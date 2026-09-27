@@ -10,9 +10,10 @@ namespace Lumora.Core.Components.Avatar;
 
 /// <summary>
 /// Drives the avatar's mouth/lip blendshapes from replicated mouth tracking. Matches blendshapes to a
-/// small set of mouth shapes by name (covers common ARKit-style and VRChat-style names) and writes the
-/// weight each frame from <see cref="MouthStreamManager"/>. Runs on every peer (the data is
-/// synced); rests the mouth when nothing is tracking. Eye blink is handled separately by BlinkDriver.
+/// small set of mouth shapes by name (covers ARKit-style names and the other common face-tracking
+/// conventions) and writes the weight each frame from <see cref="MouthStreamManager"/>. Runs on every
+/// peer (the data is synced); rests the mouth when nothing is tracking. Eye blink is handled separately
+/// by BlinkDriver.
 /// </summary>
 [ComponentCategory("Users/Avatar/Face")]
 public sealed class MouthExpressionDriver : Component

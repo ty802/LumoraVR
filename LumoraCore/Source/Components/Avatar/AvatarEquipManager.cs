@@ -65,6 +65,29 @@ public class AvatarEquipManager : UserRootComponent
 
     public bool IsEquippingManually { get; private set; }
 
+    public Slot? EquippedAvatar
+    {
+        get
+        {
+            var userRoot = UserRoot.Target ?? Slot?.ActiveUserRoot;
+            var rootSocket = userRoot?.GetRegisteredComponent<AvatarSocket>(s => s.Node.Value == BodyNode.Root && s.HasEquipped);
+            return (rootSocket?.Equipped.Target as AvatarForm)?.Slot;
+        }
+    }
+
+    public Slot? AvatarHead
+    {
+        get
+        {
+            var avatar = EquippedAvatar;
+            if (avatar == null || avatar.IsDestroyed || !avatar.IsActive)
+                return null;
+            var quad = avatar.GetComponentInChildren<QuadrupedRig>();
+            return quad?.TryGetBone(QuadNode.Head)
+                   ?? avatar.GetComponentInChildren<HumanoidRig>()?.TryGetBone(BodyNode.Head);
+        }
+    }
+
     public AvatarEquipManager()
     {
         AvailableAvatars = new SyncRefList<Slot>(this);
@@ -237,6 +260,7 @@ public class AvatarEquipManager : UserRootComponent
         }
 
         IsEquippingManually = isManualEquip;
+        EnsureRootObjectSlot();
 
         var equipObjects = new List<IAvatarEquippable>();
         CollectEquippableObjects(target, equipObjects);
@@ -246,8 +270,8 @@ public class AvatarEquipManager : UserRootComponent
             return false;
         }
 
-        // Descending priority - Root last (it's MaxValue and reparents the rest).
-        equipObjects.Sort((a, b) => -a.EquipPriority.CompareTo(b.EquipPriority));
+        // Root is last: its callback must see the newly equipped head and limb proxies.
+        equipObjects.Sort((a, b) => a.EquipPriority.CompareTo(b.EquipPriority));
 
         var objectSlots = new List<AvatarSocket>();
         var seenNodes = new HashSet<BodyNode>();
@@ -287,6 +311,13 @@ public class AvatarEquipManager : UserRootComponent
             foreach (var node in obj.ConflictingNodes)
                 exclusiveNodes.Add(node);
         }
+        if (target.GetComponentInChildren<QuadrupedIK>() != null)
+        {
+            exclusiveNodes.Add(BodyNode.LeftHand);
+            exclusiveNodes.Add(BodyNode.RightHand);
+            exclusiveNodes.Add(BodyNode.LeftFoot);
+            exclusiveNodes.Add(BodyNode.RightFoot);
+        }
         foreach (var node in exclusiveNodes)
         {
             for (int i = objectSlots.Count - 1; i >= 0; i--)
@@ -307,6 +338,9 @@ public class AvatarEquipManager : UserRootComponent
             if (dqc.Slot.IsDescendantOf(Slot))
                 dqc.Slot.SetParent(World.RootSlot);
 
+            if (dq is AvatarForm)
+                dqc.Slot.ActiveSelf.Value = false;
+
             if (forceDestroyOld)
                 dqc.Slot.Destroy();
         }
@@ -323,11 +357,14 @@ public class AvatarEquipManager : UserRootComponent
             target.SetParent(Slot);
         }
 
-        CurrentAvatar.Target = target;
-        IsUsingDefaultAvatar.Value = false;
-
-        if (!AvailableAvatars.Contains(target))
-            AvailableAvatars.Add(target);
+        bool fullAvatar = pairs.Exists(p => p.obj is AvatarForm);
+        if (fullAvatar)
+        {
+            CurrentAvatar.Target = target;
+            IsUsingDefaultAvatar.Value = false;
+            if (!AvailableAvatars.Contains(target))
+                AvailableAvatars.Add(target);
+        }
 
         if (!isFillingEmptySlot)
         {
@@ -337,7 +374,8 @@ public class AvatarEquipManager : UserRootComponent
         EnsureNameplate();
 
         Logger.Log($"AvatarEquipManager: Equipped {pairs.Count} object(s) from '{target.SlotName.Value}'");
-        OnAvatarChanged?.Invoke(target);
+        if (fullAvatar)
+            OnAvatarChanged?.Invoke(target);
         return true;
     }
 
@@ -384,6 +422,10 @@ public class AvatarEquipManager : UserRootComponent
             {
                 if (slot == null || slot.IsDestroyed) continue;
                 if (slot.HasEquipped) continue;
+                if (EquippedAvatar?.GetComponentInChildren<QuadrupedIK>() != null
+                    && (slot.Node.Value == BodyNode.LeftHand || slot.Node.Value == BodyNode.RightHand
+                        || slot.Node.Value == BodyNode.LeftFoot || slot.Node.Value == BodyNode.RightFoot))
+                    continue;
                 var handler = SocketFiller.Target;
                 if (handler == null) break;
                 _ = handler.FillSocket(slot.Node.Value, this, token);
@@ -415,7 +457,9 @@ public class AvatarEquipManager : UserRootComponent
 
         foreach (var c in slot.Components)
         {
-            if (c is IAvatarEquippable obj && CanEquip(obj))
+            if (c is IAvatarEquippable obj && CanEquip(obj)
+                && !(c is AvatarPoseDriver pose && slot.GetComponentInParents<QuadrupedIK>() is { } quad
+                     && quad.IsProceduralPawProxy(pose)))
                 output.Add(obj);
         }
         foreach (var child in slot.Children)
@@ -438,8 +482,14 @@ public class AvatarEquipManager : UserRootComponent
 
     public void DequipCurrentAvatar()
     {
-        var avatarSlot = CurrentAvatar.Target;
-        if (avatarSlot == null) return;
+        _fillCts?.Cancel();
+        var avatarSlot = EquippedAvatar ?? CurrentAvatar.Target;
+        if (avatarSlot == null || avatarSlot.IsDestroyed)
+        {
+            CurrentAvatar.Target = null!;
+            ResetAvatarPresentation();
+            return;
+        }
 
         Logger.Log($"AvatarEquipManager: Dequipping '{avatarSlot.SlotName.Value}'");
 
@@ -468,11 +518,12 @@ public class AvatarEquipManager : UserRootComponent
             avatarRoot.IsActive.Value = false;
 
         // Don't leave the dead tree hidden under the manager.
-        if (Slot != null && avatarSlot.IsDescendantOf(Slot))
+        if (userRoot != null && avatarSlot.ActiveUserRoot == userRoot)
             avatarSlot.SetParent(World.RootSlot);
 
         avatarSlot.ActiveSelf.Value = false;
         CurrentAvatar.Target = null!;
+        ResetAvatarPresentation();
     }
 
     public void EquipDefaultAvatar()
@@ -537,7 +588,7 @@ public class AvatarEquipManager : UserRootComponent
     // Single-avatar equip: an avatar is a self-describing component tree
     // (AvatarForm + skeleton + rig + pose nodes). If it has a rigged body,
     // wire IK; either way, dispatch through the body-node pipeline. No
-    // finalize gate - matching how avatars work everywhere else. - xlinka
+    // finalize gate. - xlinka
     public bool EquipAvatar(Slot avatarSlot)
     {
         if (avatarSlot == null || avatarSlot.IsDestroyed)
@@ -550,6 +601,11 @@ public class AvatarEquipManager : UserRootComponent
             return false;
         }
 
+        if (EquippedAvatar == avatarSlot)
+            return true;
+        if (avatarSlot.ActiveUserRoot != null)
+            return false;
+
         if (avatarSlot.GetComponent<AvatarForm>() == null)
             avatarSlot.AttachComponent<AvatarForm>();
 
@@ -557,7 +613,7 @@ public class AvatarEquipManager : UserRootComponent
         // pose-node compositions.
         var skeleton = avatarSlot.GetComponentInChildren<SkeletonBuilder>();
         var rig = avatarSlot.GetComponentInChildren<HumanoidRig>();
-        if (skeleton != null && rig != null)
+        if (skeleton != null && (rig != null || avatarSlot.GetComponentInChildren<QuadrupedRig>() != null))
         {
             // Root frame must face the body: equip resets this slot to identity, so a stale frame wears the
             // avatar yawed off the user's forward. World-invariant + reference slots are live transforms, so
@@ -572,22 +628,27 @@ public class AvatarEquipManager : UserRootComponent
             AvatarIK? avatarIk = null;
             if (quadrupedIk != null)
             {
-                if (!quadrupedIk.SetupFromAvatar(UserRoot.Target))
+                if (!quadrupedIk.SetupFromAvatar(UserRoot.Target, equipTracking: false))
                 {
                     Logger.Warn("AvatarEquipManager: quadruped IK setup failed");
                     return false;
                 }
             }
-            else
+            else if (rig != null)
             {
                 AvatarCalibration.AlignAvatarFacing(avatarSlot, rig);
 
                 avatarIk = avatarSlot.GetComponent<AvatarIK>() ?? avatarSlot.AttachComponent<AvatarIK>();
-                if (!avatarIk.SetupFromAvatar(UserRoot.Target))
+                if (!avatarIk.SetupFromAvatar(UserRoot.Target, equipTracking: false))
                 {
                     Logger.Warn("AvatarEquipManager: Avatar IK setup failed");
                     return false;
                 }
+            }
+            else
+            {
+                Logger.Warn("AvatarEquipManager: avatar has no usable rig");
+                return false;
             }
 
             // Rigs with finger bones get a per-hand poser. It drives fingers only
@@ -598,7 +659,7 @@ public class AvatarEquipManager : UserRootComponent
             // finds it and carries on as if the avatar were a person. On a fox the "hands" are front
             // paws: a hand poser curls them to whatever the controller's fingers are doing while the
             // quadruped solver is trying to plant them on the ground. -xlinka
-            if (quadrupedIk == null)
+            if (quadrupedIk == null && rig != null)
             {
                 if (rig.HasLeftFingerBones)
                     EnsureHandPoser(rig, Chirality.Left);
@@ -616,16 +677,22 @@ public class AvatarEquipManager : UserRootComponent
             // Face drivers (blink/eye-look/eye-expression/mouth/viseme). The in-world AvatarStudio wires
             // these, but an import-built or directly-equipped avatar otherwise has a dead face. Attach the
             // same set here so every equip path gets it; idempotent, so a creator-built avatar isn't doubled.
-            AttachFaceDrivers(avatarSlot, rig);
+            if (rig != null)
+                AttachFaceDrivers(avatarSlot, rig);
 
-            FitBodyColliderToAvatar(quadrupedIk);
-            AnchorNameplateToAvatar(quadrupedIk, rig);
         }
 
         var spanRig = avatarSlot.GetComponent<QuadrupedRig>() ?? avatarSlot.GetComponentInChildren<QuadrupedRig>();
         spanRig?.LogGirdleSpan("before-Equip");
         DequipCurrentAvatar();
         bool equipped = Equip(avatarSlot, isManualEquip: true);
+        if (equipped)
+        {
+            var quad = avatarSlot.GetComponentInChildren<QuadrupedIK>();
+            FitBodyColliderToAvatar(quad);
+            if (quad != null)
+                quad.FitTrackingSpace();
+        }
         spanRig?.LogGirdleSpan("after-Equip");
         return equipped;
     }
@@ -676,45 +743,38 @@ public class AvatarEquipManager : UserRootComponent
                  + $"height={height:F2} radius={radius:F2}");
     }
 
-    // Put the nameplate on the AVATAR's head, not the wearer's tracked head node.
-    //
-    // The two are the same place on a person, which is why nothing ever distinguished them. On an animal
-    // the wearer's head node stays at human standing height while the dog's head is out front and low,
-    // so the plate hung over empty air. Resolved on every equip and cleared when nothing is worn.
-    private void AnchorNameplateToAvatar(QuadrupedIK? quadrupedIk, HumanoidRig? rig)
+    // Restore the user's neutral tracking frame and collider when no custom form is worn.
+    private void ResetAvatarPresentation()
     {
-        var plateRoot = Slot?.FindChild(NameplateManager.RootSlotName, recursive: false);
-        var positioner = plateRoot?.GetComponentInChildren<PositionAtUser>();
-        if (positioner == null || positioner.IsDestroyed)
-            return;
-
-        var head = quadrupedIk != null
-            ? quadrupedIk.HeadBone
-            : rig?.TryGetBone(BodyNode.Head);
-
-        positioner.Anchor.Target = head != null && !head.IsDestroyed ? head : null!;
+        var userRoot = UserRoot.Target ?? Slot?.ActiveUserRoot;
+        userRoot?.SetAvatarTrackingOffset(float3.Zero);
+        FitBodyColliderToAvatar(null);
     }
 
     private const float HumanCapsuleHeight = 1.8f;
     private const float HumanCapsuleRadius = 0.3f;
 
-    // Attach the avatar's face-driver set, mirroring the in-world creator. Eye drivers gate on eye bones;
-    // mouth/viseme drivers always attach (they rest when nothing is tracking). Each is added only if absent.
-    // LipSyncAnalyzer has no audio pipeline yet - it's attached ready, but stays inert until one feeds it.
+    // Attach the avatar's face-driver set, mirroring the in-world creator. Every driver attaches
+    // unconditionally and resolves its own targets; one with nothing to drive is a no-op.
+    //
+    // The eye set used to gate on eye BONES, and all three of them drive BLENDSHAPES: blink is
+    // nothing but blendshapes, and the gaze driver handles bone eyes and eyeLook shapes alike. So an
+    // avatar with a full set of face shapes and no eye bones - which is most of them, since the
+    // common face-shape conventions carry no eye bones at all - got no blink, no gaze and no eye
+    // expression. It sat there with its eyes open forever, which is the single loudest way an avatar
+    // reads as dead. Measured on a real import: 'no eye bones' in the log, nothing on the face. Let
+    // each driver decide for itself whether it has work. -xlinka
     private static void AttachFaceDrivers(Slot avatarSlot, HumanoidRig rig)
     {
         if (avatarSlot == null || avatarSlot.IsDestroyed)
             return;
 
-        if (rig.TryGetBone(BodyNode.LeftEye) != null || rig.TryGetBone(BodyNode.RightEye) != null)
-        {
-            if (avatarSlot.GetComponent<BlinkDriver>() == null)
-                avatarSlot.AttachComponent<BlinkDriver>();
-            if (avatarSlot.GetComponent<EyeGazeDriver>() == null)
-                avatarSlot.AttachComponent<EyeGazeDriver>();
-            if (avatarSlot.GetComponent<EyeExpressionDriver>() == null)
-                avatarSlot.AttachComponent<EyeExpressionDriver>();
-        }
+        if (avatarSlot.GetComponent<BlinkDriver>() == null)
+            avatarSlot.AttachComponent<BlinkDriver>();
+        if (avatarSlot.GetComponent<EyeGazeDriver>() == null)
+            avatarSlot.AttachComponent<EyeGazeDriver>();
+        if (avatarSlot.GetComponent<EyeExpressionDriver>() == null)
+            avatarSlot.AttachComponent<EyeExpressionDriver>();
 
         // Mouth/lip blendshapes from replicated face tracking; rests when nothing is tracking.
         if (avatarSlot.GetComponent<MouthExpressionDriver>() == null)
@@ -731,13 +791,14 @@ public class AvatarEquipManager : UserRootComponent
             avatarSlot.AttachComponent<BreathingDriver>();
     }
 
-    // Attach a HandPoseDriver (+ its equip-time assigner) to a hand's wrist bone, once.
-    // The poser binds to the rig's finger bones itself and drives them locally. An idle finger-pose preset
-    // is wired as the poser's fallback so the hand holds a relaxed shape when no live tracking is present;
-    // the user-root VR finger stream still wins whenever it's actually tracking.
+    // The pose graph for one hand, on its wrist bone, once: a driver fed by a multiplexer whose first
+    // slot the binder fills with the wearer's finger stream at equip and whose second is the tool grip,
+    // an idle-to-fist blend the driver eases while this hand's HandTool holds something. The presets
+    // are shared per avatar. Live finger tracking wins whenever it is there; the grip blend covers
+    // everything else, so an untracked hand still holds a relaxed shape and closes on a tool. -xlinka
     private static void EnsureHandPoser(HumanoidRig rig, Chirality side)
     {
-        var wrist = rig.TryGetBone(side == Chirality.Left ? BodyNode.LeftHand : BodyNode.RightHand);
+        var wrist = rig.TryGetBone(side.HandNode());
         if (wrist == null)
             return;
 
@@ -745,29 +806,27 @@ public class AvatarEquipManager : UserRootComponent
             if (comp is HandPoseDriver)
                 return;
 
+        var idle = HandPosePresets.GetShared(rig.Slot, HandPoseShape.Idle);
+        var fist = HandPosePresets.GetShared(rig.Slot, HandPoseShape.Fist);
+
+        var grip = wrist.AttachComponent<HandPoseBlend>();
+        grip.A.Target = idle;
+        grip.B.Target = fist;
+
+        var multiplexer = wrist.AttachComponent<HandPoseMultiplexer>();
+        multiplexer.Sources.Add(null);
+        multiplexer.Sources.Add(grip);
+
         var poser = wrist.AttachComponent<HandPoseDriver>();
         poser.Side.Value = side;
         poser.HandRoot.Target = wrist;
-        poser.IdlePose.Target = EnsureIdleHandPose(rig);
+        poser.PoseSource.Target = multiplexer;
+        poser.GripBlend.Target = grip;
 
-        var assigner = wrist.AttachComponent<HandPoseBinder>();
-        assigner.Side.Value = side;
-        assigner.TargetPoser.Target = poser;
-    }
-
-    // One idle finger-pose source per avatar, shared by both hands. A HandPosePreset on Idle serves a
-    // relaxed hand shape (synthesized per-peer, only the Shape enum syncs). Finger-pose components were
-    // otherwise never attached, so hands had no idle source at all.
-    private static HandPosePreset EnsureIdleHandPose(HumanoidRig rig)
-    {
-        var host = rig.Slot;
-        var preset = host.GetComponent<HandPosePreset>();
-        if (preset == null)
-        {
-            preset = host.AttachComponent<HandPosePreset>();
-            preset.Shape.Value = HandPoseShape.Idle;
-        }
-        return preset;
+        var binder = wrist.AttachComponent<HandPoseBinder>();
+        binder.Side.Value = side;
+        binder.TargetPoser.Target = poser;
+        binder.TargetMultiplexer.Target = multiplexer;
     }
 
     public bool CanEquipAvatar(Slot avatarSlot)

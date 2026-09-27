@@ -22,11 +22,12 @@ namespace Lumora.Core.Components.Avatar;
 // a tracked hand or foot is somewhere a paw could physically be, in which case that tracker owns the
 // leg (see BuildPawTargets for the gate and why it exists). -xlinka
 [ComponentCategory("Users/Avatar")]
-[DefaultUpdateOrder(-5000)]
-public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
+[DefaultUpdateOrder(1000)]
+public class QuadrupedIK : Component, IAvatarEquipReceiver
 {
     private readonly QuadrupedIKSolver _solver = new();
     private readonly QuadrupedGait _gait = new();
+    private readonly ProceduralGrounding _grounding = new();
 
     public readonly SyncRef<SkeletonBuilder> Skeleton = new();
     public readonly SyncRef<QuadrupedRig> Rig = new();
@@ -55,13 +56,18 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     public readonly Sync<float> StepHeight = new();
     public readonly Sync<float> StepThreshold = new();
     public readonly Sync<float> StepAngleThreshold = new();
-    // SECONDS of velocity lookahead, like the biped's. This was metres, applied unscaled by speed, so
-    // every stance point sat 12 cm ahead of its girdle with the animal standing still - the front half
-    // of the resting splay. Velocity times seconds is zero at rest by construction. -xlinka
+    // SECONDS of velocity lookahead, like the biped's: a cap on how far ahead of home a paw may touch
+    // down, 0 = only the leg's reach caps it. This was metres, applied unscaled by speed, so every
+    // stance point sat 12 cm ahead of its girdle with the animal standing still - the front half of
+    // the resting splay. Velocity times seconds is zero at rest by construction. -xlinka
     public readonly Sync<float> StepPrediction = new();
     // Longest a swing may take. A swing runs on its own clock so it always finishes, including when
     // the body stops under it; at speed the gait shortens it to keep up.
     public readonly Sync<float> StepDuration = new();
+    // Stride and landing lead for travel across the body and against its axis, as a fraction of the
+    // forward stride. Blended by how lateral or backward the travel is, so a diagonal sits between.
+    public readonly Sync<float> SidewaysStrideRatio = new();
+    public readonly Sync<float> BackwardsStrideRatio = new();
     // Root-to-paw distance, as a fraction of the leg's straight length, past which a planted leg must
     // step whatever the home distance says. The rig's own rest extension plus a margin overrides a
     // value below it, so a straight-legged rig does not step forever.
@@ -89,6 +95,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     // gait owned all four legs unconditionally, so the back legs could only ever follow the same
     // procedural cycle as the front and no tracker could say otherwise. -xlinka
     private readonly SyncRef<Slot> _headProxy = new();
+    private float3 _viewLocalOffset;
     private readonly SyncRef<AvatarPoseDriver> _headNode = new();
     private readonly SyncRef<AvatarPoseDriver> _frontLeftPawNode = new();
     private readonly SyncRef<AvatarPoseDriver> _frontRightPawNode = new();
@@ -103,7 +110,6 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
 
     private bool _isInitialized;
     private bool _suspendSolve;
-    private bool _registered;
 
     private readonly QuadrupedIKSolver.LimbTarget[] _pawTargets = new QuadrupedIKSolver.LimbTarget[QuadLimb.Count];
     private readonly float3[] _homePoints = new float3[QuadLimb.Count];
@@ -112,17 +118,17 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     private readonly Slot?[] _pawProxies = new Slot?[QuadLimb.Count];
     private readonly AvatarPoseDriver?[] _pawNodes = new AvatarPoseDriver?[QuadLimb.Count];
 
-    // The authored stance, captured with the rest pose and carried on the body.
+    // The neutral stance, measured with the rest pose and carried on the body.
     //
-    // Each paw's home point is its REST position relative to a body-fixed reference: the chest for a
-    // front leg, the pelvis for a rear one. Not the girdle. The girdle is the midpoint of the limb
-    // roots, read from last frame's SOLVED pose, and the front root is the scapula, which the limb
-    // solver swings freely - so a scapula pulled forward to reach a paw moved next frame's home
-    // forward, and the paw chased its own shadow. The reference points are stored in the rig slot's
-    // space and transformed by the live slot each frame, which is body-fixed by construction: the
-    // solver never writes anything above the pelvis. The offset is a forward/lateral pair in metres at
-    // capture, rescaled by the live body length so an equip rescale after capture does not shrink or
-    // stretch the stance. -xlinka
+    // Each paw's home point hangs off a body-fixed reference: the chest for a front leg, the pelvis for
+    // a rear one. Not the live girdle. The girdle is the midpoint of the limb roots read from last
+    // frame's SOLVED pose, and the front root is the scapula, which the limb solver swings freely - so
+    // a scapula pulled forward to reach a paw moved next frame's home forward, and the paw chased its
+    // own shadow. The reference points are stored in the rig slot's space and transformed by the live
+    // slot each frame, which is body-fixed by construction: the solver never writes anything above the
+    // pelvis. The offset itself is measured ONCE at rest, from the rest girdle (see CaptureRestStance),
+    // as a forward/lateral pair in metres, rescaled by the live body length so an equip rescale after
+    // capture does not shrink or stretch the stance. -xlinka
     private readonly float2[] _restPawOffset = new float2[QuadLimb.Count];
     private readonly float[] _restReachRatio = new float[QuadLimb.Count];
     private readonly bool[] _hasRestStance = new bool[QuadLimb.Count];
@@ -130,6 +136,11 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     private float3 _restPelvisLocal;
     private float _restStanceBodyLength;
     private const float StretchMargin = 0.04f;
+
+    // How far ahead of or behind its root a neutral paw may sit, as a fraction of the leg's straight
+    // length. The authored bias is worth keeping - a rig really can stand with its forepaws a little
+    // forward - but only as a bias.
+    private const float StanceForwardBias = 0.2f;
 
     // Which of the wearer's tracked nodes owns each leg.
     private static readonly BodyNode[] PawBodyNodes =
@@ -173,11 +184,13 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         StepHeight.Value = 0.08f;
         StepThreshold.Value = 0.22f;
         StepAngleThreshold.Value = 28f;
-        StepPrediction.Value = 0.12f;
+        StepPrediction.Value = 0f;
         StepDuration.Value = 0.25f;
+        SidewaysStrideRatio.Value = 0.5f;
+        BackwardsStrideRatio.Value = 0.75f;
         MaxLegStretch.Value = 0.92f;
         MaxStepVelocity.Value = 6f;
-        BodyBob.Value = 0.02f;
+        BodyBob.Value = 0f;
         StanceWidth.Value = 1f;
         GroundConformScale.Value = 1f;
 
@@ -190,28 +203,21 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         BendGoalWeight.Value = 1f;
     }
 
-    public override void OnStart()
-    {
-        base.OnStart();
-
-        var input = Engine.Current?.InputInterface;
-        if (input != null)
-        {
-            input.RegisterInputEventReceiver(this);
-            _registered = true;
-        }
-    }
-
-    public override void OnDestroy()
-    {
-        if (_registered)
-            Engine.Current?.InputInterface?.UnregisterInputEventReceiver(this);
-        base.OnDestroy();
-    }
 
     // SETUP
 
-    public bool SetupFromAvatar(UserRoot userRoot)
+    public override void OnStart()
+    {
+        base.OnStart();
+        if (UpdateOrder == -5000)
+            UpdateOrder = 1000;
+        if (MathF.Abs(BodyBob.Value - 0.02f) < 1e-6f)
+            BodyBob.Value = 0f;
+        if (MathF.Abs(StepPrediction.Value - 0.12f) < 1e-6f)
+            StepPrediction.Value = 0f;
+    }
+
+    public bool SetupFromAvatar(UserRoot userRoot, bool equipTracking = true)
     {
         var rig = Rig.Target ?? Slot.GetComponent<QuadrupedRig>() ?? Slot.GetComponentInChildren<QuadrupedRig>();
         var skeleton = Skeleton.Target
@@ -226,8 +232,12 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         }
 
         Setup(skeleton, rig, userRoot);
-        SetupTracking(userRoot);
-        return true;
+        CaptureViewOffset();
+        if (equipTracking)
+            SetupTracking(userRoot);
+        else
+            SweepForeignPoseDrivers();
+        return _solver.IsReady;
     }
 
     // An avatar can carry SEVERAL skeletons - a body, a tail, a swap mesh - and a fox very commonly
@@ -300,6 +310,54 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     // The animal's own head bone, for anything that has to sit ON the animal rather than on the wearer.
     public Slot? HeadBone => Rig.Target is { IsDestroyed: false } rig ? rig.TryGetBone(QuadNode.Head) : null;
 
+    private void CaptureViewOffset()
+    {
+        _viewLocalOffset = float3.Zero;
+        var head = HeadBone;
+        if (head == null)
+            return;
+        foreach (var point in Slot.GetComponentsInChildren<AvatarReferencePoint>())
+        {
+            if (point.Kind.Value != AvatarReferenceKind.View)
+                continue;
+            _viewLocalOffset = head.GlobalPointToLocal(point.Slot.GlobalPosition);
+            break;
+        }
+    }
+
+    public void FitTrackingSpace()
+    {
+        var userRoot = UserRoot.Target;
+        var rig = Rig.Target;
+        var head = HeadBone;
+        if (userRoot == null || rig == null || head == null || !_solver.IsReady)
+            return;
+
+        // Measure the neutral standing view after the avatar has entered the user's frame.
+        // Keeping this offset fixed avoids feeding the solved head back into its own tracking target.
+        _lastGroundY = userRoot.Slot.GlobalPosition.y;
+        _solver.BeginFrame();
+        Array.Clear(_pawTargets);
+        _solver.LocomotionOffset = float3.Zero;
+        _solver.Solve(_pawTargets, default, BuildChassisTargetCore(rig, standing: true));
+        float3 view = head.LocalPointToGlobal(_viewLocalOffset);
+        float height = Engine.Current?.InputInterface?.UserHeight ?? InputInterface.DEFAULT_USER_HEIGHT;
+        if (!float.IsFinite(height) || height < 0.5f)
+            height = InputInterface.DEFAULT_USER_HEIGHT;
+        userRoot.SetAvatarTrackingOffset(userRoot.Slot.GlobalPointToLocal(view) - float3.Up * height);
+        _solver.ResetToDefaultPose();
+    }
+
+    internal bool IsProceduralPawProxy(AvatarPoseDriver driver)
+    {
+        if (Engine.Current?.InputInterface?.IsVRActive == true)
+            return false;
+        for (int i = 0; i < QuadLimb.Count; i++)
+            if (_pawNodes[i] == driver)
+                return true;
+        return false;
+    }
+
     private float EffectiveBodyLength()
         => BodyLength.Value > 0f ? BodyLength.Value : MathF.Max(_solver.RestBodyLength, 0.1f);
 
@@ -334,7 +392,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         if (forward.LengthSquared < 1e-8f)
             return;
         forward = forward.Normalized;
-        float3 right = float3.Cross(float3.Up, forward);
+        float3 right = float3.Cross(forward, float3.Up);
         if (right.LengthSquared < 1e-8f)
             return;
         right = right.Normalized;
@@ -351,19 +409,54 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
             if (paw == null || paw.IsDestroyed)
                 continue;
 
+            bool front = QuadLimb.IsFront(id);
             float3 pawPos = paw.GlobalPosition;
-            float3 reference = QuadLimb.IsFront(id) ? _solver.RestChestPosition : _solver.RestPelvisPosition;
+            float3 reference = front ? _solver.RestChestPosition : _solver.RestPelvisPosition;
             float3 offset = pawPos - reference;
-            _restPawOffset[i] = new float2(float3.Dot(offset, forward), float3.Dot(offset, right));
 
             // How extended the leg is at rest, over its straight length. The stretch trigger must sit
             // above this or a rig authored with straight legs would want to step every frame.
             _restReachRatio[i] = 0f;
+            float limbLength = 0f;
             if (_solver.TryGetLimbReach(id, out float3 root, out _)
                 && _solver.TryGetLimbInfo(id, out _, out float length, out _)
                 && length > 1e-4f)
             {
                 _restReachRatio[i] = float3.Distance(root, pawPos) / length;
+                limbLength = length;
+            }
+
+            // Neutral stance comes off the LEG ROOTS, not off where the author parked the paws.
+            //
+            // On a real fox the front paws plant 0.11 from the midline and the rears 0.44, while both
+            // pairs of upper legs sit 0.25 out: the saved pose is an animal mid-stride with its front
+            // feet tucked under it and its back feet splayed, and taking that as the neutral gave two
+            // pairs with completely different tracks and a body that rocked between them. A leg hangs
+            // from its root, so a leg at rest stands UNDER its root - that is a property of the animal
+            // and not of the frame it happened to be exported on. Lateral is half the pair's root track,
+            // scaled by StanceWidth where the home is built; fore-aft is the pair's own root position
+            // plus whatever forward or backward bias the author gave the paw, clamped small so a tucked
+            // or trailing rest paw cannot drag the stance off the roots again. -xlinka
+            if (rig.TryGetGirdle(front, out float3 girdleCentre, out float track, out _, out _)
+                && track > 1e-4f)
+            {
+                float3 girdleOffset = girdleCentre - reference;
+                float bias = float3.Dot(pawPos - girdleCentre, forward);
+                if (limbLength > 1e-4f)
+                {
+                    float limit = limbLength * StanceForwardBias;
+                    bias = System.Math.Clamp(bias, -limit, limit);
+                }
+                float side = QuadLimb.IsLeft(id) ? -1f : 1f;
+                _restPawOffset[i] = new float2(
+                    float3.Dot(girdleOffset, forward) + bias,
+                    float3.Dot(girdleOffset, right) + side * track * 0.5f);
+            }
+            else
+            {
+                // No girdle for this pair means no root track to stand on; the authored paw is all
+                // there is.
+                _restPawOffset[i] = new float2(float3.Dot(offset, forward), float3.Dot(offset, right));
             }
 
             _hasRestStance[i] = true;
@@ -391,20 +484,19 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
                             + "the rest fall back to girdle-relative home points");
         }
 
-        SymmetriseRestStance();
+        SymmetriseRestStance(rig);
     }
 
     // A neutral stance is SYMMETRIC, whatever pose the author happened to save.
     //
-    // Home was captured straight from the authored rest and this fox is saved mid-stride: the paw
-    // heights in its rig dump differ by 25 cm side to side. Measured after the gait rewrite, three home
-    // points sat at 99-103% of their leg's reach (one physically unreachable, looping a settle step
-    // forever) while the fourth sat at a relaxed 60%. The tested systems put home at the centre of the
-    // leg's reachable area, which is a property of the animal, not of the frame it was exported on.
-    // Average each front/rear pair's forward offset and mirror the lateral, so both sides of a pair get
-    // the same neutral point. Then keep every home inside the leg's reach: a home the leg cannot reach
-    // is a straight-locked leg at best and a settle loop at worst. -xlinka
-    private void SymmetriseRestStance()
+    // The lateral term now comes off the root track and is symmetric by construction, but the fore-aft
+    // bias is still read per paw and this fox is saved mid-stride, so one side of a pair can carry a
+    // bias the other does not. Average each pair's forward offset and mirror the lateral, so both sides
+    // of a pair get the same neutral point. Then keep every home inside the leg's reach: a home the leg
+    // cannot reach is a straight-locked leg at best and a settle loop at worst - three of the four home
+    // points once sat at 99-103% of their leg's reach, one of them physically unreachable and looping a
+    // settle step forever. -xlinka
+    private void SymmetriseRestStance(QuadrupedRig rig)
     {
         Pair(QuadLimbId.FrontLeft, QuadLimbId.FrontRight);
         Pair(QuadLimbId.RearLeft, QuadLimbId.RearRight);
@@ -417,6 +509,19 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
 
             float forward = (_restPawOffset[l].x + _restPawOffset[r].x) * 0.5f;
             float lateral = (MathF.Abs(_restPawOffset[l].y) + MathF.Abs(_restPawOffset[r].y)) * 0.5f;
+            var leftUpper = rig.TryGetLimbBone(left, QuadLimb.SegUpper);
+            var rightUpper = rig.TryGetLimbBone(right, QuadLimb.SegUpper);
+            if (leftUpper != null && rightUpper != null)
+            {
+                float3 axis = rig.BodyForward;
+                float3 side = float3.Cross(axis, float3.Up).Normalized;
+                float3 reference = QuadLimb.IsFront(left) ? _solver.RestChestPosition : _solver.RestPelvisPosition;
+                float3 midpoint = (leftUpper.GlobalPosition + rightUpper.GlobalPosition) * 0.5f;
+                lateral = MathF.Abs(float3.Dot(rightUpper.GlobalPosition - leftUpper.GlobalPosition, side)) * 0.5f;
+                float rootForward = float3.Dot(midpoint - reference, axis);
+                float allowance = _restStanceBodyLength * 0.12f;
+                forward = rootForward + System.Math.Clamp(forward - rootForward, -allowance, allowance);
+            }
             float reach = MathF.Min(_restReachRatio[l], _restReachRatio[r]);
             if (reach <= 1e-4f)
                 reach = MathF.Max(_restReachRatio[l], _restReachRatio[r]);
@@ -659,24 +764,21 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
 
         // Transform copiers on RIG BONES are the same kind of foreign writer, and a sneakier one.
         //
-        // A package built for the source platform poses its animal bones by having the humanoid rig
-        // solve and the <NOIK> bones COPY from it, one CopyGlobalTransform per bone. Under this solver
-        // the animal bones are written directly, and the copier then overwrites them from the humanoid
-        // legs, which nothing solves any more and which sit wherever the author left them. Measured:
-        // both thigh bones carried a CopyGlobalTransform, the solver left them level at 0.663/0.660,
-        // and by the next gait tick the right one had been copied down to 0.391. Only copiers that
-        // target a bone this rig owns are removed; anything on a non-rig slot is not ours to touch.
+        // A packaged avatar can pose its animal bones by having the humanoid rig solve and the <NOIK>
+        // bones COPY from it, one CopyGlobalTransform per bone. Under this solver the animal bones are
+        // written directly, and the copier then overwrites them from the humanoid legs, which nothing
+        // solves any more and which sit wherever the author left them. Measured: both thigh bones carried
+        // a CopyGlobalTransform, the solver left them level at 0.663/0.660, and by the next gait tick the
+        // right one had been copied down to 0.391. Only copiers that target a bone this rig owns are
+        // removed; anything on a non-rig slot is not ours to touch.
         // -xlinka
         var rig = Rig.Target;
         if (rig == null || rig.IsDestroyed)
             return;
 
         int copiers = 0;
-        foreach (var node in rig.Bones.Keys)
+        foreach (var bone in rig.GetPoseBones())
         {
-            var bone = rig.TryGetBone(node);
-            if (bone == null || bone.IsDestroyed)
-                continue;
             foreach (var copier in new System.Collections.Generic.List<Lumora.Core.Components.Utility.CopyGlobalTransform>(
                          bone.GetComponents<Lumora.Core.Components.Utility.CopyGlobalTransform>()))
             {
@@ -722,16 +824,18 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     // PER-FRAME
 
     public BodyNode Node => BodyNode.Root;
+    private int _equipRevision;
 
     public void OnPreEquip(AvatarSocket slot) { }
 
     public void OnEquip(AvatarSocket slot)
     {
+        _grounding.Reset();
         // Equip reparents and rescales the avatar, so every captured length is stale. Suspend, then
         // re-capture once the transforms have settled.
         Rig.Target?.LogGirdleSpan("equip-entry");
         _suspendSolve = true;
-        RecaptureUntilSane(0);
+        RecaptureUntilSane(0, ++_equipRevision);
         LumoraLogger.Log($"QuadrupedIK: equipped to {slot.Node.Value}");
     }
 
@@ -757,30 +861,8 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
             return;
 
         int freed = 0;
-        var bones = new System.Collections.Generic.List<Slot>();
-        foreach (var node in rig.Bones.Keys)
+        foreach (var bone in rig.GetPoseBones())
         {
-            var mapped = rig.TryGetBone(node);
-            if (mapped != null && !mapped.IsDestroyed)
-                bones.Add(mapped);
-        }
-
-        // The bone each limb HANGS FROM is not in the map when it is a hip rather than a scapula, and it
-        // ships driven like everything else. Left driven, it keeps its orphaned-link pose forever, the
-        // symmetrise pass refuses to write it, and one rear root sits 20 cm below its twin with both
-        // paws flat on the floor. Release it too; it is the solver's to level even if not to solve.
-        // -xlinka
-        for (int i = 0; i < QuadLimb.Count; i++)
-        {
-            var upper = rig.TryGetLimbBone((QuadLimbId)i, QuadLimb.SegUpper);
-            var girdle = upper?.Parent;
-            if (girdle != null && !girdle.IsDestroyed && !bones.Contains(girdle))
-                bones.Add(girdle);
-        }
-
-        foreach (var bone in bones)
-        {
-
             if (bone.LocalPosition.IsDriven && bone.LocalPosition.ActiveLink is { } localpositionLink)
             {
                 bone.LocalPosition.ReleaseLink(localpositionLink);
@@ -815,7 +897,6 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     private float _measuredSoleOffset;
     private readonly float[] _rootAboveAnchor = new float[2];
     private readonly int[] _rootAboveAnchorCount = new int[2];
-    private double _homeGeomLogAt = -10.0;
     private bool _constraintsLogged;
 
     // How far the MESH hangs below the lowest paw bone.
@@ -949,17 +1030,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
             LumoraLogger.Log($"QuadrupedIK: {QuadLimb.Name((QuadLimbId)i)} {_solver.DescribeLimbConstraints((QuadLimbId)i)}");
     }
 
-    // Swing each girdle bone so its limb root sits at the SYMMETRIC lateral position.
-    //
-    // Mapping the hip bones into the chain levelled the two rear roots (0.589/0.386 became 0.556/0.569)
-    // but left them laterally lopsided: the authored pose has one hip rotated outward, so one thigh
-    // root sat 20 cm from its home and the other 3 cm, and the same leg read a comfortable stretch on
-    // one side and the limit on the other. Rather than mirror quaternions across a body plane, which
-    // depends on a handedness this codebase has already tripped over twice tonight, measure where each
-    // pair's roots actually are along the left-right axis, average the magnitudes, and rotate each
-    // girdle bone by the shortest arc that puts its root on the averaged offset. Nothing but the
-    // lateral component changes; height and fore-aft stay as authored. Done after the authored pose is
-    // restored so it acts on the same base every equip. -xlinka
+    // Level each pair of limb roots and balance its lateral spread without changing bone lengths.
     private void SymmetriseGirdles(QuadrupedRig rig)
     {
         Pair(QuadLimbId.FrontLeft, QuadLimbId.FrontRight, "front");
@@ -975,6 +1046,8 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
             var gr = rig.TryGetLimbBone(right, QuadLimb.SegScapula) ?? rr?.Parent;
             if (gl == null || gr == null || rl == null || rr == null
                 || gl.IsDestroyed || gr.IsDestroyed || rl.IsDestroyed || rr.IsDestroyed)
+                return;
+            if (gl == gr)
                 return;
             if (gl.LocalRotation.IsDriven || gr.LocalRotation.IsDriven)
                 return;
@@ -995,8 +1068,15 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
                 return;
 
             float before = MathF.Abs(MathF.Abs(sideL) - MathF.Abs(sideR));
-            Swing(gl, rl, mid, axis, target);
-            Swing(gr, rr, mid, axis, -target);
+            float lengthL = float3.Distance(gl.GlobalPosition, rl.GlobalPosition);
+            float lengthR = float3.Distance(gr.GlobalPosition, rr.GlobalPosition);
+            float lowest = MathF.Max(gl.GlobalPosition.y - lengthL, gr.GlobalPosition.y - lengthR);
+            float highest = MathF.Min(gl.GlobalPosition.y + lengthL, gr.GlobalPosition.y + lengthR);
+            if (lowest > highest)
+                return;
+            float level = System.Math.Clamp((rl.GlobalPosition.y + rr.GlobalPosition.y) * 0.5f, lowest, highest);
+            Swing(gl, rl, mid, axis, target, level);
+            Swing(gr, rr, mid, axis, -target, level);
 
             float afterL = float3.Dot(rl.GlobalPosition - mid, axis);
             float afterR = float3.Dot(rr.GlobalPosition - mid, axis);
@@ -1004,21 +1084,24 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
                            + $"{sideL:F3}/{sideR:F3} (asymmetry {before:F3}), now {afterL:F3}/{afterR:F3}");
         }
 
-        static void Swing(Slot girdle, Slot root, float3 mid, float3 axis, float targetSide)
+        static void Swing(Slot girdle, Slot root, float3 mid, float3 axis, float targetSide, float level)
         {
             float3 current = root.GlobalPosition - girdle.GlobalPosition;
             if (current.LengthSquared < 1e-8f)
                 return;
 
-            // Desired root: same point but with its lateral component moved to the target offset.
             float3 rootPos = root.GlobalPosition;
             float side = float3.Dot(rootPos - mid, axis);
             float3 desiredRoot = rootPos + axis * (targetSide - side);
             float3 desired = desiredRoot - girdle.GlobalPosition;
+            float height = level - girdle.GlobalPosition.y;
+            float radius = MathF.Sqrt(MathF.Max(current.LengthSquared - height * height, 0f));
+            desired.y = 0f;
             if (desired.LengthSquared < 1e-8f)
-                return;
+                desired = axis * (targetSide < 0f ? -1f : 1f);
+            desired = desired.Normalized * radius + float3.Up * height;
 
-            var swing = FabrikSolver.FromToRotation(current.Normalized, desired.Normalized);
+            var swing = FabrikSolver.FromToRotation(current.Normalized, desired.Normalized, float3.Up);
             girdle.GlobalRotation = (swing * girdle.GlobalRotation).Normalized;
         }
     }
@@ -1035,9 +1118,9 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     // property, and RestLooksCollapsed can test for it directly. -xlinka
     private const int MaxRestCaptureAttempts = 90;
 
-    private void RecaptureUntilSane(int attempt)
+    private void RecaptureUntilSane(int attempt, int revision)
     {
-        if (IsDestroyed)
+        if (IsDestroyed || revision != _equipRevision || UserRoot.Target == null)
             return;
 
         if (attempt == 0)
@@ -1067,11 +1150,16 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
             return;
         }
 
-        Slot.RunInUpdates(1, () => RecaptureUntilSane(attempt + 1));
+        Slot.RunInUpdates(1, () => RecaptureUntilSane(attempt + 1, revision));
     }
 
     public void OnDequip(AvatarSocket slot)
     {
+        _equipRevision++;
+        _suspendSolve = true;
+        _solver.ResetToDefaultPose();
+        _gait.Reset();
+        UserRoot.Target = null!;
         LumoraLogger.Log($"QuadrupedIK: dequipped from {slot.Node.Value}");
     }
 
@@ -1095,28 +1183,22 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
            && Enabled.Value
            && _isInitialized
            && !IsDestroyed
+           && Slot.IsActive
            && World != null
            && World.IsFocused
            && UserRoot.Target != null
-           && !UserRoot.Target.IsDestroyed;
+           && !UserRoot.Target.IsDestroyed
+           && Slot.ActiveUserRoot == UserRoot.Target;
 
-    public void BeforeInputUpdate()
+    public override void OnUpdate(float delta)
     {
-        if (!CanRun() || !UseProceduralGait.Value)
-            return;
-
-        var rig = Rig.Target;
-        if (rig == null || rig.IsDestroyed)
-            return;
-
-        TickGait(rig);
-    }
-
-    public void AfterInputUpdate()
-    {
+        base.OnUpdate(delta);
         if (!CanRun() || _suspendSolve)
             return;
 
+        using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
+        if (UseProceduralGait.Value && Rig.Target is { IsDestroyed: false } rig)
+            TickGait(rig);
         SolveBody();
     }
 
@@ -1138,7 +1220,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         }
 
         float3 forward = rig.BodyForward;
-        float3 right = float3.Cross(float3.Up, forward);
+        float3 right = float3.Cross(forward, float3.Up);
         if (right.LengthSquared < 1e-8f)
         {
             if (!_gaitBlockedLogged)
@@ -1153,6 +1235,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         float bodyLength = EffectiveBodyLength();
         float groundY = ResolveGroundY(rig);
         _lastGroundY = groundY;
+        _grounding.Update(UserRoot.Target, dt);
 
         // Home points. The authored rest paw offset hung off a body-fixed reference (see the capture
         // for why not the girdle), rotated by the live body yaw, lateral scaled by StanceWidth. No lead
@@ -1202,39 +1285,6 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
                 _limbRoots[i] = root;
                 _limbReach[i] = length * limit;
 
-                // Pull home inside the leg's reach. Home is a point on the ground and the root is a
-                // height above it, so the horizontal radius the leg can cover is what is left of a
-                // comfortable reach after the vertical drop. A home outside that is not a stance, it is
-                // a straight-locked leg, and on this rig it was a settle loop. Comfortable = 90% of the
-                // straight length, which leaves the solver room to bend. -xlinka
-                float comfortable = length * 0.90f;
-                float drop = root.y - home.y;
-                float radius = MathF.Sqrt(MathF.Max(comfortable * comfortable - drop * drop, 0f));
-                float3 flat = home - root;
-                flat.y = 0f;
-                float flatLen = flat.Length;
-
-                // Per-limb geometry, throttled. Three of four homes kept clamping to the reach limit and
-                // the numbers upstream could not say whether it was height, fore-aft or lateral. -xlinka
-                if (_homeGeomLogAt + 3.0 < World.Time.TotalTime && i == 0)
-                    _homeGeomLogAt = World.Time.TotalTime;
-                if (_homeGeomLogAt == World.Time.TotalTime)
-                {
-                    float3 fwdOff = forward * float3.Dot(flat, forward);
-                    float3 latOff = right * float3.Dot(flat, right);
-                    var upperNow = rig.TryGetLimbBone(id, QuadLimb.SegUpper);
-                    string upperName = upperNow?.SlotName.Value ?? "none";
-                    float upperY = upperNow?.GlobalPosition.y ?? float.NaN;
-                    LumoraLogger.Log($"HOMEGEOM {id}: len={length:F3} rootY={root.y:F3} upper='{upperName}' upperY={upperY:F3} drop={drop:F3} "
-                                   + $"radius={radius:F3} flat={flatLen:F3} fwd={float3.Dot(flat, forward):F3} "
-                                   + $"lat={float3.Dot(flat, right):F3} restOff=({_restPawOffset[i].x:F3},{_restPawOffset[i].y:F3}) "
-                                   + $"clamped={(flatLen > radius)}");
-                }
-                if (flatLen > radius && flatLen > 1e-4f)
-                {
-                    float3 pulled = root + flat * (radius / flatLen);
-                    home = new float3(pulled.x, groundY, pulled.z);
-                }
             }
             _homePoints[i] = home;
         }
@@ -1256,9 +1306,13 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
             StepAngleThresholdDeg = StepAngleThreshold.Value,
             StepPrediction = MathF.Max(StepPrediction.Value, 0f),
             StepDuration = StepDuration.Value > 0f ? StepDuration.Value : 0.25f,
+            // A save from before these existed loads them as 0; that is the biped default, not "no stride".
+            SidewaysRatio = SidewaysStrideRatio.Value > 0f ? System.Math.Clamp(SidewaysStrideRatio.Value, 0.1f, 1f) : 0.5f,
+            BackwardsRatio = BackwardsStrideRatio.Value > 0f ? System.Math.Clamp(BackwardsStrideRatio.Value, 0.1f, 1f) : 0.75f,
             MaxStepVelocity = MathF.Max(MaxStepVelocity.Value, 0.1f),
             GroundY = groundY,
-            Grounded = true,
+            Grounded = _grounding.Grounded,
+            RootDelta = _grounding.RootDelta,
             Mode = GaitMode.Value,
             Home = _homePoints,
             LimbRoots = _limbRoots,
@@ -1306,7 +1360,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
 
         // Keep the joint cone and the crouch floor in step: a cone that cannot fold as far as the crouch
         // asks makes the legs straighten and stretch instead of bending.
-        _solver.MinLimbFoldScale = System.Math.Clamp(MinCrouchScale.Value, 0.05f, 1f);
+        _solver.MinLimbFoldScale = System.Math.Clamp(MinCrouchScale.Value, 0.05f, 1f) * StandExtension;
         _solver.SoleOffset = SoleOffset.Value > 1e-4f ? SoleOffset.Value : _measuredSoleOffset;
         _solver.MaxStretch = MathF.Max(LimbStretch.Value, 1f);
         _solver.BendGoalWeight = BendGoalWeight.Value;
@@ -1341,9 +1395,8 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
             lift += _gait.Limbs[i].StepLift;
             swinging++;
         }
-        _bodyBobOffset = swinging > 0
-            ? new float3(0f, BodyBob.Value * EffectiveBodyLength() * (lift / swinging), 0f)
-            : float3.Zero;
+        float bob = swinging > 0 ? MathF.Min(BodyBob.Value, 0.01f) * EffectiveBodyLength() * (lift / swinging) : 0f;
+        _bodyBobOffset = float3.Lerp(_bodyBobOffset, float3.Up * bob, 1f - MathF.Exp(-World!.Time.Delta * 8f));
 
         _solver.LocomotionOffset = _bodyBobOffset;
         _solver.Solve(_pawTargets, in head, in chassis);
@@ -1399,6 +1452,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
                 target.GroundAlign = false;
                 target.HasGroundRotation = false;
                 target.StepLift = 0f;
+                target.HasSupportPosition = false;
                 continue;
             }
 
@@ -1431,10 +1485,15 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
             target.HasGroundRotation = true;
             target.GroundRotation = limb.CurrentRot;
             target.StepLift = limb.StepLift;
+            target.HasSupportPosition = limb.Init;
+            target.SupportPosition = limb.Planted + float3.Up * _solver.PawGroundClearance[i];
         }
     }
 
     private QuadrupedIKSolver.ChassisTarget BuildChassisTarget(QuadrupedRig rig)
+        => BuildChassisTargetCore(rig, standing: false);
+
+    private QuadrupedIKSolver.ChassisTarget BuildChassisTargetCore(QuadrupedRig rig, bool standing)
     {
         var chassis = default(QuadrupedIKSolver.ChassisTarget);
         if (!UseProceduralGait.Value)
@@ -1450,8 +1509,8 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         // Each girdle rides its own pair of paws, so pitch falls out of the two pairs sitting at
         // different heights rather than being computed. Contact heights, not swing heights, and the
         // root ground plane until a pair has planted.
-        float frontGround = _gait.TryGirdleGroundHeight(front: true, out float fg) ? fg : _lastGroundY;
-        float rearGround = _gait.TryGirdleGroundHeight(front: false, out float rg) ? rg : _lastGroundY;
+        float frontGround = !standing && _grounding.Grounded && _gait.TryGirdleGroundHeight(front: true, out float fg) ? fg : _lastGroundY;
+        float rearGround = !standing && _grounding.Grounded && _gait.TryGirdleGroundHeight(front: false, out float rg) ? rg : _lastGroundY;
 
         // Stand height = the girdle bone's rest height above the SOLE PLANE, measured this frame at the
         // live scale. What was here before added the girdle's height above its own limb root to the
@@ -1472,7 +1531,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         // Measured against the CALIBRATED user height rather than a standing pose captured at equip,
         // which is the same reason the biped path gives: equipping while already crouched would
         // otherwise bake the crouch in as the new standing height. -xlinka
-        float crouch = ResolveCrouchScale();
+        float crouch = standing ? 1f : ResolveCrouchScale();
         // Stand no taller than the legs can stand WITH BEND.
         //
         // The rest stand heights are read from the authored pose, and this fox is authored on straight
@@ -1485,19 +1544,10 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         float pelvisStand = MathF.Min(_solver.RestPelvisStandHeight, StandCapFor(QuadLimbId.RearLeft, QuadLimbId.RearRight)) * crouch;
 
         float comp = System.Math.Clamp(HeightCompensation.Value, 0f, 1f);
-        // Horizontal position comes from the LIVE girdles; only the HEIGHT comes from the rest capture.
-        //
-        // These were both taken straight from the rest capture, which stores WORLD positions. So every
-        // frame the solver drove the body back to wherever the animal happened to be standing when rest
-        // was captured, and it could never translate. The gait reads its phase from body velocity
-        // (AdvancePhase), so a body that cannot move reports zero speed, the phase never advances, and
-        // no leg ever enters a swing - which is exactly the gaitPhase=0.00 in every log, walking or not.
-        // The animal moved across the world only because its parent did, dragging a body that was
-        // fighting to stay put. -xlinka
-        var chestTarget = frontCentre;
-        var pelvisTarget = rearCentre;
-        chestTarget.y = _solver.RestChestPosition.y;
-        pelvisTarget.y = _solver.RestPelvisPosition.y;
+        // BeginFrame remeasures these anchors in the current root frame. Limb-root midpoints
+        // can sit ahead of them and must not shorten or shift the spine targets.
+        var chestTarget = _solver.RestChestPosition;
+        var pelvisTarget = _solver.RestPelvisPosition;
         chestTarget.y = chestTarget.y + (frontGround + chestStand - chestTarget.y) * comp;
         pelvisTarget.y = pelvisTarget.y + (rearGround + pelvisStand - pelvisTarget.y) * comp;
 
@@ -1505,8 +1555,8 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         chassis.Valid = true;
         chassis.ChestPosition = chestTarget;
         chassis.PelvisPosition = pelvisTarget;
-        chassis.FrontRoll = _gait.GirdleRoll(front: true, frontTrack) * gain;
-        chassis.RearRoll = _gait.GirdleRoll(front: false, rearTrack) * gain;
+        chassis.FrontRoll = _grounding.Grounded ? _gait.GirdleRoll(front: true, frontTrack) * gain : 0f;
+        chassis.RearRoll = _grounding.Grounded ? _gait.GirdleRoll(front: false, rearTrack) * gain : 0f;
         return chassis;
     }
 
@@ -1530,10 +1580,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         if (userHeight < 0.5f)
             return 1f;
 
-        float headAboveRoot = headSlot.GlobalPosition.y - userRoot.Slot.GlobalPosition.y;
-        float scale = userRoot.GlobalScale;
-        if (scale > 1e-4f)
-            headAboveRoot /= scale;
+        float headAboveRoot = userRoot.TrackingSpaceSlot.GlobalPointToLocal(headSlot.GlobalPosition).y;
 
         float raw = System.Math.Clamp(headAboveRoot / userHeight, 0f, 1f);
         float floor = System.Math.Clamp(MinCrouchScale.Value, 0.05f, 1f);
@@ -1573,27 +1620,15 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         if (proxy == null || proxy.IsDestroyed)
             return head;
 
-        // CLAMP THE HEAD TO THE NECK'S REACH.
-        //
-        // The head proxy is the WEARER'S head, which on a standing person is about 1.6 m up. A fox's
-        // head lives around 0.6 m. Handed that target raw, the neck solve reaches for a point it cannot
-        // physically get to, and since it cannot, it drags the front of the animal up after it: the
-        // chassis asks for a level body at 0.6 and the render comes back with the thing rearing on its
-        // hind legs. The wearer's head still STEERS the head - direction is preserved exactly - it just
-        // cannot ask for a distance the neck does not have. -xlinka
-        var target = proxy.GlobalPosition;
-        var neckRoot = _solver.IsReady ? _solver.RestChestPosition : target;
-        float reach = _solver.RestNeckReach;
-        if (reach > 0.01f)
-        {
-            float3 toTarget = target - neckRoot;
-            float span = toTarget.Length;
-            if (span > reach)
-                target = neckRoot + toTarget / span * reach;
-        }
-
+        // The solver limits reach from the live neck anchor after the body has moved.
         head.Valid = true;
-        head.Position = target;
+        head.Position = proxy.GlobalPosition;
+        var bone = HeadBone;
+        if (bone != null && Rig.Target != null)
+        {
+            float3 eyeOffset = bone.LocalPointToGlobal(_viewLocalOffset) - bone.GlobalPosition;
+            head.Position -= FabrikSolver.ViewRotationDelta(Rig.Target.BodyForward, proxy.GlobalRotation) * eyeOffset;
+        }
         head.Rotation = proxy.GlobalRotation;
         head.PositionWeight = 1f;
         head.RotationWeight = 1f;
@@ -1652,6 +1687,12 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         ik.Rig.Target = rig;
 
         rig.AlignAvatarFacing();
+
+        bool hasView = false;
+        foreach (var point in avatarSlot.GetComponentsInChildren<AvatarReferencePoint>())
+            hasView |= point.Kind.Value == AvatarReferenceKind.View;
+        if (!hasView)
+            AvatarCalibration.AutoPlaceQuadReferences(avatarSlot, rig, bipedRig);
 
         LumoraLogger.Log(
             $"QuadrupedIK: attached ({rig.Bones.Count} bones, {rig.TailBoneCount.Value} tail); AvatarIK suppressed on this avatar");
@@ -1812,6 +1853,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
             line.Append(" headY=").Append(head.Position.y.ToString("F3"));
         line.Append(" spine=").Append(_solver.SpineCount).Append(" neck=").Append(_solver.NeckCount);
         line.Append(" gaitPhase=").Append(_gait.Phase.ToString("F2"));
+        line.Append(" reachClampBites=").Append(_gait.ReachClampBites);
         line.Append(" bodyLength=").Append(EffectiveBodyLength().ToString("F3"));
 
         // Pelvis ROLL as actually posed versus what the chassis asked for, and the two rear roots'

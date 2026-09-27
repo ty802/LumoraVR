@@ -201,6 +201,11 @@ public class HumanoidRig : Component
                 continue;
             if (excludeMetacarpal && node.GetFingerSegmentType() == FingerSegmentType.Metacarpal)
                 continue;
+            // A key whose slot never resolved (a package map pointing at a pruned bone) is not a finger:
+            // counting it says the hand has fingers, and the geometric pass that would find the real
+            // ones then never runs.
+            if (entry.Value.Target is not { IsDestroyed: false })
+                continue;
             if (node.GetFingerType() == finger)
                 count++;
         }
@@ -913,8 +918,8 @@ public class HumanoidRig : Component
     // the labelled RightHand bone reached its target and the physical LEFT arm crossed the chest to get
     // there. The bone dump behind it: every Left_* bone at +X, every Right_* at -X, eyes at -Z in front
     // of the head, so the body faces -Z and +X is its physical right. The whole label set is a mirror
-    // image, arms, legs and eyes alike. Package transforms are read verbatim from a left-handed source,
-    // which reflects the model, and the names come along unchanged.
+    // image, arms, legs and eyes alike. Package transforms are left-handed and read verbatim, which
+    // reflects the model, and the names come along unchanged.
     //
     // Two failures, checked in this order:
     //   1. A PAIR whose labelled roots sit on opposite physical sides (that mirror). Both chains swap
@@ -1554,18 +1559,29 @@ public class HumanoidRig : Component
 
         // Assign this candidate's segments to body nodes. A thumb has no intermediate, so its 3-4 segments
         // map metacarpal/proximal/distal/tip; other fingers map metacarpal/proximal/intermediate/distal/tip.
-        // When a chain has only 3-4 segments (no metacarpal authored) the leading metacarpal is dropped.
+        //
+        // The thumb's first bone is ALWAYS its metacarpal: it hangs off the wrist, and there is no rig
+        // convention that authors a thumb without it. Counting a three-bone thumb as proximal/distal/tip
+        // handed the proximal joint's flex to the metacarpal, the distal's to the proximal, and left the
+        // real distal phalanx unposed, which is a thumb folded back onto the wrist on every Blender rig
+        // (thumb.01/.02/.03). The four fingers are the other way round: almost no rig authors their
+        // metacarpals, so a three-bone chain is proximal/intermediate/distal and a fourth node is the
+        // tip (a leaf helper, a claw, a trail anchor). A metacarpal is only assumed when the chain is
+        // five long or the first bone says so by name. -xlinka
         public void Assign(HumanoidRig rig, Chirality chirality)
         {
             FingerSegmentType[] layout = Type == FingerType.Thumb
                 ? new[] { FingerSegmentType.Metacarpal, FingerSegmentType.Proximal, FingerSegmentType.Distal, FingerSegmentType.Tip }
                 : new[] { FingerSegmentType.Metacarpal, FingerSegmentType.Proximal, FingerSegmentType.Intermediate, FingerSegmentType.Distal, FingerSegmentType.Tip };
 
-            // Most rigs omit the metacarpal for the four fingers; if this chain is one short of the full
-            // layout, skip the leading metacarpal so proximal lines up with the first real joint.
             int offset = 0;
-            if (Segments.Count == layout.Length - 1)
-                offset = 1;
+            if (Type != FingerType.Thumb && Segments.Count > 0)
+            {
+                string first = Segments[0].Name.Value?.ToLowerInvariant() ?? string.Empty;
+                bool namedMetacarpal = first.Contains("metacarpal") || first.Contains("meta");
+                if (!namedMetacarpal && Segments.Count < layout.Length)
+                    offset = 1;
+            }
 
             for (int i = 0; i < Segments.Count && i + offset < layout.Length; i++)
             {

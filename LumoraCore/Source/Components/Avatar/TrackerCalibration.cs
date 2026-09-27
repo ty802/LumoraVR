@@ -13,11 +13,10 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
-// Body tracker calibration, the way players already know it from other social VR: the avatar freezes in
-// a T-pose where you stand, every mappable joint gets a marker, every puck gets a marker, you put your
-// pucks on the joints and pull both triggers. Nobody assigns a role to anything: at confirm each puck is
-// paired with the nearest unclaimed joint, closest pair first, and the stored offset is what turns that
-// puck's pose into that joint's pose from then on.
+// Body tracker calibration: the avatar freezes in a T-pose where you stand, every mappable joint gets a
+// marker, every puck gets a marker, you put your pucks on the joints and pull both triggers. Nobody
+// assigns a role to anything: at confirm each puck is paired with the nearest unclaimed joint, closest
+// pair first, and the stored offset is what turns that puck's pose into that joint's pose from then on.
 //
 // A per-limb wizard was rejected on purpose. It asks the user to know what a "left lower leg" is and to
 // hold a menu open with a foot in the air. Proximity needs neither. -xlinka

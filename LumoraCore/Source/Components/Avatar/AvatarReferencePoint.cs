@@ -23,12 +23,12 @@ public enum AvatarReferenceKind
     RearLeftPaw = 9,
     RearRightPaw = 10,
 
-    // Where the hand tool rig sits once the avatar is worn. Two points per hand, because the source
-    // platform authors two distinct ones and they are genuinely different places on a hand: the TOOL
-    // point is where the held tool's own root is pinned (out past the fingertips, so a pen or a laser
-    // reads as coming OUT of the hand), and the GRAB point is the centre of the grab sphere that picks
-    // things up (inside the palm, so you close on what you are touching). One shared anchor would put
-    // the grab sphere out in front of the hand or the tool inside the wrist.
+    // Where the hand tool rig sits once the avatar is worn. Two points per hand, because they are
+    // genuinely different places on a hand: the TOOL point is where the held tool's own root is pinned
+    // (out past the fingertips, so a pen or a laser reads as coming OUT of the hand), and the GRAB point
+    // is the centre of the grab sphere that picks things up (inside the palm, so you close on what you
+    // are touching). One shared anchor would put the grab sphere out in front of the hand or the tool
+    // inside the wrist.
     //
     // APPENDED with explicit values for the same reason the paws were: the enum persists BY NAME and
     // inserting above these would re-key every reference point already on disk. -xlinka

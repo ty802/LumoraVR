@@ -28,9 +28,8 @@ public static class AvatarCalibration
     // Eyes sit a little in front of the head bone.
     private const float ViewForwardOffset = 0.06f;
 
-    // Default tool-anchor offsets, in HAND GRIP local space, taken from the source platform's creator
-    // defaults (it spawns its tool point 15cm out along the controller and its grab point 7.5cm out and
-    // 2cm under). Our forward is local -Z, theirs is +Z, so the sign is flipped and nothing else.
+    // Default tool-anchor offsets, in HAND GRIP local space: the tool point 15cm out along the controller,
+    // the grab point 7.5cm out and 2cm under. Forward is local -Z, hence the negative Z.
     //
     // Shared with AvatarStudio on purpose: the studio spawns its draggable anchors at these offsets and
     // the auto path below bakes them at the same place, so an avatar built by dragging the markers
@@ -149,22 +148,227 @@ public static class AvatarCalibration
         return true;
     }
 
-    // View/head reference: in front of the head bone, looking along the (horizontal) facing.
-    public static RefPose ComputeView(Slot avatarRoot, HumanoidRig rig)
+    public static RefPose ComputeView(Slot avatarRoot, HumanoidRig rig, QuadrupedRig? quadruped = null)
     {
-        var head = rig?.TryGetBone(BodyNode.Head);
+        quadruped ??= avatarRoot?.GetComponent<QuadrupedRig>() ?? avatarRoot?.GetComponentInChildren<QuadrupedRig>();
+        var head = quadruped?.TryGetBone(QuadNode.Head) ?? rig?.TryGetBone(BodyNode.Head);
         if (avatarRoot == null || head == null || head.IsDestroyed)
             return default;
 
         TryComputeBodyAxes(rig!, out _, out _, out var forward);
+        if (quadruped != null)
+            forward = quadruped.BodyForward;
         float3 flat = Flatten(forward);
-        float3 worldPos = head.GlobalPosition + flat * ViewForwardOffset;
+        var left = rig?.TryGetBone(BodyNode.LeftEye);
+        var right = rig?.TryGetBone(BodyNode.RightEye);
+        float3 worldPos;
+        if (left is { IsDestroyed: false } && right is { IsDestroyed: false })
+            worldPos = (left.GlobalPosition + right.GlobalPosition) * 0.5f;
+        else if ((left ?? right) is { IsDestroyed: false } eye)
+        {
+            var across = float3.Cross(flat, float3.Up);
+            worldPos = eye.GlobalPosition - across * float3.Dot(eye.GlobalPosition - head.GlobalPosition, across);
+        }
+        else
+        {
+            float scale = System.MathF.Abs(avatarRoot.GlobalScale.y);
+            worldPos = head.GlobalPosition + (flat * ViewForwardOffset + float3.Up * 0.07f) * scale;
+        }
         return ToLocal(avatarRoot, worldPos, BuildRotation(flat, float3.Up));
     }
 
-    // Hand grip reference: at the hand bone, oriented along the forearm with "up" along the arm-bend
-    // plane normal - a usable controller grip frame regardless of the bone's authored rotation.
+    // The view the creator actually set up, when the avatar still carries it.
+    //
+    // An imported package keeps a head pose proxy whose parent was seated at the headset reference at
+    // creation - eye position, level, facing forward - and whose "Target" child was seated at the head
+    // bone. The importer re-seats that parent from the bone, so its position is the creator's own eye
+    // point, and the geometric guess in ComputeView (an eye midpoint pushed 6 cm out) has no business
+    // overriding it. Rotation is the level yaw of the proxy's facing: numerically the proxy faces +Z, the
+    // package's forward, and BuildRotation turns that into our -Z facing frame. Only a proxy with a
+    // Target child counts; the ones AvatarIK grows for itself have none, so every avatar built here keeps
+    // the geometric view. -xlinka
+    public static RefPose ComputeViewFromHeadProxy(Slot avatarRoot, HumanoidRig rig)
+    {
+        var proxy = FindSeatedHeadProxy(avatarRoot);
+        if (proxy == null || rig?.TryGetBone(BodyNode.Head) == null)
+            return default;
+
+        float3 facing = Flatten(proxy.GlobalRotation * float3.Forward);
+        return ToLocal(avatarRoot, proxy.GlobalPosition, BuildRotation(facing, float3.Up));
+    }
+
+    private static Slot? FindSeatedHeadProxy(Slot avatarRoot)
+    {
+        if (avatarRoot == null || avatarRoot.IsDestroyed)
+            return null;
+        foreach (var driver in avatarRoot.GetComponentsInChildren<AvatarPoseDriver>())
+        {
+            if (driver.IsDestroyed || driver.Node.Value != BodyNode.Head || driver.Slot == null || driver.Slot.IsDestroyed)
+                continue;
+            var target = driver.Slot.FindChild("Target", recursive: false);
+            if (target != null && !target.IsDestroyed)
+                return driver.Slot;
+        }
+        return null;
+    }
+
+    public static RefPose ComputeQuadBone(Slot avatarRoot, QuadrupedRig rig, QuadNode node)
+    {
+        var bone = rig.TryGetBone(node);
+        return bone == null || bone.IsDestroyed ? default
+            : ToLocal(avatarRoot, bone.GlobalPosition, BuildRotation(Flatten(rig.BodyForward), float3.Up));
+    }
+
+    public static Slot AutoPlaceQuadReferences(Slot avatarRoot, QuadrupedRig rig, HumanoidRig? faceRig)
+    {
+        var existing = avatarRoot.FindChild("AvatarReferences", recursive: false);
+        if (existing != null && !existing.IsDestroyed)
+            existing.Destroy();
+        var root = avatarRoot.AddSlot("AvatarReferences");
+        Place(root, AvatarReferenceKind.View, "View", ComputeView(avatarRoot, faceRig!, rig));
+        Place(root, AvatarReferenceKind.Pelvis, "Pelvis", ComputeQuadBone(avatarRoot, rig, QuadNode.Pelvis));
+        Place(root, AvatarReferenceKind.FrontLeftPaw, "FrontLeftPaw", ComputeQuadBone(avatarRoot, rig, QuadNode.FrontLeftPaw));
+        Place(root, AvatarReferenceKind.FrontRightPaw, "FrontRightPaw", ComputeQuadBone(avatarRoot, rig, QuadNode.FrontRightPaw));
+        Place(root, AvatarReferenceKind.RearLeftPaw, "RearLeftPaw", ComputeQuadBone(avatarRoot, rig, QuadNode.RearLeftPaw));
+        Place(root, AvatarReferenceKind.RearRightPaw, "RearRightPaw", ComputeQuadBone(avatarRoot, rig, QuadNode.RearRightPaw));
+        return root;
+    }
+
+    // Canonical hand socket: -Z runs wrist-to-fingers and +Y runs toward the thumb side of the palm,
+    // which is the OpenXR grip frame, so a tracked controller maps onto it with no offset.
+    // These anatomical axes are independent of the model's authored bone rotations.
+    //
+    // The roll comes from the knuckle line first (index to pinky proximal: rigid, pose-independent), the
+    // thumb bone second (it moves with however the thumb was posed), and for a rig with no finger bones
+    // at all the body's FORWARD. A T- or A-pose rig rests with its palms down or in, so its thumbs point
+    // at the front; the body's up is the back of such a hand, and a grip rolled onto that wears the
+    // controller ninety degrees off with the thumb out sideways. -xlinka
     public static RefPose ComputeHandGrip(Slot avatarRoot, HumanoidRig rig, bool rightSide)
+        => ComputeHandGripCore(avatarRoot, rig, rightSide, thumbFirstBodyUp: false);
+
+    // The generator that wrote markers between the palm-normal one and the current one: thumb bone
+    // first, knuckle line second, body UP for a fingerless hand. Kept exactly so
+    // UpgradeLegacyHandReferences can recognise what it produced; never used for new markers.
+    private static RefPose ComputeThumbFirstHandGrip(Slot avatarRoot, HumanoidRig rig, bool rightSide)
+        => ComputeHandGripCore(avatarRoot, rig, rightSide, thumbFirstBodyUp: true);
+
+    private static RefPose ComputeHandGripCore(Slot avatarRoot, HumanoidRig rig, bool rightSide, bool thumbFirstBodyUp)
+    {
+        var side = rightSide ? Chirality.Right : Chirality.Left;
+        var hand = rig?.TryGetBone(side.HandNode());
+        if (avatarRoot == null || hand == null || hand.IsDestroyed)
+            return default;
+
+        var lower = rig!.TryGetBone(rightSide ? BodyNode.RightLowerArm : BodyNode.LeftLowerArm);
+        var middle = FirstBone(rig, new[] {
+            FingerType.Middle.ComposeFinger(FingerSegmentType.Proximal, side),
+            FingerType.Ring.ComposeFinger(FingerSegmentType.Proximal, side) });
+        var thumb = FirstBone(rig, new[] {
+            FingerType.Thumb.ComposeFinger(FingerSegmentType.Proximal, side),
+            FingerType.Thumb.ComposeFinger(FingerSegmentType.Metacarpal, side),
+            FingerType.Thumb.ComposeFinger(FingerSegmentType.Distal, side) });
+        var index = rig.TryGetBone(FingerType.Index.ComposeFinger(FingerSegmentType.Proximal, side));
+        var pinky = rig.TryGetBone(FingerType.Pinky.ComposeFinger(FingerSegmentType.Proximal, side));
+
+        float3 origin = hand.GlobalPosition;
+        float3 forward = middle != null ? middle.GlobalPosition - origin
+            : lower != null && !lower.IsDestroyed ? origin - lower.GlobalPosition
+            : hand.GlobalRotation * float3.Backward;
+        if (forward.LengthSquared < 1e-10f)
+            forward = hand.GlobalRotation * float3.Backward;
+        forward = forward.Normalized;
+
+        float3 knuckleAxis = index != null && pinky != null && !index.IsDestroyed && !pinky.IsDestroyed
+            ? Reject(index.GlobalPosition - pinky.GlobalPosition, forward)
+            : float3.Zero;
+        float3 thumbBoneAxis = thumb != null ? Reject(thumb.GlobalPosition - origin, forward) : float3.Zero;
+
+        float3 thumbAxis;
+        if (thumbFirstBodyUp)
+        {
+            thumbAxis = thumbBoneAxis.LengthSquared >= 1e-10f ? thumbBoneAxis : knuckleAxis;
+            if (thumbAxis.LengthSquared < 1e-10f)
+            {
+                TryComputeBodyAxes(rig, out var up, out _, out _);
+                thumbAxis = Reject(up, forward);
+            }
+        }
+        else
+        {
+            thumbAxis = knuckleAxis.LengthSquared >= 1e-10f ? knuckleAxis : thumbBoneAxis;
+            if (thumbAxis.LengthSquared < 1e-10f)
+            {
+                TryComputeBodyAxes(rig, out _, out _, out var bodyForward);
+                thumbAxis = Reject(bodyForward, forward);
+            }
+        }
+        if (thumbAxis.LengthSquared < 1e-10f)
+            thumbAxis = avatarRoot.GlobalRotation * float3.Backward;
+
+        // Roll about the pointing axis explicitly. An unconstrained 180-degree FromToRotation
+        // can choose a different axis and reverse the fingers on a palm-down rest pose.
+        var swing = FabrikSolver.FromToRotation(float3.Backward, forward);
+        var currentUp = swing * float3.Up;
+        thumbAxis = (thumbAxis - forward * float3.Dot(thumbAxis, forward)).Normalized;
+        float roll = System.MathF.Atan2(float3.Dot(forward, float3.Cross(currentUp, thumbAxis)),
+            float3.Dot(currentUp, thumbAxis));
+        var rotation = (floatQ.AxisAngleRad(forward, roll) * swing).Normalized;
+        return ToLocal(avatarRoot, origin, rotation);
+    }
+
+    // Two earlier generators wrote grips this one disagrees with: the first used the palm normal as
+    // grip up, the second the thumb bone with body up for a fingerless hand. Recognize only their
+    // exact generated poses, so existing imports repair themselves on equip without replacing creator
+    // adjustments.
+    public static void UpgradeLegacyHandReferences(Slot avatarRoot, HumanoidRig rig)
+    {
+        var root = avatarRoot.FindChild("AvatarReferences", recursive: false);
+        if (root == null || root.IsDestroyed)
+            return;
+        foreach (bool rightSide in new[] { false, true })
+        {
+            var kind = rightSide ? AvatarReferenceKind.RightHandGrip : AvatarReferenceKind.LeftHandGrip;
+            var marker = root.FindChild(kind.ToString(), recursive: false);
+            if (marker?.GetComponent<AvatarReferencePoint>()?.Kind.Value != kind)
+                continue;
+            var oldPose = ComputeLegacyHandGrip(avatarRoot, rig, rightSide);
+            if (!Matches(marker, oldPose))
+            {
+                oldPose = ComputeThumbFirstHandGrip(avatarRoot, rig, rightSide);
+                if (!Matches(marker, oldPose))
+                    continue;
+            }
+            var newPose = ComputeHandGrip(avatarRoot, rig, rightSide);
+            if (!newPose.Valid || Matches(marker, newPose))
+                continue;
+            Logging.Logger.Log($"AvatarCalibration: {(rightSide ? "right" : "left")} hand grip on '{avatarRoot.SlotName.Value}' was a generated marker from an older grip rule; re-placed with the current one");
+
+            UpgradeAnchor(rightSide ? AvatarReferenceKind.RightHandToolAnchor : AvatarReferenceKind.LeftHandToolAnchor, ToolAnchorGripOffset);
+            UpgradeAnchor(rightSide ? AvatarReferenceKind.RightHandGrabAnchor : AvatarReferenceKind.LeftHandGrabAnchor, GrabAnchorGripOffset);
+            Apply(marker, newPose);
+
+            void UpgradeAnchor(AvatarReferenceKind anchorKind, float3 offset)
+            {
+                var anchor = root.FindChild(anchorKind.ToString(), recursive: false);
+                if (anchor?.GetComponent<AvatarReferencePoint>()?.Kind.Value == anchorKind
+                    && Matches(anchor, OffsetInPose(oldPose, offset)))
+                    Apply(anchor, OffsetInPose(newPose, offset));
+            }
+        }
+
+        bool Matches(Slot marker, RefPose pose)
+            => pose.Valid
+                && (avatarRoot.GlobalPointToLocal(marker.GlobalPosition) - pose.LocalPosition).LengthSquared < 1e-8f
+                && System.Math.Abs(floatQ.Dot(avatarRoot.GlobalRotationToLocal(marker.GlobalRotation).Normalized,
+                    pose.LocalRotation.Normalized)) > 0.999999f;
+        void Apply(Slot marker, RefPose pose)
+        {
+            marker.GlobalPosition = avatarRoot.LocalPointToGlobal(pose.LocalPosition);
+            marker.GlobalRotation = avatarRoot.LocalRotationToGlobal(pose.LocalRotation);
+        }
+    }
+
+    private static RefPose ComputeLegacyHandGrip(Slot avatarRoot, HumanoidRig rig, bool rightSide)
     {
         var hand = rig?.TryGetBone(rightSide ? BodyNode.RightHand : BodyNode.LeftHand);
         if (avatarRoot == null || hand == null || hand.IsDestroyed)
@@ -185,16 +389,6 @@ public static class AvatarCalibration
             pointDir = hand.GlobalRotation * float3.Backward;
         }
 
-        // Palm normal (the grip's "up" roll), and it needs the same left/right sign correction the arm-bend
-        // fallback below already has.
-        //
-        // The old reasoning here was that deriving from the THUMB cancels the mirror, because the thumb
-        // sits on mirror-opposite sides of the two hands. It does not, and a cross product is why: it is a
-        // pseudovector, so mirroring BOTH of its inputs flips the result rather than mirroring it.
-        // Measured on a perfectly symmetric rig, forearm and thumb mirror exactly and the normals come out
-        // as exact opposites - (0, +0.996, +0.09) on the left against (0, -0.996, -0.09) on the right. The
-        // right grip was rolled 180 degrees from the left on every rig that has a thumb bone, which is
-        // every real one, and it reads as one paw held palm-up. -xlinka
         float3 palmNormal = float3.Up;
         var thumb = FirstBone(rig, rightSide
             ? new[] { BodyNode.RightThumb_Proximal, BodyNode.RightThumb_Metacarpal, BodyNode.RightThumb_Distal }
@@ -245,6 +439,33 @@ public static class AvatarCalibration
 
     // Build (or rebuild) the "AvatarReferences" subtree with auto-aligned AvatarReferencePoints.
     // Returns the reference root, or null if the rig is unusable.
+    // Keep the wearer from seeing the inside of their own head: a zero-scale UserView override on the
+    // head bone, which the hook turns into a collapsed head for the wearer's eyes and nobody else's.
+    // Idempotent - an override that already hides the head on the bone or anything above it (a
+    // package that shipped its own, an earlier run of this) is reused, so an avatar never picks up two.
+    // Returns the override in force, or null when the rig has no head bone. -xlinka
+    public static LocalViewOverride? EnsureHeadViewOverride(Slot avatarRoot, HumanoidRig rig)
+    {
+        var head = rig?.TryGetBone(BodyNode.Head);
+        if (head == null || head.IsDestroyed)
+            return null;
+
+        for (var walk = head; walk != null; walk = walk.Parent)
+        {
+            foreach (var existing in walk.GetComponents<LocalViewOverride>())
+            {
+                if (!existing.IsDestroyed && existing.HidesFromOwnView)
+                    return existing;
+            }
+            if (walk == avatarRoot)
+                break;
+        }
+
+        var view = head.AttachComponent<LocalViewOverride>();
+        view.HideFromOwnView();
+        return view;
+    }
+
     public static Slot AutoPlaceReferences(Slot avatarRoot, HumanoidRig rig, bool feet, bool pelvis)
     {
         if (avatarRoot == null || rig == null)
@@ -258,7 +479,10 @@ public static class AvatarCalibration
         root.LocalPosition.Value = float3.Zero;
         root.LocalRotation.Value = floatQ.Identity;
 
-        Place(root, AvatarReferenceKind.View, "View", ComputeView(avatarRoot, rig));
+        var view = ComputeViewFromHeadProxy(avatarRoot, rig);
+        if (!view.Valid)
+            view = ComputeView(avatarRoot, rig);
+        Place(root, AvatarReferenceKind.View, "View", view);
         var leftGrip = ComputeHandGrip(avatarRoot, rig, rightSide: false);
         var rightGrip = ComputeHandGrip(avatarRoot, rig, rightSide: true);
         Place(root, AvatarReferenceKind.LeftHandGrip, "LeftHandGrip", leftGrip);
@@ -333,6 +557,10 @@ public static class AvatarCalibration
         v.y = 0f;
         return v.LengthSquared > 1e-6f ? v.Normalized : float3.Backward;
     }
+
+    // The part of v perpendicular to a unit axis.
+    private static float3 Reject(float3 v, float3 axis)
+        => v - axis * float3.Dot(v, axis);
 
     // Rotation whose facing axis (Backward, matching the IK/slot convention) points along forward and
     // whose up rolls toward up. Built from two swings to avoid floatQ.LookRotation (returns inverse).

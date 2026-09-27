@@ -30,9 +30,9 @@ public sealed class AvatarStudio : Component
 
     public readonly Sync<bool> ShowDirections = new();
 
-    // Reveal the per-hand tool anchors. Off by default, matching the source platform's own creator: the
-    // anchors are always authored and always baked, the box only decides whether you can see and drag
-    // them, so someone setting up a plain avatar is not handed four more orbs to worry about. -xlinka
+    // Reveal the per-hand tool anchors. Off by default: the anchors are always authored and always
+    // baked, the box only decides whether you can see and drag them, so someone setting up a plain
+    // avatar is not handed four more orbs to worry about. -xlinka
     public readonly Sync<bool> ShowToolAnchors = new();
 
     // Build a QUADRUPED rig instead of a biped one.
@@ -205,13 +205,11 @@ public sealed class AvatarStudio : Component
 
     // Where the hand tool rig lands once this avatar is worn.
     //
-    // The source platform authors two anchor points per hand from its creator - the tool point and the
-    // grab-area point - and drops a third for a toolshelf we have no counterpart for. Both of ours have a
-    // real destination: HandTool builds a "Tool Holder" slot and a "Grabber" slot under itself, which is
-    // exactly the pair the other engine re-parents onto these anchors on equip.
+    // Two anchor points per hand, the tool point and the grab-area point, and both have a real
+    // destination: HandTool builds a "Tool Holder" slot and a "Grabber" slot under itself, and while the
+    // avatar is worn those two take the anchors' poses.
     //
-    // Biped only. The quadruped set has no hands to hang them off, and the source platform has no
-    // four-legged mode at all, so there is nothing to port for one. -xlinka
+    // Biped only. The quadruped set has no hands to hang them off. -xlinka
     private void BuildToolAnchorMarkers()
     {
         _leftToolAnchorProxy.Target = AddToolAnchorMarker(_leftHandProxy.Target, "LeftHandToolAnchor",
@@ -230,33 +228,33 @@ public sealed class AvatarStudio : Component
     // model you actually have. -xlinka
     private void BuildQuadrupedMarkers()
     {
-        _headProxy.Target = AddMarker("Head", new float3(0f, 0.62f, 0.42f), HeadDetectionRadius, HeadFill, float3.Backward);
+        _headProxy.Target = AddMarker("Head", new float3(0f, 0.62f, -0.42f), HeadDetectionRadius, HeadFill, float3.Backward);
         AddHeadsetShape(_headProxy.Target);
         AddEyeBalls(_headProxy.Target);
 
         // Front anchor: the shoulders / withers, where the forelegs hang from.
-        _chestProxy.Target = AddMarker("Chest", new float3(0f, 0.55f, 0.18f), LimbDetectionRadius, PelvisFill, float3.Backward);
+        _chestProxy.Target = AddMarker("Chest", new float3(0f, 0.55f, -0.18f), LimbDetectionRadius, PelvisFill, float3.Backward);
         AddPelvisShape(_chestProxy.Target, PelvisFill);
         AddSideLabel(_chestProxy.Target, "Front", PelvisFill);
 
         // Rear anchor: the hips proper.
-        _pelvisProxy.Target = AddMarker("Pelvis", new float3(0f, 0.55f, -0.22f), LimbDetectionRadius, PelvisFill, float3.Backward);
+        _pelvisProxy.Target = AddMarker("Pelvis", new float3(0f, 0.55f, 0.22f), LimbDetectionRadius, PelvisFill, float3.Backward);
         AddPelvisShape(_pelvisProxy.Target, PelvisFill);
         AddSideLabel(_pelvisProxy.Target, "Rear", PelvisFill);
 
-        _frontLeftPawProxy.Target = AddMarker("FrontLeftPaw", new float3(-0.11f, 0.06f, 0.20f), LimbDetectionRadius, LeftFill, float3.Backward);
+        _frontLeftPawProxy.Target = AddMarker("FrontLeftPaw", new float3(-0.11f, 0.06f, -0.20f), LimbDetectionRadius, LeftFill, float3.Backward);
         AddFootShape(_frontLeftPawProxy.Target, LeftFill);
         AddSideLabel(_frontLeftPawProxy.Target, "FL", LeftFill);
 
-        _frontRightPawProxy.Target = AddMarker("FrontRightPaw", new float3(0.11f, 0.06f, 0.20f), LimbDetectionRadius, RightFill, float3.Backward);
+        _frontRightPawProxy.Target = AddMarker("FrontRightPaw", new float3(0.11f, 0.06f, -0.20f), LimbDetectionRadius, RightFill, float3.Backward);
         AddFootShape(_frontRightPawProxy.Target, RightFill);
         AddSideLabel(_frontRightPawProxy.Target, "FR", RightFill);
 
-        _rearLeftPawProxy.Target = AddMarker("RearLeftPaw", new float3(-0.11f, 0.06f, -0.24f), LimbDetectionRadius, LeftFill, float3.Backward);
+        _rearLeftPawProxy.Target = AddMarker("RearLeftPaw", new float3(-0.11f, 0.06f, 0.24f), LimbDetectionRadius, LeftFill, float3.Backward);
         AddFootShape(_rearLeftPawProxy.Target, LeftFill);
         AddSideLabel(_rearLeftPawProxy.Target, "RL", LeftFill);
 
-        _rearRightPawProxy.Target = AddMarker("RearRightPaw", new float3(0.11f, 0.06f, -0.24f), LimbDetectionRadius, RightFill, float3.Backward);
+        _rearRightPawProxy.Target = AddMarker("RearRightPaw", new float3(0.11f, 0.06f, 0.24f), LimbDetectionRadius, RightFill, float3.Backward);
         AddFootShape(_rearRightPawProxy.Target, RightFill);
         AddSideLabel(_rearRightPawProxy.Target, "RR", RightFill);
     }
@@ -378,7 +376,7 @@ public sealed class AvatarStudio : Component
     }
 
     // The tool point: a stubby cone lying along the anchor's forward, so a held tool's direction is
-    // readable at a glance. Same proportions the source platform draws for it.
+    // readable at a glance.
     private static void AddToolAnchorShape(Slot marker, in colorHDR fill)
     {
         var model = ShapePart(marker, "Model", fill, 0.85f);
@@ -391,9 +389,9 @@ public sealed class AvatarStudio : Component
         Draw(model, cone);
     }
 
-    // The grab point: the grab sphere itself, at the source platform's 7cm radius, drawn faint. Solid it
-    // would swallow the hand shape and both anchor pips inside it. Its size is a cue only - the grab
-    // radius the engine actually uses is the Grabber's, not this. -xlinka
+    // The grab point: the grab sphere itself, at a 7cm radius, drawn faint. Solid it would swallow the
+    // hand shape and both anchor pips inside it. Its size is a cue only - the grab radius the engine
+    // actually uses is the Grabber's, not this. -xlinka
     private static void AddGrabAnchorShape(Slot marker, in colorHDR fill)
     {
         var model = ShapePart(marker, "Model", fill, 0.16f);
@@ -476,9 +474,8 @@ public sealed class AvatarStudio : Component
         SetActive(_pelvisProxy.Target, QuadrupedMode.Value || CalibratePelvis.Value);
         SetActive(_chestProxy.Target, true);
 
-        // Hidden is only hidden: these still get baked on Create either way, exactly as the source
-        // platform does it. The toggle is about clutter while you work, not about whether the avatar
-        // ends up with tool anchors. -xlinka
+        // Hidden is only hidden: these still get baked on Create either way. The toggle is about
+        // clutter while you work, not about whether the avatar ends up with tool anchors. -xlinka
         bool anchors = ShowToolAnchors.Value && !QuadrupedMode.Value;
         SetActive(_leftToolAnchorProxy.Target, anchors);
         SetActive(_rightToolAnchorProxy.Target, anchors);
@@ -496,11 +493,10 @@ public sealed class AvatarStudio : Component
     // a visible cue for the eye drivers.
     // MARKER SHAPES
     //
-    // The other tool ships modelled proxies for these: a headset, a left and right hand, feet, a
-    // pelvis. We have no such art, so each marker gets a shape built from primitives that reads as
-    // the thing at a glance and, more importantly, shows which way it is facing. Local -Z is the
-    // view/front direction throughout. All of it is a child of the marker, so grabbing, scaling and
-    // the detection halo are untouched. -xlinka
+    // There is no modelled art for these (a headset, a left and right hand, feet, a pelvis), so each
+    // marker gets a shape built from primitives that reads as the thing at a glance and, more
+    // importantly, shows which way it is facing. Local -Z is the view/front direction throughout. All
+    // of it is a child of the marker, so grabbing, scaling and the detection halo are untouched. -xlinka
     private static Slot ShapePart(Slot marker, string name, in colorHDR fill, float alpha)
     {
         var part = marker.AddSlot(name);
@@ -884,6 +880,7 @@ public sealed class AvatarStudio : Component
         if (_statusText == null || _statusText.IsDestroyed)
             return;
 
+        _rigSearchBackoff -= World?.Time?.Delta ?? 0f;
         _statusPoll -= World?.Time?.Delta ?? 0f;
         if (_statusPoll > 0f)
             return;
@@ -922,8 +919,15 @@ public sealed class AvatarStudio : Component
         if (marker == null || marker.IsDestroyed)
             return false;
         var head = rig.TryGetBone(BodyNode.Head);
-        if (head != null && !head.IsDestroyed)
-            return (head.GlobalPosition - marker.GlobalPosition).Length <= HeadDetectionRadius;
+        if (MarkerOverBone(marker, head, HeadDetectionRadius))
+            return true;
+        var avatar = ResolveAvatarRoot(rig);
+        var view = AvatarCalibration.ComputeView(avatar, rig);
+        float radius = HeadDetectionRadius * MathF.Max(MathF.Abs(marker.GlobalScale.x), 0.0001f);
+        if (view.Valid && float3.Distance(avatar.LocalPointToGlobal(view.LocalPosition), marker.GlobalPosition) <= radius)
+            return true;
+        if (head is { IsDestroyed: false })
+            return false;
 
         foreach (var node in HumanoidRig.RequiredBones)
         {
@@ -967,17 +971,14 @@ public sealed class AvatarStudio : Component
 
     private HumanoidRig? FindRigQuiet()
     {
-        if (CachedRigStillValid())
+        if (CachedRigStillValid() && IsHeadMarkerOnRig(_cachedRig!))
             return _cachedRig;
 
-        _cachedRig = null;
-
         // Only the miss path is throttled. A hit never reaches here.
-        float delta = World?.Time?.Delta ?? 0f;
-        _rigSearchBackoff -= delta;
         if (_rigSearchBackoff > 0f)
-            return null;
+            return CachedRigStillValid() ? _cachedRig : null;
         _rigSearchBackoff = RigSearchBackoffSeconds;
+        _cachedRig = null;
 
         var world = World;
         if (world?.RootSlot == null)
@@ -985,17 +986,23 @@ public sealed class AvatarStudio : Component
 
         _rigSearchBuffer.Clear();
         world.RootSlot.GetComponentsInChildren(_rigSearchBuffer);
+        int bestScore = -1;
         for (int i = 0; i < _rigSearchBuffer.Count; i++)
         {
             var rig = _rigSearchBuffer[i];
             if (rig != null && !rig.IsDestroyed && IsCandidate(rig.Slot) && rig.Bones.Count > 0)
             {
-                _rigSearchBuffer.Clear();
-                _cachedRig = rig;
-                return rig;
+                int score = ScoreRig(rig);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    _cachedRig = rig;
+                }
             }
         }
         _rigSearchBuffer.Clear();
+        if (_cachedRig != null && bestScore >= 10)
+            return _cachedRig;
 
         _skeletonSearchBuffer.Clear();
         world.RootSlot.GetComponentsInChildren(_skeletonSearchBuffer);
@@ -1004,13 +1011,20 @@ public sealed class AvatarStudio : Component
             var skeleton = _skeletonSearchBuffer[i];
             if (IsCandidate(skeleton?.Slot))
             {
-                _skeletonSearchBuffer.Clear();
-                _cachedRig = EnsureRig(skeleton!);
-                return _cachedRig;
+                var candidate = EnsureRig(skeleton!);
+                if (candidate != null)
+                {
+                    int score = ScoreRig(candidate);
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        _cachedRig = candidate;
+                    }
+                }
             }
         }
         _skeletonSearchBuffer.Clear();
-        return null;
+        return _cachedRig;
     }
 
     // A model appearing is a human-scale event; a second of latency on a status label is invisible, and
@@ -1028,13 +1042,16 @@ public sealed class AvatarStudio : Component
         AlignMarkersToComputedReferences(avatar, rig);
     }
 
-    // Snap the headset/view marker onto the model's head bone POSITION only. Orientation is handled by the
+    // Centre the view marker between the eyes. Orientation is handled by the
     // Align Forward/Up/Right buttons, so you can recentre without losing a hand-tuned facing and vice-versa.
     private void AlignHeadPosition()
     {
         var rig = RequireRig();
         if (rig == null) return;
-        AlignMarker(_headProxy.Target, rig.TryGetBone(BodyNode.Head));
+        var avatar = ResolveAvatarRoot(rig);
+        var pose = AvatarCalibration.ComputeView(avatar, rig, ResolveQuadRig(avatar, rig));
+        if (pose.Valid && _headProxy.Target != null)
+            _headProxy.Target.GlobalPosition = avatar.LocalPointToGlobal(pose.LocalPosition);
     }
 
     // Snap the head marker's chosen view axis onto the head bone's NEAREST axis. The marker is the View/HMD
@@ -1110,17 +1127,22 @@ public sealed class AvatarStudio : Component
         var avatar = ResolveAvatarRoot(rig);
         if (avatar == null || avatar.IsDestroyed)
             return;
+        if (QuadrupedMode.Value)
+        {
+            AlignQuadMarkers(avatar, rig, head: false);
+            return;
+        }
         ApplyMarkerPose(_leftHandProxy.Target, avatar, AvatarCalibration.ComputeHandGrip(avatar, rig, rightSide: false));
         ApplyMarkerPose(_rightHandProxy.Target, avatar, AvatarCalibration.ComputeHandGrip(avatar, rig, rightSide: true));
     }
 
     // Put every tool anchor back on its hand's frame, keeping where it has been dragged to.
     //
-    // This is the source platform's own "align tool anchors": rotation only. An anchor that has been
-    // twisted while positioning it points the tool off at an angle that is very hard to see and very
-    // obvious once you are holding something, and there is no way to eyeball your way back to square -
-    // so the button hands the rotation back rather than resetting the whole anchor and throwing away the
-    // placement work. Needs no rig, only the hand markers, which is why it is not gated. -xlinka
+    // Rotation only. An anchor that has been twisted while positioning it points the tool off at an
+    // angle that is very hard to see and very obvious once you are holding something, and there is no
+    // way to eyeball your way back to square - so the button hands the rotation back rather than
+    // resetting the whole anchor and throwing away the placement work. Needs no rig, only the hand
+    // markers, which is why it is not gated. -xlinka
     private void AlignToolAnchors()
     {
         SquareAnchorToHand(_leftToolAnchorProxy.Target, _leftHandProxy.Target);
@@ -1145,6 +1167,11 @@ public sealed class AvatarStudio : Component
         var avatar = ResolveAvatarRoot(rig);
         if (avatar == null || avatar.IsDestroyed)
             return;
+        if (QuadrupedMode.Value)
+        {
+            AlignQuadMarkers(avatar, rig, head: false);
+            return;
+        }
         if (rig.TryGetBone(BodyNode.LeftFoot) != null && rig.TryGetBone(BodyNode.RightFoot) != null)
             CalibrateFeet.Value = true;
         if (rig.TryGetBone(BodyNode.Hips) != null)
@@ -1156,6 +1183,13 @@ public sealed class AvatarStudio : Component
 
     private void AlignMarkersToComputedReferences(Slot avatar, HumanoidRig rig)
     {
+        if (QuadrupedMode.Value)
+        {
+            AlignQuadMarkers(avatar, rig, head: true);
+            RefreshOptionalMarkers();
+            RefreshDirectionArrows();
+            return;
+        }
         // Root frame onto the body front (world-invariant, nothing visibly moves) so the references and the
         // equip facing agree. Heals avatars set up before this existed; no-op when already aligned.
         AvatarCalibration.AlignAvatarFacing(avatar, rig);
@@ -1181,6 +1215,38 @@ public sealed class AvatarStudio : Component
         RefreshOptionalMarkers();
         RefreshDirectionArrows();
         LumoraLogger.Log($"AvatarStudio: auto-aligned markers from computed references on '{avatar.SlotName.Value}'");
+    }
+
+    private QuadrupedRig? ResolveQuadRig(Slot avatar, HumanoidRig rig)
+    {
+        if (!QuadrupedMode.Value)
+            return null;
+        var quad = avatar.GetComponent<QuadrupedRig>() ?? avatar.GetComponentInChildren<QuadrupedRig>();
+        if (quad != null)
+            return quad;
+        var skeleton = avatar.GetComponentInChildren<SkeletonBuilder>() ?? rig.Slot.GetComponentInChildren<SkeletonBuilder>();
+        if (skeleton == null)
+            return null;
+        quad = avatar.AttachComponent<QuadrupedRig>();
+        quad.PopulateFromSkeleton(skeleton);
+        return quad;
+    }
+
+    private void AlignQuadMarkers(Slot avatar, HumanoidRig faceRig, bool head)
+    {
+        var quad = ResolveQuadRig(avatar, faceRig);
+        if (quad == null)
+            return;
+        quad.AlignAvatarFacing();
+        if (head)
+            ApplyMarkerPose(_headProxy.Target, avatar, AvatarCalibration.ComputeView(avatar, faceRig, quad));
+        ApplyMarkerPose(_chestProxy.Target, avatar, AvatarCalibration.ComputeQuadBone(avatar, quad, QuadNode.Chest));
+        ApplyMarkerPose(_pelvisProxy.Target, avatar, AvatarCalibration.ComputeQuadBone(avatar, quad, QuadNode.Pelvis));
+        ApplyMarkerPose(_frontLeftPawProxy.Target, avatar, AvatarCalibration.ComputeQuadBone(avatar, quad, QuadNode.FrontLeftPaw));
+        ApplyMarkerPose(_frontRightPawProxy.Target, avatar, AvatarCalibration.ComputeQuadBone(avatar, quad, QuadNode.FrontRightPaw));
+        ApplyMarkerPose(_rearLeftPawProxy.Target, avatar, AvatarCalibration.ComputeQuadBone(avatar, quad, QuadNode.RearLeftPaw));
+        ApplyMarkerPose(_rearRightPawProxy.Target, avatar, AvatarCalibration.ComputeQuadBone(avatar, quad, QuadNode.RearRightPaw));
+        CalibratePelvis.Value = true;
     }
 
     private static void ApplyMarkerPose(Slot marker, Slot avatar, in AvatarCalibration.RefPose pose)
@@ -1359,29 +1425,30 @@ public sealed class AvatarStudio : Component
         // subtree itself, so the stray sweep above and this branch cannot leave two behind.
         var quadrupedIk = QuadrupedIK.TryAttachFor(avatar, skeleton, rig);
         if (quadrupedIk != null)
-            return;
-
-        var avatarIk = avatar.GetComponent<AvatarIK>() ?? avatar.AttachComponent<AvatarIK>();
-        avatarIk.Skeleton.Target = skeleton;
-        avatarIk.Rig.Target = rig;
-
-        // The root frame must face the body before references bake, since equip resets the root to identity.
-        // World-invariant, so manually-adjusted markers stay exactly where the user put them.
-        AvatarCalibration.AlignAvatarFacing(avatar, rig);
-
-        // Write creator marker transforms as the avatar references. The
-        // headset marker is the View/HMD frame; AvatarIK captures the head
-        // bone relative to that frame, so arbitrary imported skull rotations
-        // do not get copied directly onto the live camera rotation.
-        if (!BuildReferencesFromMarkers(avatar))
-            AvatarCalibration.AutoPlaceReferences(avatar, rig, CalibrateFeet.Value, CalibratePelvis.Value);
+        {
+            if (!BuildReferencesFromMarkers(avatar))
+                AvatarCalibration.AutoPlaceQuadReferences(avatar, quadrupedIk.Rig.Target, rig);
+            quadrupedIk.GenerateBodyColliders();
+        }
+        else
+        {
+            var avatarIk = avatar.GetComponent<AvatarIK>() ?? avatar.AttachComponent<AvatarIK>();
+            avatarIk.Skeleton.Target = skeleton;
+            avatarIk.Rig.Target = rig;
+            AvatarCalibration.AlignAvatarFacing(avatar, rig);
+            if (!BuildReferencesFromMarkers(avatar))
+                AvatarCalibration.AutoPlaceReferences(avatar, rig, CalibrateFeet.Value, CalibratePelvis.Value);
+            avatarIk.GenerateBodyColliders();
+        }
 
         // Make the finished (unworn) avatar grabbable: coarse body colliders to hit +
         // a single root Grabbable. BlockWhenWorn keeps it pickable on the ground / passable, but ungrabbable
         // once equipped under a user root. (Equipping is still its own action via the equip target/menu.)
-        avatarIk.GenerateBodyColliders();
         var avatarGrab = avatar.GetComponent<Grabbable>() ?? avatar.AttachComponent<Grabbable>();
         avatarGrab.BlockWhenWorn.Value = true;
+
+        // Hide the head from the wearer, unless the model already carries an override that does.
+        AvatarCalibration.EnsureHeadViewOverride(avatar, rig);
 
         if (SetupEyes.Value && (rig.TryGetBone(BodyNode.LeftEye) != null || rig.TryGetBone(BodyNode.RightEye) != null))
         {
@@ -1436,8 +1503,8 @@ public sealed class AvatarStudio : Component
 
         // Tool anchors bake unconditionally on a biped, whether or not "show tool anchors" was ever
         // ticked. They spawn at usable default offsets from the grip, so an avatar built by someone who
-        // never opened that toggle still ships anchors sitting where the source platform's defaults put
-        // them - the alternative is shipping nothing and having the hand rig fall back to the wrist.
+        // never opened that toggle still ships anchors at those defaults. The alternative is shipping
+        // nothing and having the hand rig fall back to the wrist.
         if (!QuadrupedMode.Value)
         {
             PlaceReferenceFromMarker(root, avatar, _leftToolAnchorProxy.Target, AvatarReferenceKind.LeftHandToolAnchor, "LeftHandToolAnchor");
@@ -1553,7 +1620,7 @@ public sealed class AvatarStudio : Component
     private int ScoreRig(HumanoidRig rig)
     {
         int score = 0;
-        score += MarkerOverBone(_headProxy.Target, rig.TryGetBone(BodyNode.Head), HeadDetectionRadius) ? 1 : 0;
+        score += IsHeadMarkerOnRig(rig) ? 10 : 0;
         score += MarkerOverBone(_leftHandProxy.Target, rig.TryGetBone(BodyNode.LeftHand), LimbDetectionRadius) ? 1 : 0;
         score += MarkerOverBone(_rightHandProxy.Target, rig.TryGetBone(BodyNode.RightHand), LimbDetectionRadius) ? 1 : 0;
         if (CalibrateFeet.Value)
@@ -1597,7 +1664,10 @@ public sealed class AvatarStudio : Component
             return null!;
         var avatar = ResolveObjectRoot(rig.Slot);
         var existingIk = avatar.GetComponentInChildren<AvatarIK>();
-        return existingIk != null && !existingIk.IsDestroyed ? existingIk.Slot : avatar;
+        if (existingIk != null && !existingIk.IsDestroyed)
+            return existingIk.Slot;
+        var existingQuad = avatar.GetComponentInChildren<QuadrupedIK>();
+        return existingQuad != null && !existingQuad.IsDestroyed ? existingQuad.Slot : avatar;
     }
 
 }

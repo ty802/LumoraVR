@@ -35,6 +35,15 @@ public class LinkManager
     private readonly object _pendingLock = new();
     private readonly List<ILinkRef> _pendingLinks = new();
 
+    // Why a request did not get its target: another granted drive holds it, or the link's author may not
+    // write it at all. Only the first is worth waiting on. -xlinka
+    private enum GrantResult { Granted, Contended, Forbidden }
+
+    // Authority only: granted links minted in a user's byte, so they can be asked again when that user's
+    // rights change. Guarded by _pendingLock.
+    private readonly HashSet<ILinkRef> _userGrants = new();
+    private bool _recheckScheduled;
+
     public World World { get; private set; }
 
     public LinkManager(World world)
@@ -49,7 +58,9 @@ public class LinkManager
         if (link == null || link.IsDestroyed)
             return;
 
-        if (TryGrant(link))
+        // A forbidden link is parked like a contended one, and cleared on the next GrantLinks rather
+        // than here: this runs while the link's own reference is resolving. -xlinka
+        if (TryGrant(link) == GrantResult.Granted)
         {
             CancelLink(link);
             return;
@@ -89,10 +100,26 @@ public class LinkManager
         foreach (var link in snapshot)
         {
             // Dead, cleared, or granted: either way it stops being a pending request.
-            if (link.IsDestroyed || link.Target == null || TryGrant(link))
+            if (link.IsDestroyed || link.Target == null)
             {
                 (settled ??= new List<ILinkRef>()).Add(link);
+                continue;
             }
+
+            var result = TryGrant(link);
+            if (result == GrantResult.Contended)
+                continue;
+
+            // Forbidden only ever comes back on the authority. The reference is cleared, not just left
+            // ungranted, so the claim stops replicating and cannot take the target later. As the system:
+            // the link is a user's element, and a frozen world would refuse the authority's own write.
+            if (result == GrantResult.Forbidden)
+            {
+                using (World.DataModelPermissions?.EnterSystemBypass())
+                    link.ReleaseLink();
+            }
+
+            (settled ??= new List<ILinkRef>()).Add(link);
         }
 
         if (settled == null)
@@ -107,11 +134,14 @@ public class LinkManager
 
     // One granted driver per element. A non-driving link (a hook) can take over from anything, and a link
     // re-asking for a target it already holds is a no-op that reports success. -xlinka
-    private static bool TryGrant(ILinkRef link)
+    private GrantResult TryGrant(ILinkRef link)
     {
         var target = link.Target;
         if (target == null || target.IsDestroyed)
-            return false;
+            return GrantResult.Contended;
+
+        if (!AuthorMayLink(link, target))
+            return GrantResult.Forbidden;
 
         var holder = target.DirectLink;
         if (holder != null && ReferenceEquals(holder, link))
@@ -119,12 +149,12 @@ public class LinkManager
             // Already holding it. Re-linking here would look to the target like its driver is changing,
             // which fires a released-drive re-broadcast and invalidates the field for nothing. -xlinka
             if (link.WasLinkGranted)
-                return true;
+                return GrantResult.Granted;
         }
         else if (holder != null)
         {
             if (link.IsDriving && holder.IsDriving && holder.WasLinkGranted)
-                return false;
+                return GrantResult.Contended;
 
             // Handing the target to someone else. Let the incumbent go through the TARGET rather than
             // overwriting the slot under it: that is what fires the released-drive re-broadcast, without
@@ -138,7 +168,107 @@ public class LinkManager
 
         target.Link(link);
         link.GrantLink();
-        return true;
+
+        if (World?.IsAuthority == true && RefIDConstants.IsValidUserByte(link.ReferenceID.GetUserByte()))
+        {
+            lock (_pendingLock)
+                _userGrants.Add(link);
+        }
+        return GrantResult.Granted;
+    }
+
+    // A grant made under the author's role holds only while that role still allows it. Asked again after
+    // every change to roles, to the config they come from, and to who is present: a demoted builder's
+    // drive on world content, or one whose author has left, would otherwise keep writing as the authority
+    // for as long as the component lives. A forbidden one is cleared as the system, the same as a
+    // forbidden request. Batched to the next update, however many changes asked for it. -xlinka
+    public void ScheduleGrantRecheck()
+    {
+        var world = World;
+        if (world == null || !world.IsAuthority)
+            return;
+        lock (_pendingLock)
+        {
+            if (_recheckScheduled || _userGrants.Count == 0)
+                return;
+            _recheckScheduled = true;
+        }
+        world.RunSynchronously(RecheckGrants);
+    }
+
+    private void RecheckGrants()
+    {
+        List<ILinkRef> snapshot;
+        lock (_pendingLock)
+        {
+            _recheckScheduled = false;
+            snapshot = new List<ILinkRef>(_userGrants);
+        }
+
+        foreach (var link in snapshot)
+        {
+            var target = link.Target;
+            bool gone = link.IsDestroyed || !link.WasLinkGranted || target == null || target.IsDestroyed;
+            if (!gone && AuthorMayLink(link, target!))
+                continue;
+
+            if (!gone)
+            {
+                using (World.DataModelPermissions?.EnterSystemBypass())
+                    link.ReleaseLink();
+            }
+            lock (_pendingLock)
+                _userGrants.Remove(link);
+        }
+    }
+
+    // A drive writes its target on every machine every frame, and on the authority it writes as the
+    // authority. A hook sits on every set of its target. Either one aimed at something its author could
+    // not write by hand launders the edit, so the author has to pass the same question a remote write
+    // to the target would. The author is whoever owns the byte the link was minted in: the authority's
+    // and this machine's local links are their own, and a user byte with nobody behind it any more has
+    // no one to vouch for it. Judged on the authority only, a peer cannot see every role the host
+    // resolves, and the authority's refusal reaches peers as the cleared reference. -xlinka
+    private bool AuthorMayLink(ILinkRef link, ILinkable target)
+    {
+        var world = World;
+        if (world == null || !world.IsAuthority)
+            return true;
+
+        byte authorByte = link.ReferenceID.GetUserByte();
+        if (!RefIDConstants.IsValidUserByte(authorByte))
+            return true;
+
+        foreach (var user in world.GetAllUsers())
+        {
+            if (user.AllocationID.Value == authorByte)
+                return MayWrite(user, target);
+        }
+        return false;
+    }
+
+    private bool MayWrite(User? user, ILinkable target)
+    {
+        // Host-only and config-locked members refuse every write from a user, whoever owns them, and
+        // ownership would wave a link through: a user's own record carries its allocation byte. -xlinka
+        if (target is ConflictingSyncElement { IsHostOnly: true } or SyncElement { IsConfigLocked: true })
+            return false;
+
+        var permissions = World?.DataModelPermissions;
+        if (permissions == null)
+            return true;
+
+        Lumora.Warden.IPermissionTarget gateTarget = target;
+        var request = new DataModelPermissionRequest(
+            World,
+            user,
+            target,
+            gateTarget.OwnershipParent,
+            target,
+            target is IField ? DataModelPermissionSurface.Field : DataModelPermissionSurface.SyncElement,
+            DataModelPermissionAction.Write | DataModelPermissionAction.Replicate,
+            isNetwork: true);
+        return permissions.Authorize(request, out _);
     }
 
     // Authority-side check for an inbound write to a link member, run before the write is applied. The
@@ -181,10 +311,33 @@ public class LinkManager
             }
         }
 
-        if (claimed.IsNull || !link.IsDriving)
+        if (claimed.IsNull)
             return MessageValidity.Valid;
 
-        if (world.ReferenceController?.GetObjectOrNull(in claimed) is not ILinkable target || target.IsDestroyed)
+        // A claim on an id nobody has minted yet would sit resolved-pending and be granted the moment the
+        // id is born, judged by nothing. Only something the sender itself is creating can be claimed
+        // ahead of time, and that is judged again at the grant. -xlinka
+        var claimedElement = world.ReferenceController?.GetObjectOrNull(in claimed);
+        if (claimedElement == null)
+        {
+            return sender != null && claimed.GetUserByte() == sender.AllocationID.Value
+                && world.ReferenceController?.BelowScriptFence(claimed) != false
+                ? MessageValidity.Valid
+                : MessageValidity.Conflict;
+        }
+
+        if (claimedElement is not ILinkable target || target.IsDestroyed)
+            return MessageValidity.Valid;
+
+        // The link's author has to be allowed to write what it reaches for, drive or hook alike. See
+        // AuthorMayLink for why the link is the author's hand on the target.
+        if (!MayWrite(sender, target))
+        {
+            World?.DataModelPermissions?.ReportDenial(sender, DataModelDenialKind.ForeignWrite, "link to a target the sender may not write");
+            return MessageValidity.Conflict;
+        }
+
+        if (!link.IsDriving)
             return MessageValidity.Valid;
 
         var holder = target.DirectLink;

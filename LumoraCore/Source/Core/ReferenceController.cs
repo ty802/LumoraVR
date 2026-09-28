@@ -102,6 +102,13 @@ public class ReferenceController : IDisposable
     // forgetting the mark is exactly what would let a rejoin collide with in-flight references to the
     // old objects. -xlinka
     private readonly ulong[] _latestUserPosition = new ulong[256];
+
+    // Per user byte, where the host's range for that user's scripts starts, and where the next thing they
+    // make is minted. Set from the join grant on every machine that knows the grant; zero is no range.
+    // A user's own machine never mints at or past the fence, and the authority refuses it if it tries,
+    // so what the host mints there can never meet an id the user minted. -xlinka
+    private readonly ulong[] _scriptFence = new ulong[256];
+    private readonly ulong[] _scriptPosition = new ulong[256];
     
     // Trash bin integration (for restore from trash)
     private readonly Dictionary<RefID, TrashEntry> _trashedObjects = new();
@@ -387,9 +394,117 @@ public class ReferenceController : IDisposable
         _currentAllocation = _allocationStack.Pop();
     }
     
-    /// <summary>
-    /// Begin a local allocation block for non-networked objects.
-    /// </summary>
+    // Allocation blocks as a using-scope, and the only way they should be opened from now on. A hand-written
+    // Begin/End pair is SKIPPED by any exception thrown between the two, and the controller then keeps minting
+    // in that context forever: one component throwing out of OnInit inside a local component attach left the
+    // whole world allocating LOCAL ids, so every user root slot built afterwards was refused by User.Root with
+    // "Cannot reference local targets from non-local reference". -xlinka
+    public readonly struct AllocationScope : IDisposable
+    {
+        internal enum Kind : byte { None, Local, Block, Owned, Script }
+
+        private readonly ReferenceController? _controller;
+        private readonly Kind _kind;
+        private readonly byte _userByte;
+
+        internal AllocationScope(ReferenceController controller, Kind kind, byte userByte = 0)
+        {
+            _controller = controller;
+            _kind = kind;
+            _userByte = userByte;
+        }
+
+        public void Dispose()
+        {
+            if (_controller == null)
+                return;
+
+            switch (_kind)
+            {
+                case Kind.Local:
+                    _controller.LocalAllocationBlockEnd();
+                    break;
+                case Kind.Block:
+                    _controller.AllocationBlockEnd();
+                    break;
+                case Kind.Owned:
+                    _controller.OwnedAllocationBlockEnd(_userByte);
+                    break;
+                case Kind.Script:
+                    _controller.ScriptAllocationBlockEnd(_userByte);
+                    break;
+            }
+        }
+    }
+
+    public AllocationScope LocalAllocationScope()
+    {
+        LocalAllocationBlockBegin();
+        return new AllocationScope(this, AllocationScope.Kind.Local);
+    }
+
+    public AllocationScope AllocationScopeAt(in RefID id)
+    {
+        AllocationBlockBegin(id);
+        return new AllocationScope(this, AllocationScope.Kind.Block);
+    }
+
+    public AllocationScope OwnedAllocationScope(byte userByte)
+    {
+        OwnedAllocationBlockBegin(userByte);
+        return new AllocationScope(this, AllocationScope.Kind.Owned, userByte);
+    }
+
+    public void SetScriptFence(byte userByte, ulong position)
+    {
+        if (!RefIDConstants.IsValidUserByte(userByte))
+            return;
+        _scriptFence[userByte] = position;
+        _scriptPosition[userByte] = position;
+    }
+
+    public ulong GetScriptFence(byte userByte) => _scriptFence[userByte];
+
+    // Whether an id sits below its byte's script fence, where that byte's own user mints.
+    public bool BelowScriptFence(in RefID id)
+    {
+        ulong fence = _scriptFence[id.GetUserByte()];
+        return fence == 0 || id.GetPosition() < fence;
+    }
+
+    // On the host: everything minted inside lands in a user's script range, and the range moves past it
+    // when the scope closes, whatever happened inside.
+    public AllocationScope ScriptAllocationScope(byte userByte)
+    {
+        if (!RefIDConstants.IsValidUserByte(userByte) || _scriptFence[userByte] == 0)
+            throw new InvalidOperationException($"user byte {userByte} has no script range");
+        ulong position = _scriptPosition[userByte];
+        if (position >= RefID.MaxPosition - RefIDConstants.USER_JOIN_HEADROOM)
+            throw new InvalidOperationException($"user byte {userByte} has run out of script range");
+        AllocationBlockBegin(RefID.Construct(userByte, position));
+        return new AllocationScope(this, AllocationScope.Kind.Script, userByte);
+    }
+
+    private void ScriptAllocationBlockEnd(byte userByte)
+    {
+        if (_currentAllocation.UserByte == userByte && _currentAllocation.NestedDepth == 0
+            && _currentAllocation.Position > _scriptPosition[userByte])
+            _scriptPosition[userByte] = _currentAllocation.Position;
+        AllocationBlockEnd();
+    }
+
+    // For an element that either carries an assigned id or belongs to a local parent; neither means it
+    // allocates in whatever context the caller is already in, and the scope then does nothing. -xlinka
+    public AllocationScope ElementAllocationScope(in RefID id, bool local)
+    {
+        if (id != RefID.Null)
+            return AllocationScopeAt(id);
+        if (local)
+            return LocalAllocationScope();
+        return default;
+    }
+
+    // Begin a local allocation block for non-networked objects. Prefer LocalAllocationScope. -xlinka
     public void LocalAllocationBlockBegin()
     {
         CheckAllocation();
@@ -409,9 +524,6 @@ public class ReferenceController : IDisposable
         _localAllocationDepth = 1;
     }
     
-    /// <summary>
-    /// End local allocation block.
-    /// </summary>
     public void LocalAllocationBlockEnd()
     {
         if (_currentAllocation.UserByte != RefIDConstants.LOCAL_BYTE)
@@ -450,7 +562,10 @@ public class ReferenceController : IDisposable
         if (!RefIDConstants.IsValidUserByte(userByte))
             throw new ArgumentOutOfRangeException(nameof(userByte), "Owned block requires a real user byte (1-253)");
 
-        if (_currentAllocation.UserByte == userByte)
+        // Never into a context at or past the byte's script fence: that is the decode of something the
+        // host made for this user's scripts, and minting on from there would take ids the host is about to.
+        if (_currentAllocation.UserByte == userByte
+            && (_scriptFence[userByte] == 0 || _currentAllocation.Position < _scriptFence[userByte]))
         {
             _currentAllocation.NestedDepth++;
             return;
@@ -460,10 +575,57 @@ public class ReferenceController : IDisposable
         _currentAllocation = new AllocationContext
         {
             UserByte = userByte,
-            Position = GetOwnedPosition(userByte),
+            Position = OwnedStart(userByte),
             NestedDepth = 0
         };
     }
+
+    // A user's machine mints its byte from two cursors that start at the same granted position: its default
+    // context, and the owned block's own for a block opened under some other context. So an owned block starts
+    // past every context minting that byte, and on closing moves them past what it took; otherwise the two hand
+    // out the same id. Only below the byte's script fence: past it is the host's. -xlinka
+    private ulong OwnedStart(byte userByte)
+    {
+        ulong start = GetOwnedPosition(userByte);
+        foreach (var context in _allocationStack)
+        {
+            if (context.UserByte == userByte && BelowFence(userByte, context.Position) && context.Position > start)
+                start = context.Position;
+        }
+        return start;
+    }
+
+    private void CatchUp(byte userByte, ulong reached)
+    {
+        if (!BelowFence(userByte, reached))
+            return;
+        if (_currentAllocation.UserByte == userByte && _currentAllocation.Position < reached)
+            _currentAllocation.Position = reached;
+
+        bool behind = false;
+        foreach (var context in _allocationStack)
+        {
+            if (context.UserByte == userByte && context.Position < reached)
+            {
+                behind = true;
+                break;
+            }
+        }
+        if (!behind)
+            return;
+        // The contexts are values, so the stack is rebuilt with those moved. ToArray is top first.
+        var contexts = _allocationStack.ToArray();
+        _allocationStack.Clear();
+        for (int i = contexts.Length - 1; i >= 0; i--)
+        {
+            var context = contexts[i];
+            if (context.UserByte == userByte && context.Position < reached)
+                context.Position = reached;
+            _allocationStack.Push(context);
+        }
+    }
+
+    private bool BelowFence(byte userByte, ulong position) => _scriptFence[userByte] == 0 || position < _scriptFence[userByte];
 
     /// <summary>
     /// End an owned allocation block and restore the previous context, saving the high-water position so a
@@ -480,10 +642,12 @@ public class ReferenceController : IDisposable
             return;
         }
 
-        _ownedAllocationPosition[userByte] = _currentAllocation.Position;
+        ulong reached = _currentAllocation.Position;
+        _ownedAllocationPosition[userByte] = reached;
         if (_allocationStack.Count == 0)
             throw new InvalidOperationException("Allocation stack is empty!");
         _currentAllocation = _allocationStack.Pop();
+        CatchUp(userByte, reached);
     }
 
     // Highest position registered so far in a user byte, or 0 when the byte has never been used.

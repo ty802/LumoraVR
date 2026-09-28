@@ -246,6 +246,7 @@ public class SyncController
 				{
 					batch.InvalidateDataRecord(i, messageValidity == MessageValidity.Conflict);
 				}
+				batch.MarkDataRecordValidated(i);
 				if (list.Count > 0)
 				{
 					ValidationGroup item = new ValidationGroup();
@@ -253,6 +254,14 @@ public class SyncController
 					list2.Add(item);
 					list = new List<ValidationGroup.Rule>();
 				}
+			}
+			else if (Owner.IsAuthority && !InSendersByte(batch, dataRecord.TargetID))
+			{
+				// Nothing to judge it against, and nothing in this batch can create it: the sender only
+				// creates in its own byte. A write aimed at an id the authority or someone else has not
+				// minted yet would otherwise wait in the pending queue and land unjudged the moment that
+				// id is born. Invalid, not Conflict, there is no element to answer with. -xlinka
+				batch.InvalidateDataRecord(i, conflict: false);
 			}
 		}
 		Dictionary<RefID, int> dictionary = new Dictionary<RefID, int>();
@@ -312,6 +321,92 @@ public class SyncController
 					value2.Invalidate();
 				}
 			}
+		}
+	}
+
+	// Members of an element a network decode just created. They load until the batch that created them
+	// has applied, so the receiver's own initialisation neither dirties them nor asks the gate about them,
+	// and are then released, except any whose record is still pending. The flag used to clear only when a
+	// record for that exact member decoded, and a member the creator never touched after init never gets
+	// one: it stayed loading for good, and a loading member skips the gate on a local write and never
+	// replicates. Every user record on the host was stuck that way. -xlinka
+	private readonly List<SyncElement> _heldLoading = new();
+	private readonly object _heldLoadingLock = new();
+
+	internal void HoldLoading(SyncElement element)
+	{
+		element.IsLoading = true;
+		lock (_heldLoadingLock)
+			_heldLoading.Add(element);
+	}
+
+	internal void ReleaseHeldLoading(Func<RefID, bool> isPending)
+	{
+		lock (_heldLoadingLock)
+		{
+			int kept = 0;
+			for (int i = 0; i < _heldLoading.Count; i++)
+			{
+				var element = _heldLoading[i];
+				if (element.IsDisposed || !element.IsLoading)
+					continue;
+				if (isPending(element.ReferenceID))
+				{
+					_heldLoading[kept++] = element;
+					continue;
+				}
+				element.IsLoading = false;
+			}
+			_heldLoading.RemoveRange(kept, _heldLoading.Count - kept);
+		}
+	}
+
+	// Where the sender may have minted it: its own byte, below that byte's script fence.
+	private bool InSendersByte(BinaryMessageBatch batch, in RefID id)
+		=> batch.SenderUser != null && id.GetUserByte() == batch.SenderUser.AllocationID.Value
+			&& Owner.ReferenceController?.BelowScriptFence(id) != false;
+
+	// Judges a record the batch pass could not, a member of something the same batch creates, once its
+	// target exists and before it decodes. Same validator, same cross-record rules, same sender. A rule
+	// that fails refuses this record alone: whatever it points at may already have been applied. -xlinka
+	public MessageValidity ValidateLateRecord(DeltaBatch batch, int index)
+	{
+		var record = batch.GetDataRecord(index);
+		if (!syncElements.TryGetValue(record.TargetID, out var element))
+			return MessageValidity.Invalid;
+
+		var rules = new List<ValidationGroup.Rule>();
+		Owner.ValidatingBatch = batch;
+		try
+		{
+			var validity = element.Validate(batch, batch.SeekDataRecord(index), rules);
+			if (validity != MessageValidity.Valid)
+				return validity;
+
+			foreach (var rule in rules)
+			{
+				int other = batch.FindDataRecordIndex(rule.OtherMessage);
+				if (other < 0)
+				{
+					if (rule.MustExist)
+						return MessageValidity.Conflict;
+					continue;
+				}
+				if (batch.GetDataRecord(other).Validity == MessageValidity.Conflict)
+					return MessageValidity.Conflict;
+				if (rule.CustomValidation != null && !rule.CustomValidation(batch.SeekDataRecord(other)))
+					return MessageValidity.Conflict;
+			}
+			return MessageValidity.Valid;
+		}
+		catch (Exception ex)
+		{
+			LumoraLogger.Debug($"SyncController.ValidateLateRecord: {element.GetType().Name} RefID={record.TargetID} validator threw, refusing record - {ex.Message}");
+			return MessageValidity.Conflict;
+		}
+		finally
+		{
+			Owner.ValidatingBatch = null;
 		}
 	}
 
@@ -499,7 +594,13 @@ public class SyncController
 				}
 				else
 				{
-					LumoraLogger.Warn($"ApplyStreams: Stream {streamRefID} not found or inactive");
+					// A sender whose streams changed after the last change we hold is ahead of us: the
+					// delta that adds or activates this stream is still on its way, and the next sample
+					// replaces this one anyway. -xlinka
+					if (message.StreamStateVersion > user.StreamConfigurationVersion)
+						LumoraLogger.Debug($"ApplyStreams: Stream {streamRefID} not here yet");
+					else
+						LumoraLogger.Warn($"ApplyStreams: Stream {streamRefID} not found or inactive");
 					break; // Can't continue if we don't know the stream's data format
 				}
 			}

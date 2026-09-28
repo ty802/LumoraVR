@@ -489,6 +489,16 @@ public static class RefIDConstants
     // that picked its own number would collide the moment the User grew a member. -xlinka
     public const ulong USER_JOIN_HEADROOM = 4096;
 
+    // How far above the start of a user's range the host begins minting what that user's scripts make.
+    // Their own machine counts up one id at a time from the start and never gets near it in a session, and
+    // a byte handed on starts its next user past the last id registered in it, so the ranges only climb.
+    public const ulong SCRIPT_RANGE_OFFSET = 1UL << 36;
+
+    // The start of a user's script range, from the position their grant starts at. Zero when the byte has
+    // no room left for one.
+    public static ulong ScriptRangeStart(ulong grantPosition)
+        => grantPosition < RefID.MaxPosition - 2 * SCRIPT_RANGE_OFFSET ? System.Math.Max(grantPosition, 1UL) + SCRIPT_RANGE_OFFSET : 0;
+
     /// <summary>
     /// Check if a user byte is valid for user allocation.
     /// </summary>

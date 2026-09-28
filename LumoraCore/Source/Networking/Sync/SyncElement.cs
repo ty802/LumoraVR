@@ -515,6 +515,15 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         return true;
     }
 
+    // The gate's answer for a plain write by whoever the current scope says is acting, without making
+    // the write. A refused write comes back from the setter as a silent no-op, which suits UI and undo
+    // and does not suit a script node that has to count its refusals. -xlinka
+    public bool IsWriteAllowed()
+        => AuthorizeDataModelMutation(
+            DataModelPermissionAction.Write,
+            this is IField ? DataModelPermissionSurface.Field : DataModelPermissionSurface.SyncElement,
+            throwOnError: false);
+
     protected void EndModification()
     {
         if (_modificationLevel == 0)
@@ -784,6 +793,22 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     protected MessageValidity RunInboundRules(
         BinaryMessageBatch inboundMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
         => HasInboundRules ? ValidateInboundWrite(inboundMessage, reader, rules) : MessageValidity.Valid;
+
+    // A peer mints new elements in its own id byte and nowhere else, its allocation context is that byte
+    // from the join grant on. The byte is also what ownership reads, so an element arriving in someone
+    // else's byte, the authority's above all, would pass as theirs from the moment it decodes. Nor past
+    // the byte's script fence, where the host mints what that peer's scripts make. Asked by every
+    // validator that brings an element into being from the wire. -xlinka
+    protected bool IsCreatableBySender(User? sender, in RefID id)
+    {
+        if (sender != null && id.GetUserByte() == sender.AllocationID.Value
+            && World?.ReferenceController?.BelowScriptFence(id) != false)
+            return true;
+
+        World?.DataModelPermissions?.ReportDenial(
+            sender, DataModelDenialKind.HostOnly, $"new element {id} outside the sender's id byte");
+        return false;
+    }
 
     public virtual void Invalidate()
     {

@@ -23,13 +23,13 @@ public class UserStreamStorage : ReplicatedObjectCollection<Stream>
     {
     }
 
-    /// <summary>
-    /// Initialize the storage for a given user
-    /// </summary>
+    // The storage is one of the user's own members and is initialised with the user. Initialising it a
+    // second time here gave it a second id and put it back in its init phase for good, so no stream added
+    // after that replicated: a guest's voice, fingers, eyes and mouth never reached the host, and a later
+    // joiner's tracking never reached the peers already in the session. -xlinka
     public void Initialize(User user)
     {
         Owner = user;
-        base.Initialize(user.World, user);
     }
 
     /// <summary>

@@ -130,6 +130,11 @@ public abstract class Stream : Worker, IStream
             Owner.StreamGroupManager.AssignToGroup(this, null);
             _groupAssigned = true;
         }
+
+        // Silent, so no ownership check and no change handlers, but still sent: a peer already in the
+        // session meets this stream by delta and drops the data of an inactive one. -xlinka
+        _active.InvalidateSyncElement();
+        _group.InvalidateSyncElement();
     }
 
     // Group reassignment rides the worker's member-change hook now, not a manual _group.Changed sub. -xlinka

@@ -13,8 +13,7 @@ namespace Lumora.Core.Components;
 
 // Secondary bone motion for hair, tails, ears, clothes: a particle chain rides the animated skeleton
 // and lags, springs and collides believably. Set Root (chain auto-builds from its descendants) or
-// fill Bones explicitly; tune Inertia/Damping/Elasticity/Stiffness like the classic spring-bone
-// parameters avatar creators already know.
+// fill Bones explicitly; Inertia/Damping/Elasticity/Stiffness shape the motion.
 //
 // WHAT IS AND ISN'T REPLICATED. The simulation is LOCAL on every peer (bones are already posed
 // identically from replicated proxies, so broadcasting the wiggle would only add churn) and runs
@@ -23,8 +22,8 @@ namespace Lumora.Core.Components;
 // where in that hand the bone was caught. Everything else - collisions, velocities, the solved pose -
 // is worked out again on each machine from state it already has. -xlinka
 [ComponentCategory("Physics/Dynamic Bones")]
-[DefaultUpdateOrder(-4000)] // after AvatarIK (-5000) so chains ride the solved pose
-public class DynamicBoneChain : Component, IInputUpdateReceiver, IGrabbable, IPermissionGrabSurface, IGrabHolderSurface
+[DefaultUpdateOrder(2000)]
+public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, IGrabHolderSurface
 {
     // Chain root bone; descendants become the chain when Bones is empty.
     public readonly SyncRef<Slot> Root;
@@ -176,7 +175,6 @@ public class DynamicBoneChain : Component, IInputUpdateReceiver, IGrabbable, IPe
     private floatQ _captureRootRotInverse;
     private floatQ _rootRestLocalRot;
     private float _captureRootScale = 1f;
-    private bool _registered;
     private bool _needsRebuild = true;
     private bool _wasSimulating;
     private bool _paused;
@@ -219,35 +217,28 @@ public class DynamicBoneChain : Component, IInputUpdateReceiver, IGrabbable, IPe
     public override void OnStart()
     {
         base.OnStart();
+        if (UpdateOrder == -4000)
+            UpdateOrder = 2000;
         _manager = DynamicBoneManager.For(World);
         _manager?.Register(this);
 
-        var input = Engine.Current?.InputInterface;
-        if (input != null)
-        {
-            input.RegisterInputEventReceiver(this);
-            _registered = true;
-        }
     }
 
     public override void OnDestroy()
     {
-        if (_registered)
-            Engine.Current?.InputInterface?.UnregisterInputEventReceiver(this);
-        _registered = false;
         _manager?.Unregister(this);
         _manager = null;
         base.OnDestroy();
     }
 
-    public void BeforeInputUpdate() { }
-
     // The chain keeps its own dispatch slot so its UpdateOrder still decides where in the frame the
     // pass happens; the work itself is batched by the world's manager. See DynamicBoneManager.
-    public void AfterInputUpdate()
+    public override void OnUpdate(float delta)
     {
+        base.OnUpdate(delta);
         if (IsDestroyed)
             return;
+        using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
         _manager ??= DynamicBoneManager.For(World);
         _manager?.Tick(this);
     }
@@ -971,9 +962,12 @@ public class DynamicBoneChain : Component, IInputUpdateReceiver, IGrabbable, IPe
             OnLocalReleased?.Invoke(this);
     }
 
+    // Only skipped while the chain is being set up. A grab from another peer is applied while the ref
+    // reads as loading, and skipping those left every other peer without the release fling or the steal.
+    // -xlinka
     private void OnHolderChanged(SyncRef<Grabber> reference)
     {
-        if (reference.IsInInitPhase || reference.IsLoading)
+        if (reference.IsInInitPhase)
             return;
 
         var newHolder = reference.Target;

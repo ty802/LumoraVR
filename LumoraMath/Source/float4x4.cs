@@ -306,7 +306,15 @@ public struct float4x4 : IEquatable<float4x4>
                       - m01 * (m10 * m22 - m12 * m20)
                       + m02 * (m10 * m21 - m11 * m20);
 
-            if (System.Math.Abs(det) < 1e-10f)
+            // Singular relative to the matrix's own size, not to a fixed number: a UI canvas at 0.0003
+            // metres per unit has a determinant of 2.7e-11 and is perfectly invertible, and the old flat
+            // 1e-10 cut-off handed it back the identity, which put every ray that canvas was asked about
+            // in the wrong place. -xlinka
+            float size = System.Math.Max(System.Math.Max(System.Math.Max(System.Math.Abs(m00), System.Math.Abs(m01)),
+                    System.Math.Max(System.Math.Abs(m02), System.Math.Abs(m10))),
+                System.Math.Max(System.Math.Max(System.Math.Abs(m11), System.Math.Abs(m12)),
+                    System.Math.Max(System.Math.Max(System.Math.Abs(m20), System.Math.Abs(m21)), System.Math.Abs(m22))));
+            if (size <= 0f || !float.IsFinite(det) || System.Math.Abs(det) <= 1e-7f * size * size * size)
                 return Identity; // Return identity if matrix is singular
 
             float invDet = 1.0f / det;
@@ -336,6 +344,76 @@ public struct float4x4 : IEquatable<float4x4>
             );
         }
     }
+
+    // The inverse of any matrix that has one, bottom row and all, where Inverse assumes an affine matrix;
+    // the zero matrix when there is none. Worked from the 2x2 minors of the top and bottom row pairs.
+    public float4x4 GeneralInverse
+    {
+        get
+        {
+            float a00 = c0.x, a01 = c1.x, a02 = c2.x, a03 = c3.x;
+            float a10 = c0.y, a11 = c1.y, a12 = c2.y, a13 = c3.y;
+            float a20 = c0.z, a21 = c1.z, a22 = c2.z, a23 = c3.z;
+            float a30 = c0.w, a31 = c1.w, a32 = c2.w, a33 = c3.w;
+
+            float s0 = a00 * a11 - a10 * a01;
+            float s1 = a00 * a12 - a10 * a02;
+            float s2 = a00 * a13 - a10 * a03;
+            float s3 = a01 * a12 - a11 * a02;
+            float s4 = a01 * a13 - a11 * a03;
+            float s5 = a02 * a13 - a12 * a03;
+
+            float t0 = a20 * a31 - a30 * a21;
+            float t1 = a20 * a32 - a30 * a22;
+            float t2 = a20 * a33 - a30 * a23;
+            float t3 = a21 * a32 - a31 * a22;
+            float t4 = a21 * a33 - a31 * a23;
+            float t5 = a22 * a33 - a32 * a23;
+
+            float det = s0 * t5 - s1 * t4 + s2 * t3 + s3 * t2 - s4 * t1 + s5 * t0;
+            if (det == 0f || !float.IsFinite(det))
+                return Zero;
+            float inv = 1f / det;
+
+            var result = new float4x4(
+                new float4(
+                    (a11 * t5 - a12 * t4 + a13 * t3) * inv,
+                    (-a10 * t5 + a12 * t2 - a13 * t1) * inv,
+                    (a10 * t4 - a11 * t2 + a13 * t0) * inv,
+                    (-a10 * t3 + a11 * t1 - a12 * t0) * inv),
+                new float4(
+                    (-a01 * t5 + a02 * t4 - a03 * t3) * inv,
+                    (a00 * t5 - a02 * t2 + a03 * t1) * inv,
+                    (-a00 * t4 + a01 * t2 - a03 * t0) * inv,
+                    (a00 * t3 - a01 * t1 + a02 * t0) * inv),
+                new float4(
+                    (a31 * s5 - a32 * s4 + a33 * s3) * inv,
+                    (-a30 * s5 + a32 * s2 - a33 * s1) * inv,
+                    (a30 * s4 - a31 * s2 + a33 * s0) * inv,
+                    (-a30 * s3 + a31 * s1 - a32 * s0) * inv),
+                new float4(
+                    (-a21 * s5 + a22 * s4 - a23 * s3) * inv,
+                    (a20 * s5 - a22 * s2 + a23 * s1) * inv,
+                    (-a20 * s4 + a21 * s2 - a23 * s0) * inv,
+                    (a20 * s3 - a21 * s1 + a22 * s0) * inv));
+            return result.IsFinite ? result : Zero;
+        }
+    }
+
+    // Position, rotation and scale such that TRS(position, rotation, scale) gives the matrix back when it
+    // has no shear and no projection. Rotation and scale are those of the upper 3x3, as
+    // float3x3.Decompose reads them.
+    public void Decompose(out float3 position, out floatQ rotation, out float3 scale)
+    {
+        position = c3.xyz;
+        new float3x3(c0.xyz, c1.xyz, c2.xyz).Decompose(out rotation, out scale);
+    }
+
+    public bool IsFinite
+        => float.IsFinite(c0.x) && float.IsFinite(c0.y) && float.IsFinite(c0.z) && float.IsFinite(c0.w)
+            && float.IsFinite(c1.x) && float.IsFinite(c1.y) && float.IsFinite(c1.z) && float.IsFinite(c1.w)
+            && float.IsFinite(c2.x) && float.IsFinite(c2.y) && float.IsFinite(c2.z) && float.IsFinite(c2.w)
+            && float.IsFinite(c3.x) && float.IsFinite(c3.y) && float.IsFinite(c3.z) && float.IsFinite(c3.w);
 
     public static bool operator ==(float4x4 a, float4x4 b) =>
         a.c0 == b.c0 && a.c1 == b.c1 && a.c2 == b.c2 && a.c3 == b.c3;

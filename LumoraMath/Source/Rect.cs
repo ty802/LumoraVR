@@ -128,6 +128,17 @@ public struct Rect : IEquatable<Rect>
         return new Rect(minX, minY, maxX - minX, maxY - minY);
     }
 
+    // Grown just enough to take in a point. Unlike a rect, a point always counts: a rect of no size grows
+    // from where it stands, so points added one by one to a rect made at the first give their bounds.
+    public Rect Encapsulate(in float2 point)
+    {
+        float minX = MathF.Min(MathF.Min(xMin, xMax), point.x);
+        float minY = MathF.Min(MathF.Min(yMin, yMax), point.y);
+        float maxX = MathF.Max(MathF.Max(xMin, xMax), point.x);
+        float maxY = MathF.Max(MathF.Max(yMin, yMax), point.y);
+        return new Rect(minX, minY, maxX - minX, maxY - minY);
+    }
+
     public bool Equals(Rect other)
         => x == other.x && y == other.y && width == other.width && height == other.height;
 

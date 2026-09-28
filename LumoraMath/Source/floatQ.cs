@@ -99,20 +99,26 @@ public struct floatQ : IEquatable<floatQ>
         float3 euler;
 
         // Pitch (x-axis rotation)
-        float sinp = 2f * (w * x - z * y);
-        if (MathF.Abs(sinp) >= 1f)
-            euler.x = MathF.CopySign(MathF.PI / 2f, sinp);
-        else
-            euler.x = MathF.Asin(sinp);
+        float sinp = System.Math.Clamp(2f * (w * x - z * y), -1f, 1f);
+        euler.x = MathF.Asin(sinp);
+
+        // Looking straight up or down, yaw and roll turn about the same axis and the usual terms are both
+        // zero over zero: all of the turn goes to yaw, read from the matrix's first column. -xlinka
+        if (MathF.Abs(sinp) > 0.999999f)
+        {
+            euler.y = MathF.Atan2(2f * (w * y - x * z), 1f - 2f * (y * y + z * z));
+            euler.z = 0f;
+            return euler;
+        }
 
         // Yaw (y-axis rotation)
         float siny_cosp = 2f * (w * y + z * x);
         float cosy_cosp = 1f - 2f * (x * x + y * y);
         euler.y = MathF.Atan2(siny_cosp, cosy_cosp);
 
-        // Roll (z-axis rotation)
+        // Roll (z-axis rotation), in the Y then X then Z order Euler builds.
         float sinr_cosp = 2f * (w * z + x * y);
-        float cosr_cosp = 1f - 2f * (y * y + z * z);
+        float cosr_cosp = 1f - 2f * (x * x + z * z);
         euler.z = MathF.Atan2(sinr_cosp, cosr_cosp);
 
         return euler;

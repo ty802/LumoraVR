@@ -45,9 +45,10 @@ public class QuaternionMemberEditor : MemberEditor
     {
         if (GetMemberValue() is not floatQ rotation)
             return;
-        var euler = rotation.ToEuler(); // radians, (yaw, pitch, roll)
-        WriteField(_yaw.Target, euler.x);
-        WriteField(_pitch.Target, euler.y);
+        // Radians: x is pitch, y is yaw, z is roll. Submit hands them back to Euler as yaw, pitch, roll.
+        var euler = rotation.ToEuler();
+        WriteField(_yaw.Target, euler.y);
+        WriteField(_pitch.Target, euler.x);
         WriteField(_roll.Target, euler.z);
     }
 

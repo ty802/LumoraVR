@@ -34,6 +34,24 @@ public class UserRoot : Component
     // USER REFERENCE
     // so clients can identify their own
     public readonly SyncRef<User> TargetUser = null!;
+    public readonly SyncRef<Slot> TrackingSpaceRoot = new();
+
+    public Slot TrackingSpaceSlot => TrackingSpaceRoot.Target is { IsDestroyed: false } space
+        ? space : Slot.FindChild("Body Nodes", recursive: false) ?? Slot;
+
+    // Where this user's eye cameras take their clip planes from. The worn avatar's AvatarRenderSettings
+    // registers here on equip and clears itself on dequip; empty means the engine defaults.
+    public readonly SyncRef<Avatar.IRenderSettingsSource> RenderSettings = new();
+
+    public Avatar.IRenderSettingsSource? ActiveRenderSettings
+        => RenderSettings.Target is { IsDestroyed: false } source ? source : null;
+
+    public void SetAvatarTrackingOffset(float3 offset)
+    {
+        var space = TrackingSpaceSlot;
+        if (space != Slot)
+            space.LocalPosition.Value = offset;
+    }
 
     private bool _isRegistered = false;
 
@@ -192,8 +210,8 @@ public class UserRoot : Component
     public const string VoiceStreamName = "Voice";
 
     // Above an ordinary emitter, below nothing. When the voice limit bites, the person talking to you
-    // is not the thing to drop. The local user's own output drops to 0 (highest) in the manager, which
-    // is the one emitter that must never be culled.
+    // is not the thing to drop. The local user's own output goes to the top in the manager, the one
+    // emitter that must never be culled.
     private const int VoicePriority = 200;
 
     private UserAudioStream _voiceStream = null!;
@@ -453,7 +471,10 @@ public class UserRoot : Component
 
         if (World?.IsAuthority == true)
         {
-            user.Root = this;
+            // The authority wiring a joiner's record to the root it just built them, an engine step and
+            // not an edit: the social freeze refuses every write to what the writer does not own. -xlinka
+            using (World.DataModelPermissions?.EnterSystemBypass())
+                user.Root = this;
             LumoraLogger.Log($"User: Registered UserRoot for authority user '{user.UserName.Value}'");
         }
 

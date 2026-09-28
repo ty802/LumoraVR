@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using Lumora.Core.Assets;
 using Lumora.Core.Components.Meshes;
+using Lumora.Core.Components.UI;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
@@ -41,7 +42,8 @@ public sealed class InteractionLaser : Component
     private readonly List<TargetHit> _hitBuffer = new(64);
     // Interaction targets pulled flat from the world's registry instead of recursing the tree, per frame. -xlinka
     private readonly List<IInteractionTarget> _interactionTargetBuffer = new(64);
-    // Slots the physics ray skips (the laser's own user/avatar hierarchy + ignore root), rebuilt per cast. -xlinka
+    // Slots the physics ray skips (this hand's own rig), rebuilt per cast; the rest of the user's body is
+    // filtered after the cast so the other hand's cargo stays hittable. -xlinka
     private readonly List<Slot> _rayExclude = new(4);
     private Slot? _beamSlot;
     private Slot? _pointSlot;
@@ -101,6 +103,66 @@ public sealed class InteractionLaser : Component
     private ILaserHitClassifier? _hitClassifier;
     private bool _currentHitPreferred;
 
+    // LASER ACTIVITY
+    //
+    // In a session world in VR the beam is off until asked for: the trigger past a tenth, the local
+    // user in edit mode, a tool that uses the laser, this hand's context menu, or a load riding the
+    // beam. Once on and on a target it stays on, and losing the target starts a two second tail so a
+    // hand drifting between two buttons does not blink; a press on nothing toggles that tail by hand.
+    // Desktop keeps the pointer for two seconds past the last mouse or button activity, or while a
+    // tool is equipped. The userspace pointer is on while a panel is under it or it is carrying
+    // something. What OTHERS see is gated separately: a quarter second sustained on something
+    // interactive, or a hold, before the beam is shown to them at all. -xlinka
+    private const float LaserTimeoutSeconds = 2f;
+    private const float LaserFadeRate = 6f;
+    private const float TriggerActivationStrength = 0.1f;
+    private const float ShowToOthersDelay = 0.25f;
+    private const float DesktopActivityWindow = 2f;
+    // A remote peer's only local knob for a beam its owner has not sustained yet: MeshRenderer has no
+    // local hide, and a view range this short draws nothing without touching a replicated field.
+    private const float RemoteHiddenViewDistance = 0.001f;
+
+    // Replicated, owner-written: this beam has earned a showing to other users.
+    public readonly Sync<bool> ShowToOthers = new();
+
+    private float _laserTimeout;
+    private bool _laserActive;
+    private float _showOthersActivation;
+    private float _desktopActivity;
+    private float? _holdDistance;
+    private bool _toolEquipped;
+    private bool _toolUsesLaser;
+    private bool _contextMenuOpen;
+
+    public bool LaserActive => _laserActive;
+    public bool LaserVisible => _laserVisibleLerp > 0f;
+    public float LaserLerp => _laserVisibleLerp;
+    public float LocalLaserTimeout => _laserTimeout;
+    public float? HoldDistance => _holdDistance;
+    // World point the beam was last drawn to; the cursor sits here.
+    public float3 BeamEndPoint => _pointSlot?.GlobalPosition ?? _aimPoint;
+
+    public void ResetLaserTimeout() => _laserTimeout = LaserTimeoutSeconds;
+
+    public void ClearLaserTimeout() => _laserTimeout = -1f;
+
+    // What only the hand knows: whether a tool is in it and wants the laser, and whether this hand's
+    // menu is up. Pushed per frame because the beam is built lazily and an equip can land before it
+    // exists.
+    public void SetHandState(bool toolEquipped, bool toolUsesLaser, bool contextMenuOpen)
+    {
+        _toolEquipped = toolEquipped;
+        _toolUsesLaser = toolUsesLaser;
+        _contextMenuOpen = contextMenuOpen;
+    }
+
+    // Distance along the ray a load is being carried at, null when nothing rides the beam. While set
+    // the beam ends there, the cursor sits there, and the cast only looks for panels in front of it.
+    public void SetHoldDistance(float? distance)
+    {
+        _holdDistance = distance.HasValue && distance.Value > 0f && !float.IsNaN(distance.Value) ? distance : null;
+    }
+
     public IInteractionTarget? CurrentTarget => _currentTarget;
     public RayTarget? CurrentRayTarget => _currentRayTarget;
     public ILaserPointerTarget? CurrentPointerTarget => _currentPointerTarget;
@@ -154,11 +216,10 @@ public sealed class InteractionLaser : Component
     public override void OnInit()
     {
         base.OnInit();
-        // How far the laser REACHES. The other platform puts no limit on this in a world at all
-        // (MaxLaserDistance is float.MaxValue outside userspace, where it clamps to the dash distance),
-        // and 8m meant you had to walk up to anything you wanted to pick up. Finite rather than
-        // infinite only because this feeds a physics raycast. The DRAWN beam is capped separately by
-        // BeamIdleLength, or pointing at the sky would paint a line to the horizon. -xlinka
+        // How far the laser REACHES: far enough to be no limit in a world, because 8m meant you had to
+        // walk up to anything you wanted to pick up. Finite rather than infinite only because this
+        // feeds a physics raycast. The DRAWN beam is capped separately by BeamIdleLength, or pointing at
+        // the sky would paint a line to the horizon. -xlinka
         MaxDistance.Value = 512f;
         BeamRadius.Value = 0.003f;
         BeamStartOffset.Value = 0.020f;
@@ -255,16 +316,6 @@ public sealed class InteractionLaser : Component
         _exclusiveRoot = root;
     }
 
-    // When true the beam mesh never shows, only the cursor. The userspace dash pointer
-    // uses this: you want the little cursor on the panel, not a laser line stabbing out
-    // of nothing (the userspace pointer has no visible hand to anchor a beam to). -xlinka
-    private bool _suppressBeam;
-
-    public void SetBeamSuppressed(bool suppressed)
-    {
-        _suppressBeam = suppressed;
-    }
-
     // Dormant pointer: skips the cast and pulls all visuals offscreen this frame. The userspace
     // dash pointer flips this with the dash open state, so when the dash is closed there's no
     // stray cursor floating in the overlay world and no wasted raycasts. -xlinka
@@ -273,6 +324,39 @@ public sealed class InteractionLaser : Component
     public void SetDormant(bool dormant)
     {
         _dormant = dormant;
+    }
+
+    // Which space this laser points into. Each hand has one of each: the userspace pointer's laser
+    // reaches the dash and the keyboard, the hand tool's laser reaches the world, and per frame only
+    // one of them owns the hand. The userspace side owns it whenever it is on something in userspace,
+    // however near the world is along the same ray, because the dash draws over the world; the world
+    // side then yields: no hover, no press, no laser grab, and its beam fades out stopped at the
+    // userspace hit while the userspace beam takes over. VR only, per hand; on desktop the dash owns
+    // the one pointer outright and the hand tools stand down themselves. -xlinka
+    public enum Role
+    {
+        World,
+        Userspace,
+    }
+
+    private Role _role = Role.World;
+    // This frame's yield: the other space owned the hand, the hover was dropped. The clamp is the
+    // distance the beam is drawn to instead (world role only), -1 for none.
+    private bool _yielded;
+    private float _yieldClamp = -1f;
+    // What the cast found before a yield dropped it.
+    private bool _rawHitFound;
+
+    public Role LaserRole => _role;
+    public bool YieldedToOtherSpace => _yielded;
+    public float YieldClamp => _yieldClamp;
+    public bool RawHitFound => _rawHitFound;
+    // Length the beam was last drawn at, from its start point.
+    public float BeamLength => _lastDirectHitDistance;
+
+    public void SetRole(Role role)
+    {
+        _role = role;
     }
 
     // Arm the aim smoother for a tool that is carrying something on this laser. speedOverride replaces
@@ -320,12 +404,20 @@ public sealed class InteractionLaser : Component
             AnchorRayAtHand(_aimPoint, delta, advance: true);
             origin = _rayOrigin;
             direction = _rayDirection;
-            // Hovering something pins the beam to that surface; otherwise it runs the same length down the
-            // damped hand ray, so a carried object never floats off the side of its own beam.
-            endPoint = _currentTarget != null
-                ? _aimPoint
-                : origin + direction * (_aimPoint - origin).Length;
-            cursorDistance = MathF.Max(_lastCastDistance, 0f);
+            // A load rides the ray at its hold distance, full stop. Otherwise hovering something pins the
+            // beam to that surface, and nothing hovered runs the same length down the damped hand ray.
+            if (_holdDistance is float externalHold)
+            {
+                endPoint = origin + direction * externalHold;
+                cursorDistance = externalHold;
+            }
+            else
+            {
+                endPoint = _currentTarget != null
+                    ? _aimPoint
+                    : origin + direction * (_aimPoint - origin).Length;
+                cursorDistance = MathF.Max(_lastCastDistance, 0f);
+            }
         }
         else
         {
@@ -334,12 +426,20 @@ public sealed class InteractionLaser : Component
             _rayOrigin = origin;
             _rayDirection = direction;
 
-            // A hovered surface point stays where the surface is; with nothing hovered the beam ends at the
-            // same distance down the new ray as the cast gave it.
-            cursorDistance = MathF.Max(_lastDirectHitDistance, 0f);
-            endPoint = _currentTarget != null
-                ? _currentHitPoint
-                : origin + direction * cursorDistance;
+            if (_holdDistance is float hold)
+            {
+                endPoint = origin + direction * hold;
+                cursorDistance = hold;
+            }
+            else
+            {
+                // A hovered surface point stays where the surface is; with nothing hovered the beam ends at
+                // the same distance down the new ray as the cast gave it.
+                cursorDistance = MathF.Max(_lastDirectHitDistance, 0f);
+                endPoint = _currentTarget != null
+                    ? _currentHitPoint
+                    : origin + direction * cursorDistance;
+            }
         }
 
         float3 visualOrigin = origin;
@@ -456,10 +556,31 @@ public sealed class InteractionLaser : Component
         if (IsRemoteUserLaser())
         {
             HideLocalCursor();
+            ApplyRemoteBeamGate();
             return;
         }
 
         CastAndUpdate(delta);
+    }
+
+    // Another user's beam is drawn here only once its owner has sustained it (ShowToOthers). The
+    // beam's visibility fields replicate from the owner as the owner sees them, so the gate has to
+    // be a local property of the renderer; the view range is the one there is. -xlinka
+    private void ApplyRemoteBeamGate()
+    {
+        if (_beamRenderer == null || _beamRenderer.IsDestroyed)
+        {
+            // The replicated beam can land after OnStart; keep looking for it.
+            TryAdoptNetworkedBeam();
+            if (_beamRenderer == null || _beamRenderer.IsDestroyed)
+                return;
+        }
+        float wanted = ShowToOthers.Value ? 0f : RemoteHiddenViewDistance;
+        if (_beamRenderer.MaxViewDistance == wanted)
+            return;
+        _beamRenderer.MaxViewDistance = wanted;
+        _beamRenderer.ViewDistanceFadeMargin = 0f;
+        _beamRenderer.MarkChangeDirty();
     }
 
     // True only when this laser definitively belongs to a DIFFERENT user than the local one. A laser with
@@ -469,6 +590,14 @@ public sealed class InteractionLaser : Component
         var owningUser = Slot?.ActiveUser;
         var localUser = World?.LocalUser;
         return owningUser != null && localUser != null && !ReferenceEquals(owningUser, localUser);
+    }
+
+    // The hand you point with is the one in the world you are looking at. A copy of the user standing
+    // in a background world casts too, and its distances must not speak for the focused hand.
+    private bool IsInFocusedWorld()
+    {
+        var focused = Engine.Current?.WorldManager?.FocusedWorld;
+        return focused == null || ReferenceEquals(focused, World);
     }
 
     // Hide just the per-viewer cursor visuals (cursor, direct cursor, direct line) without touching the
@@ -496,14 +625,8 @@ public sealed class InteractionLaser : Component
     // -xlinka
     private void BuildNetworkedBeam()
     {
-        var existing = Slot.FindChild("InteractionLaserVisual");
-        if (existing != null)
+        if (TryAdoptNetworkedBeam())
         {
-            _beamSlot = existing;
-            _beamMesh = existing.GetComponent<CurvedBeamMesh>();
-            _beamRenderer = existing.GetComponent<MeshRenderer>();
-            _beamMaterial = existing.FindChild("InteractionLaserMaterial")?.GetComponent<OverlayUnlitMaterial>();
-            _pointSlot = existing.FindChild("Point");
             // Adopted - the owner already set every value, and the local cursor build below fills its own refs.
             // Anything still null (a half-synced adopt) is tolerated: CastAndUpdate/PositionBeam null-guard _beamSlot
             // and _beamMesh, and a later sync doesn't re-run OnStart, but the renderer/material drive themselves once
@@ -545,11 +668,27 @@ public sealed class InteractionLaser : Component
         _beamSlot.ActiveSelf.Value = false;
     }
 
-    // Cursor render band, ABOVE the dash surface's reserved band (UserspaceDashboard.DashSurfaceSortingOrder
-    // = 20000) so the pointer stays visible on the open dashboard. Effective draw order is
-    // SortingOffset = material RenderQueue + SortingOrder. -xlinka
-    private const int CursorSortingOrder = 21000;
-    private const int DirectCursorSortingOrder = 20900;
+    private bool TryAdoptNetworkedBeam()
+    {
+        var existing = Slot?.FindChild("InteractionLaserVisual");
+        if (existing == null)
+            return false;
+        _beamSlot = existing;
+        _beamMesh = existing.GetComponent<CurvedBeamMesh>();
+        _beamRenderer = existing.GetComponent<MeshRenderer>();
+        _beamMaterial = existing.FindChild("InteractionLaserMaterial")?.GetComponent<OverlayUnlitMaterial>();
+        _pointSlot = existing.FindChild("Point");
+        return true;
+    }
+
+    // Cursor render band, ABOVE the dash surface's reserved band so the pointer stays visible on the open
+    // dashboard. Effective draw order is SortingOffset = material RenderQueue + SortingOrder, and these land
+    // on the same offsets UserspaceRenderBands lifts them to, so a reticle never moves band when the dash
+    // opens; only the beam and the direct line do. -xlinka
+    private const int CursorRenderQueue = 4005;
+    private const int DirectCursorRenderQueue = 4000;
+    private const int CursorSortingOrder = UserspaceRenderBands.Cursor - CursorRenderQueue;
+    private const int DirectCursorSortingOrder = UserspaceRenderBands.DirectCursor - DirectCursorRenderQueue;
 
     // The cursor / direct-cursor / direct-line are LOCAL (per-viewer, like an OS mouse cursor) - AddLocalSlot mints a
     // LOCAL_BYTE RefID the world never replicates, so the whole cursor subtree stays on this machine only and other
@@ -570,7 +709,7 @@ public sealed class InteractionLaser : Component
             _cursorMaterial.FrontTintColor.Value = colorHDR.White;
             _cursorMaterial.BehindTintColor.Value = new colorHDR(1f, 1f, 1f, 0.35f);
             _cursorMaterial.UseVertexColor.Value = true;
-            _cursorMaterial.RenderQueue.Value = 4005;
+            _cursorMaterial.RenderQueue.Value = CursorRenderQueue;
 
             _cursorRootSlot = _cursorSlot.AddSlot("Image");
             var cursorMesh = _cursorRootSlot.AttachComponent<QuadMesh>();
@@ -604,7 +743,7 @@ public sealed class InteractionLaser : Component
             _directCursorMaterial.FrontTintColor.Value = new colorHDR(1f, 1f, 1f, 0.25f);
             _directCursorMaterial.BehindTintColor.Value = new colorHDR(1f, 1f, 1f, 0.15f);
             _directCursorMaterial.UseVertexColor.Value = true;
-            _directCursorMaterial.RenderQueue.Value = 4000;
+            _directCursorMaterial.RenderQueue.Value = DirectCursorRenderQueue;
 
             var directCursorMesh = _directCursorSlot.AttachComponent<QuadMesh>();
             directCursorMesh.Size.Value = float2.One * (CursorSize.Value * 0.75f);
@@ -673,11 +812,25 @@ public sealed class InteractionLaser : Component
             _currentHitSlot = null;
             _currentHitPreferred = false;
             _hasAimPoint = false;
+            _yielded = false;
+            _yieldClamp = -1f;
+            _rawHitFound = false;
+            _laserActive = false;
+            ClearLaserTimeout();
+            _showOthersActivation = 0f;
+            _desktopActivity = 0f;
+            SetIfChanged(ShowToOthers, false);
             HideVisuals();
+            ApplyRenderBand(null, false);
             return;
         }
 
         float maxDist = MathF.Max(MaxDistance.Value, 0.01f);
+        // A load on the beam bounds the cast: the ray has nothing to say about what is behind the
+        // thing it is carrying, only about panels between the hand and it.
+        bool holdingOnBeam = _holdDistance.HasValue;
+        float castDist = holdingOnBeam ? MathF.Min(maxDist, _holdDistance!.Value) : maxDist;
+        BuildRayExclude();
         _externalAim = UseExternalCameraAim(Engine.Current?.InputInterface);
         ResolveRayPose(out float3 origin, out float3 direction);
         // Read the smoother without stepping it. The step belongs to RefreshHeldAim, which runs later in the
@@ -699,16 +852,16 @@ public sealed class InteractionLaser : Component
         // with the same arguments; casting it twice doubled the physics cost of every hand every frame,
         // and each cast can re-issue itself up to RaycastSkipLimit times through filtered hits. -xlinka
         _castHitValid = false;
-        float blockingDistance = maxDist;
+        float blockingDistance = castDist;
         _colliderHitSlot = null;
         _colliderHitPoint = float3.Zero;
-        if (!exclusive && TryFindNearestColliderHitDistance(origin, direction, maxDist, out float colliderHitDistance))
+        if (!exclusive && TryFindNearestColliderHitDistance(origin, direction, castDist, out float colliderHitDistance))
         {
             blockingDistance = colliderHitDistance;
         }
 
         _hitBuffer.Clear();
-        CollectInteractionHits(World, origin, direction, maxDist, blockingDistance);
+        CollectInteractionHits(World, origin, direction, castDist, blockingDistance, pointerTargetsOnly: holdingOnBeam);
 
         // The dashboard lives in the userspace overlay world and is pointed at by a rig that also
         // lives there (the userspace pointer rig, see UserspacePointer) in BOTH desktop and VR. So
@@ -752,7 +905,7 @@ public sealed class InteractionLaser : Component
 
         IInteractionTarget? hoveredTarget = null;
         Slot? hoveredSlot = null;
-        float hoveredDistance = maxDist;
+        float hoveredDistance = castDist;
         float3 hoveredHitPoint = float3.Zero;
         bool hoveredPreferred = false;
 
@@ -776,7 +929,12 @@ public sealed class InteractionLaser : Component
                 for (int i = 0; i < _hitBuffer.Count; i++)
                 {
                     var hit = _hitBuffer[i];
-                    if (ReferenceEquals(hit.Target, _currentTarget) && hit.Distance <= keepThreshold)
+                    // Hover retention must not keep an object's grab surface selected over a
+                    // nearer button. Otherwise UI a few millimetres above its collider requires
+                    // clearing the grab target before the first click can reach the canvas.
+                    bool nearerPointer = _hitBuffer[nearestIndex].Target is ILaserPointerTarget
+                        && hit.Target is not ILaserPointerTarget;
+                    if (!nearerPointer && ReferenceEquals(hit.Target, _currentTarget) && hit.Distance <= keepThreshold)
                     {
                         selectedIndex = i;
                         break;
@@ -793,7 +951,7 @@ public sealed class InteractionLaser : Component
             hoveredHitPoint = selected.HitPoint;
             hoveredPreferred = selected.Preferred;
         }
-        else if (!exclusive && TryKeepStickyTarget(origin, direction, maxDist, blockingDistance,
+        else if (!exclusive && TryKeepStickyTarget(origin, direction, castDist, blockingDistance, holdingOnBeam,
             out var stickyTarget, out var stickySlot, out float stickyDistance, out float3 stickyPoint))
         {
             hoveredTarget = stickyTarget;
@@ -803,6 +961,50 @@ public sealed class InteractionLaser : Component
             // Same target as last frame, so it keeps the class it was selected with - a handle the ray
             // slid off for one frame must not start being occluded by the thing it sits inside.
             hoveredPreferred = _currentHitPreferred;
+        }
+
+        // HAND OWNERSHIP BETWEEN THE TWO SPACES (VR, per hand). The userspace laser owns a hand for as long
+        // as it is on something in userspace, whatever sits nearer along the same ray in the world: the dash
+        // draws over the world, so the panel under the beam is what the user is looking at. It casts first
+        // (the overlay world updates first) and publishes that; the world laser of the hand reads it here
+        // and drops its hover before anything acts on it. -xlinka
+        _rawHitFound = hoveredTarget != null || _colliderHitSlot != null || holdingOnBeam;
+        bool yield = false;
+        float yieldClamp = -1f;
+        var spaceInput = Engine.Current?.InputInterface;
+        var side = ControllerSide.Value;
+        if (_role == Role.World && spaceInput != null && spaceInput.IsVRActive && IsInFocusedWorld()
+            && spaceInput.IsUserspaceLaserActive(side))
+        {
+            yield = true;
+            yieldClamp = MathF.Min(spaceInput.UserspaceLaserHitDistance(side), maxDist);
+            if (float.IsInfinity(yieldClamp) || float.IsNaN(yieldClamp))
+                yieldClamp = -1f;
+        }
+        _yielded = yield;
+        _yieldClamp = yieldClamp;
+        if (yield)
+        {
+            hoveredTarget = null;
+            hoveredSlot = null;
+            hoveredDistance = castDist;
+            hoveredHitPoint = float3.Zero;
+            hoveredPreferred = false;
+        }
+
+        bool isVrNow = spaceInput?.IsVRActive == true;
+        bool active = ResolveLaserActive(delta, hoveredTarget != null, spaceInput, isVrNow);
+        // A hidden laser has no target: a hand passing over a button with the beam off must not hover
+        // it, press it, or bring the beam up because of it. The userspace pointer is exempt (being on
+        // a panel IS its activity), and the raw distances above keep publishing so the two spaces
+        // still arbitrate on what is physically nearer. -xlinka
+        if (_role == Role.World && !active && !LaserVisible && hoveredTarget != null)
+        {
+            hoveredTarget = null;
+            hoveredSlot = null;
+            hoveredDistance = castDist;
+            hoveredHitPoint = float3.Zero;
+            hoveredPreferred = false;
         }
 
         if (!ReferenceEquals(hoveredTarget, _currentTarget))
@@ -829,8 +1031,20 @@ public sealed class InteractionLaser : Component
         UpdatePointerTarget(hoveredTarget as ILaserPointerTarget, origin, direction, _toolPrimaryPressed);
         ProcessPointerActions();
 
-        float beamLength = hoveredTarget != null ? hoveredDistance : blockingDistance;
-        float3 beamEndPoint = hoveredTarget != null
+        // A hand the dash owns stops its world beam at the dash surface while it fades: what is behind
+        // the panel is out of reach, and a line running on through it would say otherwise. The userspace
+        // pointer draws the beam and the reticle on the panel itself.
+        // A load on the beam owns the end of it: origin + direction * hold distance, every frame, the
+        // same numbers the hand places the holder with, so the beam and the thing on it cannot part.
+        // A panel hovered in front of the load keeps its hover (that is how a card is dropped on a
+        // field) but does not pull the beam back to itself. -xlinka
+        bool clampedAtUserspace = yieldClamp >= 0f;
+        float beamLength = holdingOnBeam
+            ? castDist
+            : hoveredTarget != null
+                ? hoveredDistance
+                : (clampedAtUserspace ? yieldClamp : blockingDistance);
+        float3 beamEndPoint = !holdingOnBeam && hoveredTarget != null
             ? _currentHitPoint
             : new float3(
                 origin.x + direction.x * beamLength,
@@ -841,7 +1055,7 @@ public sealed class InteractionLaser : Component
         // are still grabbable; the beam stops short so a miss is a short pointer, not a stripe across
         // the world. -xlinka
         float3 visualEndPoint = beamEndPoint;
-        if (hoveredTarget == null && beamLength > BeamIdleLength)
+        if (!holdingOnBeam && hoveredTarget == null && !clampedAtUserspace && beamLength > BeamIdleLength)
         {
             visualEndPoint = new float3(
                 origin.x + direction.x * BeamIdleLength,
@@ -911,11 +1125,127 @@ public sealed class InteractionLaser : Component
             // looking at the sky sized the cursor for a point hundreds of metres away and filled the
             // screen with it. It is drawn at the capped beam end, so it must be sized for there too.
             // -xlinka
-            float visualDistance = hoveredTarget != null
+            float visualDistance = hoveredTarget != null || holdingOnBeam
                 ? _lastCastDistance
                 : MathF.Min(_lastCastDistance, BeamIdleLength);
-            UpdateLaserVisual(delta, hoveredTarget != null, wantedColor, visualDistance);
+            UpdateLaserVisual(delta, active, hoveredTarget != null, wantedColor, visualDistance);
         }
+    }
+
+    // Whether this beam is on this frame. See the LASER ACTIVITY block up top for the rule; this is
+    // the order it is evaluated in, and the timeout bookkeeping that rides along with it. -xlinka
+    private bool ResolveLaserActive(float delta, bool hasTarget, InputInterface? input, bool isVr)
+    {
+        var side = ControllerSide.Value;
+        bool holding = _holdDistance.HasValue;
+
+        if (_role == Role.Userspace)
+        {
+            // On a panel, carrying something off one, or the desktop dash: the pointer is live for as
+            // long as it is not parked.
+            _laserActive = hasTarget || holding || !isVr;
+            return _laserActive;
+        }
+
+        bool userspaceOwnsHand = isVr && input != null && input.IsUserspaceLaserActive(side);
+        bool userspaceHasHit = isVr && input != null && input.UserspaceLaserHasTarget(side);
+        bool active;
+        if (!isVr)
+        {
+            if (input != null && HasDesktopActivity(input, side))
+                _desktopActivity = DesktopActivityWindow;
+            else
+                _desktopActivity = MathF.Max(0f, _desktopActivity - MathF.Max(delta, 0f));
+            active = _toolEquipped || holding || _desktopActivity > 0f;
+        }
+        else
+        {
+            bool usesLaser = !_toolEquipped || _toolUsesLaser;
+            if (!usesLaser)
+                _laserTimeout = 0f;
+            // The tail only runs down once there is nothing under the beam and nothing on it.
+            if (_laserTimeout > 0f && !hasTarget && !holding && !userspaceOwnsHand)
+                _laserTimeout -= MathF.Max(delta, 0f);
+            // On and on something: the tail is kept full, so losing it gives the whole two seconds.
+            if (_laserActive && (hasTarget || holding) && usesLaser)
+                ResetLaserTimeout();
+            if (_toolPrimaryPressed && hasTarget)
+                ResetLaserTimeout();
+
+            if (_laserTimeout > 0f)
+            {
+                active = true;
+            }
+            else if ((!_toolEquipped || !_toolUsesLaser) && !_contextMenuOpen)
+            {
+                float strength = ReadTriggerStrength(input, side);
+                active = (strength > TriggerActivationStrength || holding) && usesLaser;
+            }
+            else
+            {
+                active = true;
+            }
+            active |= userspaceHasHit;
+        }
+
+        active = active && !userspaceOwnsHand;
+        if (!active && _laserTimeout > 0f)
+            ClearLaserTimeout();
+        _laserActive = active;
+        return active;
+    }
+
+    private static float ReadTriggerStrength(InputInterface? input, Chirality side)
+    {
+        if (input == null)
+            return 0f;
+        var controller = side == Chirality.Left ? input.LeftController : input.RightController;
+        return controller?.TriggerValue ?? 0f;
+    }
+
+    // Mouse motion, a held button or a wheel notch on this hand's actions. The dash is not in here:
+    // while it is open this laser is parked anyway.
+    private static bool HasDesktopActivity(InputInterface input, Chirality side)
+    {
+        var mouse = input.Mouse;
+        if (mouse != null && mouse.DirectDelta.Value != float2.Zero)
+            return true;
+        var actions = input.Actions?.Interaction(side);
+        if (actions == null)
+            return false;
+        return actions.Primary.Held || actions.Secondary.Held || actions.Grab.Held
+            || actions.Pointer.Value != float2.Zero;
+    }
+
+    // What the owner has done that is worth showing other users. A hover on plain scenery or on a
+    // grabbable is nothing; a panel, a handle, or a load is. Others see the beam once this
+    // has been sustained for ShowToOthersDelay; a hold shows at once. -xlinka
+    private void UpdateShowToOthers(float delta)
+    {
+        bool activity;
+        if (_holdDistance.HasValue)
+        {
+            _showOthersActivation = float.MaxValue;
+            activity = true;
+        }
+        else if (_role == Role.Userspace)
+        {
+            activity = true;
+        }
+        else if (_currentTarget != null)
+        {
+            activity = _currentTarget is not IGrabbable;
+        }
+        else
+        {
+            activity = false;
+        }
+
+        if (activity)
+            _showOthersActivation += MathF.Max(delta, 0f);
+        else
+            _showOthersActivation = 0f;
+        SetIfChanged(ShowToOthers, _showOthersActivation > ShowToOthersDelay);
     }
 
     private static void SetIfChanged(Sync<colorHDR> field, colorHDR value)
@@ -1002,18 +1332,17 @@ public sealed class InteractionLaser : Component
         };
     }
 
-    private void UpdateLaserVisual(float delta, bool hasTarget, color targetColor, float pointDistance)
+    private void UpdateLaserVisual(float delta, bool active, bool hasTarget, color targetColor, float pointDistance)
     {
         var input = Engine.Current?.InputInterface;
         bool isVr = input?.IsVRActive == true;
-        // Desktop has no screen-space reticle - this in-world cursor is the only
-        // pointer, so it stays visible even with nothing hovered.
-        bool isDesktop = input != null && !isVr;
-        bool shouldShow = hasTarget || isVr || isDesktop;
-        float visualStep = MathF.Max(delta, 0f) * 6f;
-        _laserVisibleLerp = Progress01(_laserVisibleLerp, visualStep, shouldShow);
+        float visualStep = MathF.Max(delta, 0f) * LaserFadeRate;
+        _laserVisibleLerp = Progress01(_laserVisibleLerp, visualStep, active);
 
-        bool rootVisible = _laserVisibleLerp > 0.001f;
+        ApplyRenderBand(input, isVr);
+        UpdateShowToOthers(delta);
+
+        bool rootVisible = _laserVisibleLerp > 0f;
         // Under an external camera the beam is the only thing that tells you where the hand is pointing, but a
         // line hanging off it at all times is just clutter in a shot you can see your whole avatar in. Show it
         // while it means something: something hovered, a press down, or a load on the end of it. -xlinka
@@ -1021,9 +1350,13 @@ public sealed class InteractionLaser : Component
         // so the off hand casts along for hit resolution but never grows a beam of its own.
         bool externalBeam = _externalAim && ControllerSide.Value == Chirality.Right
             && (hasTarget || _toolPrimaryPressed || _toolBlocksPointerActions);
-        bool beamVisible = rootVisible && (isVr || ShowDesktopBeam.Value || externalBeam) && !_suppressBeam;
-        bool cursorVisible = rootVisible;
-        bool directVisible = rootVisible && ShowDirectCursor.Value && isVr;
+        // Desktop draws the beam only onto something, and only when asked to; the cursor is the pointer.
+        bool beamVisible = rootVisible && (isVr || (ShowDesktopBeam.Value && hasTarget) || externalBeam);
+        // A world laser the dash owns fades out stopped at the panel and drops its reticles at once: the
+        // userspace pointer draws its own beam and cursor there, and two dots on one spot read as a glitch.
+        bool worldYielded = _yielded && _role == Role.World;
+        bool cursorVisible = rootVisible && !worldYielded;
+        bool directVisible = rootVisible && ShowDirectCursor.Value && isVr && !worldYielded;
 
         if (_beamSlot != null) SetIfChanged(_beamSlot.ActiveSelf, rootVisible);
         if (_cursorSlot != null) SetIfChanged(_cursorSlot.ActiveSelf, cursorVisible);
@@ -1039,8 +1372,15 @@ public sealed class InteractionLaser : Component
             return;
         }
 
-        float endVisibility = MathF.Min(1f, _laserVisibleLerp * 2f);
-        float startVisibility = MathF.Min(1f, MathF.Max(0f, _laserVisibleLerp - 0.35f) / 0.65f);
+        // Two halves of one fade: coming on, the start of the beam lights first and the far end with the
+        // cursor follows; going off, the start goes first and the cursor lingers, so the beam reads as
+        // growing out of the hand and retracting back into it. -xlinka
+        float startVisibility = MathF.Pow(MathF.Min(1f, _laserVisibleLerp * 2f), 2.2f);
+        float endVisibility = MathF.Pow(MathF.Max(0f, _laserVisibleLerp - 0.5f) * 2f, 2.2f);
+        if (!active)
+        {
+            (startVisibility, endVisibility) = (endVisibility, startVisibility);
+        }
         float colorStep = System.Math.Clamp(MathF.Max(delta, 0f) * 10f, 0f, 1f);
         _currentStartColor = color.Lerp(_currentStartColor, _currentEndColor, colorStep);
         _currentEndColor = color.Lerp(_currentEndColor, targetColor, colorStep);
@@ -1082,6 +1422,28 @@ public sealed class InteractionLaser : Component
             SetIfChanged(_beamMaterial.FrontTextureOffset, _laserTextureOffset);
             SetIfChanged(_beamMaterial.BehindTextureOffset, _laserTextureOffset);
         }
+    }
+
+    // While a userspace panel is up in VR this viewer's own laser parts lift above the dash band
+    // (UserspaceRenderBands), so the beam leading to the panel and the reticle on it are not painted
+    // over by it, and drop back the moment it closes. Their overlay shaders already skip the depth test,
+    // so only the draw order moves. Local renderer state, never replicated: the beam other users see
+    // keeps its normal order in their view. -xlinka
+    private void ApplyRenderBand(InputInterface? input, bool isVr)
+    {
+        bool lift = isVr && input != null && (input.IsDashboardOpen || VrKeyboard.LocalShown);
+        if (lift)
+        {
+            _beamRenderer?.SetOverlayOrder(UserspaceRenderBands.Beam, depthTest: false);
+            _cursorRenderer?.SetOverlayOrder(UserspaceRenderBands.Cursor, depthTest: false);
+            _directCursorRenderer?.SetOverlayOrder(UserspaceRenderBands.DirectCursor, depthTest: false);
+            _directLineRenderer?.SetOverlayOrder(UserspaceRenderBands.DirectLine, depthTest: false);
+            return;
+        }
+        _beamRenderer?.ClearOverlayOrder();
+        _cursorRenderer?.ClearOverlayOrder();
+        _directCursorRenderer?.ClearOverlayOrder();
+        _directLineRenderer?.ClearOverlayOrder();
     }
 
     private static float Progress01(float current, float amount, bool target)
@@ -1252,7 +1614,7 @@ public sealed class InteractionLaser : Component
         return best;
     }
 
-    private bool TryKeepStickyTarget(float3 origin, float3 direction, float maxDistance, float blockingDistance,
+    private bool TryKeepStickyTarget(float3 origin, float3 direction, float maxDistance, float blockingDistance, bool pointerTargetsOnly,
         out IInteractionTarget? target, out Slot? slot, out float distance, out float3 hitPoint)
     {
         target = null;
@@ -1263,6 +1625,11 @@ public sealed class InteractionLaser : Component
         if (_currentTarget == null || _currentHitSlot == null) return false;
         if (_currentTarget is Component comp && (!comp.Enabled.Value || comp.IsDestroyed)) return false;
         if (!_currentHitSlot.IsActive) return false;
+        // Same exclusions as the fresh cast: the thing just grabbed is under this hand now, and its old
+        // hit point still projects inside the hold distance, so without this the beam keeps hovering
+        // the load it is carrying. With a load on, only panels in front of it may be kept. -xlinka
+        if (IsSlotOnThisHierarchy(_currentHitSlot)) return false;
+        if (pointerTargetsOnly && _currentTarget is not ILaserPointerTarget) return false;
 
         float3 oldDelta = new(
             _currentHitPoint.x - origin.x,
@@ -1371,7 +1738,7 @@ public sealed class InteractionLaser : Component
     // momentarily stale registry entry can't produce a wrong hit - same guarantee as the collider raycast.
     // The old subtree skip (!slot.IsActive -> return) becomes a per-target slot.IsActive check, which is the
     // hierarchical active state, so an inactive ancestor still excludes its targets. -xlinka
-    private void CollectInteractionHits(World? world, float3 origin, float3 direction, float maxDist, float blockingDistance)
+    private void CollectInteractionHits(World? world, float3 origin, float3 direction, float maxDist, float blockingDistance, bool pointerTargetsOnly = false)
     {
         if (world == null) return;
 
@@ -1400,6 +1767,10 @@ public sealed class InteractionLaser : Component
                 continue;
             }
 
+            // With a load on the beam only panels in front of it matter (a card dropped on a field);
+            // the world behind the load is out of reach and so is anything else on the way to it.
+            if (pointerTargetsOnly) continue;
+
             float radius = GetHoverRadius(target);
             if (radius <= 0f) continue;
 
@@ -1407,6 +1778,7 @@ public sealed class InteractionLaser : Component
             if (!RaySphereIntersect(origin, direction, center, radius, out float distance)) continue;
             if (distance > maxDist) continue;
             if (IsSlotOnThisHierarchy(slot)) continue;
+            if (!HoverSphereApplies(target, slot, origin, center, radius)) continue;
             var sphereClass = ClassifyHit(target, slot);
             if (sphereClass == LaserHitClass.Ignore) continue;
             bool spherePreferred = sphereClass == LaserHitClass.Prefer;
@@ -1426,7 +1798,7 @@ public sealed class InteractionLaser : Component
         // its body/mesh - sphere-testing the target at its slot origin misses the body entirely. The physics ray
         // hits the real collision shape (mesh colliders included) and we walk up to the owning interaction target.
         // This is what makes a big avatar grabbable/equippable anywhere on its body. -xlinka
-        if (CastRayCached(origin, direction, maxDist, out var shapeHit) &&
+        if (!pointerTargetsOnly && CastRayCached(origin, direction, maxDist, out var shapeHit) &&
             shapeHit.Distance <= blockingDistance && shapeHit.Slot != null)
         {
             var ctarget = FindInteractionTargetInParents(shapeHit.Slot);
@@ -1492,6 +1864,40 @@ public sealed class InteractionLaser : Component
     {
         if (target is RayTarget rt) return MathF.Max(rt.HoverRadius.Value, 0.001f);
         return MathF.Max(DefaultHoverRadius.Value, 0.001f);
+    }
+
+    // The hover sphere is the reach of a target with no surface of its own, and nothing more. A target
+    // whose slot has a collider is found through that collider by the cast, where it actually is, and a
+    // collider set to ignore rays is asking for the beam to pass, not for a ball at its origin in its
+    // place. A grabbable only a hand can take has nothing to offer a beam. The user's own body is out,
+    // as it is for the cast, and so is a sphere the ray starts inside: that is a volume the hand is in,
+    // not something it points at. A RayTarget is a sphere by definition and keeps it. -xlinka
+    private bool HoverSphereApplies(IInteractionTarget target, Slot slot, float3 origin, float3 center, float radius)
+    {
+        if (float3.DistanceSquared(origin, center) <= radius * radius)
+            return false;
+        if (target is IGrabbable { AllowOnlyPhysicalGrab: true })
+            return false;
+        if (target is not RayTarget && HasRaySurface(slot))
+            return false;
+        return !IsOwnBody(slot);
+    }
+
+    // A collider the cast can land on, or one that asked rays to go through it. NoCollision builds no
+    // body at all here, so it is neither. -xlinka
+    private static bool HasRaySurface(Slot slot)
+    {
+        if (slot.GetComponent<Collider>() == null)
+            return false;
+        foreach (var collider in slot.GetComponents<Collider>())
+        {
+            if (!collider.Enabled.Value)
+                continue;
+            if (collider.IgnoreRaycasts.Value
+                || collider.Type.Value is not (ColliderType.NoCollision or ColliderType.CharacterController))
+                return true;
+        }
+        return false;
     }
 
     // Clearance past the body when the cast starts beyond the avatar, and the floor the skip never drops
@@ -1565,11 +1971,11 @@ public sealed class InteractionLaser : Component
                 return;
             }
 
-            // Third-person / free-cam: the view flies on its own and the head is parked where mouse look
-            // last left it, so head-forward is a stale direction. Aim from the CAMERA through the screen
-            // centre - the mouse is captured in these modes, so the crosshair IS the pointer - and start the
-            // cast past the body so the avatar standing between the lens and the target never eats the ray.
-            // -xlinka
+            // Third-person / free-cam: the view flies on its own and the head is simulated under neck rules
+            // (or held still in free cam), so head-forward is not where the user is looking. Aim from the
+            // CAMERA through the screen centre - the mouse is captured in these modes, so the crosshair IS the
+            // pointer - and start the cast past the body so the avatar standing between the lens and the
+            // target never eats the ray. -xlinka
             if (UseExternalCameraAim(input) &&
                 input.TryGetDesktopViewRay(float2.Zero, out float3 viewOrigin, out float3 viewDirection))
             {
@@ -1614,45 +2020,15 @@ public sealed class InteractionLaser : Component
             return;
         }
 
-        // VR: controller slot forward, with optional fingertip refinement. - xlinka
+        // VR: the beam leaves this slot exactly, along its aim. The hand poses this slot at the tool tip
+        // every frame (HandTool.UpdateLaserAnchor: 7.5 cm ahead of the tool holder, or the equipped tool's
+        // own tip), so the clearance is already in the slot and no start offset is added. Never the
+        // fingertip: a beam that follows the finger bends with every curl. -xlinka
         direction = -Slot.Forward;
         float dirLen = direction.Length;
         if (dirLen < 0.0001f) direction = float3.Backward;
         else direction /= dirLen;
-
-        origin = new float3(
-            Slot.GlobalPosition.x + direction.x * startOffset,
-            Slot.GlobalPosition.y + direction.y * startOffset,
-            Slot.GlobalPosition.z + direction.z * startOffset);
-
-        if (input == null) return;
-
-        BodyNode tipNode = ControllerSide.Value == Chirality.Left
-            ? BodyNode.LeftIndexFinger_Tip
-            : BodyNode.RightIndexFinger_Tip;
-        BodyNode distalNode = ControllerSide.Value == Chirality.Left
-            ? BodyNode.LeftIndexFinger_Distal
-            : BodyNode.RightIndexFinger_Distal;
-
-        var tip = input.GetBodyNode(tipNode);
-        if (tip == null || !tip.IsTracking) return;
-
-        float3 resolvedOrigin = tip.Position;
-        var distal = input.GetBodyNode(distalNode);
-        if (distal != null && distal.IsTracking)
-        {
-            float3 fingertipDirection = new float3(
-                tip.Position.x - distal.Position.x,
-                tip.Position.y - distal.Position.y,
-                tip.Position.z - distal.Position.z);
-            float ftLen = fingertipDirection.Length;
-            if (ftLen > 0.0001f) direction = fingertipDirection / ftLen;
-        }
-
-        origin = new float3(
-            resolvedOrigin.x + direction.x * startOffset,
-            resolvedOrigin.y + direction.y * startOffset,
-            resolvedOrigin.z + direction.z * startOffset);
+        origin = Slot.GlobalPosition;
     }
 
     // The physics hit's slot and point survive the cast so a sampler can read plain scenery: the
@@ -1720,8 +2096,6 @@ public sealed class InteractionLaser : Component
         if (physics == null)
             return false;
 
-        BuildRayExclude();
-
         float3 castOrigin = origin;
         float remaining = maxDistance;
         float traveled = 0f;
@@ -1734,7 +2108,8 @@ public sealed class InteractionLaser : Component
             // sensor (Trigger/Area3D) colliders on this platform - query-only shapes meant to be raycast-hittable
             // without acting as walls. With triggers off the ray would pass straight through every grabbable and
             // avatar body, so equip/grab targeting would never resolve a hit on them. Solid bodies still block
-            // (CollideWithBodies stays on), so walls/floor occlude as before. -xlinka
+            // (CollideWithBodies stays on), so walls/floor occlude as before. A trigger that belongs to nothing
+            // the laser can act on is skipped below, which is where plain zones and volumes drop out. -xlinka
             if (!physics.Raycast(in castOrigin, in direction, remaining, _rayExclude, out var candidate, hitTriggers: true))
                 return false;
 
@@ -1761,30 +2136,95 @@ public sealed class InteractionLaser : Component
         return false;
     }
 
-    // Rebuild the exclude list: the laser's own avatar/user hierarchy (so the ray doesn't catch the user's own
-    // body colliders) plus any explicit ignore root. The platform skips these and all their descendants. -xlinka
+    // The cast's exclude list, rebuilt once per frame: this hand's own rig, then every collider slot of the
+    // user's own body. The platform puts the bodies of slots it knows on the query's exclude list before
+    // the first query, so a beam pointing down its own arm is one cast, not one cast per capsule it
+    // crosses. IsPhysicsHitFiltered stays behind it for whatever was not registered yet. The walk stops
+    // at a Grabber: what hangs under one is cargo, and the OTHER hand's cargo has to stay hittable or a
+    // second grip can never scale the first hand's load. -xlinka
     private void BuildRayExclude()
     {
         _rayExclude.Clear();
+        var rig = _ignoreRoot ?? Slot;
+        if (rig != null)
+            _rayExclude.Add(rig);
+        if (_role != Role.World)
+            return;
         var ownRoot = Slot?.ActiveUserRoot?.Slot;
         if (ownRoot != null)
-            _rayExclude.Add(ownRoot);
-        else if (Slot != null)
-            _rayExclude.Add(Slot);
-        if (_ignoreRoot != null && !ReferenceEquals(_ignoreRoot, ownRoot))
-            _rayExclude.Add(_ignoreRoot);
+            CollectOwnBodyColliders(ownRoot, rig, _rayExclude);
+    }
+
+    private static void CollectOwnBodyColliders(Slot slot, Slot? rig, List<Slot> into)
+    {
+        if (ReferenceEquals(slot, rig))
+            return;
+        if (slot.GetComponent<Grabber>() != null)
+            return;
+        if (slot.GetComponent<Collider>() != null)
+            into.Add(slot);
+        foreach (var child in slot.Children)
+            CollectOwnBodyColliders(child, rig, into);
     }
 
     // Engine-only filters the platform raycast doesn't apply: a collider opted out of raycasts, a non-collision
-    // collider, or a slot on this laser's own hierarchy (belt-and-suspenders with the exclude list). -xlinka
+    // collider, a slot on this laser's own hierarchy (belt-and-suspenders with the exclude list), or the
+    // user's own body. -xlinka
     private bool IsPhysicsHitFiltered(Slot slot)
     {
         if (IsSlotOnThisHierarchy(slot))
             return true;
+        if (IsOwnBody(slot))
+            return true;
         var collider = slot.GetComponent<Collider>();
         if (collider != null && (collider.IgnoreRaycasts.Value || collider.Type.Value == ColliderType.NoCollision))
             return true;
+        // Older particle recipes included an invisible grab sphere. It is an editing handle,
+        // not a surface: stopping here makes the beam jump onto the emitter in mid-air.
+        // A solid prop that also emits particles still has real geometry and remains hittable.
+        if (slot.GetComponent<ParticleSystem>() != null
+            && slot.GetComponent<MeshRenderer>() == null
+            && slot.GetComponent<SkinnedMeshRenderer>() == null)
+            return true;
+        // A trigger is a volume, not a surface. The beam goes through one (a zone, a sensor, a volume the
+        // user is standing in) unless it belongs to something the beam can act on, which is how a
+        // grabbable, a touch control or an avatar built from trigger shapes stays reachable. -xlinka
+        if (IsBareTrigger(slot))
+            return true;
         return false;
+    }
+
+    private static bool IsBareTrigger(Slot slot)
+    {
+        // The usual hit is one solid collider; that answer needs no walk.
+        var first = slot.GetComponent<Collider>();
+        if (first == null || (first.Enabled.Value && first.Type.Value != ColliderType.Trigger))
+            return false;
+        bool trigger = false;
+        foreach (var collider in slot.GetComponents<Collider>())
+        {
+            if (!collider.Enabled.Value)
+                continue;
+            if (collider.Type.Value != ColliderType.Trigger)
+                return false;
+            trigger = true;
+        }
+        return trigger && FindInteractionTargetInParents(slot) == null;
+    }
+
+    // Under this laser's own user root and not in one of that user's hands. A held object is the user's
+    // cargo, not the user's body, so the beam may land on it. -xlinka
+    private bool IsOwnBody(Slot slot)
+    {
+        var ownRoot = Slot?.ActiveUserRoot?.Slot;
+        if (ownRoot == null || !ReferenceEquals(slot.ActiveUserRoot?.Slot, ownRoot))
+            return false;
+        for (var current = slot; current != null && !ReferenceEquals(current, ownRoot); current = current.Parent)
+        {
+            if (current.GetComponent<Grabber>() != null)
+                return false;
+        }
+        return true;
     }
 
     private void PositionBeam(float3 origin, float3 direction, float length, float3 endPoint, float delta)
@@ -1809,9 +2249,11 @@ public sealed class InteractionLaser : Component
         // The exponential smoothing here damps real hand jitter in VR. On DESKTOP the mouse is already pixel
         // precise, so smoothing it just makes the cursor trail behind the pointer - the "sluggish / floaty"
         // feel. Snap 1:1 on desktop; keep the smoothing only for VR. -xlinka
+        // A load on the beam is placed on the already damped ray; smoothing the end a second time
+        // would put the beam and the object it carries in two places. -xlinka
         var rayInput = Engine.Current?.InputInterface;
         bool isDesktopPointer = rayInput != null && !rayInput.IsVRActive;
-        if (!_hasVisualActualPoint || isDesktopPointer)
+        if (!_hasVisualActualPoint || isDesktopPointer || _holdDistance.HasValue)
         {
             _visualActualPoint = localActual;
             _hasVisualActualPoint = true;

@@ -34,16 +34,23 @@ public sealed class HandTool : Tool
     // down at the hip - and AvatarIK sees an untracked hand and drops its arm to rest weight. The tool
     // ends up hanging at the waist behind the camera and the avatar never lifts an arm to it.
     //
-    // The source platform does not leave the desktop hand untracked at all: it SIMULATES it. While a tool
-    // is equipped the hand node is driven to a fixed spot relative to the head - out to the side, below
-    // the eye line, in front - and reported as tracked, so its IK solves to a real target like any other.
+    // So the hand is SIMULATED instead. While a tool is equipped and the beam is live, a
+    // DesktopHandSimulator reaches the hand from beside the hips toward whatever the beam is on, at
+    // most an arm's length out and never into the body, with the tool's own frame composed in so the
+    // tool aims at the target. The reach blends in and out on the simulator's eased interaction lerp,
+    // and that lerp is HoldWeight, so AvatarIK raises the arm exactly as far as the hand has gone.
     //
-    // Same model here, at the one slot that makes everything else follow for free. The controller body
-    // node is the parent of the hand socket, this tool rig and the tool holder, so moving it carries the
-    // tool, the beam origin and the avatar's hand target together. Only the OWNER writes it (a remote peer
+    // Written at the one slot that makes everything else follow for free. The controller body node is
+    // the parent of the hand socket, this tool rig and the tool holder, so moving it carries the tool,
+    // the beam origin and the avatar's hand target together. Only the OWNER writes it (a remote peer
     // reads the pose off the node's transform stream); the intent replicates as HoldToolInView so every
-    // peer runs the same blend and AvatarIK can weight the arm by HoldWeight on both ends. -xlinka
+    // peer runs the same ease and AvatarIK can weight the arm by HoldWeight on both ends. -xlinka
     public readonly Sync<bool> HoldToolInView = new();
+
+    // Whether the equipped tool is in use. The presses that decide it only exist on the
+    // owner's machine, so the owner writes it and every other machine reads it here. -xlinka
+    [NonPersistent]
+    public readonly Sync<bool> ToolInUse = new();
 
     private Slot? _grabberSlot;
     private Slot? _laserSlot;
@@ -53,13 +60,11 @@ public sealed class HandTool : Tool
 
     // AVATAR TOOL ANCHORS
     //
-    // The source platform lets an avatar say where a hand's tool and grab area sit: an anchor component
-    // in the avatar's hand object, and on equip the interaction handler re-parents its tool root onto the
-    // tool anchor and its grabber onto the grab anchor (keepGlobalTransform false, so each takes the
-    // anchor's pose), then back onto its own slot on dequip. Ours are the {Left,Right}HandToolAnchor and
-    // {Left,Right}HandGrabAnchor reference points Avatar Studio bakes.
+    // An avatar says where a hand's tool and grab area sit through the {Left,Right}HandToolAnchor and
+    // {Left,Right}HandGrabAnchor reference points Avatar Studio bakes. While it is worn, Tool Holder takes
+    // the tool anchor's pose and Grabber the grab anchor's.
     //
-    // NOT a re-parent here, for a reason that took verifying: our reference points are STATIC avatar-local
+    // NOT a re-parent, for a reason that took verifying: the reference points are STATIC avatar-local
     // poses under "AvatarReferences" (AvatarStudio.PlaceReferenceFromMarker, AvatarCalibration.Place),
     // the same class of data as the grip reference, which AvatarIK turns into a bone OFFSET and never
     // parents anything to. Nothing moves them with the hand, so parenting Tool Holder onto one would pin
@@ -67,12 +72,12 @@ public sealed class HandTool : Tool
     // would also break ToolSnapper.OnToolTaken and TransformHandle.ResolveLaser, which walk UP from the
     // grabber to find this component, and a remote peer's EnsureRig, which adopts the rig by child name.
     //
-    // So the same model is expressed the way our references are consumed: the anchor's pose RELATIVE TO
+    // So the anchor is applied the way the reference points are consumed: the anchor's pose RELATIVE TO
     // THE GRIP reference is the pose the rig slot takes relative to the hand socket, because the IK
     // places the hand bone so that the grip reference lands exactly on the hand socket
     // (AvatarIK.TargetFromPose). Tool Holder and Grabber stay children of this slot; only their local pose
-    // changes, which is all the source's re-parent changes in the end. Restored to identity on dequip -
-    // the pose EnsureRig built them with - so an avatar without anchors behaves exactly as before.
+    // changes. Restored to identity on dequip - the pose EnsureRig built them with - so an avatar without
+    // anchors behaves exactly as before.
     //
     // Recomputed per frame (cheap: a handful of transforms, no tree walk) and written change-gated, since
     // the avatar can be rescaled against the user after equip and the world-metre offset has to follow;
@@ -87,26 +92,24 @@ public sealed class HandTool : Tool
 
     // HELD-TOOL HAND FRAME
     //
-    // The hold pose used to swing the controller node's authored rest onto the aim and leave the hand
-    // bone to follow. That only reads right if the bone hangs off the node with its fingers down the
-    // node's -Z and the back of its hand up the node's +Y, and nothing guarantees either: Chiki's right
-    // hand bone (raw-aligned to the node, see below) keeps its fingers along -X and its back along +Z,
-    // so the swing put the fingers sideways and the palm square at the camera - the "stop" hand in
-    // the front screenshot.
+    // The simulator aims the TOOL and rolls the hand so the BACK of the hand faces outward, palm in
+    // toward the body. Both need to be known in the controller node's space, and nothing guarantees the
+    // bone hangs off the node with its back up the node's +Y: Chiki's right hand bone (raw-aligned to the
+    // node, see below) keeps its fingers along -X and its back along +Z, so a roll built from the node's
+    // own axes put the palm square at the camera - the "stop" hand in the front screenshot.
     //
-    // So the hold is built the other way round: decide where the BONE should be - fingers along the
-    // aim, back of the hand outward and a little up, palm in toward the body, the way the source
-    // platform's simulated hand rests (fingers down, back outward) and then swings to the aim - and
-    // derive the node from that through whatever attachment AvatarIK will use. That attachment is one
-    // of two: an avatar whose own hand object took the socket gets its bone aligned to the socket RAW
+    // So the tool frame handed to the simulator carries the bone's measured back axis as its up, mapped
+    // into node space through whatever attachment AvatarIK will use. That attachment is one of two: an
+    // avatar whose own hand object took the socket gets its bone aligned to the socket RAW
     // (AvatarIK.TryTargetFromSocket), and an avatar whose socket holds AvatarIK's pose node gets its
     // bone placed so the GRIP reference lands on the socket (TargetFromPose, grip = -Z down the forearm,
     // +Y out of the palm as AvatarCalibration builds it). Both are expressed here as "the socket frame
     // in bone space" and multiplied back out.
     //
     // The bone's own finger and back axes are measured off the rig once per worn avatar: wrist to
-    // middle proximal is the finger axis (metacarpals are never driven, so it is pose-invariant), and
-    // the thumb gives the back by the per-side cross rule HandPoseDriver documents. -xlinka
+    // middle proximal is the finger axis (a metacarpal only follows the finger source on a rig with real
+    // metacarpal bones, and by a few degrees, so it is as good as pose-invariant), and the thumb gives
+    // the back by the per-side cross rule below. -xlinka
     private Slot? _handBone;
     private AvatarSocket? _handSocket;
     private HandPoseDriver? _fingerDriver;
@@ -135,23 +138,42 @@ public sealed class HandTool : Tool
     private ToolItem? _activeSecondaryToolItem;
     private bool _isHoldingWithLaser;
     private float _laserGrabDistance;
+    // The ring opens on the pointer at ContextMenuSystem.OpenDistance, so a load carried closer than
+    // that would sit between the eye and the menu. While this hand's menu is up and it is laser-holding,
+    // the hold distance is eased out to at least OpenDistance + the load's reach back toward the hand +
+    // MenuHoldClearance, a smoothstep over MenuPushDuration. The load stays wherever the push left it
+    // when the menu closes: a push is a push, and sliding it back in would be a second move the user
+    // did not ask for. A push shorter than MenuPushMinimum is not made at all, so reopening the menu
+    // on a load already sitting clear does not creep it out by the millimetres its reach re-measures
+    // to. A hand that only holds the two-hand scale reference is never pushed, since moving that
+    // holder rescales the object. -xlinka
+    private const float MenuHoldClearance = 0.12f;
+    private const float MenuPushDuration = 0.2f;
+    private const float MenuPushMinimum = 0.01f;
+    private bool _menuPushActive;
+    private float _menuPushFrom;
+    private float _menuPushTo;
+    private float _menuPushLerp;
     private float _holderAxisOffset;
     private floatQ _holderRotationOffset = floatQ.Identity;
+    // The controller's roll about the beam when the hold began. In VR a laser hold turns with the
+    // wrist from here, at half rate.
+    private float _originalTwistOffset;
     private floatQ? _holderRotationReference;
     private bool _desktopInputSuppressed;
     private bool _scrollWheelCaptured;
+    private bool _stickPressCaptured;
     private double _lastAlignPress = -1000.0;
     private long _holdPoseFrame = long.MinValue;
     private long _holdPoseWrittenFrame = long.MinValue;
 
     // Desktop tool hold state. See HoldToolInView.
     private float _holdWeight;
+    private float _remoteHoldVelocity;
     private float3 _restLocalPosition;
     private floatQ _restLocalRotation = floatQ.Identity;
     private bool _hasRestPose;
     private bool _wroteHoldPose;
-    private floatQ _holdAimRotation = floatQ.Identity;
-    private bool _holdAimValid;
     private Slot? _bodyNodeSlot;
     private TransformStreamDriver? _bodyNodeStream;
     private bool _bodyNodeStreamChecked;
@@ -161,27 +183,31 @@ public sealed class HandTool : Tool
     private double _holdLogAt = double.NegativeInfinity;
     private bool _holdLogPending;
 
-    // Head-relative hold offset in user-root metres: out to the side, below the eye line, in front. The
-    // numbers are the source platform's desktop hand override, with its +Z-forward Z flipped to ours
-    // (float3.Backward is the way a slot points here). -xlinka
-    private static readonly float3 HoldOffset = new float3(0.25f, -0.22f, -0.20f);
+    // The simulated desktop hand, owner only, in a local slot so no peer ever carries a component it
+    // will never run. The pose it produces reaches peers as the body node's transform stream. -xlinka
+    private DesktopHandSimulator? _simulator;
+    private Slot? _simulatorSlot;
+    private Slot? _neckBone;
+    private Slot? _hipsBone;
+    private const string SimulatorSlotName = "Hand Simulator";
 
-    // 1/s ease between rest and hold. Roughly a fifth of a second to settle, so equipping reads as the arm
-    // coming up rather than the tool teleporting into view.
-    private const float HoldBlendRate = 12f;
+    // Ease rate the simulator blends the reach in at while a tool is held, in 1/s (the spring runs at
+    // half that). About a fifth of a second to settle, so equipping reads as the arm coming up rather
+    // than the tool teleporting into view; the drop after a dequip runs at the simulator's slower
+    // default, the way a hand relaxes rather than snaps back. -xlinka
+    private const float ToolTransitionSpeed = 50f;
 
-    // 1/s ease on the held tool's AIM. The beam's end point jumps the moment the hover crosses an object
-    // edge (half a metre away, then the skybox), and the tool convergence swings with it, so taking the raw
-    // direction snaps the tool round on every sweep. Matches the rate the desktop hand aim already uses.
-    private const float HoldAimRate = 10f;
-
-    // 0..1: how far this hand is into its desktop tool hold. AvatarIK multiplies the arm's IK weight by it,
-    // so an untracked desktop hand gets a real target exactly while one is being driven. Zero in VR.
+    // 0..1: how far this hand is into its desktop tool hold, the simulator's eased interaction lerp.
+    // AvatarIK multiplies the arm's IK weight by it, so an untracked desktop hand gets a real target
+    // exactly while one is being driven. Zero in VR.
     public float HoldWeight => _holdWeight;
 
     // The hold this hand is ASKING for, before the ease. Separate from HoldWeight so a caller can tell
     // "not holding" apart from "holding, still on the way up".
     public bool WantsToolHold => _holdWanted;
+
+    // The simulated hand, for anything that wants the pose in user-root space rather than off the node.
+    public DesktopHandSimulator? HandSimulator => _simulator != null && !_simulator.IsDestroyed ? _simulator : null;
 
     // AvatarIK pushes back the weight it actually handed this hand's IK target, so one log line can carry
     // both ends of the chain. Pulling it the other way would mean this component walking an avatar tree for
@@ -194,7 +220,21 @@ public sealed class HandTool : Tool
     public override bool SecondaryHeld => _secondaryHeld;
     public override bool GripHeld => _gripHeld;
     public bool IsHoldingObjects => _grabber?.IsHoldingObjects == true;
-    public bool IsHoldingObjectsWithLaser => _isHoldingWithLaser && IsHoldingObjects;
+    public bool IsScalingObjects => _grabber?.IsScaling == true;
+    // A scale reference rides the beam like a hold: its holder has to keep following the laser for the
+    // two-holder distance to change at all, and the beam reads as loaded for the same reason. -xlinka
+    public bool IsHoldingObjectsWithLaser => _isHoldingWithLaser && (IsHoldingObjects || IsScalingObjects);
+
+    // Equipping asks the item whether this user may take it, which is how ToolUse applies, and the host
+    // asks it of whoever sent the equip rather than trusting the peer to have asked. An item that is not
+    // here yet falls back to the domain itself. -xlinka
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        ActiveToolItem.CheckRemoteSets((user, _, item) => item != null
+            ? item.AllowsEquip(user)
+            : World?.DataModelPermissions?.AllowsDomain(user, DataModelPermissionDomain.ToolUse) != false);
+    }
 
     public override void OnInit()
     {
@@ -228,6 +268,8 @@ public sealed class HandTool : Tool
         // Same reason: where the tool sits IN the hand is avatar shape, not interaction. The two compose -
         // the hold moves the controller node, the anchor moves the rig slots under it.
         UpdateAvatarAnchors();
+        // And the beam starts off the tool, so it goes after the anchors and before the laser casts.
+        UpdateLaserAnchor();
 
         if (_laser == null)
         {
@@ -243,11 +285,14 @@ public sealed class HandTool : Tool
         if (dashOwner != null && dashOwner.IsAnyUserspaceLaserActive)
         {
             _laser.SetToolState(false, false);
+            _laser.SetHandState(false, false, false);
+            _laser.SetHoldDistance(null);
             _laser.ArmRaySmoothing(false);
             _laser.SetExclusiveRoot(null);
             _laser.SetDormant(true);
             SetDesktopInputSuppression(false);
             SetScrollWheelCapture(false);
+            PublishToolUse(false);
             return;
         }
         _laser.SetDormant(false);
@@ -279,11 +324,20 @@ public sealed class HandTool : Tool
         _laser.SetExclusiveRoot(exclusiveRoot);
         bool uiPress = _primaryHeld && (menuVisible || !IsHoldingObjectsWithLaser)
             && EyedropperFor(_laser) == null;
-        bool carryingOnLaser = IsHoldingObjectsWithLaser && !menuVisible;
+        // In VR the carry survives the menu: the load keeps riding the beam (pushed behind the ring, see
+        // UpdateMenuPush) and the beam, ending on it, is what picks the wedges, with the ring the only
+        // thing it may touch. On desktop the menu owns the pointer and the hold pauses where it is.
+        bool carryingOnLaser = IsHoldingObjectsWithLaser && (!menuVisible || vrActive);
         // Damp the aim only while something is actually riding the laser. A bare pointer wants to be
-        // pixel-exact, and while the menu is open the mouse IS the pointer.
+        // pixel-exact, and while the desktop menu is open the mouse IS the pointer.
         _laser.ArmRaySmoothing(carryingOnLaser, GrabSmoothing.Value);
         _laser.SetToolState(uiPress, carryingOnLaser);
+        // The beam's own on/off rule reads these: a tool that wants the laser or an open menu keeps it
+        // on, and a load on it ends the beam at the hold distance. The distance pushed here is last
+        // frame's; the late pass below pushes the fresh one before it places the holder. -xlinka
+        var equipped = ActiveToolItem.Target;
+        _laser.SetHandState(equipped != null, equipped?.UsesLaser == true, menuVisible);
+        _laser.SetHoldDistance(carryingOnLaser ? _laserGrabDistance : null);
         // Hit classification belongs to whatever is equipped: the tool is the only thing that knows
         // which chrome it wants pulled in front of the world. A modal menu takes that away - while one
         // is up the beam may touch nothing but the menu, and a tool preferring its own targets through
@@ -295,21 +349,33 @@ public sealed class HandTool : Tool
         ProcessSecondary(_laser);
         ProcessMenuKey(_laser);
         ProcessGrip(_laser);
+        PublishToolUse(ActiveToolItem.Target is { IsDestroyed: false } used && used.IsInUse);
 
         // The wheel is the held object's distance control while something rides the laser. Say so, or the
         // third-person orbit zooms the camera on the same notch that pulls the object in. -xlinka
         SetScrollWheelCapture(!vrActive && IsHoldingObjectsWithLaser && !menuVisible);
+        // The VR twin: the stick click is the scale modifier while something rides the laser, and jump
+        // sits on the same click. -xlinka
+        SetStickPressCapture(vrActive && IsHoldingObjectsWithLaser);
 
-        if (IsHoldingObjectsWithLaser && !menuVisible)
+        if (carryingOnLaser)
         {
-            ProcessLaserHold(_laser, delta);
+            ProcessLaserHold(_laser, delta, menuVisible);
         }
         else
         {
+            _menuPushActive = false;
             SetDesktopInputSuppression(false);
         }
 
         ProcessToolShortcuts(vrActive, menuVisible);
+    }
+
+    // Owner only, and only on a change.
+    private void PublishToolUse(bool inUse)
+    {
+        if (IsUnderLocalUser && ToolInUse.Value != inUse)
+            ToolInUse.Value = inUse;
     }
 
     // Offered every frame by whatever normally parks this hand on desktop (LocomotionController, which
@@ -329,9 +395,9 @@ public sealed class HandTool : Tool
         return _wroteHoldPose || _holdWeight > 0f;
     }
 
-    // Drive the controller body node toward the desktop tool-hold pose (or back to the rig's authored rest
-    // when nothing is equipped). See HoldToolInView for why this lives on the body node rather than on the
-    // avatar's hand target. -xlinka
+    // Drive the controller body node with the simulated desktop hand while a tool is held (and back to
+    // the rig's authored rest once the reach has fully dropped). See HoldToolInView for why this lives on
+    // the body node rather than on the avatar's hand target. -xlinka
     private void UpdateToolHold(float delta)
     {
         var node = ResolveBodyNodeSlot();
@@ -343,19 +409,22 @@ public sealed class HandTool : Tool
 
         bool vrActive = Engine.Current?.InputInterface?.IsVRActive == true;
 
-        // Only the owner decides. HoldToolInView replicates, so a remote peer runs the identical blend
+        // Only the owner decides. HoldToolInView replicates, so a remote peer runs the identical ease
         // against the pose already arriving on this node's transform stream.
         //
-        // The owner blends off its OWN decision, never off the value it just wrote. A synced field write
+        // The owner works off its OWN decision, never off the value it just wrote. A synced field write
         // can be refused - a driven field bails out of BeginModification, and the data-model gate denies
         // foreign writes for the window where the User<->UserRoot ownership link is still settling after a
-        // join - and both refusals are near-silent. Reading the flag back as the blend input would turn
+        // join - and both refusals are near-silent. Reading the flag back as the ease input would turn
         // either one into "the arm just never comes up", with nothing in the log tying it to the write.
-        // -xlinka
+        //
+        // "Live" means the beam has an end point: it goes dormant while the dash owns the pointer, and
+        // the hand relaxes for the duration rather than staying up aimed at nothing. -xlinka
         bool localOwner = IsUnderLocalUser;
+        bool laserLive = _laser != null && !_laser.IsDestroyed && _laser.HasAimPoint;
         if (localOwner)
         {
-            _holdWanted = !vrActive && ActiveToolItem.Target != null;
+            _holdWanted = !vrActive && ActiveToolItem.Target != null && laserLive;
             if (HoldToolInView.Value != _holdWanted)
             {
                 HoldToolInView.Value = _holdWanted;
@@ -376,23 +445,53 @@ public sealed class HandTool : Tool
             _hasRestPose = true;
         }
 
-        float target = _holdWanted ? 1f : 0f;
-        float t = System.Math.Clamp(1f - MathF.Exp(-HoldBlendRate * MathF.Max(delta, 0f)), 0f, 1f);
-        _holdWeight += (target - _holdWeight) * t;
-        if (_holdWeight < 0.001f)
-        {
-            _holdWeight = 0f;
-        }
-        else if (_holdWeight > 0.999f)
-        {
-            _holdWeight = 1f;
-        }
+        float transitionSpeed = _holdWanted ? ToolTransitionSpeed : DesktopHandSimulator.DefaultTransitionSpeed;
 
         // A remote peer's node is driven by its owner's transform stream; a second writer here would
-        // fight it. It still runs the blend above so AvatarIK can weight that user's arm.
-        if (!localOwner || !_hasRestPose)
+        // fight it. It still runs the same ease so AvatarIK can weight that user's arm.
+        if (!localOwner)
         {
-            LogToolHold(node, !localOwner ? "remote" : "no-rest-pose");
+            _holdWeight = SnapWeight(DesktopHandSimulator.SmoothDamp(
+                _holdWeight, _holdWanted ? 1f : 0f, ref _remoteHoldVelocity, transitionSpeed, delta));
+            LogToolHold(node, "remote");
+            return;
+        }
+
+        var simulator = EnsureSimulator();
+        if (simulator == null)
+        {
+            _holdWeight = 0f;
+            LogToolHold(node, "no-simulator");
+            return;
+        }
+
+        var root = FindUserRootSlot();
+        DesktopHandSimulator.BodyFrame frame = default;
+        bool framed = !vrActive && DesktopHandSimulator.TryResolveBodyFrame(
+            Slot?.ActiveUserRoot, _neckBone, _hipsBone, out frame);
+        var input = new DesktopHandSimulator.HandInput
+        {
+            InteractionLerp = framed && _holdWanted ? 1f : 0f,
+            TransitionSpeed = transitionSpeed,
+            ToolFrame = floatQ.Identity,
+        };
+        if (framed)
+        {
+            // Resolved whether or not the beam is live, so the rest rotation carries the same roll as the
+            // reach and the hand does not twist on its way down when the beam goes dormant mid-hold.
+            ResolveToolFrame(node, out input.ToolOrigin, out input.ToolFrame);
+            if (laserLive && root != null)
+            {
+                input.HasTarget = true;
+                input.TargetPoint = root.GlobalPointToLocal(_laser!.AimPoint);
+            }
+        }
+        simulator.Step(in frame, in input, delta);
+        _holdWeight = SnapWeight(simulator.InteractionLerp);
+
+        if (!_hasRestPose)
+        {
+            LogToolHold(node, "no-rest-pose");
             return;
         }
 
@@ -405,31 +504,97 @@ public sealed class HandTool : Tool
                 WriteBodyNode(node, _restLocalPosition, _restLocalRotation);
                 _wroteHoldPose = false;
             }
-            _holdAimValid = false;
             LogToolHold(node, "released");
             return;
         }
 
-        if (!TryComputeHoldPose(node, out float3 holdPosition, out floatQ holdRotation))
+        var parent = node.Parent;
+        if (!framed || root == null || parent == null || parent.IsDestroyed)
         {
             LogToolHold(node, "no-hold-pose");
             return;
         }
 
-        // Ease the aim, but snap to it on the first frame of a hold so the arm does not start out pointing
-        // wherever the last hold left off.
-        float aimT = _holdAimValid
-            ? System.Math.Clamp(1f - MathF.Exp(-HoldAimRate * MathF.Max(delta, 0f)), 0f, 1f)
-            : 1f;
-        _holdAimRotation = floatQ.Slerp(_holdAimRotation, holdRotation, aimT).Normalized;
-        _holdAimValid = true;
-        holdRotation = _holdAimRotation;
-
+        // The simulator works in user-root space; the node is written in its parent's, which is the same
+        // frame its rest pose is captured in.
+        float3 globalPosition = root.LocalPointToGlobal(simulator.HandPosition);
+        floatQ globalRotation = root.LocalRotationToGlobal(simulator.HandRotation);
         WriteBodyNode(node,
-            float3.Lerp(_restLocalPosition, holdPosition, _holdWeight),
-            floatQ.Slerp(_restLocalRotation, holdRotation, _holdWeight));
+            parent.GlobalPointToLocal(globalPosition),
+            parent.GlobalRotationToLocal(globalRotation).Normalized);
         _wroteHoldPose = true;
         LogToolHold(node, "holding");
+    }
+
+    private static float SnapWeight(float weight)
+    {
+        if (weight < 0.001f)
+            return 0f;
+        if (weight > 0.999f)
+            return 1f;
+        return weight;
+    }
+
+    private DesktopHandSimulator? EnsureSimulator()
+    {
+        if (_simulator != null && !_simulator.IsDestroyed)
+        {
+            return _simulator;
+        }
+
+        if (Slot == null || Slot.IsRemoved)
+        {
+            return null;
+        }
+
+        if (_simulatorSlot == null || _simulatorSlot.IsDestroyed)
+        {
+            _simulatorSlot = Slot.FindChild(SimulatorSlotName, recursive: false);
+            if (_simulatorSlot == null)
+            {
+                _simulatorSlot = Slot.AddLocalSlot(SimulatorSlotName);
+                _simulatorSlot.Persistent.Value = false;
+            }
+        }
+
+        _simulator = _simulatorSlot.GetComponent<DesktopHandSimulator>()
+                     ?? _simulatorSlot.AttachComponent<DesktopHandSimulator>();
+        _simulator.Side.Value = Side.Value;
+        return _simulator;
+    }
+
+    // The tool's frame in the controller node's space: where it aims from and which way it points (the
+    // tool holder, which sits at the avatar's tool anchor when one is authored and at the node otherwise),
+    // with the measured back of the hand bone as its up so the simulator can roll the palm in toward the
+    // body. See the HELD-TOOL HAND FRAME block for the bone-to-node mapping. -xlinka
+    private void ResolveToolFrame(Slot node, out float3 toolOrigin, out floatQ toolFrame)
+    {
+        toolOrigin = float3.Zero;
+        float3 toolDirection = float3.Backward;
+        float3 toolUp = float3.Up;
+        _holdViaGrip = false;
+
+        var holder = _toolHolderSlot;
+        if (holder != null && !holder.IsDestroyed)
+        {
+            toolOrigin = node.GlobalPointToLocal(holder.GlobalPosition);
+            floatQ holderInNode = node.GlobalRotationToLocal(holder.GlobalRotation).Normalized;
+            toolDirection = holderInNode * float3.Backward;
+            toolUp = holderInNode * float3.Up;
+        }
+
+        var hand = Side.Value == Chirality.Left ? Slot?.ActiveUserRoot?.LeftHandSlot : Slot?.ActiveUserRoot?.RightHandSlot;
+        if (_handFrameValid && hand != null && !hand.IsDestroyed && ReferenceEquals(hand.Parent, node))
+        {
+            bool viaGrip = SocketDrivenByPoseNode();
+            _holdViaGrip = viaGrip;
+            floatQ boneInNode = viaGrip
+                ? (hand.LocalRotation.Value * _gripInBone.Inverse).Normalized
+                : hand.LocalRotation.Value;
+            toolUp = boneInNode * _boneBackAxis;
+        }
+
+        toolFrame = DesktopHandSimulator.PointingRotation(toolDirection, toolUp);
     }
 
     // TOOL-HOLD TRACE
@@ -519,7 +684,7 @@ public sealed class HandTool : Tool
         int finger = driverAlive ? (int)driver!.CurrentState : -1;
         float grip = driverAlive ? driver!.GripWeight : 0f;
 
-        // 0 = no measured hand frame (rest swing), 1 = raw bone-to-socket, 2 = through the grip reference.
+        // 0 = no measured hand frame (the tool holder's own up), 1 = raw bone-to-socket, 2 = through the grip reference.
         int attach = !_handFrameValid ? 0 : (_holdViaGrip ? 2 : 1);
 
         // Where the tool's visual actually is against the hand bone, in world metres. The number that
@@ -558,7 +723,7 @@ public sealed class HandTool : Tool
         _holdLogPending = false;
 
         string fingerText = driverAlive ? $"{driver!.CurrentState}/{grip:F2}" : "<no-poser>";
-        string attachText = attach switch { 1 => "raw", 2 => "grip", _ => "rest-swing" };
+        string attachText = attach switch { 1 => "raw", 2 => "grip", _ => "unmeasured" };
         string visualText = _hasToolVisualWorld
             ? $"{_lastToolVisualWorld} dHand={(visualDistance >= 0f ? visualDistance.ToString("F3") : "<no-bone>")}"
             : "<none>";
@@ -601,119 +766,6 @@ public sealed class HandTool : Tool
 
         _bodyNodeSlot = parent;
         return _bodyNodeSlot;
-    }
-
-    // Where the hand should sit and which way it should point while holding a tool, in the body node's
-    // parent space (the space its rest pose is already in, so the two can be blended directly).
-    private bool TryComputeHoldPose(Slot node, out float3 localPosition, out floatQ localRotation)
-    {
-        localPosition = _restLocalPosition;
-        localRotation = _restLocalRotation;
-
-        var root = FindUserRootSlot();
-        var head = Slot?.ActiveUserRoot?.HeadSlot;
-        var parent = node.Parent;
-        if (root == null || root.IsDestroyed || head == null || head.IsDestroyed
-            || parent == null || parent.IsDestroyed)
-        {
-            return false;
-        }
-
-        // Placed in USER-ROOT space so the offset scales with the user: a shrunk user holds the tool a
-        // proportionally shorter way from their eye, not at a fixed 20cm that would put it through them.
-        float sign = Side.Value == Chirality.Left ? -1f : 1f;
-        float3 headLocal = root.GlobalPointToLocal(head.GlobalPosition);
-        floatQ headLocalRotation = root.GlobalRotationToLocal(head.GlobalRotation);
-        float3 holdLocal = headLocal
-            + headLocalRotation * new float3(HoldOffset.x * sign, HoldOffset.y, HoldOffset.z);
-        float3 holdGlobal = root.LocalPointToGlobal(holdLocal);
-
-        // Aim at what the beam is on, so the tool points where the user is pointing rather than merely
-        // parallel to the view; head forward is the fallback while the beam is dormant (dash open) or has
-        // never cast. The 5cm floor rejects an aim point that has landed on the hand itself.
-        float3 aim = head.GlobalRotation * float3.Backward;
-        if (_laser != null && _laser.HasAimPoint)
-        {
-            float3 toAim = _laser.AimPoint - holdGlobal;
-            if (toAim.Length > 0.05f)
-            {
-                aim = toAim;
-            }
-        }
-        if (aim.Length <= 0.0001f)
-        {
-            aim = float3.Backward;
-        }
-        aim = aim.Normalized;
-
-        floatQ holdGlobalRotation;
-        var hand = Side.Value == Chirality.Left ? Slot?.ActiveUserRoot?.LeftHandSlot : Slot?.ActiveUserRoot?.RightHandSlot;
-        if (_handFrameValid && hand != null && !hand.IsDestroyed && ReferenceEquals(hand.Parent, node))
-        {
-            holdGlobalRotation = ComputeHoldFromHandFrame(hand, root, head, aim, sign);
-        }
-        else
-        {
-            // No measurable hand (no worn avatar, no finger bones): SWING the authored rest orientation
-            // onto the aim rather than building a facing from raw axes. The rig decides which way a hand's
-            // frame faces at rest, and a rotation composed here from float3.Backward/Up would silently roll
-            // the wrist by however far that frame differs from ours. A shortest-arc swing carries the
-            // authored roll through untouched. -xlinka
-            floatQ restGlobalRotation = parent.LocalRotationToGlobal(_restLocalRotation);
-            float3 restAim = restGlobalRotation * float3.Backward;
-            holdGlobalRotation = RotationFromTo(restAim, aim) * restGlobalRotation;
-            _holdViaGrip = false;
-        }
-
-        localPosition = parent.GlobalPointToLocal(holdGlobal);
-        localRotation = parent.GlobalRotationToLocal(holdGlobalRotation);
-        return true;
-    }
-
-    // How far the back of the held hand tips up from straight-outward. A tool pointed forward at chest
-    // height is held a little pronated: palm in and slightly down, thumb up and a bit in. Twenty degrees
-    // reads as a relaxed pointer grip rather than a karate-chop (0) or a palm-down grab (90). -xlinka
-    private const float HoldBackTiltRadians = 20f * MathF.PI / 180f;
-
-    // The node rotation that leaves the hand BONE with its fingers down `aim` and the back of its hand
-    // outward. See the HELD-TOOL HAND FRAME block. -xlinka
-    private floatQ ComputeHoldFromHandFrame(Slot hand, Slot root, Slot head, float3 aim, float sign)
-    {
-        // Outward is the head's right for the right hand and its left for the left; up is the user's up
-        // so a pitched camera does not roll the wrist.
-        float3 lateral = head.GlobalRotation * float3.Right * sign;
-        float3 up = root.GlobalRotation * float3.Up;
-        float3 backTarget = lateral * MathF.Cos(HoldBackTiltRadians) + up * MathF.Sin(HoldBackTiltRadians);
-        backTarget -= aim * float3.Dot(backTarget, aim);
-        if (backTarget.LengthSquared < 1e-4f)
-        {
-            // Pointing straight along the outward axis (arm out to the side): keep the back of the hand up.
-            backTarget = up - aim * float3.Dot(up, aim);
-            if (backTarget.LengthSquared < 1e-4f)
-                backTarget = lateral;
-        }
-        backTarget = backTarget.Normalized;
-
-        // Desired bone rotation: swing the finger axis onto the aim, then roll ABOUT THE AIM until the
-        // back of the hand faces backTarget. The roll is an explicit signed angle about the aim rather
-        // than a second shortest-arc: both vectors are perpendicular to the aim, so a shortest-arc would
-        // pick the aim as its axis anyway except in the antiparallel case, where it picks any axis at all
-        // and pulls the fingers off the aim.
-        floatQ swing = RotationFromTo(_boneFingerAxis, aim);
-        float3 backNow = swing * _boneBackAxis;
-        floatQ roll = RollAbout(aim, backNow, backTarget);
-        floatQ boneRotation = (roll * swing).Normalized;
-
-        // Bone -> socket. Raw when the avatar's own hand object holds the socket; through the grip frame
-        // when AvatarIK's pose node does. On the grip path the socket's -Z lands exactly on the aim; on
-        // the raw path it lands wherever the bone's own -Z is, which on desktop costs nothing (the beam
-        // aims from the camera) and is why the anchors below are placed off the grip frame instead.
-        bool viaGrip = SocketDrivenByPoseNode();
-        _holdViaGrip = viaGrip;
-        floatQ socketRotation = viaGrip ? (boneRotation * _gripInBone).Normalized : boneRotation;
-
-        // Socket -> node: the hand socket is the node's direct child carrying the assembler's grip offset.
-        return (socketRotation * hand.LocalRotation.Value.Inverse).Normalized;
     }
 
     // Whether AvatarIK is placing this hand's bone THROUGH the grip reference (its own pose node holds
@@ -801,7 +853,7 @@ public sealed class HandTool : Tool
         // stays missing without a walk per frame.
         if (!ReferenceEquals(avatar, _anchorAvatar) || _anchorSide != Side.Value
             || IsGone(_gripReference) || IsGone(_toolAnchorReference) || IsGone(_grabAnchorReference)
-            || IsGone(_handBone))
+            || IsGone(_handBone) || IsGone(_neckBone) || IsGone(_hipsBone))
         {
             ResolveAvatarAnchors(avatar);
         }
@@ -826,6 +878,106 @@ public sealed class HandTool : Tool
 
         ApplyAvatarAnchor(_toolHolderSlot, _toolAnchorReference, hand, ref _toolAnchorApplied);
         ApplyAvatarAnchor(_grabberSlot, _grabAnchorReference, hand, ref _grabAnchorApplied);
+    }
+
+    // LASER ANCHOR
+    //
+    // In VR the beam leaves the TOOL, not the controller: the laser slot is posed every frame at the raw
+    // tip, 7.5 cm ahead of the tool holder along the holder's own aim, or at the equipped tool's Tip along
+    // its TipForward when the tool carries a tip reference. The holder sits at the avatar's tool anchor,
+    // so the beam comes off wherever the avatar says the hand holds its tools, and nothing about it bends
+    // with the fingers: the old fingertip re-anchor made real finger data steer the beam, so a hand that
+    // had just pressed a face button (index curled on the trigger) cast a ray 120 degrees off the ring it
+    // had opened and the edge-close shut the menu. Written in this slot's space, where it is a constant
+    // in the steady state (the holder and the docked tool only move on an equip or an avatar change), so
+    // the change-gated write costs nothing per frame and the replicated slot carries it to everyone.
+    // Only the owner writes; a remote peer's slot arrives already posed. Desktop leaves the slot at
+    // identity because the desktop ray comes off the head or the camera, not the slot. -xlinka
+    private const float LaserTipOffset = 0.075f;
+    private const float LaserAnchorEpsilon = 1e-5f;
+
+    private static readonly (float3 position, floatQ rotation, bool valid)[] PublishedTipPose = new (float3, floatQ, bool)[3];
+
+    // The world hand's laser pose in CONTROLLER NODE space, for the userspace pointer riding the same
+    // controller: the dash cursor has to come off the same point as the world beam or the two disagree
+    // by the holder offset. Published by the hand in the focused world; None when no hand is publishing.
+    public static bool TryGetPublishedTipPose(Chirality side, out float3 localPosition, out floatQ localRotation)
+    {
+        int index = (int)side;
+        if (index < 0 || index >= PublishedTipPose.Length || !PublishedTipPose[index].valid)
+        {
+            localPosition = float3.Zero;
+            localRotation = floatQ.Identity;
+            return false;
+        }
+        localPosition = PublishedTipPose[index].position;
+        localRotation = PublishedTipPose[index].rotation;
+        return true;
+    }
+
+    private void UpdateLaserAnchor()
+    {
+        if (_laserSlot == null || _laserSlot.IsDestroyed || Slot == null || !IsUnderLocalUser)
+        {
+            return;
+        }
+
+        var input = Engine.Current?.InputInterface;
+        float3 position = float3.Zero;
+        floatQ rotation = floatQ.Identity;
+        if (input?.IsVRActive == true)
+        {
+            ResolveLaserAnchor(out position, out rotation);
+        }
+
+        if (float3.Distance(_laserSlot.LocalPosition.Value, position) > LaserAnchorEpsilon)
+        {
+            _laserSlot.LocalPosition.Value = position;
+        }
+        if (MathF.Abs(floatQ.Dot(_laserSlot.LocalRotation.Value, rotation)) < 1f - LaserAnchorEpsilon)
+        {
+            _laserSlot.LocalRotation.Value = rotation;
+        }
+
+        var focused = Engine.Current?.WorldManager?.FocusedWorld;
+        if (focused == null || ReferenceEquals(focused, World))
+        {
+            int index = (int)Side.Value;
+            if (index >= 0 && index < PublishedTipPose.Length)
+            {
+                PublishedTipPose[index] = (
+                    Slot.LocalPosition.Value + Slot.LocalRotation.Value * position,
+                    (Slot.LocalRotation.Value * rotation).Normalized,
+                    input?.IsVRActive == true);
+            }
+        }
+    }
+
+    // In this slot's space. The holder is a direct child, so its local pose is already here; a docked tool
+    // is deeper, so its tip comes back through world space.
+    private void ResolveLaserAnchor(out float3 position, out floatQ rotation)
+    {
+        float3 holderPosition = float3.Zero;
+        floatQ holderRotation = floatQ.Identity;
+        var holder = _toolHolderSlot;
+        if (holder != null && !holder.IsDestroyed)
+        {
+            holderPosition = holder.LocalPosition.Value;
+            holderRotation = holder.LocalRotation.Value;
+        }
+
+        var tool = ActiveToolItem.Target;
+        if (tool != null && !tool.IsDestroyed && tool.Slot != null && !tool.Slot.IsDestroyed
+            && tool.HasTipReference && tool.UsesLaser)
+        {
+            position = Slot!.GlobalPointToLocal(tool.Tip);
+            float3 forward = Slot.GlobalDirectionToLocal(tool.TipForward);
+            rotation = DesktopHandSimulator.PointingRotation(forward, holderRotation * float3.Up);
+            return;
+        }
+
+        position = holderPosition + holderRotation * (float3.Backward * LaserTipOffset);
+        rotation = holderRotation;
     }
 
     private void ResolveHandFrame(Slot? avatar)
@@ -870,7 +1022,7 @@ public sealed class HandTool : Tool
             // A rig without those bones will not grow them: say so once and stop asking until the avatar
             // changes (ResolveAvatarAnchors resets the clock).
             _nextHandFrameRetry = double.PositiveInfinity;
-            Logging.Logger.Log($"HandTool: {side} hand frame unmeasured on '{bone.SlotName.Value}' (knuckle={knuckle != null} thumb={thumb != null}); hold keeps the rest swing");
+            Logging.Logger.Log($"HandTool: {side} hand frame unmeasured on '{bone.SlotName.Value}' (knuckle={knuckle != null} thumb={thumb != null}); hold rolls off the tool holder");
             return;
         }
 
@@ -882,8 +1034,7 @@ public sealed class HandTool : Tool
         }
         fingers = fingers.Normalized;
 
-        // Same per-side rule as HandPoseDriver.MeasurePoseBasis, same evidence: the plain cross is the
-        // back of the RIGHT hand and the palm of the left.
+        // Palm normal is used for desktop palm-inward posing, separately from the thumb-up grip frame.
         float3 back = float3.Cross(fingers, toThumb.Normalized);
         if (side == Chirality.Left)
         {
@@ -898,10 +1049,8 @@ public sealed class HandTool : Tool
         _boneFingerAxis = fingers;
         _boneBackAxis = back.Normalized;
 
-        floatQ gripSwing = RotationFromTo(float3.Backward, _boneFingerAxis);
-        float3 gripUpNow = gripSwing * float3.Up;
-        floatQ gripRoll = RollAbout(_boneFingerAxis, gripUpNow, -_boneBackAxis);
-        _gripInBone = (gripRoll * gripSwing).Normalized;
+        var grip = AvatarCalibration.ComputeHandGrip(avatar, rig, side == Chirality.Right);
+        _gripInBone = (inverse * avatar.LocalRotationToGlobal(grip.LocalRotation)).Normalized;
 
         _handFrameValid = true;
         Logging.Logger.Log($"HandTool: {side} hand frame in '{bone.SlotName.Value}' space fingers={_boneFingerAxis} back={_boneBackAxis}");
@@ -935,9 +1084,20 @@ public sealed class HandTool : Tool
         _fingerDriver = null;
         _handFrameValid = false;
         _nextHandFrameRetry = double.NegativeInfinity;
+        _neckBone = null;
+        _hipsBone = null;
         if (avatar == null || avatar.IsDestroyed)
         {
             return;
+        }
+
+        // The simulator hangs its rest pose and reach origin off the worn body's neck and hips; without
+        // a rig it estimates both from the head.
+        var rig = avatar.GetComponentInChildren<HumanoidRig>();
+        if (rig != null && !rig.IsDestroyed)
+        {
+            _neckBone = rig.TryGetBone(BodyNode.Neck);
+            _hipsBone = rig.TryGetBone(BodyNode.Hips);
         }
 
         bool left = Side.Value == Chirality.Left;
@@ -995,8 +1155,8 @@ public sealed class HandTool : Tool
         if (anchor == null || anchor.IsDestroyed || grip == null || grip.IsDestroyed || hand == null || hand.IsDestroyed)
         {
             // Nothing authored for this hand (or no hand socket to read it against): back to the identity
-            // EnsureRig built the slot with, the way the source parks its slot back on the handler. Written
-            // once on the way out, so an avatar with no anchors never costs a write.
+            // EnsureRig built the slot with. Written once on the way out, so an avatar with no anchors never
+            // costs a write.
             if (applied)
             {
                 rigSlot.LocalPosition.Value = float3.Zero;
@@ -1039,32 +1199,29 @@ public sealed class HandTool : Tool
 
     // Number-row tool shortcuts, desktop only.
     //
-    // Ported from the source platform's interaction handler, including the layout: it walks key
-    // indices 0..10, mapping 0..9 onto the number row and 10 onto Minus, and looks each one up in a
-    // table. An index with no tool PUTS THE CURRENT TOOL AWAY rather than doing nothing, which is why
-    // 1 is the unequip key over there and is the unequip key here.
+    // Key indices 0..10 map 0..9 onto the number row and 10 onto Minus, and each one is looked up in
+    // the table below. An index with no tool PUTS THE CURRENT TOOL AWAY rather than doing nothing, so 1
+    // is the unequip key and every empty or reserved key works as one too.
     //
-    // The numbers we share with it are pinned to its layout so muscle memory carries across:
-    // 2 dev, 4 material, 5 shape, 6 light, 0 glue, 1 away. The two tools it has no shortcut for sit on
-    // keys it spends on things we will never build. Slots 7, 8 and Minus stay empty on purpose - they
-    // are its grabbable setter, collider setter and component clone, and squatting on them now would
-    // move those keys under someone once we build the real ones.
+    // 0 glue, 1 away, 2 dev, 3 node graph, 4 material, 5 shape, 6 light, 9 meter. The duplicator has no
+    // key. 7, 8 and Minus stay empty on purpose: they are held for tools not built yet, so those keys
+    // never move under anyone once the tools land.
     //
-    // It spawns from a cloud record path; we attach the component directly, which is the same result
-    // without a round trip. -xlinka
+    // The tool component goes on a child of the tool holder named after its type, reused when one is
+    // already there. -xlinka
     private static readonly System.Type?[] ShortcutTools =
     {
         typeof(GlueTool),          // 0
         null,                            // 1  - put the current tool away
-        typeof(DevToolItem),             // 2  - same key it has over there
-        typeof(DuplicatorTool),    // 3  - their node-graph tool, which we do not build
+        typeof(DevToolItem),             // 2
+        typeof(ScriptNodeTool),    // 3  - node graph
         typeof(MaterialTool),      // 4
         typeof(ShapeTool),         // 5
         typeof(LightTool),         // 6
-        null,                            // 7  - reserved: their grabbable setter
-        null,                            // 8  - reserved: their collider setter
-        typeof(MeterTool),         // 9  - their microphone tool, which is not ours to build
-        null,                            // 10 - Minus. reserved: their component clone
+        null,                            // 7  - reserved
+        null,                            // 8  - reserved
+        typeof(MeterTool),         // 9
+        null,                            // 10 - Minus, reserved
     };
 
     private void ProcessToolShortcuts(bool vrActive, bool menuVisible)
@@ -1101,8 +1258,7 @@ public sealed class HandTool : Tool
         }
     }
 
-    // Pressing the same tool's key again puts it away, so one key is equip and unequip both. The
-    // source platform reaches this state through its stash path; the observable behaviour is the same.
+    // Pressing the same tool's key again puts it away, so one key is equip and unequip both.
     // public so a test harness can equip a tool without synthesising a keypress. The number-row
     // shortcut path calls exactly this, so a scripted run exercises the same code a person does.
     public void EquipToolByType(System.Type toolType)
@@ -1145,6 +1301,15 @@ public sealed class HandTool : Tool
     public override void OnDestroy()
     {
         ResetInteraction(releaseHeld: true);
+        // The published tip pose is this world's; the next focused hand republishes on its first frame.
+        if (IsUnderLocalUser)
+        {
+            int index = (int)Side.Value;
+            if (index >= 0 && index < PublishedTipPose.Length)
+            {
+                PublishedTipPose[index] = default;
+            }
+        }
         // Give the body node its authored pose back. Only this component knows it was moved, and a rig torn
         // down mid-hold (avatar swap, user leaving) would otherwise leave the hand parked in front of the
         // face for whatever gets built next. -xlinka
@@ -1175,24 +1340,44 @@ public sealed class HandTool : Tool
             return;
         }
 
-        // Builds the tool rig (Grabber/Laser/Tool Holder slots + components) under the HandTool slot. This is
-        // idempotent: every slot is FindChild-or-add, so a non-owner peer adopts the rig that replicated from the
-        // owner instead of minting a duplicate. The owner's writes can be permission-denied for a beat during join
-        // (the User<->UserRoot link lags), but we run this from OnUpdate every frame as well as OnStart, so the next
-        // frame retries and lands once the link resolves - no bypass needed, just let it throw and re-drive. -xlinka
-        _grabberSlot ??= Slot.FindChild("Grabber", recursive: false) ?? Slot.AddSlot("Grabber");
-        if (_grabberSlot.GetComponent<SearchBlock>() == null)
+        // The tool rig (Grabber/Laser/Tool Holder slots + components) under the HandTool slot. Only the hand's
+        // owner builds it. Another machine can meet this hand a frame before its rig replicates, and building
+        // one there minted a second Grabber, Laser and Tool Holder beside the owner's, sent them to everyone
+        // and left this hand pointing at them for good. Every other machine adopts the owner's by name once it
+        // arrives and has no rig until then. The owner is not known to be the owner until the User<->UserRoot
+        // link lands after a join, and its writes can be refused for that beat too; this runs every frame as
+        // well as at OnStart, so the next frame retries. -xlinka
+        bool owner = IsUnderLocalUser;
+        _grabberSlot = RigSlot(_grabberSlot, "Grabber", owner);
+        _laserSlot = RigSlot(_laserSlot, "Laser", owner);
+        _toolHolderSlot = RigSlot(_toolHolderSlot, "Tool Holder", owner);
+
+        if (_grabberSlot != null)
         {
-            _grabberSlot.AttachComponent<SearchBlock>();
+            if (owner && _grabberSlot.GetComponent<SearchBlock>() == null)
+            {
+                _grabberSlot.AttachComponent<SearchBlock>();
+            }
+            _grabber = RigPart(_grabber, _grabberSlot, owner);
         }
-        _grabber ??= _grabberSlot.GetComponent<Grabber>() ?? _grabberSlot.AttachComponent<Grabber>();
 
-        _laserSlot ??= Slot.FindChild("Laser", recursive: false) ?? Slot.AddSlot("Laser");
-        _laser ??= _laserSlot.GetComponent<InteractionLaser>() ?? _laserSlot.AttachComponent<InteractionLaser>();
-        _laser.ControllerSide.Value = Side.Value;
-        _laser.SetIgnoreRoot(Slot);
+        if (_laserSlot != null)
+        {
+            _laser = RigPart(_laser, _laserSlot, owner);
+            if (_laser != null)
+            {
+                if (owner)
+                {
+                    _laser.ControllerSide.Value = Side.Value;
+                }
+                _laser.SetIgnoreRoot(Slot);
+            }
+        }
 
-        _toolHolderSlot ??= Slot.FindChild("Tool Holder", recursive: false) ?? Slot.AddSlot("Tool Holder");
+        if (_toolHolderSlot == null || !owner)
+        {
+            return;
+        }
         if (_toolHolderSlot.GetComponent<GrabBlock>() == null)
         {
             _toolHolderSlot.AttachComponent<GrabBlock>();
@@ -1210,6 +1395,25 @@ public sealed class HandTool : Tool
                 EquipToolItem(item);
             }
         }
+    }
+
+    // The rig slot this hand holds, else the owner's found by name, else a new one when building.
+    private Slot? RigSlot(Slot? held, string name, bool build)
+    {
+        if (held != null && !held.IsDestroyed)
+        {
+            return held;
+        }
+        return Slot.FindChild(name, recursive: false) ?? (build ? Slot.AddSlot(name) : null);
+    }
+
+    private static T? RigPart<T>(T? held, Slot slot, bool build) where T : Component, new()
+    {
+        if (held != null && !held.IsDestroyed && ReferenceEquals(held.Slot, slot))
+        {
+            return held;
+        }
+        return slot.GetComponent<T>() ?? (build ? slot.AttachComponent<T>() : null);
     }
 
     public void EquipToolItem(ToolItem? item)
@@ -1342,8 +1546,34 @@ public sealed class HandTool : Tool
         _gripHeld = ReadGripPressed(laser);
     }
 
+    // In VR a hand the dash pointer owns gives the dash its buttons outright. The laser already yields its
+    // hover, world press and grab for that hand; the equipped tool reads the raw action in the two press
+    // handlers below, so it has to stand down here or a click on the dash fires whatever is in that hand.
+    // -xlinka
+    private bool DashOwnsThisHand()
+        => Engine.Current?.InputInterface?.IsUserspaceLaserActive(Side.Value) == true;
+
     private void ProcessPrimary(InteractionLaser laser)
     {
+        // The edge bookkeeping still advances, so a press that began on the dash stays spent when the hand
+        // leaves it; a tool press or handle drag that began in the world lets go rather than running on
+        // underneath the dash. -xlinka
+        if (DashOwnsThisHand())
+        {
+            if (_activePrimaryToolItem != null)
+            {
+                _activePrimaryToolItem.OnPrimaryRelease();
+                _activePrimaryToolItem = null;
+            }
+            if (_bareHandle != null)
+            {
+                _bareHandle.EndToolDrag();
+                _bareHandle = null;
+            }
+            _prevPrimaryHeld = _primaryHeld;
+            return;
+        }
+
         // A press while this hand's menu is up is a menu press and nothing else. The canvas already
         // receives it (uiPress stays true with the menu open so held-object actions are clickable), so
         // letting the chain below run too meant "Destroy" on a held reference card first activated the
@@ -1372,6 +1602,7 @@ public sealed class HandTool : Tool
             }
             else if (IsHoldingObjectsWithLaser)
             {
+                // A press while carrying leaves the beam's tail alone.
                 // Order matters. Holding with the laser SUPPRESSES canvas presses (uiPress below), so a
                 // press aimed at a UI row can never reach the row's own button - the row has to be
                 // offered the hand's contents from here instead. That has to happen BEFORE the held
@@ -1394,6 +1625,21 @@ public sealed class HandTool : Tool
             {
                 laser.CurrentRayTarget?.NotifyActivated(laser.CurrentHitPoint);
                 laser.NotifyActivatedByTool(laser.CurrentTarget, laser.CurrentHitPoint);
+                laser.ResetLaserTimeout();
+            }
+            else if (laser.CurrentTarget != null)
+            {
+                // A press on a panel keeps the beam up.
+                laser.ResetLaserTimeout();
+            }
+            else
+            {
+                // Nothing under the beam and nothing in the hand: the press toggles the beam's tail, on
+                // for two seconds if it was off, off now if it was already running on the tail. -xlinka
+                if (laser.LaserActive && laser.LocalLaserTimeout > 0f)
+                    laser.ClearLaserTimeout();
+                else
+                    laser.ResetLaserTimeout();
             }
         }
         else if (_primaryHeld && _activePrimaryToolItem != null)
@@ -1509,6 +1755,17 @@ public sealed class HandTool : Tool
 
     private void ProcessSecondary(InteractionLaser laser)
     {
+        if (DashOwnsThisHand())
+        {
+            if (_activeSecondaryToolItem != null)
+            {
+                _activeSecondaryToolItem.OnSecondaryRelease();
+                _activeSecondaryToolItem = null;
+            }
+            _prevSecondaryHeld = _secondaryHeld;
+            return;
+        }
+
         if (_secondaryHeld && !_prevSecondaryHeld)
         {
             // Secondary is this tool's "back out of whatever mode you are in", so it cancels an armed
@@ -1535,10 +1792,10 @@ public sealed class HandTool : Tool
                 {
                     _activeSecondaryToolItem = toolItem;
                 }
-                else if (!IsHoldingObjects && Engine.Current?.InputInterface?.IsVRActive == true)
+                else if (Engine.Current?.InputInterface?.IsVRActive == true)
                 {
-                    // VR fallback: free secondary opens the menu. Desktop uses
-                    // the dedicated T binding instead.
+                    // VR: secondary opens the menu, held object or not; a full hand is exactly when
+                    // Destroy, Duplicate and Save are wanted. Desktop uses the dedicated T binding.
                     ToggleContextMenu(laser);
                 }
             }
@@ -1556,9 +1813,9 @@ public sealed class HandTool : Tool
         _prevSecondaryHeld = _secondaryHeld;
     }
 
-    // Secondary press with no tool/held-object claim toggles the user's
-    // radial context menu at the laser, carrying what it was pointing at so
-    // sources can add contextual actions (equip avatar, etc.).
+    // Secondary press with no tool claim toggles the user's radial context menu at the laser,
+    // carrying what it was pointing at and what it is holding so sources can add contextual actions
+    // (equip avatar, destroy/duplicate/save the held objects, etc.).
     private void ToggleContextMenu(InteractionLaser laser)
     {
         var menu = FindContextMenu();
@@ -1570,6 +1827,7 @@ public sealed class HandTool : Tool
             Pointer = _laserSlot ?? Slot,
             Target = laser?.CurrentHitSlot,
             Side = Side.Value,
+            Grabber = IsHoldingObjects ? _grabber : null,
         });
     }
 
@@ -1698,15 +1956,24 @@ public sealed class HandTool : Tool
         }
 
         _laserGrabDistance = MathF.Max(0.05f, laser.CurrentHitDistance);
+        _menuPushActive = false;
         _holderAxisOffset = 0f;
         _holderRotationOffset = floatQ.Identity;
         // Frozen at grab, never recomputed. The held object keeps the facing it had when you picked it up;
         // letting it re-derive from the head every frame makes it swing to face you as the view pitches and
         // yaws, which is the last thing you want while trying to place something. Resolve it to a real value
         // here so UpdateHolderRotation can never fall through to the chasing path. -xlinka
-        _holderRotationReference = GetHeadFacingRotation(laser)
-            ?? laser.FindHeadSlot()?.GlobalRotation
-            ?? Slot.GlobalRotation;
+        //
+        // DESKTOP ONLY. In VR the holder's facing comes off the HAND every frame (see
+        // UpdateHolderRotation), and a frame pinned here would hold the object to one world heading
+        // while the person walks and turns around it - which is exactly
+        // the "it snaps straight to the world" complaint. Desktop keeps the pinned frame because there
+        // the view IS the hand and the 2026-08-30 stepping fix depends on it. -xlinka
+        bool pinReference = Engine.Current?.InputInterface?.IsVRActive != true;
+        _holderRotationReference = pinReference
+            ? GetHeadFacingRotation(laser) ?? laser.FindHeadSlot()?.GlobalRotation ?? Slot.GlobalRotation
+            : null;
+        _originalTwistOffset = TwistAngle(laser);
         RotationMode.Value = LaserRotationMode.AxisY;
 
         holder.GlobalPosition = laser.CurrentHitPoint;
@@ -1825,7 +2092,12 @@ public sealed class HandTool : Tool
             return false;
         }
 
-        TryAlignGrabbed(grabbed);
+        // A second hand on the other hand's load became its scale reference: the object stays where it
+        // is, and aligning it to this hand would yank it out of the first one's grip. -xlinka
+        if (!_grabber.IsScaling)
+        {
+            TryAlignGrabbed(grabbed);
+        }
 
         // Touch-held objects follow the hand through the hierarchy, so the laser-hold path must not drive
         // them. Leaving _isHoldingWithLaser false also keeps the laser cursor in its normal state. -xlinka
@@ -1860,9 +2132,9 @@ public sealed class HandTool : Tool
         }
     }
 
-    private void ProcessLaserHold(InteractionLaser laser, float delta)
+    private void ProcessLaserHold(InteractionLaser laser, float delta, bool menuOpen)
     {
-        if (_grabber == null || !_grabber.IsHoldingObjects)
+        if (_grabber == null || !(_grabber.IsHoldingObjects || _grabber.IsScaling))
         {
             ResetInteraction(releaseHeld: false);
             return;
@@ -1875,7 +2147,17 @@ public sealed class HandTool : Tool
             return;
         }
 
-        ApplyHoldInputs(laser, holder, delta);
+        // With the menu up the stick is the wedge selector, so slide, twist and scale stand down; the
+        // load still follows the hand, only its distance is spoken for by the push. -xlinka
+        if (menuOpen)
+        {
+            SetDesktopInputSuppression(false);
+        }
+        else
+        {
+            ApplyHoldInputs(laser, holder, delta);
+        }
+        UpdateMenuPush(laser, holder, delta, menuOpen);
         _laserGrabDistance = Clamp(_laserGrabDistance, 0.05f, MathF.Max(laser.MaxDistance.Value, 0.05f));
 
         // The pose write waits for the late pass. This tool updates at -1000, but on desktop the head pitch,
@@ -1893,6 +2175,83 @@ public sealed class HandTool : Tool
         {
             WriteHolderPose(laser, holder, delta);
         }
+    }
+
+    // The rule in full is on the fields. Measured once at open: the load rides rigidly on the holder
+    // from then on, and a wedge pick turns the hand by a few degrees at most. -xlinka
+    private void UpdateMenuPush(InteractionLaser laser, Slot holder, float delta, bool menuOpen)
+    {
+        if (!menuOpen || _grabber == null || !_grabber.IsHoldingObjects)
+        {
+            _menuPushActive = false;
+            return;
+        }
+
+        if (!_menuPushActive)
+        {
+            _menuPushActive = true;
+            _menuPushFrom = _laserGrabDistance;
+            float reach = MeasureHeldReach(laser, holder);
+            _menuPushTo = MathF.Max(_laserGrabDistance, UI.ContextMenuSystem.OpenDistance + reach + MenuHoldClearance);
+            if (_menuPushTo - _menuPushFrom < MenuPushMinimum)
+            {
+                _menuPushTo = _menuPushFrom;
+            }
+            _menuPushLerp = _menuPushTo > _menuPushFrom ? 0f : 1f;
+        }
+
+        if (_menuPushLerp >= 1f)
+        {
+            return;
+        }
+
+        _menuPushLerp = MathF.Min(1f, _menuPushLerp + delta / MenuPushDuration);
+        float t = _menuPushLerp * _menuPushLerp * (3f - 2f * _menuPushLerp);
+        _laserGrabDistance = _menuPushFrom + (_menuPushTo - _menuPushFrom) * t;
+    }
+
+    // How far the held objects reach back from the holder toward the hand, along the beam: the
+    // ring plane is normal to the beam, so this is the only extent that can put geometry in front
+    // of it. Renderer bounds, colliders when nothing renders, zero when neither is there yet. -xlinka
+    private float MeasureHeldReach(InteractionLaser laser, Slot holder)
+    {
+        if (_grabber == null)
+        {
+            return 0f;
+        }
+
+        float3 direction = laser.RayDirection;
+        if (direction.Length <= 0.0001f)
+        {
+            ResolveFallbackRay(laser, out _, out direction);
+        }
+        direction = direction.Normalized;
+        float3 origin = holder.GlobalPosition;
+        float reach = 0f;
+
+        foreach (var grabbable in _grabber.GrabbedObjects)
+        {
+            var slot = (grabbable as Component)?.Slot;
+            if (slot == null || slot.IsDestroyed)
+            {
+                continue;
+            }
+            if (!SlotBoundsHelper.TryComputeWorldBounds(slot, out var bounds))
+            {
+                continue;
+            }
+
+            for (int corner = 0; corner < 8; corner++)
+            {
+                var point = new float3(
+                    (corner & 1) == 0 ? bounds.Min.x : bounds.Max.x,
+                    (corner & 2) == 0 ? bounds.Min.y : bounds.Max.y,
+                    (corner & 4) == 0 ? bounds.Min.z : bounds.Max.z);
+                reach = MathF.Max(reach, float3.Dot(origin - point, direction));
+            }
+        }
+
+        return float.IsNaN(reach) ? 0f : reach;
     }
 
     public override void OnLateUpdate(float delta)
@@ -1919,6 +2278,7 @@ public sealed class HandTool : Tool
     // the smoothing step, so the beam and the object it carries come off the same ray. -xlinka
     private void WriteHolderPose(InteractionLaser laser, Slot holder, float delta)
     {
+        laser.SetHoldDistance(_laserGrabDistance);
         laser.RefreshHeldAim(delta);
         UpdateHolderPosition(laser, holder);
         UpdateHolderRotation(laser, holder);
@@ -2040,7 +2400,14 @@ public sealed class HandTool : Tool
         }
         rootUp = rootUp.Normalized;
 
-        floatQ reference = _holderRotationReference ?? GetHeadFacingRotation(laser) ?? (head?.GlobalRotation ?? Slot.GlobalRotation);
+        bool vr = Engine.Current?.InputInterface?.IsVRActive == true;
+        // Desktop: the frame pinned at grab. VR: nothing pinned; the head's current yaw stands in for
+        // the side axis and the facing below comes off the hand.
+        floatQ reference = _holderRotationReference
+            ?? GetHeadFacingRotation(laser)
+            ?? (head?.GlobalRotation ?? Slot.GlobalRotation);
+        if (!vr)
+            _holderRotationReference ??= reference;
         float3 rightAxis = reference * float3.Right;
         if (rightAxis.Length <= 0.0001f)
         {
@@ -2048,9 +2415,23 @@ public sealed class HandTool : Tool
         }
         rightAxis = rightAxis.Normalized;
 
-        float3 forward = ComputeHolderForward(laser, holder, reference, root, head);
-        if (forward.Length <= 0.0001f)
+        float3 forward;
+        if (vr)
         {
+            // THE FACING IS THE HAND'S, EVERY FRAME. Where the beam points from the head, flattened in
+            // the root's frame, plus where the tool's tip points, flattened the same way: turn the wrist
+            // and the object turns with it, walk round it and it comes with you, because both terms move
+            // with the person. Neither is a stored world heading. -xlinka
+            float3 headPos = head?.GlobalPosition ?? Slot.GlobalPosition;
+            float3 toHolder = FlattenInRoot(root, holder.GlobalPosition - headPos);
+            float3 tip = FlattenInRoot(root, laser.RayDirection);
+            forward = toHolder + tip;
+            if (forward.LengthSquared <= 1e-8f)
+                forward = tip.LengthSquared > 1e-8f ? tip : reference * float3.Backward;
+        }
+        else
+        {
+            // A desktop laser hold keeps its captured orientation while its position follows the beam.
             forward = reference * float3.Backward;
         }
         if (forward.Length <= 0.0001f)
@@ -2060,6 +2441,11 @@ public sealed class HandTool : Tool
         forward = forward.Normalized;
 
         float angle = _holderAxisOffset;
+        if (vr)
+        {
+            // Wrist roll, at half rate, so a full twist of the controller is a half turn of the object.
+            angle += DeltaAngle(_originalTwistOffset, TwistAngle(laser)) * 0.5f;
+        }
         switch (RotationMode.Value)
         {
             case LaserRotationMode.AxisX:
@@ -2074,34 +2460,6 @@ public sealed class HandTool : Tool
         }
 
         holder.GlobalRotation = _holderRotationOffset * FacingRotation(forward, rootUp);
-    }
-
-    private float3 ComputeHolderForward(InteractionLaser laser, Slot holder, floatQ reference, Slot? root, Slot? head)
-    {
-        var input = Engine.Current?.InputInterface;
-        if (input == null || !input.IsVRActive)
-        {
-            return reference * float3.Backward;
-        }
-
-        if (root == null || head == null)
-        {
-            return laser.RayDirection;
-        }
-
-        float3 fromHead = holder.GlobalPosition - head.GlobalPosition;
-        float3 radial = ProjectOnPlane(fromHead, root.Up);
-        float3 ray = ProjectOnPlane(laser.RayDirection, root.Up);
-
-        if (radial.Length > 0.0001f && ray.Length > 0.0001f)
-        {
-            return (radial.Normalized + ray.Normalized).Normalized;
-        }
-        if (radial.Length > 0.0001f)
-        {
-            return radial.Normalized;
-        }
-        return laser.RayDirection;
     }
 
     private void ApplyFreeformRotation(InteractionLaser laser, float3 rotation)
@@ -2275,11 +2633,14 @@ public sealed class HandTool : Tool
 
         SetDesktopInputSuppression(false);
         SetScrollWheelCapture(false);
+        SetStickPressCapture(false);
         _laser?.ArmRaySmoothing(false);
+        _laser?.SetHoldDistance(null);
         _holdPoseFrame = long.MinValue;
         _holdPoseWrittenFrame = long.MinValue;
         _isHoldingWithLaser = false;
         _laserGrabDistance = 0f;
+        _menuPushActive = false;
         _holderAxisOffset = 0f;
         _holderRotationOffset = floatQ.Identity;
         _holderRotationReference = null;
@@ -2364,6 +2725,43 @@ public sealed class HandTool : Tool
     // the raw LookRotation made objects face/rotate the wrong way. -xlinka
     private static floatQ FacingRotation(float3 forward, float3 up) => floatQ.LookRotation(forward, up).Inverse;
 
+    // A direction with its root-up component removed, so the person's own tilt does not enter the aim.
+    private static float3 FlattenInRoot(Slot? root, float3 direction)
+    {
+        float3 up = root?.Up ?? float3.Up;
+        if (up.LengthSquared <= 1e-8f)
+            up = float3.Up;
+        up = up.Normalized;
+        return direction - up * float3.Dot(direction, up);
+    }
+
+    // The controller's roll about the beam, in the root's frame, radians. Only ever read as a DELTA
+    // from the value at grab, so which way is "zero" does not matter, only that it is stable.
+    private float TwistAngle(InteractionLaser laser)
+    {
+        var root = FindUserRootSlot();
+        float3 forward = laser.RayDirection;
+        if (forward.LengthSquared <= 1e-8f || _laserSlot == null || _laserSlot.IsDestroyed)
+            return 0f;
+        float3 rootUp = (root?.Up ?? float3.Up).Normalized;
+        float3 tipUp = _laserSlot.Up;
+        // Beam-perpendicular frame: the flat side axis, then the beam's own up in that frame.
+        float3 side = float3.Cross(rootUp, forward);
+        if (side.LengthSquared <= 1e-8f)
+            return 0f;
+        side = side.Normalized;
+        float3 levelUp = float3.Cross(forward.Normalized, side);
+        return MathF.Atan2(float3.Dot(tipUp, side), float3.Dot(tipUp, levelUp));
+    }
+
+    private static float DeltaAngle(float from, float to)
+    {
+        float delta = to - from;
+        while (delta > MathF.PI) delta -= 2f * MathF.PI;
+        while (delta < -MathF.PI) delta += 2f * MathF.PI;
+        return delta;
+    }
+
     private static floatQ? GetHeadFacingRotation(InteractionLaser laser)
     {
         var head = laser.FindHeadSlot();
@@ -2403,27 +2801,9 @@ public sealed class HandTool : Tool
         direction = direction.Normalized;
     }
 
-    private bool CanScaleHeldObjects()
-    {
-        if (_grabber == null || _grabber.GrabbedObjects.Count == 0)
-        {
-            return false;
-        }
-
-        foreach (var grabbable in _grabber.GrabbedObjects)
-        {
-            if (grabbable == null || !grabbable.Scalable)
-            {
-                return false;
-            }
-
-            if (grabbable is Component component && component.IsDestroyed)
-            {
-                return false;
-            }
-        }
-        return true;
-    }
+    // The grabber's answer, so the scroll stretch and the two-hand stretch obey the same Scalable and
+    // role rules. -xlinka
+    private bool CanScaleHeldObjects() => _grabber?.CanScaleHeldObjects == true;
 
     private void ScaleHolder(Slot holder, float delta)
     {
@@ -2451,6 +2831,17 @@ public sealed class HandTool : Tool
 
         _scrollWheelCaptured = active;
         UserInputState.ForFocusedLocalUser?.SetScrollWheelCaptured(this, active);
+    }
+
+    private void SetStickPressCapture(bool active)
+    {
+        if (_stickPressCaptured == active)
+        {
+            return;
+        }
+
+        _stickPressCaptured = active;
+        UserInputState.ForFocusedLocalUser?.SetStickPressCaptured(this, active);
     }
 
     private static float3 ProjectOnPlane(float3 vector, float3 normal)

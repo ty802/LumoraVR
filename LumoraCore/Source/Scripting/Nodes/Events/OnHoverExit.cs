@@ -1,0 +1,13 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+using Lumora.Script;
+
+namespace Lumora.Core.Scripting;
+
+// Someone's beam went off the object, as On Hover Enter means it. -xlinka
+[Node("Events/On Hover Exit")]
+[SourcedEvent]
+public sealed class OnHoverExit : EventNode<HoverEnded>
+{
+}

@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Lumora.Nexus.Transport.LNL;
 using Lumora.Nexus.Cloud;
 using LumoraLogger = Lumora.Nexus.Diagnostics.NexusLog;
+using System.Threading;
 
 namespace Lumora.Nexus.Transport.Relay;
 
@@ -49,6 +50,8 @@ public sealed class RelayConnection : IConnection
     public Uri Address => _address;
     public string Identifier => $"relay:{_sessionId}";
     public ulong ReceivedBytes { get; private set; }
+    private long _sentBytes;
+    public ulong SentBytes => (ulong)Interlocked.Read(ref _sentBytes);
     public int Ping => _client?.IsConnected == true ? -1 : -1; // relay RTT not surfaced
     public bool IsEncrypted => _crypto.IsEstablished;
     public string TransportName => "Relay";
@@ -186,6 +189,7 @@ public sealed class RelayConnection : IConnection
     {
         if (_client == null)
             return;
+        Interlocked.Add(ref _sentBytes, payload.Length);
         _client.SendRelayPacket(_sessionId, payload);
     }
 

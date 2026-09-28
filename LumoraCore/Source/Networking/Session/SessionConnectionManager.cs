@@ -67,6 +67,27 @@ public class SessionConnectionManager : IDisposable
     public IReadOnlyList<IListener> StartedListeners => _listeners;
     public IConnection HostConnection { get; private set; } = null!;
 
+    // This machine's traffic in the session, wire bytes both ways: a guest's one connection to the host, or
+    // the host's connections to every guest it has now.
+    public (ulong Received, ulong Sent) TrafficTotals()
+    {
+        lock (_lock)
+        {
+            if (HostConnection != null)
+                return (HostConnection.ReceivedBytes, HostConnection.SentBytes);
+            ulong received = 0, sent = 0;
+            foreach (var connection in _connectionToUser.Keys)
+            {
+                received += connection.ReceivedBytes;
+                sent += connection.SentBytes;
+            }
+            return (received, sent);
+        }
+    }
+
+    // The round trip to the host in milliseconds: 0 on the host itself, -1 while a guest's is not known yet.
+    public int PingToHost => HostConnection?.Ping ?? 0;
+
     public event Action OnHostDisconnected = null!;
 
     public SessionConnectionManager(Session session)
@@ -589,6 +610,7 @@ public class SessionConnectionManager : IDisposable
         // rejected ("fails to authenticate"). Purging first makes rejoin bulletproof - a genuinely fresh byte
         // has nothing to purge. -xlinka
         World.ReferenceController?.PurgeUserByte(allocStart.GetUserByte());
+        World.ReferenceController?.SetScriptFence(allocStart.GetUserByte(), RefIDConstants.ScriptRangeStart(allocStart.GetPosition()));
 
         // Use the start of the range as the user's RefID
         RefID userRefID = allocStart;

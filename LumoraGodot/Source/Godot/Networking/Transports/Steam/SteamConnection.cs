@@ -14,6 +14,7 @@ using System.Runtime.InteropServices;
 using Steamworks;
 using Lumora.Nexus.Transport;
 using LumoraLogger = Lumora.Core.Logging.Logger;
+using System.Threading;
 
 namespace Lumora.Godot.Networking.Transports.Steam;
 
@@ -53,6 +54,8 @@ public sealed class SteamConnection : IConnection
     public Uri Address { get; internal set; } = null!;
     public string Identifier { get; }
     public ulong ReceivedBytes => _receivedBytes;
+    private long _sentBytes;
+    public ulong SentBytes => (ulong)Interlocked.Read(ref _sentBytes);
     // m_nPing is refreshed every transport Update via UpdateStats. Steam Datagram Relay is always
     // end-to-end encrypted, so IsEncrypted is unconditionally true once open. -xlinka
     public int Ping => IsOpen ? _lastMainStatus.m_nPing : -1;
@@ -120,6 +123,7 @@ public sealed class SteamConnection : IConnection
     {
         if (!IsOpen) return;
         if (length <= 0) return;
+        Interlocked.Add(ref _sentBytes, length);
 
         var handle = GCHandle.Alloc(data, GCHandleType.Pinned);
         try

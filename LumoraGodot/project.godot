@@ -16,6 +16,8 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 config/name="LumoraVR"
 run/main_scene="uid://c8sly288nngj4"
+config/use_custom_user_dir=true
+config/custom_user_dir_name="LumoraVR"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 config/icon="res://Assets/Textures/lumoravricon.svg"
 
@@ -42,6 +44,10 @@ window/size/always_on_top.editor=false
 [dotnet]
 
 project/assembly_name="Lumora"
+
+[editor]
+
+run/main_run_args="--Lumora-Debug"
 
 [filesystem]
 
@@ -211,18 +217,20 @@ menu_button={
 
 [rendering]
 
-renderer/rendering_method="forward_plus"
-; Only Android uses Mobile. Keep its override before the broader mobile fallback.
-renderer/rendering_method.android="mobile"
 renderer/rendering_method.mobile="forward_plus"
 textures/vram_compression/import_etc2_astc=true
 textures/default_filters/anisotropic_filtering_level=4
+anti_aliasing/quality/use_debanding=true
 mesh_lod/lod_change/threshold_pixels=2.0
+renderer/rendering_method.android="mobile"
 
 [xr]
 
 openxr/enabled=true
 openxr/foveation_eye_tracked=false
 openxr/startup_alert=false
+openxr/extensions/hand_tracking=true
+openxr/extensions/hand_tracking_unobstructed_data_source=true
+openxr/extensions/hand_tracking_controller_data_source=true
 shaders/enabled=true
 openxr/action_map="res://openxr_action_map.tres"

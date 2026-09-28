@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -68,6 +68,7 @@ public partial class LumoraEngineRunner : Node
 	private GodotKeyboardDriver _keyboardDriver = null!;
 	private GodotGamepadDriver _gamepadDriver = null!;
 	private GodotVRDriver _vrDriver = null!;
+	private SRanipalDriver? _sranipalDriver;
 	private ClipboardImporter _clipboardImporter = null!;
 	private LocalDB _localDB = null!;
 	private InspectorInputHandler _inspectorInputHandler = null!;
@@ -291,6 +292,7 @@ public partial class LumoraEngineRunner : Node
 		Lumora.Core.Assets.TextureVariantStore.PlatformDecoder = DecodeImageWithGodot;
 		Lumora.Core.Assets.TextureVariantStore.AnimatedDecoder = DecodeAnimatedWithGodot;
 		Lumora.Core.Assets.TextureVariantStore.PlatformHdrDecoder = DecodeHdrImageWithGodot;
+		Lumora.Core.Networking.AssetFetcher.ResourcePackReader = Lumora.Godot.Helpers.ResourcePackReader.Read;
 		// Godot object picking logs in stereo and is not part of engine-side interaction. - xlinka
 		GetViewport().PhysicsObjectPicking = false;
 
@@ -660,12 +662,83 @@ public partial class LumoraEngineRunner : Node
 		await Task.Delay(150); // Artificial delay to show phase message
 	}
 
+	// THE POOL HAS TO BE BIG ENOUGH FOR AN IMPORT BEFORE THE IMPORT STARTS.
+	//
+	// .NET starts with as many worker threads as there are cores and then grows by roughly ONE PER
+	// SECOND under load. Importing an avatar asks for well over a hundred assets in the same instant,
+	// each wanting a thread for its load state machine and another for its decode, so the work sat in
+	// a queue and drained at the injection rate rather than at the speed of the machine. Raising the
+	// floor costs nothing when idle - these are threads the pool is allowed to create, not threads it
+	// creates now - and removes a stall that reads as "the textures never loaded".
+	//
+	// Measured before: 67 texture loads started, 34 reads finished, 13 reached the GPU in 44 seconds.
+	// -xlinka
+	private static void WidenThreadPoolForAssetBursts()
+	{
+		try
+		{
+			System.Threading.ThreadPool.GetMinThreads(out int workers, out int completion);
+			int wantWorkers = System.Math.Max(workers, System.Math.Max(32, System.Environment.ProcessorCount * 2));
+			int wantCompletion = System.Math.Max(completion, 32);
+			if (wantWorkers == workers && wantCompletion == completion)
+				return;
+			if (System.Threading.ThreadPool.SetMinThreads(wantWorkers, wantCompletion))
+				LumoraLogger.Log($"Thread pool: minimum raised to {wantWorkers} workers / {wantCompletion} IO (was {workers}/{completion}).");
+			else
+				LumoraLogger.Warn($"Thread pool: refused a minimum of {wantWorkers}/{wantCompletion}; asset bursts will drain slowly.");
+		}
+		catch (Exception ex)
+		{
+			LumoraLogger.Warn($"Thread pool: could not raise the minimum ({ex.Message}).");
+		}
+	}
+
 	private void LogLaunchDiagnostics()
 	{
+		WidenThreadPoolForAssetBursts();
 		LumoraLogger.Log($"Runtime: .NET {System.Environment.Version}, OS={RuntimeInformation.OSDescription}, Arch={RuntimeInformation.ProcessArchitecture}, CPUs={System.Environment.ProcessorCount}");
 		LumoraLogger.Log($"Godot platform: {OS.GetName()}, model={SafeDiagnostic(OS.GetModelName)}");
+		// Every line above says Windows under Proton, and a bug report that says Windows when the
+		// machine is a Steam Deck wastes everybody's afternoon.
+		LumoraLogger.Log($"Host: {Lumora.Core.WinePlatform.Describe()}");
+
+		// WHEN THE CODE THAT IS ACTUALLY RUNNING WAS BUILT.
+		//
+		// Twice now a fix has been declared not to work off a log from a process that started before
+		// the build finished, and the only way to tell was to notice that a string added an hour ago
+		// was missing. The assemblies can say so themselves in one line. -xlinka
+		LogAssemblyStamp("LumoraCore", typeof(Lumora.Core.Engine).Assembly);
+		LogAssemblyStamp("LumoraHooks", typeof(Lumora.Godot.Hooks.SlotHook).Assembly);
+		Lumora.Core.WinePlatform.LogOnce();
 		LumoraLogger.Log($"Display: window={DisplayServer.WindowGetSize()}, screen={DisplayServer.ScreenGetSize()}");
 		LumoraLogger.Log($"Renderer: {SafeDiagnostic(RenderingServer.GetVideoAdapterName)}");
+	}
+
+	// The PE header's timestamp is what the compiler stamped in, which is the build, not a file copy.
+	// Deterministic builds put a content hash there instead; that is still a fingerprint that changes
+	// whenever the code does, so it answers the same question either way.
+	private static void LogAssemblyStamp(string name, Assembly assembly)
+	{
+		try
+		{
+			// Assembly.Location comes back EMPTY for anything loaded from a bundle or a byte array,
+			// which is how Godot loads these, so fall back to finding the file beside the app.
+			var path = assembly.Location;
+			if (string.IsNullOrEmpty(path))
+			{
+				var guess = System.IO.Path.Combine(AppContext.BaseDirectory, assembly.GetName().Name + ".dll");
+				if (System.IO.File.Exists(guess))
+					path = guess;
+			}
+			string stamp = string.IsNullOrEmpty(path) || !System.IO.File.Exists(path)
+				? "unknown"
+				: System.IO.File.GetLastWriteTime(path).ToString("HH:mm:ss");
+			LumoraLogger.Log($"Build: {name} written {stamp}");
+		}
+		catch (Exception ex)
+		{
+			LumoraLogger.Log($"Build: {name} stamp unavailable ({ex.Message})");
+		}
 	}
 
 	private static string SafeDiagnostic(Func<string> read)
@@ -737,11 +810,17 @@ public partial class LumoraEngineRunner : Node
 
 				// Without an explicit VR request a failed init just means no headset is up, which is every
 				// desktop launch; only a requested VR session that cannot start is worth a warning.
+				//
+				// Either way it says WHICH runtime was asked. A PC with more than one runtime installed
+				// has exactly one active, and the game only ever talks to that one: streaming over Steam
+				// Link while Virtual Desktop's runtime is active gets a truthful "no headset" from a
+				// runtime that was never going to have one, and until now the log said only "no headset
+				// session" and left the person to guess. -xlinka
+				var diagnosis = OpenXRRuntimeReport.DiagnoseNoHeadset();
 				if (_xrLaunchMode == XrLaunchMode.Vr)
-					LumoraLogger.Warn("XR: OpenXR Initialize() failed with VR mode requested - falling back to screen mode. " +
-						"Check that the active OpenXR runtime in Windows matches the headset you're using.");
+					LumoraLogger.Warn($"XR: OpenXR Initialize() failed with VR mode requested - falling back to screen mode. {diagnosis}");
 				else
-					LumoraLogger.Log("XR: OpenXR runtime present but no headset session - screen mode.");
+					LumoraLogger.Log($"XR: OpenXR runtime present but no headset session - screen mode. {diagnosis}");
 				GetViewport().UseXR = false;
 				await Task.Delay(120);
 				return;
@@ -835,53 +914,17 @@ public partial class LumoraEngineRunner : Node
 	{
 		if (_xrViewport != null && GodotObject.IsInstanceValid(_xrViewport))
 			return _xrViewport;
-
-		var sceneRoot = GetTree()?.CurrentScene ?? this;
-
-		if (UseRootViewportForXr)
-		{
-			_xrViewport = GetViewport();
-			LumoraLogger.Log("XR: rendering the headset from the ROOT viewport (no XR SubViewport).");
-			return _xrViewport;
-		}
-
-		var sub = sceneRoot.GetNodeOrNull<SubViewport>("%XRViewport");
-		if (sub == null)
-		{
-			sub = new SubViewport
-			{
-				Name = "XRViewport",
-				UniqueNameInOwner = true,
-				Size = new Vector2I(16, 16),
-				RenderTargetUpdateMode = SubViewport.UpdateMode.Always
-			};
-
-			sceneRoot.AddChild(sub);
-			sub.Owner = GetTree()?.CurrentScene;
-		}
-
-		var rootViewport = GetViewport();
-		if (rootViewport?.World3D != null)
-			sub.World3D = rootViewport.World3D;
-
-		sub.PhysicsObjectPicking = false;
-
-		var xrOrigin = sceneRoot.GetNodeOrNull<XROrigin3D>("%XROrigin3D");
-		if (xrOrigin != null && GodotObject.IsInstanceValid(xrOrigin) && xrOrigin.GetParent() != sub)
-			xrOrigin.Reparent(sub, keepGlobalTransform: true);
-
-		_xrViewport = sub;
+		_xrViewport = XRViewportLayout.Ensure(GetTree()?.CurrentScene ?? this, GetViewport(), UseRootViewportForXr);
 		return _xrViewport;
 	}
-
 	private void ConfigureOpenXRViewport(Viewport viewport)
 	{
 		if (viewport == null)
 			return;
 
 		DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
-		viewport.UseXR = true;
 		ViewportQuality.ConfigureOpenXRAfterInitialize(_openXRInterface, viewport, LumoraLogger.Log);
+		XRViewportLayout.ApplySessionState(GetViewport(), viewport, true, true);
 	}
 
 	private void ConnectOpenXREvents(OpenXRInterface xrInterface)
@@ -968,17 +1011,20 @@ public partial class LumoraEngineRunner : Node
 			return;
 
 		_xrIsFocused = false;
+		_engine?.InputInterface?.ReportHeadsetFocus(false);
 		LumoraLogger.Log("OpenXR: visible but not focused");
 	}
 
 	private void OnOpenXRFocusedState()
 	{
 		_xrIsFocused = true;
+		_engine?.InputInterface?.ReportHeadsetFocus(true);
 		LumoraLogger.Log("OpenXR: focused");
 	}
 
 	private void OnOpenXRStopping()
 	{
+		_engine?.InputInterface?.ReportHeadsetFocus(false);
 		LumoraLogger.Log("OpenXR: stopping");
 	}
 
@@ -1010,7 +1056,9 @@ public partial class LumoraEngineRunner : Node
 		// would otherwise sit right on the lens. It stays on its own layer for spectator/other views.
 		// The local head rides the same idea: LocalViewOverride moves the local avatar's head renderers
 		// onto LOCAL_HEAD_LAYER so these two cameras skip them, which is what lets the near plane sit at
-		// 2 cm instead of being used as a head-remover. -xlinka
+		// millimetres instead of being used as a head-remover. EYES_ONLY_LAYER is the mirror image and
+		// deliberately NOT in this mask: it carries the headless twin of a skinned body that only these
+		// two cameras are meant to draw; every other camera masks it off. -xlinka
 		uint hiddenAndOverlay = (uint)(Lumora.Godot.Helpers.RenderHelper.HIDDEN_LAYER
 			| Lumora.Godot.Helpers.RenderHelper.OVERLAY_LAYER
 			| Lumora.Godot.Helpers.RenderHelper.FREECAM_INDICATOR_LAYER
@@ -1206,7 +1254,15 @@ public partial class LumoraEngineRunner : Node
 		AddChild(_xrModeManager);
 		_xrModeManager.Initialize(
 			_engine, _headOutput, _inputInterface, _mainCamera, _vrDriver,
-			startingInVR: _vrInitializedAtBoot);
+			startingInVR: _vrInitializedAtBoot,
+			allowAutoVr: _xrLaunchMode != XrLaunchMode.Desktop);
+
+		// Mirrors and portals render from the eye the person is actually using, which only the mode
+		// manager knows across a desktop/VR switch.
+		Lumora.Godot.Helpers.RenderHelper.ViewerCamera = () =>
+			_xrModeManager != null && GodotObject.IsInstanceValid(_xrModeManager)
+				? _xrModeManager.CurrentCamera
+				: _mainCamera;
 
 		await Task.Delay(150); // Artificial delay to show phase message
 	}
@@ -1231,6 +1287,16 @@ public partial class LumoraEngineRunner : Node
 		_vrDriver.FindXRNodes(GetTree().Root);
 		_inputInterface.RegisterVRDriver(_vrDriver);
 		_vrDriver.LogRuntimeDiagnostics();
+
+		// Vendor eye and lip tracking, when the machine has the runtime for it. Registered after the
+		// VR driver so its UpdateOrder puts it after the OpenXR gaze floor, which it replaces on the
+		// hardware that can do better. Costs nothing on a machine without it: the gate is a file
+		// check and the whole driver stays unregistered. -xlinka
+		if (SRanipalDriver.ShouldRegister())
+		{
+			_sranipalDriver = new SRanipalDriver();
+			_inputInterface.RegisterInputDriver(_sranipalDriver);
+		}
 		LumoraLogger.Log($"Input drivers: keyboard={_keyboardDriver.GetType().Name}, mouse={_mouseDriver.GetType().Name}, gamepad={_gamepadDriver.ConnectedPadCount} pad(s), vr={_vrDriver.VRSystemName}, active={_vrDriver.IsVRActive}");
 
 		_localDB = new LocalDB();
@@ -1547,6 +1613,19 @@ public partial class LumoraEngineRunner : Node
 			LumoraLogger.Log("LoadingScreen: Hiding loading screen");
 			_loadingScreen.Hide();
 		}
+
+		// Bootstrap.tscn carries a DirectionalLight3D for the loading phase and nothing ever turned it
+		// off, so every world rendered under a second sun: a fixed 45 degree white fill at half energy
+		// WITH shadows, on top of whatever sun the world authored. A fill from a direction the sky does
+		// not agree with is the definition of flat lighting, and its cascade was a whole extra shadow
+		// pass per frame that no world asked for. Worlds carry their own lights; the loading visuals
+		// are unshaded and never needed it. -xlinka
+		var bootstrapSun = GetNodeOrNull<DirectionalLight3D>("%DirectionalLight3D");
+		if (bootstrapSun != null && bootstrapSun.Visible)
+		{
+			bootstrapSun.Visible = false;
+			LumoraLogger.Log("LumoraEngineRunner: bootstrap DirectionalLight3D off, worlds light themselves");
+		}
 	}
 
 	public override void _Process(double delta)
@@ -1610,6 +1689,7 @@ public partial class LumoraEngineRunner : Node
 		_headOutput?.UpdatePositioning(_engine);
 		_dashOverlay?.Tick(_engine);
 		_worldLoadOverlay?.Tick(_engine);
+		Lumora.Source.Godot.Rendering.CameraSanity.Check(GetViewport(), _xrViewport);
 		// Includes the telemetry send itself, so the profiler is honest about its own cost.
 		_hostTailMs = (System.Diagnostics.Stopwatch.GetTimestamp() - _tailTs) * _hostMspt;
 
@@ -1962,6 +2042,7 @@ public partial class LumoraEngineRunner : Node
 			HooksMs = profile.HooksMs,
 			EndMs = profile.EndMs,
 			LateMs = profile.LateMs,
+			ScriptsMs = profile.ScriptsMs,
 			RenderCpuMs = renderCpuMs,
 			RenderGpuMs = renderGpuMs,
 			FrameSetupCpuMs = RenderingServer.GetFrameSetupTimeCpu(),
@@ -2318,6 +2399,10 @@ public partial class LumoraEngineRunner : Node
 	{
 		LumoraLogger.Log("LumoraEngineRunner: Shutting down...");
 		DisconnectOpenXREvents();
+
+		// Hand the eye and lip cameras back before anything else goes down. A module left open keeps
+		// the SRanipal service holding them and the next app to ask gets BUSY.
+		_sranipalDriver?.Shutdown();
 
 		if (_ownsDebugConsoleLock && _debugConsoleInstanceMutex != null)
 		{

@@ -37,18 +37,23 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         _rigidBody.Name = "RigidBody_" + Owner.Slot.SlotName.Value;
 
         // This world's collision bit (BEFORE adding to tree): rigid bodies only interact with their
-        // own world's geometry. Legacy bit kept in the mask so pre-bit bodies still collide.
+        // own world's geometry.
         uint worldBit = WorldHook.GetCollisionBitFor(Owner?.World);
         _rigidBody.CollisionLayer = worldBit;
-        _rigidBody.CollisionMask = worldBit | 1u;
+        _rigidBody.CollisionMask = worldBit;
+        (Owner?.World?.Hook as WorldHook)?.RegisterBody(Owner?.Slot, _rigidBody.GetRid());
 
         if (Owner?.Slot != null)
         {
             _rigidBody.SetMeta("LumoraSlotRef", Owner.Slot.ReferenceID.ToDecimalString());
         }
 
+        // A world in the background keeps its bodies in the physics space, so its scripts still meet them.
+        _rigidBody.DisableMode = CollisionObject3D.DisableModeEnum.KeepActive;
         _rigidBody.ContactMonitor = true;
-        _rigidBody.MaxContactsReported = 4;
+        _rigidBody.MaxContactsReported = 16;
+        _rigidBody.BodyEntered += OnBodyEntered;
+        _rigidBody.BodyExited += OnBodyExited;
         _rigidBody.ContinuousCd = true;
 
         // Start frozen - we'll unfreeze after a few frames to let static colliders initialize first
@@ -123,94 +128,58 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         LumoraLogger.Debug($"RigidBodyHook: Position set for '{Owner.Slot.SlotName.Value}' at ({slotPos.x:F2}, {slotPos.y:F2}, {slotPos.z:F2})");
     }
 
+    private readonly Dictionary<Collider, CollisionShape3D> _colliderShapes = new();
+    private readonly List<Collider> _removedColliders = new();
+
     private void AddCollidersFromSlot()
     {
         if (_rigidBody == null) return;
-
-        int shapeCount = 0;
+        bool debugChanged = false;
         foreach (var component in Owner.Slot.Components)
         {
-            if (component is BoxCollider box)
+            if (component is not (BoxCollider or SphereCollider or CapsuleCollider or CylinderCollider)) continue;
+            var collider = (Collider)component;
+            bool created = !_colliderShapes.TryGetValue(collider, out var node);
+            if (created)
             {
-                AddBoxShape(box);
-                shapeCount++;
+                node = new CollisionShape3D { Name = collider.GetType().Name + "Shape" };
+                _rigidBody.AddChild(node);
+                _colliderShapes.Add(collider, node);
             }
-            else if (component is SphereCollider sphere)
+            var scale = Lumora.Godot.Helpers.ColliderShapeScaling.ScaleOf(collider);
+            var shape = Lumora.Godot.Helpers.ColliderShapeScaling.Update(collider, scale, node!.Shape, out bool changed);
+            if (!ReferenceEquals(node.Shape, shape)) node.Shape = shape;
+            var offset = Lumora.Godot.Helpers.ColliderShapeScaling.OffsetOf(collider, scale);
+            debugChanged |= created || changed || node.Position != offset;
+            if (node.Position != offset) node.Position = offset;
+            bool disabled = !collider.Enabled || !collider.Slot.IsActive
+                || collider.Type.Value == Lumora.Core.Physics.ColliderType.NoCollision;
+            if (node.Disabled != disabled) node.Disabled = disabled;
+        }
+        _removedColliders.Clear();
+        foreach (var pair in _colliderShapes)
+            if (pair.Key.IsDestroyed || pair.Key.Slot != Owner.Slot) _removedColliders.Add(pair.Key);
+        foreach (var collider in _removedColliders)
+        {
+            var node = _colliderShapes[collider];
+            _rigidBody.RemoveChild(node);
+            node.QueueFree();
+            _colliderShapes.Remove(collider);
+            debugChanged = true;
+        }
+        _hasCollisionShape = _colliderShapes.Count > 0;
+        if (!debugChanged) return;
+        ClearDebugEdges();
+        foreach (var node in _colliderShapes.Values)
+        {
+            switch (node.Shape)
             {
-                AddSphereShape(sphere);
-                shapeCount++;
-            }
-            else if (component is CapsuleCollider capsule)
-            {
-                AddCapsuleShape(capsule);
-                shapeCount++;
-            }
-            else if (component is CylinderCollider cylinder)
-            {
-                AddCylinderShape(cylinder);
-                shapeCount++;
+                case BoxShape3D box: AddDebugEdgesForBox(box.Size, node.Position); break;
+                case SphereShape3D sphere: AddDebugEdgesForSphere(sphere.Radius, node.Position); break;
+                case CapsuleShape3D capsule: AddDebugEdgesForCapsule(capsule.Radius, capsule.Height, node.Position); break;
+                case CylinderShape3D cylinder: AddDebugEdgesForCylinder(cylinder.Radius, cylinder.Height, node.Position); break;
             }
         }
-        _hasCollisionShape = shapeCount > 0;
-        LumoraLogger.Debug($"RigidBodyHook: Added {shapeCount} collision shapes for '{Owner.Slot.SlotName.Value}'");
-    }
-
-    private void AddBoxShape(BoxCollider box)
-    {
-        var shape = new CollisionShape3D();
-        shape.Name = "BoxShape";
-        var boxShape = new BoxShape3D();
-        var size = box.Size.Value;
-        var sizeVec = new Vector3(size.x, size.y, size.z);
-        boxShape.Size = sizeVec;
-        shape.Shape = boxShape;
-        var offset = new Vector3(box.Offset.Value.x, box.Offset.Value.y, box.Offset.Value.z);
-        shape.Position = offset;
-        shape.Disabled = false;
-        _rigidBody.AddChild(shape);
-        AddDebugEdgesForBox(sizeVec, offset);
-        LumoraLogger.Debug($"RigidBodyHook.AddBoxShape: size=({size.x}, {size.y}, {size.z}), disabled={shape.Disabled}, shapeValid={shape.Shape != null}");
-    }
-
-    private void AddSphereShape(SphereCollider sphere)
-    {
-        var shape = new CollisionShape3D();
-        shape.Name = "SphereShape";
-        var sphereShape = new SphereShape3D();
-        sphereShape.Radius = sphere.Radius.Value;
-        shape.Shape = sphereShape;
-        var offset = new Vector3(sphere.Offset.Value.x, sphere.Offset.Value.y, sphere.Offset.Value.z);
-        shape.Position = offset;
-        _rigidBody.AddChild(shape);
-        AddDebugEdgesForSphere(sphereShape.Radius, offset);
-    }
-
-    private void AddCapsuleShape(CapsuleCollider capsule)
-    {
-        var shape = new CollisionShape3D();
-        shape.Name = "CapsuleShape";
-        var capsuleShape = new CapsuleShape3D();
-        capsuleShape.Radius = capsule.Radius.Value;
-        capsuleShape.Height = capsule.Height.Value;
-        shape.Shape = capsuleShape;
-        var offset = new Vector3(capsule.Offset.Value.x, capsule.Offset.Value.y, capsule.Offset.Value.z);
-        shape.Position = offset;
-        _rigidBody.AddChild(shape);
-        AddDebugEdgesForCapsule(capsuleShape.Radius, capsuleShape.Height, offset);
-    }
-
-    private void AddCylinderShape(CylinderCollider cylinder)
-    {
-        var shape = new CollisionShape3D();
-        shape.Name = "CylinderShape";
-        var cylinderShape = new CylinderShape3D();
-        cylinderShape.Radius = cylinder.Radius.Value;
-        cylinderShape.Height = cylinder.Height.Value;
-        shape.Shape = cylinderShape;
-        var offset = new Vector3(cylinder.Offset.Value.x, cylinder.Offset.Value.y, cylinder.Offset.Value.z);
-        shape.Position = offset;
-        _rigidBody.AddChild(shape);
-        AddDebugEdgesForCylinder(cylinderShape.Radius, cylinderShape.Height, offset);
     }
 
     public override void ApplyChanges()
@@ -242,6 +211,16 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             }
         }
 
+        // A body this machine does not simulate is kinematic here and follows its object, so casts and
+        // searches meet it where it is. Nothing of it is written back to the object, and it reports no
+        // touches: those belong to the machine that simulates it. -xlinka
+        if (!Owner.IsSimulationOwner)
+        {
+            FollowSlot();
+            ReportTouches();
+            return;
+        }
+
         // Wait a few frames before enabling physics to let static colliders (ground) initialize
         // This prevents rigid bodies from falling through the ground before it exists
         _framesSinceInit++;
@@ -258,11 +237,9 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             }
         }
 
-        // Retry adding collision shapes if none were found during Initialize
-        if (!_hasCollisionShape)
-        {
-            AddCollidersFromSlot();
-        }
+        // Geometry, offsets and ancestor scale can change after the body was created.
+        // The shape updater only sends changed dimensions to the physics server.
+        AddCollidersFromSlot();
 
         // Only push a parameter the engine does not already hold. ApplyChanges runs every frame for the
         // simulation owner (RigidBody.OnUpdate queues it), and every one of these is a marshalled call
@@ -313,6 +290,17 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         // Throw hand-off: SET the velocity, never add. The body was kinematic a frame ago and whatever the
         // freeze/unfreeze left on it has nothing to do with the throw. A sleeping body swallows velocity
         // writes, so wake it first. Clamped below like any other live body.
+        if (Owner.HasPendingTeleport)
+        {
+            Owner.HasPendingTeleport = false;
+            var teleportPos = Owner.Slot.GlobalPosition;
+            var teleportRot = Owner.Slot.GlobalRotation;
+            _rigidBody.GlobalPosition = new Vector3(teleportPos.x, teleportPos.y, teleportPos.z);
+            _rigidBody.Quaternion = new Quaternion(teleportRot.x, teleportRot.y, teleportRot.z, teleportRot.w);
+            _rigidBody.LinearVelocity = Vector3.Zero;
+            _rigidBody.AngularVelocity = Vector3.Zero;
+            _rigidBody.Sleeping = false;
+        }
         if (Owner.HasPendingVelocity)
         {
             _rigidBody.Sleeping = false;
@@ -323,6 +311,8 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         }
 
         Owner.ClearPendingForces();
+
+        ReportTouches();
 
         // SLEEPING BODIES COST ONE READ. Godot has parked this body: its transform cannot change, its
         // velocity is zero, and there is nothing to clamp. Everything below - two velocity reads, two
@@ -384,6 +374,32 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         Owner.AngularVelocity.Value = new float3(angVel.X, angVel.Y, angVel.Z);
 
         SyncTransformToSlot();
+    }
+
+    private Vector3 _followPosition = new(float.NaN, float.NaN, float.NaN);
+    private Quaternion _followRotation = new(float.NaN, float.NaN, float.NaN, float.NaN);
+
+    private void FollowSlot()
+    {
+        if (!_rigidBody.Freeze || _rigidBody.FreezeMode != RigidBody3D.FreezeModeEnum.Kinematic)
+        {
+            // The mode before the freeze, so the body is never static for a step.
+            _rigidBody.FreezeMode = RigidBody3D.FreezeModeEnum.Kinematic;
+            _rigidBody.Freeze = true;
+            _rigidBody.LinearVelocity = Vector3.Zero;
+            _rigidBody.AngularVelocity = Vector3.Zero;
+        }
+        AddCollidersFromSlot();
+        var slotPos = Owner.Slot.GlobalPosition;
+        var slotRot = Owner.Slot.GlobalRotation;
+        var position = new Vector3(slotPos.x, slotPos.y, slotPos.z);
+        var rotation = new Quaternion(slotRot.x, slotRot.y, slotRot.z, slotRot.w);
+        if (position == _followPosition && rotation == _followRotation)
+            return;
+        _followPosition = position;
+        _followRotation = rotation;
+        _rigidBody.GlobalPosition = position;
+        _rigidBody.Quaternion = rotation;
     }
 
     private bool TryReparentToWorldRoot()
@@ -533,8 +549,142 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         // to avoid transform conflicts (RigidBody is a sibling of attachedNode, not a child)
     }
 
+    // TOUCHES. Godot says a body came into or out of contact from inside its physics step, where nothing of
+    // the world may be written, so the handlers only note the other node. ApplyChanges, on the world
+    // thread, hands the notes to World.Physics, which tells whatever watches either side. Only the peer
+    // simulating the body reports; a body frozen for a hold, made kinematic or handed to another peer ends
+    // every touch it had. -xlinka
+    private const int MaxTouchNotes = 64;
+    private readonly List<(bool Began, ulong Id, Node Other)> _touchNotes = new();
+    private readonly Dictionary<ulong, Lumora.Core.Slot?> _touching = new();
+
+    private void OnBodyEntered(Node body) => NoteTouch(true, body);
+
+    private void OnBodyExited(Node body) => NoteTouch(false, body);
+
+    private void NoteTouch(bool began, Node body)
+    {
+        if (body == null || !GodotObject.IsInstanceValid(body))
+            return;
+        lock (_touchNotes)
+        {
+            if (_touchNotes.Count < MaxTouchNotes)
+                _touchNotes.Add((began, body.GetInstanceId(), body));
+        }
+    }
+
+    private void ReportTouches()
+    {
+        (bool Began, ulong Id, Node Other)[] notes;
+        lock (_touchNotes)
+        {
+            notes = _touchNotes.ToArray();
+            _touchNotes.Clear();
+        }
+        var physics = Owner?.World?.Physics;
+        if (physics == null || !Owner!.IsSimulationOwner || Owner.IsKinematic.Value || IsHeld || _rigidBody.Freeze)
+        {
+            EndTouches();
+            return;
+        }
+
+        var hook = Owner.World.Hook as WorldHook;
+        foreach (var (began, id, other) in notes)
+        {
+            if (began)
+            {
+                if (_touching.ContainsKey(id))
+                    continue;
+                var slot = GodotObject.IsInstanceValid(other) ? hook?.SlotOfBody(other) : null;
+                _touching[id] = slot;
+                float3 point = Owner.Slot.GlobalPosition, normal = float3.Zero;
+                float impulse = 0f;
+                if (physics.HasContactWatchers(Owner.Slot) || physics.HasContactWatchers(slot))
+                    ReadContact(other, ref point, ref normal, ref impulse);
+                physics.ReportContactBegan(Owner.Slot, slot, point, normal, impulse);
+            }
+            else if (_touching.Remove(id, out var slot))
+            {
+                physics.ReportContactEnded(Owner.Slot, slot);
+            }
+        }
+        Owner.IsColliding = _touching.Count > 0;
+    }
+
+    // Where and how hard this body met the other, from the last physics step. Falls back to the middle
+    // between the two, with no impulse, if the step kept no contact for them.
+    private void ReadContact(Node other, ref float3 point, ref float3 normal, ref float impulse)
+    {
+        if (other is Node3D node3D && GodotObject.IsInstanceValid(node3D))
+        {
+            var mine = _rigidBody.GlobalPosition;
+            var theirs = node3D.GlobalPosition;
+            point = new float3((mine.X + theirs.X) * 0.5f, (mine.Y + theirs.Y) * 0.5f, (mine.Z + theirs.Z) * 0.5f);
+            var away = mine - theirs;
+            if (away.LengthSquared() > 1e-10f)
+            {
+                away = away.Normalized();
+                normal = new float3(away.X, away.Y, away.Z);
+            }
+        }
+
+        var state = PhysicsServer3D.BodyGetDirectState(_rigidBody.GetRid());
+        if (state == null || !GodotObject.IsInstanceValid(other))
+            return;
+        ulong otherId = other.GetInstanceId();
+        int found = 0;
+        Vector3 sum = Vector3.Zero, normals = Vector3.Zero;
+        float total = 0f;
+        int count = state.GetContactCount();
+        for (int i = 0; i < count; i++)
+        {
+            if (state.GetContactColliderId(i) != otherId)
+                continue;
+            sum += state.GetContactColliderPosition(i);
+            normals += state.GetContactLocalNormal(i);
+            total += state.GetContactImpulse(i).Length();
+            found++;
+        }
+        if (found == 0)
+            return;
+        sum /= found;
+        point = new float3(sum.X, sum.Y, sum.Z);
+        if (normals.LengthSquared() > 1e-10f)
+        {
+            normals = normals.Normalized();
+            normal = new float3(normals.X, normals.Y, normals.Z);
+        }
+        impulse = total;
+    }
+
+    private void EndTouches()
+    {
+        if (_touching.Count == 0)
+            return;
+        var physics = Owner?.World?.Physics;
+        var self = Owner?.Slot;
+        if (physics != null && self != null)
+        {
+            foreach (var slot in _touching.Values)
+                physics.ReportContactEnded(self, slot);
+        }
+        _touching.Clear();
+        if (Owner != null)
+            Owner.IsColliding = false;
+    }
+
     public override void Destroy(bool destroyingWorld)
     {
+        if (!destroyingWorld)
+            EndTouches();
+        lock (_touchNotes)
+            _touchNotes.Clear();
+        if (_rigidBody != null && GodotObject.IsInstanceValid(_rigidBody))
+        {
+            _rigidBody.BodyEntered -= OnBodyEntered;
+            _rigidBody.BodyExited -= OnBodyExited;
+            (Owner?.World?.Hook as WorldHook)?.UnregisterBody(Owner?.Slot, _rigidBody.GetRid());
+        }
         if (!destroyingWorld && _rigidBody != null && GodotObject.IsInstanceValid(_rigidBody))
         {
             _rigidBody.QueueFree();
@@ -737,4 +887,3 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         indices.Add(start + 1);
     }
 }
-

@@ -85,7 +85,8 @@ public sealed class AudioClipPlayer : Component, IWorldAudioDataSource, IPlayabl
 
     public bool IsClipReady => Clip.Asset?.IsReady == true;
 
-    public string? LoadError => Clip.Asset?.FailureReason;
+    // Why the clip did not load, from its provider, which alone can see a failed load.
+    public string? LoadError => (Clip.Target as IUrlAssetProvider)?.LoadFailure ?? Clip.Asset?.FailureReason;
 
     // TRANSPORT
 

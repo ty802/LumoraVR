@@ -65,6 +65,8 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
 
         _characterBody = new CharacterBody3D();
         _characterBody.Name = $"@CharacterBody3D_{Owner?.Slot?.Name?.Value ?? "Unknown"}";
+        // Kept in the physics space while its world is in the background, like every body of the world.
+        _characterBody.DisableMode = CollisionObject3D.DisableModeEnum.KeepActive;
 
         // Parent to world root: MoveAndSlide operates in world space and the
         // body is re-based from the slot every step, so it must not inherit
@@ -79,11 +81,20 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         _characterBody.FloorMaxAngle = Mathf.DegToRad(45f);
         _characterBody.WallMinSlideAngle = Mathf.DegToRad(15f);
 
-        // This world's collision bit (plus the legacy default bit) so the character only ever
-        // collides with geometry in its own world - overlay/userspace bodies are invisible to it.
+        // This world's collision bit so the character only ever collides with geometry in its own
+        // world - overlay/userspace bodies are invisible to it. Registered under the user root so a
+        // laser cast from the wearer's own hand can put the capsule on its exclude list up front;
+        // the body itself stays untagged (no slot meta), see DesktopCameraController. -xlinka
         uint worldBit = WorldHook.GetCollisionBitFor(Owner?.World);
-        _characterBody.CollisionLayer = worldBit;
-        _characterBody.CollisionMask = worldBit | 1u;
+        uint characterBit = WorldHook.GetCharacterCollisionBitFor(Owner?.World);
+        // The LAYER keeps the world's general bit so everything that was finding this capsule still
+        // finds it - triggers, queries, other characters. The MASK is the character bit alone, and
+        // that is the whole change: a walking body now stops against the geometry that says it
+        // should, rather than against everything in the world. Characters keep the character bit on
+        // their layer too, so two people still bump into each other exactly as before. -xlinka
+        _characterBody.CollisionLayer = worldBit | characterBit;
+        _characterBody.CollisionMask = characterBit;
+        (Owner?.World?.Hook as WorldHook)?.RegisterBody(Owner?.Slot, _characterBody.GetRid());
 
         // Initialize crouch state
         _currentHeight = Owner!.StandingHeight;
@@ -174,8 +185,22 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         return root.LocalPointToGlobal(local);
     }
 
+    // Everything here scales LINEARLY with the person's size: walk speed, jump speed and gravity
+    // alike. A half-size person under full-size gravity falls like a dropped coin and jumps like a
+    // flea. -xlinka
+    private const float Gravity = 9.81f;
+
+    private float UserScale()
+    {
+        float y = Owner?.Slot?.GlobalScale.y ?? 1f;
+        if (float.IsNaN(y) || float.IsInfinity(y))
+            return 1f;
+        return Mathf.Clamp(Mathf.Abs(y), 0.01f, 100f);
+    }
+
     private void StepMovement(float delta)
     {
+        float scale = UserScale();
         // Apply gravity
         if (_characterBody.IsOnFloor())
         {
@@ -185,7 +210,12 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         }
         else
         {
-            _velocity.Y -= 9.81f * delta * 2.0f; // 2x gravity for snappier feel
+            // ONE gravity, standard 9.81. This was doubled "for a snappier feel", which on a
+            // monitor is a preference and in a headset is the whole difference between a jump and a
+            // lurch: a 6 m/s launch under 19.6 m/s^2 peaks in 0.3 s, and the vestibular system reads
+            // that acceleration as the room dropping. Same launch under 9.81 peaks in 0.6 s and reads
+            // as a jump. -xlinka
+            _velocity.Y -= Gravity * scale * delta;
         }
 
         // Smoothly transition crouch height
@@ -203,7 +233,7 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
             // Grounded: drive horizontal velocity directly to the target speed (instant traction).
             if (hasInput)
             {
-                float speed = _isCrouching ? Owner.CrouchSpeed : Owner.Speed;
+                float speed = (_isCrouching ? Owner.CrouchSpeed : Owner.Speed) * scale;
                 if (!_isCrouching && Owner.IsSprinting)
                     speed *= Owner.SprintMultiplier;
                 speed = ApplySurfaceParameter(CharacterControllerParameter.TractionSpeed, speed);
@@ -213,8 +243,8 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
             else
             {
                 // Decelerate to stop on the ground only.
-                _velocity.X = Mathf.MoveToward(_velocity.X, 0, Owner.Speed * delta * 10);
-                _velocity.Z = Mathf.MoveToward(_velocity.Z, 0, Owner.Speed * delta * 10);
+                _velocity.X = Mathf.MoveToward(_velocity.X, 0, Owner.Speed * scale * delta * 10);
+                _velocity.Z = Mathf.MoveToward(_velocity.Z, 0, Owner.Speed * scale * delta * 10);
             }
         }
         else if (hasInput)
@@ -226,9 +256,10 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
             var horiz = new Vector2(_velocity.X, _velocity.Z);
             var dir = new Vector2(_moveDirection.X, _moveDirection.Z).Normalized();
             float along = horiz.Dot(dir);
-            if (along < Owner.AirSpeed)
+            float airSpeed = Owner.AirSpeed * scale;
+            if (along < airSpeed)
             {
-                float add = Mathf.Min(AirControlAcceleration * delta, Owner.AirSpeed - along);
+                float add = Mathf.Min(AirControlAcceleration * scale * delta, airSpeed - along);
                 _velocity.X += dir.X * add;
                 _velocity.Z += dir.Y * add;
             }
@@ -238,7 +269,7 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         // Apply jump
         if (_jumpRequested && _characterBody.IsOnFloor())
         {
-            _velocity.Y = ApplySurfaceParameter(CharacterControllerParameter.TractionJumpSpeed, Owner.JumpSpeed);
+            _velocity.Y = ApplySurfaceParameter(CharacterControllerParameter.TractionJumpSpeed, Owner.JumpSpeed * scale);
             _jumpRequested = false;
         }
 
@@ -439,6 +470,10 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
 
     public override void Destroy(bool destroyingWorld)
     {
+        if (_characterBody != null && GodotObject.IsInstanceValid(_characterBody))
+        {
+            (Owner?.World?.Hook as WorldHook)?.UnregisterBody(Owner?.Slot, _characterBody.GetRid());
+        }
         if (!destroyingWorld && _characterBody != null && GodotObject.IsInstanceValid(_characterBody))
         {
             _characterBody.QueueFree();

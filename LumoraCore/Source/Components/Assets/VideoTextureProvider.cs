@@ -407,6 +407,8 @@ public sealed class VideoTextureProvider : DynamicAssetProvider<VideoTexture>, I
 
     public Uri? SourceUrl => URL.Value;
 
+    public string? LoadFailure => URL.Value == null || string.IsNullOrEmpty(LoadError.Value) ? null : LoadError.Value;
+
     public bool IsLoadPending
     {
         get

@@ -46,6 +46,19 @@ public abstract class StaticAssetProvider<A> : AssetProvider<A>, IAssetRequester
         }
     }
 
+    // Asset hides a failed instance, so this is the one way to its reason. An address changed since the
+    // request no longer counts as failed.
+    public string? LoadFailure
+    {
+        get
+        {
+            var asset = _asset;
+            if (asset == null || asset.LoadState != AssetLoadState.Failed || URL.Value != _requestedSourceUrl)
+                return null;
+            return asset.LoadFailureReason ?? $"could not load {URL.Value}";
+        }
+    }
+
     // The raw state for a diagnostic line, and nothing else reads it. Asset hides the instance until it
     // is loaded, so from outside "not loaded" is indistinguishable from "never asked for" - and those
     // are different bugs: the first is a decode still running or failed, the second is a provider with
@@ -155,6 +168,10 @@ public abstract class StaticAssetProvider<A> : AssetProvider<A>, IAssetRequester
                 if (_asset == asset)
                     _asset = null;
                 AssetRemoved();
+                break;
+            case AssetLoadState.Failed:
+                // Nothing more is coming: whoever holds this has to hear it, to say why.
+                AssetUpdated();
                 break;
         }
     }

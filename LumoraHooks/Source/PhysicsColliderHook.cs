@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Godot;
@@ -39,6 +39,7 @@ namespace Lumora.Godot.Hooks
         private float3[]? _meshBakeSource;
         private int _meshBakeIndexCount;
         private Vector3 _meshBakeScale;
+
         private bool _meshBakeConvex;
 
         // Hull-shape bake key. The hull itself is solved engine-side and cached there, so all this
@@ -81,8 +82,16 @@ namespace Lumora.Godot.Hooks
                 // BuildShape and UpdateTransform run below on every path; no need to do them twice.
             }
 
-            bool shouldBeDynamic = Owner.Mass.Value > 0.0001f && Owner.Type.Value != ColliderType.Static;
-            if (shouldBeDynamic != _isDynamic)
+            // A sensor is never dynamic, whatever its mass says: Collider.Mass defaults to 1, and asking
+            // the mass alone here tore every Trigger, image and grabbable sensor down and rebuilt it on
+            // EVERY apply (a body collider on a moving bone applies every frame). The rebuilt Area3D kept
+            // Godot's default layer 1 because the layer cache below still matched, so a worn avatar's
+            // bone capsules sat on the one bit every world's query used to read, and the userspace
+            // dash pointer landed on the wearer's arm. -xlinka
+            bool shouldBeSensor = ShouldBeSensor();
+            bool shouldBeDynamic = !shouldBeSensor && Owner.Mass.Value > 0.0001f && Owner.Type.Value != ColliderType.Static;
+            bool isSensor = _bodyNode is Area3D;
+            if (shouldBeDynamic != _isDynamic || shouldBeSensor != isSensor)
             {
                 DestroyBody(true);
                 CreateBody();
@@ -107,9 +116,19 @@ namespace Lumora.Godot.Hooks
             // their root, and you walk into geometry that is not on screen. -xlinka
             bool enabled = (Owner?.Enabled ?? false) && (Owner?.Slot?.IsActive ?? false);
             uint layer = enabled ? worldBit : 0u;
+
+            // A collider that stops a walking body carries the world's character bit as well, and
+            // that bit is the only thing the character's capsule is looking for. One that does not -
+            // an imported model, a decorative prop - stays on the general bit, where lasers still hit
+            // it and physics objects still rest on it, and a person walks straight through. -xlinka
+            if (enabled && !(_bodyNode is Area3D) && (Owner?.CharacterCollider.Value ?? false)
+                && Owner?.Type.Value != Lumora.Core.Physics.ColliderType.Trigger)
+            {
+                layer |= WorldHook.GetCharacterCollisionBitFor(Owner?.World);
+            }
             // sensor only (Area3D). on physics layer for engine-side interaction, mask=0 so nothing
             // pushes against it - xlinka
-            uint mask = _bodyNode is Area3D ? 0u : (enabled ? (worldBit | 1u) : 0u);
+            uint mask = _bodyNode is Area3D ? 0u : (enabled ? worldBit : 0u);
 
             if (enabled != _lastEnabled)
             {
@@ -148,25 +167,32 @@ namespace Lumora.Godot.Hooks
             }
             else if (_isDynamic)
             {
+                // Kinematic: with no RigidBody on the slot nothing carries a simulated pose back to the
+                // object, so a live body here fell away from it on every machine while casts kept meeting
+                // the body. It follows its object, like a static one, and pushes what it moves into. -xlinka
                 _material = new PhysicsMaterial { Friction = 1f, Bounce = 0f };
-                var rigid = new RigidBody3D
+                _bodyNode = new RigidBody3D
                 {
                     Name = "RigidCollider",
                     PhysicsMaterialOverride = _material,
-                    Mass = Owner.Mass.Value
+                    Mass = Owner.Mass.Value,
+                    FreezeMode = RigidBody3D.FreezeModeEnum.Kinematic,
+                    Freeze = true,
                 };
-                _bodyNode = rigid;
             }
             else
             {
                 _material = new PhysicsMaterial { Friction = 1f, Bounce = 0f };
-                var staticBody = new StaticBody3D
+                _bodyNode = new StaticBody3D
                 {
                     Name = "StaticCollider",
                     PhysicsMaterialOverride = _material
                 };
-                _bodyNode = staticBody;
             }
+
+            // A world in the background keeps its bodies in the physics space, so its scripts still meet them.
+            if (_bodyNode is CollisionObject3D kept)
+                kept.DisableMode = CollisionObject3D.DisableModeEnum.KeepActive;
 
             _collisionShape = new CollisionShape3D { Name = "Shape" };
             _bodyNode.AddChild(_collisionShape);
@@ -180,96 +206,43 @@ namespace Lumora.Godot.Hooks
             Node3D worldRoot = (Owner?.World?.GodotSceneRoot as Node3D)!;
             Node parentNode = (Node)worldRoot ?? attachedNode!;
             parentNode.AddChild(_bodyNode);
+
+            if (_bodyNode is CollisionObject3D created)
+            {
+                _registeredRid = created.GetRid();
+                _registeredSlot = Owner?.Slot;
+                (Owner?.World?.Hook as WorldHook)?.RegisterBody(_registeredSlot, _registeredRid);
+            }
         }
+
+        // What was handed to the world's body registry, so the same pair comes back out on destroy.
+        private Rid _registeredRid;
+        private Lumora.Core.Slot? _registeredSlot;
 
         private void BuildShape()
         {
             if (_collisionShape == null || !GodotObject.IsInstanceValid(_collisionShape))
                 return;
 
-            // Update existing shape in-place if possible, otherwise create new
-            switch (Owner)
+            var scale = Lumora.Godot.Helpers.ColliderShapeScaling.ScaleOf(Owner);
+            var primitive = Lumora.Godot.Helpers.ColliderShapeScaling.Update(Owner, scale, _shape, out _);
+            if (primitive != null)
             {
-                case BoxCollider box:
-                    float3 size = box.Size.Value;
-                    if (_shape is BoxShape3D existingBox)
-                    {
-                        // Re-writing the same extents re-cooks the shape and wakes everything resting on
-                        // it, and a moving collider lands here every frame. Only push a real change.
-                        var boxSize = new Vector3(size.x, size.y, size.z);
-                        if (existingBox.Size != boxSize)
-                            existingBox.Size = boxSize;
-                    }
-                    else
-                    {
-                        _shape = new BoxShape3D { Size = new Vector3(size.x, size.y, size.z) };
-                        _collisionShape.Shape = _shape;
-                    }
-                    break;
-                case CapsuleCollider capsule:
-                    if (_shape is CapsuleShape3D existingCap)
-                    {
-                        if (existingCap.Radius != capsule.Radius.Value)
-                            existingCap.Radius = capsule.Radius.Value;
-                        if (existingCap.Height != capsule.Height.Value)
-                            existingCap.Height = capsule.Height.Value;
-                    }
-                    else
-                    {
-                        _shape = new CapsuleShape3D { Radius = capsule.Radius.Value, Height = capsule.Height.Value };
-                        _collisionShape.Shape = _shape;
-                    }
-                    break;
-                case SphereCollider sphere:
-                    if (_shape is SphereShape3D existingSph)
-                    {
-                        if (existingSph.Radius != sphere.Radius.Value)
-                            existingSph.Radius = sphere.Radius.Value;
-                    }
-                    else
-                    {
-                        _shape = new SphereShape3D { Radius = sphere.Radius.Value };
-                        _collisionShape.Shape = _shape;
-                    }
-                    break;
-                case CylinderCollider cylinder:
-                    if (_shape is CylinderShape3D existingCyl)
-                    {
-                        if (existingCyl.Radius != cylinder.Radius.Value)
-                            existingCyl.Radius = cylinder.Radius.Value;
-                        if (existingCyl.Height != cylinder.Height.Value)
-                            existingCyl.Height = cylinder.Height.Value;
-                    }
-                    else
-                    {
-                        _shape = new CylinderShape3D { Radius = cylinder.Radius.Value, Height = cylinder.Height.Value };
-                        _collisionShape.Shape = _shape;
-                    }
-                    break;
-                case Lumora.Core.Components.MeshCollider meshCollider:
-                    BuildMeshShape(meshCollider);
-                    break;
-                case ConvexHullCollider hullCollider:
-                    BuildConvexHullShape(hullCollider);
-                    break;
-                case ConeCollider cone:
-                    // Godot has no cone primitive: convex hull of the base ring + apex.
-                    _shape = BuildConeShape(cone.Radius.Value, cone.Height.Value);
+                if (!ReferenceEquals(_shape, primitive))
+                {
+                    _shape = primitive;
                     _collisionShape.Shape = _shape;
-                    break;
-                case TriangleCollider triangle:
-                    _shape = BuildTriangleShape(triangle.A.Value, triangle.B.Value, triangle.C.Value);
-                    _collisionShape.Shape = _shape;
-                    break;
-                default:
-                    LumoraLogger.Warn($"PhysicsColliderHook: Unknown collider type {Owner.GetType().Name}");
-                    return;
+                }
             }
+            else if (Owner is Lumora.Core.Components.MeshCollider meshCollider)
+                BuildMeshShape(meshCollider);
+            else if (Owner is ConvexHullCollider hullCollider)
+                BuildConvexHullShape(hullCollider);
+            else
+                return;
 
-            var offset = Owner.Offset.Value;
-            var offsetVector = new Vector3(offset.x, offset.y, offset.z);
-            if (_collisionShape.Position != offsetVector)
-                _collisionShape.Position = offsetVector;
+            var offsetVector = Lumora.Godot.Helpers.ColliderShapeScaling.OffsetOf(Owner, scale);
+            if (_collisionShape.Position != offsetVector) _collisionShape.Position = offsetVector;
 
             if (ShouldShowDebugForCollider())
             {
@@ -464,16 +437,16 @@ namespace Lumora.Godot.Hooks
             switch (Owner)
             {
                 case BoxCollider box:
-                    var boxSize = box.Size.Value;
+                    var boxSize = ((BoxShape3D)_shape).Size;
                     if (isImageCollider)
                     {
-                        _debugMesh.Mesh = BuildBoxWireMesh(new Vector3(boxSize.x, boxSize.y, boxSize.z));
+                        _debugMesh.Mesh = BuildBoxWireMesh(boxSize);
                         material.AlbedoColor = new Color(0.75f, 0.2f, 1.0f, 1.0f);
                     }
                     else
                     {
                         var boxMesh = new BoxMesh();
-                        boxMesh.Size = new Vector3(boxSize.x, boxSize.y, boxSize.z);
+                        boxMesh.Size = boxSize;
                         _debugMesh.Mesh = boxMesh;
                         material.AlbedoColor = new Color(0.2f, 0.5f, 1.0f, 0.3f);
                     }
@@ -481,24 +454,25 @@ namespace Lumora.Godot.Hooks
 
                 case CapsuleCollider capsule:
                     var capsuleMesh = new CapsuleMesh();
-                    capsuleMesh.Radius = capsule.Radius.Value;
-                    capsuleMesh.Height = capsule.Height.Value;
+                    capsuleMesh.Radius = ((CapsuleShape3D)_shape).Radius;
+                    capsuleMesh.Height = ((CapsuleShape3D)_shape).Height;
                     _debugMesh.Mesh = capsuleMesh;
                     material.AlbedoColor = new Color(0.2f, 1.0f, 0.5f, 0.3f); // Green for capsule
                     break;
 
                 case SphereCollider sphere:
                     var sphereMesh = new SphereMesh();
-                    sphereMesh.Radius = sphere.Radius.Value;
+                    sphereMesh.Radius = ((SphereShape3D)_shape).Radius;
+                    sphereMesh.Height = sphereMesh.Radius * 2f;
                     _debugMesh.Mesh = sphereMesh;
                     material.AlbedoColor = new Color(1.0f, 0.5f, 0.2f, 0.3f); // Orange for sphere
                     break;
 
                 case CylinderCollider cylinder:
                     var cylinderMesh = new CylinderMesh();
-                    cylinderMesh.TopRadius = cylinder.Radius.Value;
-                    cylinderMesh.BottomRadius = cylinder.Radius.Value;
-                    cylinderMesh.Height = cylinder.Height.Value;
+                    cylinderMesh.TopRadius = ((CylinderShape3D)_shape).Radius;
+                    cylinderMesh.BottomRadius = ((CylinderShape3D)_shape).Radius;
+                    cylinderMesh.Height = ((CylinderShape3D)_shape).Height;
                     _debugMesh.Mesh = cylinderMesh;
                     material.AlbedoColor = new Color(0.8f, 0.2f, 0.8f, 0.3f); // Purple for cylinder
                     break;
@@ -506,8 +480,7 @@ namespace Lumora.Godot.Hooks
 
             _debugMesh.MaterialOverride = material;
 
-            var offset = Owner.Offset.Value;
-            _debugMesh.Position = new Vector3(offset.x, offset.y, offset.z);
+            _debugMesh.Position = _collisionShape.Position;
 
             _bodyNode.AddChild(_debugMesh);
         }
@@ -650,6 +623,7 @@ namespace Lumora.Godot.Hooks
 
             if (position == _lastBodyPosition && rotation == _lastBodyRotation)
                 return;
+
             _lastBodyPosition = position;
             _lastBodyRotation = rotation;
 
@@ -673,6 +647,20 @@ namespace Lumora.Godot.Hooks
 
         private void DestroyBody(bool queueFree)
         {
+            if (_registeredRid.IsValid)
+            {
+                (Owner?.World?.Hook as WorldHook)?.UnregisterBody(_registeredSlot, _registeredRid);
+                _registeredRid = default;
+                _registeredSlot = null;
+            }
+            // A body built after this one starts from Godot's defaults (layer 1, mask 1, visible), so
+            // the caches must not claim those values were already pushed.
+            _lastEnabled = false;
+            _lastLayer = uint.MaxValue;
+            _lastMask = uint.MaxValue;
+            _lastBodyPosition = new Vector3(float.NaN, float.NaN, float.NaN);
+            _lastBodyRotation = new Quaternion(float.NaN, float.NaN, float.NaN, float.NaN);
+
             if (_debugMesh != null && GodotObject.IsInstanceValid(_debugMesh) && queueFree)
             {
                 _debugMesh.QueueFree();
@@ -695,4 +683,3 @@ namespace Lumora.Godot.Hooks
         }
     }
 }
-

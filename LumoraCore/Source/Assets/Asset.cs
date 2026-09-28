@@ -96,6 +96,12 @@ public abstract class Asset : IAsset
         AssetManager = manager ?? Lumora.Core.Engine.Current?.AssetManager!;
     }
 
+    public void NotifyBackingReady()
+    {
+        if (Owner is IAssetProvider provider)
+            provider.NotifyAssetUpdated();
+    }
+
     public void SetOwner(object owner)
     {
         if (Owner != null)
@@ -134,9 +140,14 @@ public abstract class Asset : IAsset
         }
     }
 
+    // Why the load failed, kept for whoever asks the provider: every failure passes through FailLoad, an
+    // exception out of the load included.
+    public string? LoadFailureReason { get; private set; }
+
     protected void FailLoad(string reason)
     {
         LumoraLogger.Log($"Failed Load: {reason}, for: {AssetURL}, instance: {GetHashCode()}");
+        LoadFailureReason = reason;
         SetLoadState(AssetLoadState.Failed);
     }
 

@@ -23,16 +23,96 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
     // Cap the skip-and-retry loop that scopes shared-space queries to this world.
     private const int MaxQueryIterations = 16;
 
-    // Per-world collision layer bit: every physics body in this world carries it, and this world's
-    // queries mask to it, so cross-world hits become impossible at the physics level instead of
-    // being filtered by the retry loop (which stays as a fallback for legacy bit-0 bodies and
-    // caller excludes). 31 bits rotate; bit 0 is the legacy default shared by pre-bit bodies.
-    private static int _nextWorldBitIndex;
+    // Per-world collision layer bit: every physics body in this world carries it and nothing else,
+    // and this world's queries mask to it alone. All worlds share one physics space, so the mask is
+    // the only thing that keeps a userspace cast off a session avatar; the retry loop below only
+    // has to deal with bodies of this world that cannot be resolved to a slot (another user's
+    // character capsule carries no slot tag). Bit 0 is Godot's default for a body whose layer was
+    // never written; it is deliberately in NO mask, so a body that slipped through unassigned is
+    // invisible rather than visible to every world. 31 bits rotate. -xlinka
+    private static readonly bool[] _bitPairsHeld = new bool[15];
+    private static int _nextSharedPair;
+    private int _bitPair = -1;
     public uint CollisionBit { get; private set; } = 1u;
 
-    // The bit for a body that should collide/query within the given world (1 = legacy default).
+    // The bit a collider ALSO sits on when it is meant to stop a walking body.
+    //
+    // Godot decides a character's collisions from the CHARACTER's mask against the other body's
+    // layer, one direction only, so the only way to say "this one blocks you and that one does not"
+    // is to put them on different layers. Hence two bits per world rather than one: the general bit
+    // that everything physical shares, and this one that only character-blocking geometry carries.
+    //
+    // The cost is the number of worlds that can be open at once, which goes from 31 to 15. Fifteen
+    // is userspace, a local home and thirteen sessions. A world takes the lowest pair no open world
+    // holds and gives it back when it closes: a world in the background keeps its bodies in the
+    // physics space, so two open worlds on one pair would collide. Only with all fifteen held does a
+    // sixteenth share one, the first in turn. -xlinka
+    public uint CharacterCollisionBit { get; private set; } = 2u;
+
+    public static uint GetCharacterCollisionBitFor(World? world)
+        => (world?.Hook as WorldHook)?.CharacterCollisionBit ?? 2u;
+
+    // The bit for a body that should collide/query within the given world (1 = unassigned; no
+    // query masks it in).
     public static uint GetCollisionBitFor(World? world)
         => (world?.Hook as WorldHook)?.CollisionBit ?? 1u;
+
+    // Every physics body of this world by the slot that owns it, registered by the collider hooks
+    // on creation. A caster that names the slots it wants skipped gets their RIDs put on the query
+    // exclude list up front, one query, instead of hitting each one and casting again behind it:
+    // a laser pointing down its own arm crosses the hand, forearm and upper arm capsules in turn,
+    // and each of those used to cost a full re-query out of a budget of eight. -xlinka
+    private readonly Dictionary<Lumora.Core.Slot, List<Rid>> _bodiesBySlot = new();
+
+    // World roots by node, so a hit on another world's body can be named in the diagnostic below.
+    private static readonly Dictionary<Node, WorldHook> _hooksByRoot = new();
+
+    // Once per distinct collider: what the userspace world's cast touched, accepted or not, with the
+    // world it belongs to and the layer it was on. Read a field report against this line. -xlinka
+    private readonly HashSet<ulong> _reportedUserspaceHits = new();
+
+    // Which slot each registered body stands for, the other way round: a touch reported against a body
+    // names it by its node, and a user's character body carries no slot tag of its own.
+    private readonly Dictionary<Rid, Lumora.Core.Slot> _slotsByBody = new();
+
+    public void RegisterBody(Lumora.Core.Slot? slot, Rid rid)
+    {
+        if (slot == null || !rid.IsValid)
+            return;
+        _slotsByBody[rid] = slot;
+        if (!_bodiesBySlot.TryGetValue(slot, out var rids))
+        {
+            rids = new List<Rid>(1);
+            _bodiesBySlot[slot] = rids;
+        }
+        if (!rids.Contains(rid))
+            rids.Add(rid);
+    }
+
+    public void UnregisterBody(Lumora.Core.Slot? slot, Rid rid)
+    {
+        if (_slotsByBody.TryGetValue(rid, out var registered) && ReferenceEquals(registered, slot))
+            _slotsByBody.Remove(rid);
+        if (slot == null || !_bodiesBySlot.TryGetValue(slot, out var rids))
+            return;
+        rids.Remove(rid);
+        if (rids.Count == 0)
+            _bodiesBySlot.Remove(slot);
+    }
+
+    private void AddRegisteredExcludes(IReadOnlyList<Lumora.Core.Slot>? exclude, global::Godot.Collections.Array<Rid> excludeRids)
+    {
+        if (exclude == null || _bodiesBySlot.Count == 0)
+            return;
+        for (int i = 0; i < exclude.Count; i++)
+        {
+            var slot = exclude[i];
+            if (slot == null || !_bodiesBySlot.TryGetValue(slot, out var rids))
+                continue;
+            for (int r = 0; r < rids.Count; r++)
+                excludeRids.Add(rids[r]);
+        }
+    }
 
     public static WorldHook Constructor()
     {
@@ -42,7 +122,10 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
     public void Initialize(World owner)
     {
         Owner = owner;
-        CollisionBit = 1u << (1 + System.Threading.Interlocked.Increment(ref _nextWorldBitIndex) % 31);
+        // Bits come in pairs: 1 and 2 for the first pair, 3 and 4 for the next, and so on up to 30.
+        int worldIndex = TakeBitPair();
+        CollisionBit = 1u << (1 + worldIndex * 2);
+        CharacterCollisionBit = 1u << (2 + worldIndex * 2);
 
         var worldManagerHook = Owner.WorldManager.Hook as WorldManagerHook;
         WorldRoot = new Node3D();
@@ -61,6 +144,10 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         WorldRoot.Position = Vector3.Zero;
         WorldRoot.Rotation = Vector3.Zero;
         WorldRoot.Scale = Vector3.One;
+        lock (_hooksByRoot)
+        {
+            _hooksByRoot[WorldRoot] = this;
+        }
 
         Owner.GodotSceneRoot = WorldRoot;
 
@@ -170,23 +257,32 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         var query = PhysicsRayQueryParameters3D.Create(from, from + dir * maxDistance);
         query.CollideWithBodies = true;
         query.CollideWithAreas = hitTriggers; // grabbable / image colliders are Area3D sensors
-        // This world's bit plus the legacy default bit (pre-bit bodies); the retry loop below
-        // still world-checks whatever comes through.
-        query.CollisionMask = CollisionBit | 1u;
+        // This world's bit and nothing else: a body of another world is not a candidate, whatever
+        // the retry loop would have made of it.
+        query.CollisionMask = CollisionBit;
         var excludeRids = new global::Godot.Collections.Array<Rid>();
+        // Excluded slots whose bodies are registered go on the list before the first query, so the
+        // ray never sees them and never has to be cast again behind them.
+        AddRegisteredExcludes(exclude, excludeRids);
         query.Exclude = excludeRids;
 
-        // Scope to this world: all worlds currently share one Godot physics space, so skip + retry
-        // past colliders that belong to a different world (or a caller-excluded slot) until a valid
-        // in-world hit (or nothing's left).
+        bool report = IsUserspaceWorld;
+
+        // What is left for the loop: a body of this world with no slot tag (another user's
+        // character capsule), a body under an excluded slot that was not registered, or a body
+        // whose slot cannot be resolved. Skip it and cast again behind it, bounded.
         for (int i = 0; i < MaxQueryIterations; i++)
         {
             var result = space.IntersectRay(query);
             if (result.Count == 0)
                 return false;
 
-            var slot = ResolveSlot(result["collider"].As<Node>());
-            if (InThisWorld(slot) && !IsExcluded(slot, exclude))
+            var collider = result["collider"].As<Node>();
+            var slot = ResolveSlot(collider);
+            bool accepted = InThisWorld(slot) && !IsExcluded(slot, exclude);
+            if (report)
+                ReportUserspaceHit(collider, slot, accepted);
+            if (accepted)
             {
                 FillHit(ref hit, (Vector3)result["position"], (Vector3)result["normal"], from, slot);
                 return true;
@@ -194,6 +290,47 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
             excludeRids.Add(result["rid"].As<Rid>());
         }
         return false;
+    }
+
+    private bool IsUserspaceWorld => Owner != null && ReferenceEquals(Owner.WorldManager?.UserspaceWorld, Owner);
+
+    private void ReportUserspaceHit(Node? collider, Lumora.Core.Slot? slot, bool accepted)
+    {
+        if (collider == null || !GodotObject.IsInstanceValid(collider))
+            return;
+        if (!_reportedUserspaceHits.Add(collider.GetInstanceId()))
+            return;
+
+        uint layer = (collider as CollisionObject3D)?.CollisionLayer ?? 0u;
+        string worldName;
+        string slotName;
+        if (slot != null)
+        {
+            worldName = Owner?.WorldName.Value ?? "?";
+            slotName = slot.SlotName.Value ?? "?";
+        }
+        else
+        {
+            var owningHook = FindOwningHook(collider);
+            worldName = owningHook?.Owner?.WorldName.Value ?? "(no world root above the body)";
+            var foreignSlot = owningHook?.ResolveSlotInOwnWorld(collider);
+            slotName = foreignSlot?.SlotName.Value ?? $"(untagged {collider.Name})";
+        }
+        Lumora.Core.Logging.Logger.Debug(
+            $"WorldHook: userspace cast {(accepted ? "accepted" : "filtered")} '{slotName}' world='{worldName}' layer=0x{layer:X}");
+    }
+
+    private static WorldHook? FindOwningHook(Node collider)
+    {
+        lock (_hooksByRoot)
+        {
+            for (var node = collider; node != null && GodotObject.IsInstanceValid(node); node = node.GetParent())
+            {
+                if (_hooksByRoot.TryGetValue(node, out var hook))
+                    return hook;
+            }
+        }
+        return null;
     }
 
     // True if slot is, or descends from, any caller-excluded slot (so a whole avatar can be skipped
@@ -245,7 +382,7 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
             Shape = shape,
             CollideWithBodies = true,
             CollideWithAreas = hitTriggers,
-            CollisionMask = CollisionBit | 1u,
+            CollisionMask = CollisionBit,
         };
         var exclude = new global::Godot.Collections.Array<Rid>();
         query.Exclude = exclude;
@@ -291,7 +428,7 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
             Transform = transform,
             CollideWithBodies = true,
             CollideWithAreas = hitTriggers,
-            CollisionMask = CollisionBit | 1u,
+            CollisionMask = CollisionBit,
         };
 
         foreach (var dict in space.IntersectShape(query, 32))
@@ -325,7 +462,8 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         query.Shape = _resolveShape;
         query.CollideWithBodies = true;
         query.CollideWithAreas = false;           // solids only - not grab/image sensors
-        query.CollisionMask = CollisionBit | 1u;
+        query.CollisionMask = CollisionBit;
+        AddRegisteredExcludes(exclude, _resolveExclude);
         query.Exclude = _resolveExclude;
 
         var basis = Basis.Identity;
@@ -385,8 +523,26 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
     }
 
     // Physics bodies are tagged with their owning slot's RefID (LumoraSlotRef meta) by the collider
-    // hooks; walk up from the hit node to recover the slot.
+    // hooks; walk up from the hit node to recover the slot. Only a body under THIS world's root is
+    // resolved: RefIDs are per world, so another world's body resolved through this world's table
+    // lands on whatever slot here happens to carry the same id, and that slot passes the world
+    // check. That is how a session avatar's arm capsule became a hit on the dash. -xlinka
+    // The slot a body in this world stands for: its registration first, then the slot tag on its node.
+    public Lumora.Core.Slot? SlotOfBody(Node? node)
+    {
+        if (node is CollisionObject3D body && GodotObject.IsInstanceValid(body) && _slotsByBody.TryGetValue(body.GetRid(), out var slot))
+            return slot;
+        return ResolveSlot(node);
+    }
+
     private Lumora.Core.Slot? ResolveSlot(Node? collider)
+    {
+        if (collider == null || WorldRoot == null || !GodotObject.IsInstanceValid(WorldRoot) || !WorldRoot.IsAncestorOf(collider))
+            return null;
+        return ResolveSlotInOwnWorld(collider);
+    }
+
+    private Lumora.Core.Slot? ResolveSlotInOwnWorld(Node? collider)
     {
         var node = collider;
         while (node != null && GodotObject.IsInstanceValid(node))
@@ -401,8 +557,41 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         return null;
     }
 
+    private int TakeBitPair()
+    {
+        lock (_bitPairsHeld)
+        {
+            for (int i = 0; i < _bitPairsHeld.Length; i++)
+            {
+                if (_bitPairsHeld[i])
+                    continue;
+                _bitPairsHeld[i] = true;
+                _bitPair = i;
+                return i;
+            }
+            Lumora.Core.Logging.Logger.Warn("WorldHook: more than 15 worlds open, so two share collision bits");
+            _nextSharedPair = (_nextSharedPair + 1) % _bitPairsHeld.Length;
+            return _nextSharedPair;
+        }
+    }
+
     public void Destroy()
     {
+        if (_bitPair >= 0)
+        {
+            lock (_bitPairsHeld)
+                _bitPairsHeld[_bitPair] = false;
+            _bitPair = -1;
+        }
+        if (WorldRoot != null)
+        {
+            lock (_hooksByRoot)
+            {
+                _hooksByRoot.Remove(WorldRoot);
+            }
+        }
+        _bodiesBySlot.Clear();
+        _reportedUserspaceHits.Clear();
         if (WorldRoot != null && GodotObject.IsInstanceValid(WorldRoot))
         {
             WorldRoot.QueueFree();

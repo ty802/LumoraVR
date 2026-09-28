@@ -15,6 +15,10 @@ public interface IUrlAssetProvider
     // The address the fetch was issued for, so a surface stuck on the loading skin can say WHICH asset
     // never arrived instead of just that something did not. -xlinka
     Uri? SourceUrl { get; }
+
+    // Why the load failed, while the provider still points where it failed; null while it loads, once it
+    // has loaded, or with no address at all.
+    string? LoadFailure { get; }
 }
 
 // A provider that GENERATES its asset in-process (a checker, a gradient, a rounded rect, a render

@@ -18,12 +18,11 @@ namespace Lumora.Core.Components;
 
 // Everything about the reflection probes in a world, in one panel.
 //
-// Modelled on the source platform's probe wizard, which does four things: collect probes under a root,
-// filter them, bake them one at a time with a delay, and toggle a debug visual. This does those and
-// then the things it does not: it tells you whether anything global is switched off before you blame a
-// probe, it audits the world for the specific mistakes that make a probe useless, it can drop a chrome
-// test sphere so "is this probe working" is a one-second yes or no rather than a guess, and it can
-// edit a probe's parameters, which theirs cannot do at all.
+// It collects probes under a root, filters them, bakes them one at a time with a delay, and toggles a
+// debug visual. It also tells you whether anything global is switched off before you blame a probe,
+// audits the world for the specific mistakes that make a probe useless, can drop a chrome test sphere
+// so "is this probe working" is a one-second yes or no rather than a guess, and can edit a probe's
+// parameters.
 //
 // The audit list is not generic advice. Every check in it is a failure mode that was found in THIS
 // codebase while working out why probes looked broken. -xlinka
@@ -63,6 +62,8 @@ public sealed class ReflectionProbeWizard : Component, IInspectorActionHandler
         var panelSlot = world.RootSlot.AddSlot("Reflection Probes");
         panelSlot.Persistent.Value = false;
         panelSlot.Tag.Value = "Developer";
+        // Canvas units are slot units: at scale 1 this panel was hundreds of metres across. -xlinka
+        panelSlot.LocalScale.Value = float3.One * 0.0005f;
 
         var head = world.LocalUser?.Root?.HeadSlot;
         if (head != null && !head.IsDestroyed)
@@ -270,7 +271,7 @@ public sealed class ReflectionProbeWizard : Component, IInspectorActionHandler
 
         InspectorUI.SectionHeader(container, "Selected: " + probe.Slot.SlotName.Value, Slot);
 
-        AddInfo(container, "Capture at", Describe(probe.Slot.GlobalPosition + probe.OriginOffset.Value), InspectorUI.TextColor);
+        AddInfo(container, "Capture at", Describe(probe.Slot.LocalPointToGlobal(probe.OriginOffset.Value)), InspectorUI.TextColor);
         AddInfo(container, "Box", Describe(probe.Size.Value), InspectorUI.TextColor);
         AddInfo(container, "Blend", $"{probe.BlendDistance.Value:0.##}m", InspectorUI.TextColor);
         AddInfo(container, "Ambient", probe.AmbientMode.Value.ToString(), InspectorUI.TextColor);
@@ -281,6 +282,7 @@ public sealed class ReflectionProbeWizard : Component, IInspectorActionHandler
         AddButton(container, "Refit box to parent bounds", "refit", InspectorUI.TextColor);
         AddButton(container, "Toggle Interior", "interior", InspectorUI.TextColor);
         AddButton(container, "Set update mode Once", "once", InspectorUI.TextColor);
+        AddButton(container, "Live scene capture", "live", InspectorUI.CyanColor);
         AddButton(container, "Jump here", "jump", InspectorUI.TextColor);
     }
 
@@ -412,6 +414,13 @@ public sealed class ReflectionProbeWizard : Component, IInspectorActionHandler
                 return;
             }
 
+            case "live":
+            {
+                var probe = SelectedProbe();
+                if (probe != null) probe.UpdateMode.Value = ProbeUpdateMode.Always;
+                Dirty();
+                return;
+            }
             case "once":
             {
                 var probe = SelectedProbe();
@@ -440,7 +449,7 @@ public sealed class ReflectionProbeWizard : Component, IInspectorActionHandler
         var slot = world.RootSlot.AddSlot(TestSphereName);
         slot.Persistent.Value = false;
         slot.Tag.Value = "Developer";
-        slot.GlobalPosition = probe.Slot.GlobalPosition + probe.OriginOffset.Value;
+        slot.GlobalPosition = probe.Slot.LocalPointToGlobal(probe.OriginOffset.Value);
 
         var material = slot.AttachComponent<PBS_Metallic>();
         material.AlbedoColor.Value = new colorHDR(1f, 1f, 1f, 1f);
@@ -455,6 +464,8 @@ public sealed class ReflectionProbeWizard : Component, IInspectorActionHandler
         var renderer = slot.AttachComponent<MeshRenderer>();
         renderer.Material.Target = material;
         renderer.Mesh.Target = mesh;
+        renderer.ShadowCastMode.Value = ShadowCastMode.Off;
+        slot.AttachComponent<RenderLayerOverride>().Layer.Value = 1 << 2;
 
         slot.AttachComponent<SphereCollider>().Radius.Value = 0.15f;
         slot.AttachComponent<Grabbable>();

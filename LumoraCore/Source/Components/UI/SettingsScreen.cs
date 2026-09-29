@@ -11,6 +11,7 @@ using Lumora.Core.Input.Actions;
 using Lumora.Core.Localization;
 using Lumora.Core.Math;
 using Lumora.Core.Media;
+using Lumora.Core.Networking.Web;
 
 namespace Lumora.Core.Components.UI;
 
@@ -34,7 +35,13 @@ public sealed class SettingsScreen : DashboardScreen
     private const string KindBinding = "binding";
     private const string KindLocomotion = "locomotion";
     private const string KindNavCategory = "nav";
+    private const string KindWebAccess = "webaccess";
     private const string AudioPath = "audio";
+    private const string GeneralPath = "general";
+
+    // Web access rows sort after every other General row, all of which sit at Order 0, so the section
+    // stays last however often its rows are torn out and re-added.
+    private const long WebAccessOrder = 1L << 20;
 
     // Gap between two audio rows' Order values. The device rows are torn out and re-added mid-page, so
     // they need room to land between the fixed rows around them.
@@ -62,6 +69,8 @@ public sealed class SettingsScreen : DashboardScreen
     private readonly List<ListingToggle> _outputDeviceRows = new();
     private ListingToggle? _inputDefaultToggle;
     private ListingToggle? _outputDefaultToggle;
+    private readonly List<ListingItem> _webAccessRows = new();
+    private int _webAccessVersion = -1;
     private LocaleText _controlsStatus = "Settings.Controls.Hint".AsLocale("Click a binding to rebind it. Escape cancels.");
     private bool _localeHooked;
 
@@ -169,6 +178,7 @@ public sealed class SettingsScreen : DashboardScreen
         mapper.Fallback(labels);
         mapper.MapKind(KindBinding, new SettingsBindingTemplate(_fonts, this));
         mapper.MapKind(KindLocomotion, new SettingsLocomotionTemplate(_fonts, this));
+        mapper.MapKind(KindWebAccess, new WebAccessRowTemplate(_fonts, this));
         return mapper;
     }
 
@@ -260,10 +270,69 @@ public sealed class SettingsScreen : DashboardScreen
         _entries.Add(path, ListingChoice.FromEnum<CookiesBrowser>("videocookies",
             "Settings.General.VideoCookies".AsLocale("Video Cookies"),
             () => EngineSettings.VideoCookiesBrowser, v => EngineSettings.VideoCookiesBrowser = v));
+
+        _entries.Add(path, new ListingHeader(path + ".h.WebAccess", "Settings.General.Section.WebAccess".AsLocale("Web Access"))
+        {
+            Order = WebAccessOrder,
+        });
+        BuildWebAccessRows();
     }
 
-    // Its own page, the way the reference files it: what you hear, what the microphone does before
-    // anyone hears it, and how your voice carries.
+    // WEB ACCESS
+    //
+    // Every site this machine's user has allowed or denied for scripts, flippable in place, with Remove to
+    // forget one so the next request asks again. The decisions live in WebAccess, not EngineSettings, and
+    // a prompt can write one from any thread while this screen is up, so the rows are rebuilt whenever its
+    // version counter moves, checked on the refresh tick. -xlinka
+    private void BuildWebAccessRows()
+    {
+        for (int i = 0; i < _webAccessRows.Count; i++)
+            _entries.Remove(GeneralPath, _webAccessRows[i].Key);
+        _webAccessRows.Clear();
+
+        var access = WebAccess.Shared;
+        _webAccessVersion = access.Version;
+        var hosts = access.Entries();
+        long order = WebAccessOrder;
+        for (int i = 0; i < hosts.Count; i++)
+        {
+            _webAccessRows.Add(_entries.Add(GeneralPath,
+                new ListingCustom("webaccess." + hosts[i].Host, KindWebAccess, hosts[i].Host)
+                {
+                    Tag = hosts[i].Host,
+                    Order = ++order,
+                }));
+        }
+
+        // Nothing decided yet. One dead row rather than a header with a hole under it.
+        if (_webAccessRows.Count == 0)
+        {
+            _webAccessRows.Add(_entries.Add(GeneralPath, new ListingLabel("webaccess.none",
+                "Settings.General.WebAccessNone".AsLocale("No sites yet"))
+            {
+                DetailText = "Settings.General.WebAccessNone.Hint".AsLocale("Scripts ask before they reach a new site"),
+                Interactable = false,
+                Order = ++order,
+            }));
+        }
+    }
+
+    internal void SetWebAccess(string host, bool allowed)
+    {
+        WebAccess.Shared.Set(host, allowed);
+        _entryView?.RefreshValues();
+    }
+
+    internal void ForgetWebAccess(string host)
+    {
+        WebAccess.Shared.Remove(host);
+        BuildWebAccessRows();
+        _entryView?.RefreshValues();
+        MarkDirty();
+    }
+
+    // Its own page: what you hear, what the microphone does before anyone hears it, and how your
+    // voice carries.
     private void BuildAudio()
     {
         const string path = AudioPath;
@@ -322,6 +391,10 @@ public sealed class SettingsScreen : DashboardScreen
             v => $"{v * 100f:0}%");
         // The gate cuts the room between words. It does not clean up noise carried over speech: that
         // would be a denoiser and there is none here.
+        // Ahead of the gate: takes the room out per band instead of switching the whole frame off.
+        Toggle(path, "noisesuppression", "Settings.Audio.NoiseSuppression".AsLocale("Noise Suppression"),
+            () => EngineSettings.NoiseSuppression, v => EngineSettings.NoiseSuppression = v,
+            "Settings.Audio.NoiseSuppression.Hint".AsLocale("Removes background noise like fans, typing and hum"));
         Slider(path, "gatethreshold", "Settings.Audio.NoiseGateThreshold".AsLocale("Noise Gate"),
             SettingsCatalog.NoiseGateThreshold,
             () => EngineSettings.NoiseGateThreshold, v => EngineSettings.NoiseGateThreshold = v,
@@ -360,6 +433,17 @@ public sealed class SettingsScreen : DashboardScreen
     // Both lists come from the platform seam and hold real hardware only: what the platform calls its
     // "default" entry is the toggle above the list, not a device to pick. A machine with nothing on one
     // side gets a single dead placeholder row rather than a header with nothing under it.
+
+    // Is there anything in the list that carries what the machine is playing?
+    private static bool HasLoopbackDevice(IReadOnlyList<string> devices)
+    {
+        for (int i = 0; i < devices.Count; i++)
+        {
+            if (Lumora.Core.Audio.AudioInputTypes.IsLoopback(Lumora.Core.Audio.AudioInputTypes.Classify(devices[i])))
+                return true;
+        }
+        return false;
+    }
 
     private static IReadOnlyList<string> AudioDevices(bool input)
     {
@@ -417,8 +501,56 @@ public sealed class SettingsScreen : DashboardScreen
         string prefix = input ? "indev." : "outdev.";
 
         var devices = AudioDevices(input);
-        for (int i = 0; i < devices.Count; i++)
-            rows.Add(AddDeviceRow(prefix + i, devices[i], devices[i], input, ++order));
+
+        // WHAT KIND OF DEVICE IT IS, on the row.
+        //
+        // The list used to be bare names, and a name is not enough to act on: somebody looking for
+        // their system audio has to already know that the entry called "CABLE Output" is it and the
+        // one called "Monitor of Built-in Audio" is too. Both are loopbacks and neither says so.
+        // Capture devices sort first here because this is the microphone list; the stream picker
+        // sorts the other way for the same reason. -xlinka
+        if (input)
+        {
+            var ordered = new List<(string Name, Lumora.Core.Audio.AudioInputType Type)>(devices.Count);
+            for (int i = 0; i < devices.Count; i++)
+                ordered.Add((devices[i], Lumora.Core.Audio.AudioInputTypes.Classify(devices[i])));
+            ordered.Sort((a, b) =>
+            {
+                int byType = Lumora.Core.Audio.AudioInputTypes.CaptureOrder(a.Type)
+                    .CompareTo(Lumora.Core.Audio.AudioInputTypes.CaptureOrder(b.Type));
+                return byType != 0 ? byType : string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+            });
+
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                var row = AddDeviceRow(prefix + i, ordered[i].Name, ordered[i].Name, input, ++order);
+                if (ordered[i].Type != Lumora.Core.Audio.AudioInputType.Unknown)
+                    row.DetailText = Lumora.Core.Audio.AudioInputTypes.Describe(ordered[i].Type);
+                rows.Add(row);
+            }
+        }
+        else
+        {
+            for (int i = 0; i < devices.Count; i++)
+                rows.Add(AddDeviceRow(prefix + i, devices[i], devices[i], input, ++order));
+        }
+
+        // A machine with no loopback at all is the common case on Windows, and silence about it is
+        // what sends people hunting through settings that do not exist. Say it once, with the two
+        // things that actually work. -xlinka
+        if (input && !HasLoopbackDevice(devices))
+        {
+            rows.Add(_entries.Add(AudioPath, new ListingToggle(prefix + "noloopback",
+                "Settings.Audio.NoLoopback".AsLocale("No system-audio device"))
+            {
+                Read = () => false,
+                Write = _ => { },
+                DetailText = "Settings.Audio.NoLoopback.Hint".AsLocale(
+                    "To stream what this machine plays, turn on Stereo Mix in Windows sound settings, or install a virtual audio cable"),
+                Interactable = false,
+                Order = ++order,
+            }));
+        }
 
         if (IsSavedDeviceMissing(input))
         {
@@ -590,9 +722,26 @@ public sealed class SettingsScreen : DashboardScreen
         // that made every emissive flat.
         Slider(path, "exposure", "Settings.Graphics.WhitePoint".AsLocale("White Point"), SettingsCatalog.Exposure,
             () => EngineSettings.Exposure, v => EngineSettings.Exposure = v, v => $"{v:0.#}");
+        // After the tonemapper. AgX flattens the midtones by design; these put the punch back.
+        Slider(path, "contrast", "Settings.Graphics.Contrast".AsLocale("Contrast"), SettingsCatalog.Contrast,
+            () => EngineSettings.Contrast, v => EngineSettings.Contrast = v, v => $"{v:0.00}");
+        Slider(path, "saturation", "Settings.Graphics.Saturation".AsLocale("Saturation"), SettingsCatalog.Saturation,
+            () => EngineSettings.Saturation, v => EngineSettings.Saturation = v, v => $"{v:0.00}");
         Slider(path, "bloom", "Settings.Graphics.Bloom".AsLocale("Bloom"), SettingsCatalog.Bloom,
             () => EngineSettings.Bloom, v => EngineSettings.Bloom = v,
             v => v <= 0.001f ? "Off" : $"{v:0.##}");
+        // Contact shadow in corners and under bodies. One number, shown as a percentage. Not offered by
+        // the standalone renderer.
+        Slider(path, "ao", "Settings.Graphics.AmbientOcclusion".AsLocale("Ambient Occlusion"), SettingsCatalog.AmbientOcclusion,
+            () => EngineSettings.AmbientOcclusion, v => EngineSettings.AmbientOcclusion = v,
+            v => v <= 0.001f ? "Off" : $"{v * 100f:0}%");
+        // Diffuse bounce between nearby surfaces, the occlusion's partner pass. Costs about what the
+        // occlusion costs; off by default.
+        Toggle(path, "ssil", "Settings.Graphics.IndirectLighting".AsLocale("Indirect Lighting"),
+            () => EngineSettings.ScreenSpaceIndirectLighting, v => EngineSettings.ScreenSpaceIndirectLighting = v);
+        // A ray march per pixel; only glossy floors and water show it. Off by default.
+        Toggle(path, "ssr", "Settings.Graphics.ScreenSpaceReflections".AsLocale("Screen Space Reflections"),
+            () => EngineSettings.ScreenSpaceReflections, v => EngineSettings.ScreenSpaceReflections = v);
         // Costs fill rate rather than frame logic. Off is a real option on a weak GPU, but in a
         // headset the first step off zero is the difference between crawling edges and a clean image.
         Slider(path, "aa", "Settings.Graphics.AntiAliasing".AsLocale("Anti-Aliasing"), 0f, EngineSettings.AntiAliasingOptions.Length - 1, 1f,
@@ -680,6 +829,16 @@ public sealed class SettingsScreen : DashboardScreen
         // The one setting in this category with nothing to group it with, so it leads the page rather
         // than sitting under a section header repeating its own name.
         _entries.Add(path, BuildLanguageChoice());
+
+        Header(path, "Editing", "Settings.Interface.Section.Editing".AsLocale("Editing"));
+        _entries.Add(path, new ListingChoice("gizmocontrols", "Settings.Interface.GizmoControls".AsLocale("Gizmo controls"))
+        {
+            Options = new[] { "Context Menu", "Cubes", "All Gizmo" },
+            Read = () => (int)EngineSettings.GizmoControls,
+            Write = index => EngineSettings.GizmoControls = (EngineSettings.GizmoControlStyle)index,
+            DetailText = "Settings.Interface.GizmoControls.Hint".AsLocale(
+                "Choose modes in the menu, use floating cubes, or grab move, rotate and scale handles together"),
+        });
 
         Header(path, "Reticle", "Settings.Interface.Section.Reticle".AsLocale("Reticle"));
         // The desktop cursor drawer reads these through InterfaceSettings, which forwards to the same
@@ -865,6 +1024,7 @@ public sealed class SettingsScreen : DashboardScreen
         // screen sat closed.
         BuildDeviceRows(input: true);
         BuildDeviceRows(input: false);
+        BuildWebAccessRows();
         _entryView?.RefreshValues();
         MarkDirty();
     }
@@ -890,6 +1050,8 @@ public sealed class SettingsScreen : DashboardScreen
 
         ApplyTurnModeGating();
         ApplyAudioDeviceGating();
+        if (WebAccess.Shared.Version != _webAccessVersion)
+            BuildWebAccessRows();
         _entryView?.RefreshValues();
     }
 

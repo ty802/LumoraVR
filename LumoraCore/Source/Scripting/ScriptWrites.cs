@@ -1,0 +1,556 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+using System;
+using Lumora.Core.Assets;
+using Lumora.Core.Components;
+using Lumora.Core.Components.Audio;
+using Lumora.Core.Components.Interaction;
+using Lumora.Core.Components.Meshes;
+using Lumora.Core.Components.Scripting;
+using Lumora.Core.Math;
+using Lumora.Core.Networking.Sync;
+using Lumora.Script;
+
+namespace Lumora.Core.Scripting;
+
+// The one way a node writes a field. The gate is asked first, so a refusal is counted instead of
+// vanishing into the setter's silent no-op, and four things are refused before the gate is asked:
+//   host-only and config-locked members: the gate enforces those only on the wire, and a script runs on
+//   the host, where its author's own user record would otherwise read as theirs to edit;
+//   anything mid-load or mid-init: the gate waves those through as engine plumbing;
+//   a driven member: the setter would drop the write and say nothing;
+//   a field in another world: a handle is only ever meant for the world the script runs in.
+//
+// Structure comes through here as well. Destroy and Set Parent are judged by the gate as the author,
+// like the same edit by hand, after what every script is refused: the world root, a protected slot,
+// anything in someone's body or hands, and the slot the script runs on or anything above it.
+//
+// A world script makes world content, under world content. A guest's script makes the guest's own
+// things: the host mints them in the guest's byte, in the range it keeps for that guest's scripts, so
+// they are the guest's by ownership and never an id the guest's own machine mints. Only where the
+// world's mode lets people bring their own things in and the guest's role holds Spawn, under the world
+// root or the guest's own things, never saved, and gone when the guest leaves. What a script copies
+// holds no script, or each copy would make the next, and is the world's own all the way down, or the
+// world's and its author's for a guest's copy.
+//
+// A Local script runs on every machine as its author, so whatever it changed would be changed from every
+// machine at once, as whoever is at each. It changes only what it made on its own machine: local slots
+// under its own object, what is on them, and local copies. Nothing it touches leaves the machine, and
+// the gate has nothing to judge. -xlinka
+internal static class ScriptWrites
+{
+    private const string LocalOnly = "a Local script changes only what it made on this machine";
+
+    public static void Write<T>(ScriptContext ctx, IField<T>? field, T value)
+    {
+        if (field == null || field.IsDestroyed)
+            return;
+        if (field is SyncElement element)
+            Check(ctx, element);
+        else if (ctx.IsLocal)
+            throw new UnauthorizedAccessException(LocalOnly);
+        else if (!ReferenceEquals(field.World, ctx.World))
+            throw new UnauthorizedAccessException("scripts write only their own world");
+        field.Value = value;
+    }
+
+    // Every refusal Write makes, without the write: for a node about to change something through a
+    // method rather than a field.
+    public static void Check(ScriptContext ctx, SyncElement element)
+    {
+        if (!ReferenceEquals(element.World, ctx.World))
+            throw new UnauthorizedAccessException("scripts write only their own world");
+        if (ctx.IsLocal)
+        {
+            if (!element.IsLocalElement)
+                throw new UnauthorizedAccessException(LocalOnly);
+            if (element.IsBlockedByDrive)
+                throw new UnauthorizedAccessException("the member is driven by something else");
+            return;
+        }
+        if (element is ConflictingSyncElement { IsHostOnly: true } || element.IsConfigLocked)
+            throw new UnauthorizedAccessException("scripts cannot write host-only or config-locked members");
+        if (element.IsLoading || element.IsInInitPhase)
+            throw new UnauthorizedAccessException("scripts cannot write a member that is still loading");
+        if (element.IsBlockedByDrive)
+            throw new UnauthorizedAccessException("the member is driven by something else");
+        if (!element.IsWriteAllowed())
+            throw new UnauthorizedAccessException("the permission gate refused the write");
+    }
+
+    public static bool Readable<T>(ScriptContext ctx, IField<T>? field)
+        => field != null && !field.IsDestroyed && ReferenceEquals(field.World, ctx.World)
+            && field is not ConflictingSyncElement { IsHostOnly: true };
+
+    // The one way a node points a reference field at something, or at nothing: asked like Write. A
+    // reference with rules of its own for who may set it (a drive or hook, an equip slot, a slot's parent)
+    // is refused, since those rules judge a set that arrives from another machine and a script's set is
+    // made on the host, where they are never asked. An action binding is refused too: moving one changes
+    // what runs when someone else presses. -xlinka
+    public static void WriteReference(ScriptContext ctx, ISyncRef? reference, IWorldElement? target)
+    {
+        if (reference is not SyncElement element || element.IsDestroyed)
+            return;
+        Check(ctx, element);
+        if (element.HasInboundRules || reference is ISyncDelegate)
+            throw new UnauthorizedAccessException("scripts do not move a drive, a hook, an action or a reference with rules of its own");
+        if (target == null)
+        {
+            reference.Target = null!;
+            if (reference.Target != null)
+                throw new UnauthorizedAccessException("the reference refused the change");
+            return;
+        }
+        if (!ReferenceEquals(target.World, ctx.World))
+            throw new UnauthorizedAccessException("scripts write only their own world");
+        if (target.IsLocalElement && !element.IsLocalElement)
+            throw new UnauthorizedAccessException("a reference in the world cannot point at something on one machine");
+        if (!reference.TargetType.IsInstanceOfType(target))
+            throw new InvalidOperationException($"the reference holds a {Named(reference.TargetType)}, not a {Named(target.GetType())}");
+        if (!reference.TrySet(target) || !ReferenceEquals(reference.Target, target))
+            throw new UnauthorizedAccessException("the reference refused the target");
+
+        static string Named(Type type) => ScriptTypes.TryGet(type, out var named) ? named.Name : type.Name;
+    }
+
+    public static void Destroy(ScriptContext ctx, Slot? slot)
+    {
+        if (!ScriptReads.Visible(ctx, slot))
+            return;
+        if (ctx.IsLocal)
+        {
+            if (!slot!.IsLocalElement)
+                throw new UnauthorizedAccessException(LocalOnly);
+            slot.Destroy();
+            return;
+        }
+        Restructurable(ctx, slot!, "destroy");
+        if (ctx.Self is { } self && (ReferenceEquals(self, slot) || self.IsDescendantOf(slot!)))
+            throw new UnauthorizedAccessException("a script cannot destroy the slot it runs on");
+
+        var world = ctx.World;
+        var request = new DataModelPermissionRequest(world, null, slot, null, slot,
+            DataModelPermissionSurface.Slot, DataModelPermissionAction.Destroy, isNetwork: false);
+        if (world.DataModelPermissions is { } permissions && !permissions.Authorize(request, out var reason))
+            throw new UnauthorizedAccessException(reason ?? "the permission gate refused the destroy");
+        if (world.SlotRegistry is { } registry && !registry.MayRemove(slot!.ReferenceID))
+            throw new UnauthorizedAccessException("the permission gate refused the destroy");
+        slot!.Destroy();
+    }
+
+    // Under parent, or under the world root with no parent. Keeping the world transform writes the
+    // local one as well, so those are checked before anything moves.
+    public static void Reparent(ScriptContext ctx, Slot? slot, Slot? parent, bool keepWorldTransform)
+    {
+        if (!ScriptReads.Visible(ctx, slot))
+            return;
+        if (ctx.IsLocal)
+        {
+            ReparentLocal(ctx, slot!, parent ?? ctx.Self, keepWorldTransform);
+            return;
+        }
+        parent ??= ctx.World.RootSlot;
+        if (!ScriptReads.Visible(ctx, parent))
+            return;
+        if (ReferenceEquals(slot!.Parent, parent))
+            return;
+        Restructurable(ctx, slot, "move");
+        if (parent!.ActiveUserRoot != null)
+            throw new UnauthorizedAccessException("scripts do not put things in someone's body or hands");
+        if (ctx.Principal.IsWorldContent && !IsWorldSlot(parent))
+            throw new UnauthorizedAccessException("a world script keeps world content under world content");
+        if (!ReparentGuard.CanReparent(slot, parent))
+            throw new UnauthorizedAccessException("the slot or its new parent refuses the move");
+
+        Check(ctx, slot.ParentSlotRef);
+        if (keepWorldTransform)
+        {
+            Check(ctx, slot.LocalPosition);
+            Check(ctx, slot.LocalRotation);
+            Check(ctx, slot.LocalScale);
+        }
+        if (!slot.TrySetParent(parent, keepWorldTransform) || !ReferenceEquals(slot.Parent, parent))
+            throw new UnauthorizedAccessException("the move was refused");
+    }
+
+    public static Slot? CreateChild(ScriptContext ctx, Slot? parent, string? name)
+    {
+        if (!ScriptReads.Visible(ctx, parent))
+            return null;
+        if (ctx.IsLocal)
+        {
+            if (!parent!.IsLocalElement && !ReferenceEquals(parent, ctx.Self))
+                throw new UnauthorizedAccessException("a Local script makes slots only under its own object");
+            ctx.ReserveMade(1);
+            var local = parent.AddLocalSlot(string.IsNullOrEmpty(name) ? "Slot" : name);
+            ctx.Made(local, 1);
+            return local;
+        }
+        if (parent!.ActiveUserRoot != null)
+            throw new UnauthorizedAccessException("scripts do not put things in someone's body or hands");
+        string slotName = string.IsNullOrEmpty(name) ? "Slot" : name;
+        if (ctx.Principal.IsWorldContent)
+        {
+            if (!IsWorldSlot(parent))
+                throw new UnauthorizedAccessException("a world script makes slots under world content only");
+            ctx.ReserveMade(1);
+            var child = parent.AddSlot(slotName);
+            ctx.Made(child, 1);
+            return child;
+        }
+
+        MayBringIn(ctx, "make slots");
+        if (!IsAuthorsPlace(ctx, parent))
+            throw new UnauthorizedAccessException("a guest's script makes slots under the world root or its author's own things");
+        ctx.ReserveMade(1);
+        Slot made;
+        using (AuthorsRange(ctx))
+        {
+            made = parent.AddSlot(slotName);
+            made.Persistent.Value = false;
+        }
+        ctx.Made(made, 1);
+        return made;
+    }
+
+    // Beside the original, under the same parent. A Local script's copy is a local one under its own
+    // object, where the original stands in the world. A guest's copy stands beside the original where
+    // that is the guest's to put things, else in the same place under the world root.
+    public static Slot? Duplicate(ScriptContext ctx, Slot? slot)
+    {
+        if (!ScriptReads.Visible(ctx, slot))
+            return null;
+        if (ctx.IsLocal)
+            return DuplicateLocal(ctx, slot!);
+        Restructurable(ctx, slot!, "copy");
+        var parent = slot!.Parent;
+        int count = 0;
+        Slot? copy;
+        if (ctx.Principal.IsWorldContent)
+        {
+            if (parent == null || !IsWorldSlot(parent))
+                throw new UnauthorizedAccessException("a world script copies world content only");
+            CopyableSubtree(slot, ref count);
+            ctx.ReserveMade(count);
+            copy = slot.Duplicate(parent);
+        }
+        else
+        {
+            MayBringIn(ctx, "copy slots");
+            CopyableByGuest(ctx, slot, ref count);
+            ctx.ReserveMade(count);
+            bool beside = parent != null && IsAuthorsPlace(ctx, parent);
+            using (AuthorsRange(ctx))
+            {
+                copy = slot.Duplicate(beside ? parent! : ctx.World.RootSlot, preserveGlobalTransform: !beside);
+                if (copy != null)
+                    copy.Persistent.Value = false;
+            }
+        }
+        if (copy == null)
+            throw new InvalidOperationException("the copy was not made");
+        ctx.Made(copy, count);
+        return copy;
+    }
+
+    private static void ReparentLocal(ScriptContext ctx, Slot slot, Slot? parent, bool keepWorldTransform)
+    {
+        if (!slot.IsLocalElement || parent == null || !ScriptReads.Visible(ctx, parent)
+            || (!parent.IsLocalElement && !ReferenceEquals(parent, ctx.Self)))
+            throw new UnauthorizedAccessException("a Local script keeps what it made under its own object");
+        if (ReferenceEquals(slot.Parent, parent))
+            return;
+        if (ReferenceEquals(parent, slot) || parent.IsDescendantOf(slot))
+            throw new UnauthorizedAccessException("a parent under its own child is refused");
+        slot.SetParent(parent, keepWorldTransform);
+    }
+
+    private static Slot DuplicateLocal(ScriptContext ctx, Slot slot)
+    {
+        var home = ctx.Self ?? throw new InvalidOperationException("a Local script copies under its own object");
+        if (slot.IsRootSlot || slot.ActiveUserRoot != null)
+            throw new UnauthorizedAccessException("scripts cannot copy the world root or anything in someone's body or hands");
+        int count = 0;
+        CopyableLocally(ctx, slot, slot, ref count);
+        ctx.ReserveMade(count);
+        var holder = home.AddLocalSlot("Copying");
+        var copy = slot.Duplicate(holder, preserveGlobalTransform: true);
+        if (copy == null)
+        {
+            holder.Destroy();
+            throw new InvalidOperationException("the copy was not made");
+        }
+        copy.SetParent(home, preserveGlobalTransform: true);
+        holder.Destroy();
+        ctx.Made(copy, count);
+        return copy;
+    }
+
+    // What a Local copy may hold: things that draw, sound, collide or lay out a panel, from the world's
+    // own content or its author's. Anything that acts could act on the world from every machine at once,
+    // as whoever is at each, and a drive reaching outside the copy would hold something real on this
+    // machine.
+    private static void CopyableLocally(ScriptContext ctx, Slot root, Slot slot, ref int count)
+    {
+        count++;
+        if (slot.ActiveUserRoot != null)
+            throw new UnauthorizedAccessException("scripts cannot copy anything in someone's body or hands");
+        if (!slot.IsLocalElement && !IsAuthors(ctx, slot))
+            throw new UnauthorizedAccessException("a Local script copies the world's own things or its author's");
+        foreach (var component in slot.Components)
+        {
+            if (component is ScriptHost)
+                throw new UnauthorizedAccessException("scripts do not copy scripts");
+            if (!IsPassive(component))
+                throw new UnauthorizedAccessException($"a Local copy holds only what draws, sounds, collides or lays out a panel, and {component.GetType().Name} does more");
+            if (!component.IsLocalElement && !IsAuthors(ctx, component))
+                throw new UnauthorizedAccessException("a Local script copies the world's own things or its author's");
+            if (DrivesOutside(component, root))
+                throw new UnauthorizedAccessException("a Local copy may not drive anything outside itself");
+        }
+        foreach (var child in slot.Children)
+            CopyableLocally(ctx, root, child, ref count);
+    }
+
+    private static bool IsAuthors(ScriptContext ctx, IWorldElement element)
+    {
+        byte owner = element.ReferenceID.GetUserByte();
+        return owner == RefIDConstants.AUTHORITY_BYTE || (!ctx.Principal.IsWorldContent && owner == ctx.Principal.AllocationByte);
+    }
+
+    private static bool IsPassive(Component component) => component switch
+    {
+        MeshRenderer or SkinnedMeshRenderer or ProceduralMesh or MaterialProvider or Light or Collider or RigidBody or RespawnData
+            or AudioClipPlayer or AudioOutput or OneShotSound or IUrlAssetProvider => true,
+        _ => component.GetType().Namespace == "Helio.UI",
+    };
+
+    private static bool DrivesOutside(Worker worker, Slot root)
+    {
+        for (int i = 0; i < worker.SyncMemberCount; i++)
+        {
+            if (worker.GetSyncMember(i) is ILinkRef { Target: { } target } && !Inside(target, root))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool Inside(IWorldElement element, Slot root)
+    {
+        IWorldElement? current = element;
+        for (int depth = 0; current != null && depth < 16; depth++)
+        {
+            switch (current)
+            {
+                case Slot slot:
+                    return ReferenceEquals(slot, root) || slot.IsDescendantOf(root);
+                case Component component:
+                    current = component.Slot;
+                    break;
+                case SyncElement member:
+                    current = member.Parent;
+                    break;
+                default:
+                    return false;
+            }
+        }
+        return false;
+    }
+
+    private static void Restructurable(ScriptContext ctx, Slot slot, string what)
+    {
+        if (slot.IsRootSlot || slot.IsProtected)
+            throw new UnauthorizedAccessException($"scripts cannot {what} the world root or a protected slot");
+        if (slot.ActiveUserRoot != null)
+            throw new UnauthorizedAccessException($"scripts cannot {what} anything in someone's body or hands");
+    }
+
+    // A guest's script brings things into the world as its author would by hand: the world's mode has to
+    // let people bring their own things in, and the author's role has to hold Spawn.
+    private static void MayBringIn(ScriptContext ctx, string what)
+    {
+        var world = ctx.World;
+        if (!world.AllowsItemSpawning)
+            throw new UnauthorizedAccessException($"this world does not let people bring their own things in, so a guest's script may not {what}");
+        if (world.DataModelPermissions?.AllowsDomain(ctx.Principal.Author, DataModelPermissionDomain.Spawn) != true)
+            throw new UnauthorizedAccessException($"its author's role may not bring things in, so their scripts may not {what}");
+    }
+
+    // Where a guest's script may put what it makes: the world root, or anything of its author's own.
+    private static bool IsAuthorsPlace(ScriptContext ctx, Slot parent)
+        => parent.IsRootSlot || (!parent.IsLocalElement && parent.ReferenceID.GetUserByte() == ctx.Principal.AllocationByte);
+
+    // The host's range for the author's scripts, in the author's own byte.
+    private static ReferenceController.AllocationScope AuthorsRange(ScriptContext ctx)
+    {
+        var controller = ctx.World.ReferenceController ?? throw new InvalidOperationException("the world has no id allocator");
+        if (controller.GetScriptFence(ctx.Principal.AllocationByte) == 0)
+            throw new UnauthorizedAccessException("this session keeps no room for its author's scripts to make things");
+        return controller.ScriptAllocationScope(ctx.Principal.AllocationByte);
+    }
+
+    // What a guest's script may copy: the world's own things or its author's, holding no script and
+    // nothing in anyone's body or hands.
+    private static void CopyableByGuest(ScriptContext ctx, Slot slot, ref int count)
+    {
+        count++;
+        if (slot.ActiveUserRoot != null)
+            throw new UnauthorizedAccessException("scripts cannot copy anything in someone's body or hands");
+        if (!IsAuthors(ctx, slot))
+            throw new UnauthorizedAccessException("a guest's script copies the world's own things or its author's");
+        foreach (var component in slot.Components)
+        {
+            if (component is ScriptHost)
+                throw new UnauthorizedAccessException("scripts do not copy scripts");
+            if (!IsAuthors(ctx, component))
+                throw new UnauthorizedAccessException("a guest's script copies the world's own things or its author's");
+        }
+        foreach (var child in slot.Children)
+        {
+            if (!child.IsLocalElement)
+                CopyableByGuest(ctx, child, ref count);
+        }
+    }
+
+    private static bool IsWorldSlot(Slot slot)
+        => slot.IsRootSlot || slot.ReferenceID.GetUserByte() == RefIDConstants.AUTHORITY_BYTE;
+
+    private static void CopyableSubtree(Slot slot, ref int count)
+    {
+        count++;
+        if (!IsWorldSlot(slot) || slot.ActiveUserRoot != null)
+            throw new UnauthorizedAccessException("a world script copies world content only");
+        foreach (var component in slot.Components)
+        {
+            if (component is ScriptHost)
+                throw new UnauthorizedAccessException("scripts do not copy scripts");
+            if (component.ReferenceID.GetUserByte() != RefIDConstants.AUTHORITY_BYTE)
+                throw new UnauthorizedAccessException("a world script copies world content only");
+        }
+        foreach (var child in slot.Children)
+        {
+            if (!child.IsLocalElement)
+                CopyableSubtree(child, ref count);
+        }
+    }
+
+    // A value a node was given to write that no field should hold.
+    public static float3 Finite(float3 value, string name)
+    {
+        if (!float.IsFinite(value.x) || !float.IsFinite(value.y) || !float.IsFinite(value.z))
+            throw new ArgumentException($"{name} is not a finite number");
+        return value;
+    }
+
+    public static floatQ Unit(floatQ rotation)
+    {
+        float lengthSquared = rotation.x * rotation.x + rotation.y * rotation.y + rotation.z * rotation.z + rotation.w * rotation.w;
+        if (!float.IsFinite(lengthSquared) || lengthSquared < 1e-12f)
+            throw new ArgumentException("rotation is not a usable quaternion");
+        float scale = 1f / MathF.Sqrt(lengthSquared);
+        return new floatQ(rotation.x * scale, rotation.y * scale, rotation.z * scale, rotation.w * scale);
+    }
+
+    public static float3 Scale(float3 scale)
+    {
+        Finite(scale, "scale");
+        if (scale.x == 0f || scale.y == 0f || scale.z == 0f)
+            throw new ArgumentException("scale has a zero axis");
+        return scale;
+    }
+
+    // What Destroy refuses, for a slot a script would put out of the world where an undo can bring it back:
+    // the world root, a protected slot, anything in a body or hands, the slot the script runs on and what is
+    // above it, and whatever the gate would not let its author destroy by hand. A Local script parks only
+    // what it made on this machine.
+    public static void CheckPark(ScriptContext ctx, Slot slot)
+    {
+        if (ctx.IsLocal)
+        {
+            if (!slot.IsLocalElement)
+                throw new UnauthorizedAccessException(LocalOnly);
+            return;
+        }
+        Restructurable(ctx, slot, "destroy");
+        if (ctx.Self is { } self && (ReferenceEquals(self, slot) || self.IsDescendantOf(slot)))
+            throw new UnauthorizedAccessException("a script cannot destroy the slot it runs on");
+        var world = ctx.World;
+        var request = new DataModelPermissionRequest(world, null, slot, null, slot,
+            DataModelPermissionSurface.Slot, DataModelPermissionAction.Destroy, isNetwork: false);
+        if (world.DataModelPermissions is { } permissions && !permissions.Authorize(request, out var reason))
+            throw new UnauthorizedAccessException(reason ?? "the permission gate refused the destroy");
+        if (world.SlotRegistry is { } registry && !registry.MayRemove(slot.ReferenceID))
+            throw new UnauthorizedAccessException("the permission gate refused the destroy");
+    }
+
+    // Makes something of count slots under parent, the way Create Child makes one: under world content for
+    // a world script; for a guest's, where the world lets people bring things in and their role holds Spawn,
+    // under the world root or the author's own things, in the host's range for the author's scripts, never
+    // saved. Counted against the script's share and its author's.
+    public static Slot MakeUnder(ScriptContext ctx, Slot parent, int count, Func<Slot> make)
+    {
+        if (ctx.IsLocal)
+            throw new UnauthorizedAccessException(LocalOnly);
+        if (parent.ActiveUserRoot != null)
+            throw new UnauthorizedAccessException("scripts do not put things in someone's body or hands");
+        if (ctx.Principal.IsWorldContent)
+        {
+            if (!IsWorldSlot(parent))
+                throw new UnauthorizedAccessException("a world script makes slots under world content only");
+            ctx.ReserveMade(count);
+            var made = make();
+            ctx.Made(made, count);
+            return made;
+        }
+
+        MayBringIn(ctx, "make slots");
+        if (!IsAuthorsPlace(ctx, parent))
+            throw new UnauthorizedAccessException("a guest's script makes slots under the world root or its author's own things");
+        ctx.ReserveMade(count);
+        Slot slot;
+        using (AuthorsRange(ctx))
+        {
+            slot = make();
+            slot.Persistent.Value = false;
+        }
+        ctx.Made(slot, count);
+        return slot;
+    }
+
+    // A new empty slot where a copy of anchor would stand: beside it where the script may put things there,
+    // else in the same place under the world root.
+    public static Slot MakeBeside(ScriptContext ctx, Slot anchor, string name)
+    {
+        var root = ctx.World.RootSlot;
+        var parent = anchor.Parent ?? root;
+        bool beside = parent.ActiveUserRoot == null && !parent.IsLocalElement
+            && (ctx.Principal.IsWorldContent ? IsWorldSlot(parent) : IsAuthorsPlace(ctx, parent));
+        if (!beside)
+            parent = root;
+        var made = MakeUnder(ctx, parent, 1, () => parent.AddSlot(name));
+        if (beside)
+        {
+            made.LocalPosition.Value = anchor.LocalPosition.Value;
+            made.LocalRotation.Value = anchor.LocalRotation.Value;
+        }
+        else
+        {
+            made.GlobalPosition = anchor.GlobalPosition;
+            made.GlobalRotation = anchor.GlobalRotation;
+        }
+        return made;
+    }
+
+    // What the host mints for a principal outside a script's call: in the author's script range for a
+    // guest's, in the world's own for the world's.
+    public static IDisposable? RangeOf(World world, ScriptPrincipal principal)
+    {
+        if (principal.IsWorldContent)
+            return null;
+        var controller = world.ReferenceController ?? throw new InvalidOperationException("the world has no id allocator");
+        if (controller.GetScriptFence(principal.AllocationByte) == 0)
+            throw new UnauthorizedAccessException("this session keeps no room for its author's scripts to make things");
+        return controller.ScriptAllocationScope(principal.AllocationByte);
+    }
+}

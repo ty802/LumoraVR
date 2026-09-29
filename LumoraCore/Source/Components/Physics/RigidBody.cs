@@ -73,8 +73,26 @@ public class RigidBody : ImplementableComponent
     public override void OnAwake()
     {
         base.OnAwake();
+        Slot.WorldTransformChanged += OnSlotMoved;
         LumoraLogger.Debug($"RigidBody: Initialized on '{Slot.SlotName.Value}' with Mass={Mass.Value}kg");
     }
+
+    public override void OnDestroy()
+    {
+        if (Slot != null)
+            Slot.WorldTransformChanged -= OnSlotMoved;
+        base.OnDestroy();
+    }
+
+    // A body this machine does not simulate still follows its object here, so a cast or a search meets it
+    // where the object is. Only when the object moved: a still one costs nothing.
+    private void OnSlotMoved(Slot _)
+    {
+        if (!IsSimulationOwner)
+            RunApplyChanges();
+    }
+
+    private bool _wasOwner;
 
     public override void OnInit()
     {
@@ -104,6 +122,10 @@ public class RigidBody : ImplementableComponent
             if (world == null)
                 return false;
 
+            // A local body exists on this machine alone, so this machine is the one to move it.
+            if (IsLocalElement)
+                return true;
+
             // Under a user's root -> that user's peer simulates it. IsUnderLocalUser is the structural,
             // reliable ownership signal (it tolerates the allocation-byte/ownership-link lag at join). -xlinka
             var userRoot = Slot?.ActiveUserRoot;
@@ -119,7 +141,8 @@ public class RigidBody : ImplementableComponent
     {
         base.OnUpdate(delta);
 
-        if (IsSimulationOwner)
+        bool owner = IsSimulationOwner;
+        if (owner)
         {
             // Owner drives the sim: queue the hook so it integrates forces and writes the synced pose/velocity. -xlinka
             RunApplyChanges();
@@ -128,9 +151,14 @@ public class RigidBody : ImplementableComponent
         {
             // Non-owner: never run a local sim that would fight the replicated transform. Drop any forces that
             // got queued locally so they can't accumulate and fire if ownership later transfers to us. The body
-            // simply follows the Slot transform the owner replicates (SlotHook positions the visual from it). -xlinka
+            // follows the Slot transform the owner replicates, moved whenever the slot is (OnSlotMoved). A body
+            // just handed to another machine, by a grab, gets one more pass so it stops simulating here at
+            // once instead of carrying on as a ghost that snaps the object back when it returns. -xlinka
             ClearPendingForces();
+            if (_wasOwner)
+                RunApplyChanges();
         }
+        _wasOwner = owner;
     }
 
     // Sync-change handler. The base queues the hook to ApplyChanges on every replicated field write; a non-owner
@@ -178,16 +206,31 @@ public class RigidBody : ImplementableComponent
     // forges the tunable and the velocity together gets both numbers it asked for. This is the one place
     // both have to pass through, on every peer including the host, so a spoofed magnitude cannot leave the
     // machine that made it up. Generous enough that no real throw ever reaches it. -xlinka
+    // A respawn or a reset: the slot pose is the truth for one frame and the body is moved onto it
+    // with its velocities cleared. Without this the body's own pose writes the slot straight back to
+    // where it fell on the next physics step. -xlinka
+    public bool HasPendingTeleport;
+    public void Teleport(float3 position, floatQ rotation)
+    {
+        Slot.GlobalPosition = position;
+        Slot.GlobalRotation = rotation;
+        LinearVelocity.Value = float3.Zero;
+        AngularVelocity.Value = float3.Zero;
+        HasPendingTeleport = true;
+        RunApplyChanges();
+    }
     public const float MaxTransferSpeed = 64f;
     public const float MaxTransferSpin = 64f;
 
-    public void SetVelocities(float3 linear, float3 angular)
+    // Bounded to MaxTransferSpeed and MaxTransferSpin, as a throw hands a body off; unbounded, whatever it
+    // is given as long as it is finite, as a script sets it.
+    public void SetVelocities(float3 linear, float3 angular, bool bounded = true)
     {
         if (!IsSimulationOwner)
             return;
 
-        PendingLinearVelocity = Bound(linear, MaxTransferSpeed);
-        PendingAngularVelocity = Bound(angular, MaxTransferSpin);
+        PendingLinearVelocity = Bound(linear, bounded ? MaxTransferSpeed : float.PositiveInfinity);
+        PendingAngularVelocity = Bound(angular, bounded ? MaxTransferSpin : float.PositiveInfinity);
         HasPendingVelocity = true;
         RunApplyChanges();
     }

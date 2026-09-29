@@ -6,66 +6,171 @@ using System.Collections.Generic;
 using Helio.UI;
 using Helio.UI.Layout;
 using Helio.UI.Listing;
+using Lumora.Core.Assets;
 using Lumora.Core.Localization;
 using Lumora.Core.Math;
-using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Components.UI;
 
-// Dashboard Session screen with top sub-tabs (Settings / Users / Permissions) for the focused world.
-// Settings binds the world configuration; Users lists the world's users; Permissions edits roles,
-// capability caps and the escalation policy backed by the hard host-authoritative datamodel gate, and
-// lives on the virtualized Listing system rather than eager rows (see SessionPermissionsPanel).
+// Every string the Session screen's header, Settings tab and Users tab put on screen. The Permissions tab
+// keeps its own (PermissionLocale).
+public static class SessionLocale
+{
+    public static readonly LocaleText TabSettings = "Session.Tab.Settings".AsLocale("Settings");
+    public static readonly LocaleText TabUsers = "Session.Tab.Users".AsLocale("Users");
+    public static readonly LocaleText TabPermissions = "Session.Tab.Permissions".AsLocale("Permissions");
+
+    public static readonly LocaleText NoWorld = "Session.NoWorld".AsLocale("No world open.");
+    public static readonly LocaleText Syncing = "Session.Syncing".AsLocale("Still receiving the host's settings.");
+    public static readonly LocaleText IntroHost = "Session.Settings.Intro.Host".AsLocale("Changes apply straight away.");
+    public static readonly LocaleText IntroGuest =
+        "Session.Settings.Intro.Guest".AsLocale("Only the host changes these. You are seeing the host's settings.");
+
+    public static readonly LocaleText SectionWorld = "Session.Settings.World".AsLocale("World");
+    public static readonly LocaleText SectionAccess = "Session.Settings.Access".AsLocale("Access");
+    public static readonly LocaleText SectionSession = "Session.Settings.Session".AsLocale("Session");
+    public static readonly LocaleText SectionSaving = "Session.Settings.Saving".AsLocale("Saving");
+
+    public static readonly LocaleText Name = "Session.Settings.Name".AsLocale("Name");
+    public static readonly LocaleText Description = "Session.Settings.Description".AsLocale("Description");
+    public static readonly LocaleText NoDescription = "Session.Settings.Description.None".AsLocale("None");
+    public static readonly LocaleText MaxUsers = "Session.Settings.MaxUsers".AsLocale("Max users");
+    public static readonly LocaleText AllowJoining = "Session.Settings.AllowJoining".AsLocale("Allow joining");
+    public static readonly LocaleText AllowJoiningHint =
+        "Session.Settings.AllowJoining.Hint".AsLocale("Off turns away anyone new, whatever the access level.");
+    public static readonly LocaleText WhoCanJoin = "Session.Settings.WhoCanJoin".AsLocale("Who can join");
+    public static readonly LocaleText HideFromLists = "Session.Settings.HideFromLists".AsLocale("Hide from session lists");
+    public static readonly LocaleText TickRate = "Session.Settings.TickRate".AsLocale("Tick rate");
+    public static readonly LocaleText TickRateHint =
+        "Session.Settings.TickRate.Hint".AsLocale("How often the session syncs. Everyone runs at this rate.");
+    public static readonly LocaleText EditMode = "Session.Settings.EditMode".AsLocale("Edit mode");
+    public static readonly LocaleText MobileFriendly = "Session.Settings.MobileFriendly".AsLocale("Mobile friendly");
+    public static readonly LocaleText KickIdle = "Session.Settings.KickIdle".AsLocale("Kick idle people");
+    public static readonly LocaleText IdleLimit = "Session.Settings.IdleLimit".AsLocale("Idle limit");
+    public static readonly LocaleText CleanupAssets = "Session.Settings.CleanupAssets".AsLocale("Clean up unused assets");
+    public static readonly LocaleText CleanupEvery = "Session.Settings.CleanupEvery".AsLocale("Clean up every");
+    public static readonly LocaleText Autosave = "Session.Settings.Autosave".AsLocale("Autosave");
+    // Said on every setting the world stores but nothing acts on yet, so a switch never claims to do
+    // something it does not.
+    public static readonly LocaleText NotActive =
+        "Session.Settings.NotActive".AsLocale("Saved with the world, not active yet.");
+
+    public static readonly LocaleText SaveChanges = "Session.Settings.SaveChanges".AsLocale("Save changes");
+    public static readonly LocaleText SaveChangesButton = "Session.Settings.SaveChanges.Button".AsLocale("Save");
+    public static readonly LocaleText SaveCopy = "Session.Settings.SaveCopy".AsLocale("Save a copy");
+    public static readonly LocaleText SaveCopyButton = "Session.Settings.SaveCopy.Button".AsLocale("Save copy");
+    public static readonly LocaleText HostOnly = "Session.Settings.HostOnly".AsLocale("Host only");
+    public static readonly LocaleText Saved = "Session.Settings.Saved".AsLocale("Saved");
+    public static readonly LocaleText SaveFailed = "Session.Settings.SaveFailed".AsLocale("Save failed");
+    public static readonly LocaleText Uploading = "Session.Settings.Uploading".AsLocale("Uploading…");
+    public static readonly LocaleText SignInFirst = "Session.Settings.SignInFirst".AsLocale("Sign in first");
+    public static readonly LocaleText On = "Session.Settings.On".AsLocale("On");
+    public static readonly LocaleText Off = "Session.Settings.Off".AsLocale("Off");
+
+    public static readonly LocaleText People = "Session.Users.People".AsLocale("People here");
+    public static readonly LocaleText AloneHost =
+        "Session.Users.AloneHost".AsLocale("Just you so far. Moderation shows up next to people as they join.");
+    public static readonly LocaleText AloneGuest = "Session.Users.AloneGuest".AsLocale("Just you so far.");
+    public static readonly LocaleText You = "Session.Users.You".AsLocale("you");
+    public static readonly LocaleText Mute = "Session.Users.Mute".AsLocale("Mute");
+    public static readonly LocaleText Muted = "Session.Users.Muted".AsLocale("Muted");
+    public static readonly LocaleText Silence = "Session.Users.Silence".AsLocale("Silence");
+    public static readonly LocaleText Silenced = "Session.Users.Silenced".AsLocale("Silenced");
+    public static readonly LocaleText Respawn = "Session.Users.Respawn".AsLocale("Respawn");
+    public static readonly LocaleText Ban = "Session.Users.Ban".AsLocale("Ban");
+    public static readonly LocaleText BanTitle = "Session.Users.Ban.Title".AsLocale("Ban this user?");
+    public static readonly LocaleText Block = "Session.Users.Block".AsLocale("Block");
+    public static readonly LocaleText Blocked = "Session.Users.Blocked".AsLocale("Blocked");
+    public static readonly LocaleText Hosting = "Session.Hosting".AsLocale("Hosting");
+    public static readonly LocaleText Guest = "Session.Guest".AsLocale("Guest");
+
+    public static LocaleText BanMessage(string userName, string worldName)
+        => "Session.Users.Ban.Message".AsLocale(
+            "\"{0}\" is disconnected and cannot come back to \"{1}\".", userName, worldName);
+
+    public static LocaleText Minutes(int value) => "Session.Minutes".AsLocale("{0} min", value);
+
+    public static LocaleText Seconds(int value) => "Session.Seconds".AsLocale("{0} s", value);
+
+    public static LocaleText Hertz(int value) => "Session.Hertz".AsLocale("{0} Hz", value);
+
+    public static string Percent(float value) => $"{value * 100f:0}%";
+}
+
+// The dashboard's Session screen: Settings / Users / Permissions for whichever world is focused.
+//
+// All three tabs sit on the Listing system and the same row family as the Settings screen, so a switch,
+// a slider or a pill strip here looks and behaves like one anywhere else on the dash. The world's
+// settings are the host's: every write goes through EditConfig, which opens the config edit scope on the
+// authority and nowhere else, and a guest gets read-only rows rather than controls that would move and
+// change nothing. -xlinka
 [ComponentCategory("Hidden")]
 public sealed class SessionScreen : WidgetScreen, ITabbedScreen
 {
-    private const float TabBarHeight = 44f;
+    public const string KindNote = "sessionnote";
+    public const string KindUser = "sessionuser";
+    public const string KindChoice = "sessionchoice";
 
-    // Opaque blend, not the translucent AccentSoft: over the panel that wash lands DARKER than a
-    // plain Surface tab, so the selected tab would read as the recessed one. -xlinka
-    private static readonly color TabActiveFill = color.Lerp(DashTheme.Surface, DashTheme.Accent, 0.30f);
-    private static readonly color SaveFill = DashTheme.Accent;
-    private static readonly color KickFill = DashTheme.Negative;
+    private const float HeaderHeight = 36f;
+    private const float TabWidth = 118f;
+    private const float TabTrackPad = 3f;
+    private const float HeaderChipWidth = 78f;
+    private const float ScrollbarGap = 6f;
+    private const float RefreshInterval = 0.25f;
+    private const float FeedbackSeconds = 1.8f;
 
-    private readonly List<(Slot page, BorderedImage tab, string name)> _tabs = new();
+    // Pages and tabs line up with the rows inside them: the row lists sit this far in from the page
+    // edges, with the scrollbar's track and gap on the right.
+    private static float ContentLeft => SettingsMetrics.PanelInset;
+    private static float ContentRight => SettingsMetrics.PanelInset + DashScrollbar.Width + ScrollbarGap;
 
-    // Settings scroll machinery (the form is taller than the panel).
-    private ScrollRect? _scroll;
-    private RectTransform? _viewportRect;
-    private RectTransform? _contentRect;
-    private DashScrollbar? _settingsBar;
-    private Slot? _leftColumn;
-    private Slot? _rightColumn;
+    private sealed class Tab
+    {
+        public required string Name;
+        public required LocaleText Label;
+        public required Slot Page;
+        public required SettingsChip Chip;
+    }
 
-    private readonly List<SettingsSection> _sections = new();
-    private Slot? _settingsPage;
-    private Slot? _usersPage;
-    private Slot? _permissionsPage;
+    private readonly List<Tab> _tabs = new();
+    private readonly SettingsFonts _fonts = new();
+    private readonly ListingItemSource _settingsItems = new();
+    private readonly ListingItemSource _userItems = new();
+
+    private ListingStyle _style = new ListingStyle();
+    private World? _world;
     private FocusManager? _focusManager;
-    private SessionPermissionsPanel? _permissionsPanel;
     private bool _localeHooked;
+    private float _accum;
+    private string _userSignature = string.Empty;
+    private bool _settingsHadConfig;
+    private bool _settingsHostedForGroup;
+    private bool _settingsAuthority;
+
+    private Text? _worldTitle;
+    private SessionHeaderChip? _modeChip;
+    private SessionHeaderChip? _roleChip;
+
+    private Slot? _settingsPage;
+    private ListingView? _settingsView;
+    private DashScrollbar? _settingsBar;
+    private Slot? _usersPage;
+    private ListingView? _usersView;
+    private DashScrollbar? _usersBar;
+    private Slot? _permissionsPage;
+    private SessionPermissionsPanel? _permissionsPanel;
 
     public SessionPermissionsPanel? PermissionsPanel => _permissionsPanel;
 
-    private World? FocusedWorld => Lumora.Core.Engine.Current?.WorldManager?.FocusedWorld;
-
-    // A collapsible section: a clickable header that shows/hides its body of rows.
-    private sealed class SettingsSection
-    {
-        public required Slot Body;
-        public required Text Chevron;
-        public bool Expanded = true;
-    }
+    private static World? FocusedWorld => Lumora.Core.Engine.Current?.WorldManager?.FocusedWorld;
 
     protected override void OnShow()
     {
         base.OnShow();
         SubscribeFocus();
-        // Settings / Users / Permissions are PER-WORLD. Re-point every tab at whatever
-        // world is focused right now (hosting or switching worlds changes the focus), so
-        // the screen never stays stuck on the world it was first built for.
+        // Everything here is PER WORLD. Re-point at whatever is focused right now, since hosting or
+        // switching worlds moves the focus while the screen is closed.
         RebuildForFocusedWorld();
-        // Layout computes the rects after the screen is shown; size the scrollbar then.
         World.RunInUpdates(2, RefreshScrollbars);
     }
 
@@ -88,31 +193,69 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
         base.OnDestroy();
     }
 
-    // Only the Permissions tab needs a tick: it polls for roster changes and re-reads the live denial
-    // scores, both of which no event reaches us for.
+    // Nothing here has an event for everything it shows: a guest's copy of the settings arrives by state
+    // sync, people join and leave, a mute lands from another machine. So the visible tab rebinds on a
+    // short interval, and every write underneath is equality-gated.
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
-        if (!Slot.ActiveSelf.Value || _permissionsPage == null || !_permissionsPage.ActiveSelf.Value)
+        if (!Slot.ActiveSelf.Value)
             return;
-        _permissionsPanel?.Tick(delta);
+
+        RefreshScrollbars();
+        if (_permissionsPage != null && _permissionsPage.ActiveSelf.Value)
+            _permissionsPanel?.Tick(delta);
+
+        _accum += delta;
+        if (_accum < RefreshInterval)
+            return;
+        _accum = 0f;
+
+        if (!ReferenceEquals(FocusedWorld, _world))
+        {
+            RebuildForFocusedWorld();
+            return;
+        }
+
+        ApplyHeader();
+        if (_settingsPage != null && _settingsPage.ActiveSelf.Value)
+        {
+            if (SettingsShapeChanged())
+                RebuildSettings();
+            else
+                _settingsView?.RefreshValues();
+        }
+        if (_usersPage != null && _usersPage.ActiveSelf.Value)
+        {
+            if (BuildUserSignature() != _userSignature)
+                RebuildUsers();
+            else
+                _usersView?.RefreshValues();
+        }
     }
 
     private void OnLocaleChanged()
     {
         if (IsDestroyed)
             return;
+        for (int i = 0; i < _tabs.Count; i++)
+            ListingStyle.SetText(_tabs[i].Chip.Text, _tabs[i].Label.Resolve());
+        // Pill strips hold resolved option strings, so a language switch rebuilds the items.
+        RebuildSettings();
+        RebuildUsers();
         _permissionsPanel?.OnLocaleChanged();
+        ApplyHeader();
         MarkDirty();
     }
 
-    // Re-point all three tabs at the currently focused world.
     private void RebuildForFocusedWorld()
     {
+        _world = FocusedWorld;
+        ApplyHeader();
         RebuildSettings();
-        RebuildUsersList();
-        RebuildPermissions();
-        _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
+        RebuildUsers();
+        _permissionsPanel?.Bind(_world);
+        MarkDirty();
     }
 
     private void SubscribeFocus()
@@ -126,8 +269,7 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
 
     private void HandleFocusedWorldChanged(World oldWorld, World newWorld)
     {
-        // Only a visible Session screen needs to re-point live; a hidden one rebuilds the
-        // next time it is shown (OnShow). Defer a frame so the focus switch fully settles.
+        // A hidden screen rebuilds the next time it is shown. Deferred a frame so the switch settles.
         if (IsDestroyed || !Slot.ActiveSelf.Value)
             return;
         World?.RunInUpdates(1, () =>
@@ -144,25 +286,26 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
     protected override void BuildContent(UIBuilder builder)
     {
         _dashboard = Slot.GetComponentInParents<Dashboard>();
+        _fonts.Regular = _dashboard?.Font.Target;
+        _fonts.Semibold = _dashboard?.FontSemibold.Target;
+        _fonts.Bold = _dashboard?.FontBold.Target;
+        _style = BuildStyle();
         _tabs.Clear();
 
         var root = builder.Current;
-        var col = root.AttachComponent<VerticalLayout>();
-        col.Spacing.Value = 10f;
-        col.PaddingLeft.Value = 16f;
-        col.PaddingRight.Value = 16f;
-        col.PaddingTop.Value = 16f;
-        col.PaddingBottom.Value = 16f;
-        col.ForceExpandWidth.Value = true;
-        col.ForceExpandHeight.Value = false;
+        var column = root.AttachComponent<VerticalLayout>();
+        column.Spacing.Value = DashTheme.GapLarge;
+        column.PaddingLeft.Value = DashTheme.GapLarge;
+        column.PaddingRight.Value = DashTheme.GapLarge;
+        column.PaddingTop.Value = DashTheme.GapLarge;
+        column.PaddingBottom.Value = 0f;
+        column.ForceExpandWidth.Value = true;
+        column.ForceExpandHeight.Value = false;
 
-        var tabBar = root.AddSlot("Tabs");
-        tabBar.AttachComponent<RectTransform>();
-        SetFixedHeight(tabBar, TabBarHeight);
-        var tabRow = tabBar.AttachComponent<HorizontalLayout>();
-        tabRow.Spacing.Value = 8f;
-        tabRow.ForceExpandWidth.Value = true;
-        tabRow.ForceExpandHeight.Value = true;
+        var header = root.AddSlot("Header");
+        header.AttachComponent<RectTransform>();
+        SetFixedHeight(header, HeaderHeight);
+        var headerInner = SettingsUI.Fill(header, "Inner", ContentLeft, 0f, ContentRight, 0f);
 
         var contentHost = root.AddSlot("Content");
         contentHost.AttachComponent<RectTransform>();
@@ -170,30 +313,64 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
         hostElement.FlexibleWidth.Value = 1f;
         hostElement.FlexibleHeight.Value = 1f;
 
-        AddTab(tabBar, contentHost, "Settings", BuildSettingsPage);
-        AddTab(tabBar, contentHost, "Users", BuildUsersPage);
-        AddTab(tabBar, contentHost, "Permissions", BuildPermissionsPage);
+        var track = BuildTabTrack(headerInner, 3);
+        AddTab(track, contentHost, "Settings", SessionLocale.TabSettings, BuildSettingsPage);
+        AddTab(track, contentHost, "Users", SessionLocale.TabUsers, BuildUsersPage);
+        AddTab(track, contentHost, "Permissions", SessionLocale.TabPermissions, BuildPermissionsPage);
+        BuildWorldTitle(headerInner, TabTrackPad * 2f + TabWidth * 3f);
+
+        if (!_localeHooked)
+        {
+            LocaleManager.Changed += OnLocaleChanged;
+            _localeHooked = true;
+        }
 
         SelectTab(0);
     }
 
-    // TABS
+    // House palette, not the ListingStyle defaults: those are raw literals that never went through the
+    // theme's sRGB decode and land two stops too bright. -xlinka
+    private ListingStyle BuildStyle() => new ListingStyle
+    {
+        Font = _fonts.Body,
+        CornerRadius = DashTheme.RadiusControl,
+        RowHeight = SettingsMetrics.RowHeight,
+        RowSpacing = DashTheme.Gap,
+        RowFill = DashTheme.Surface,
+        RowBorder = DashTheme.Outline,
+        RowSelectedFill = DashTheme.SurfaceHover,
+        ControlFill = DashTheme.Surface,
+        NeutralFill = DashTheme.Surface,
+        AccentFill = DashTheme.Accent,
+        WarningFill = DashTheme.Negative,
+        DisabledFill = DashTheme.Field,
+        Accent = DashTheme.Accent,
+        TextPrimary = DashTheme.Text,
+        TextDim = DashTheme.TextDim,
+        TextDisabled = DashTheme.TextMuted,
+        HeaderText = DashTheme.TextMuted,
+    };
 
-    private void AddTab(Slot tabBar, Slot contentHost, string name, Action<Slot> buildPage)
+    // HEADER
+
+    // A segmented control: one sunken track, the current tab lit in the accent, the others bare words.
+    private Slot BuildTabTrack(Slot header, int count)
+    {
+        float width = TabTrackPad * 2f + TabWidth * count;
+        var track = SettingsUI.Child(header, "Tabs", float2.Zero, new float2(0f, 1f), float2.Zero, new float2(width, 0f));
+        SettingsUI.Panel(track, DashTheme.Field, DashTheme.Outline, DashTheme.RadiusControl + TabTrackPad);
+        return track;
+    }
+
+    private void AddTab(Slot track, Slot contentHost, string name, LocaleText label, Action<Slot> buildPage)
     {
         int index = _tabs.Count;
-
-        var tabSlot = tabBar.AddSlot(name);
-        tabSlot.AttachComponent<RectTransform>();
-        var element = tabSlot.AttachComponent<LayoutElement>();
-        element.FlexibleWidth.Value = 1f;
-        element.FlexibleHeight.Value = 1f;
-        var background = ApplyRoundedPanel(tabSlot, TabFill, RowBorder);
-
-        var button = tabSlot.AttachComponent<Button>();
-        button.Clicked += (_, _) => SelectTab(index);
-
-        AddFillLabel(tabSlot, name, 18f, TextPrimary);
+        float left = TabTrackPad + TabWidth * index;
+        var host = SettingsUI.Child(track, name, float2.Zero, new float2(0f, 1f),
+            new float2(left, TabTrackPad), new float2(left + TabWidth, -TabTrackPad));
+        var chip = SettingsChip.Build(host, _fonts.Medium, DashTheme.FontBody, DashTheme.RadiusControl);
+        ListingStyle.SetText(chip.Text, label.Resolve());
+        chip.Button.Clicked += (_, _) => SelectTab(index);
 
         var page = contentHost.AddSlot(name);
         var pageRect = page.AttachComponent<RectTransform>();
@@ -202,22 +379,60 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
         pageRect.OffsetMin.Value = float2.Zero;
         pageRect.OffsetMax.Value = float2.Zero;
         page.ActiveSelf.Value = false;
-
         var pageLayout = page.AttachComponent<VerticalLayout>();
-        pageLayout.Spacing.Value = 8f;
         pageLayout.ForceExpandWidth.Value = true;
         pageLayout.ForceExpandHeight.Value = false;
 
-        _tabs.Add((page, background, name));
+        _tabs.Add(new Tab { Name = name, Label = label, Page = page, Chip = chip });
         buildPage(page);
     }
+
+    private void BuildWorldTitle(Slot header, float tabsWidth)
+    {
+        var chips = SettingsUI.Child(header, "Chips", new float2(1f, 0.5f), new float2(1f, 0.5f),
+            new float2(-(HeaderChipWidth * 2f + DashTheme.Gap), -DashTheme.ChipHeight * 0.5f),
+            new float2(0f, DashTheme.ChipHeight * 0.5f));
+        _modeChip = SessionHeaderChip.Build(chips, "Mode", _fonts.Medium, 0f, HeaderChipWidth);
+        _roleChip = SessionHeaderChip.Build(chips, "Role", _fonts.Medium, HeaderChipWidth + DashTheme.Gap, HeaderChipWidth);
+
+        _worldTitle = SettingsUI.Label(header, "World", _fonts.Strong, DashTheme.FontHeading, DashTheme.Text,
+            TextHorizontalAlignment.Right, float2.Zero, float2.One,
+            new float2(tabsWidth + DashTheme.GapLarge, 0f),
+            new float2(-(HeaderChipWidth * 2f + DashTheme.Gap + DashTheme.GapLarge), 0f), shrinkToFit: true);
+    }
+
+    private void ApplyHeader()
+    {
+        var world = _world;
+        bool live = world != null && !world.IsDestroyed;
+        if (_worldTitle != null)
+            ListingStyle.SetText(_worldTitle, live ? WorldDisplayName(world!) : SessionLocale.NoWorld.Resolve());
+        if (_modeChip != null)
+        {
+            _modeChip.SetActive(live);
+            if (live)
+            {
+                var tint = DashTheme.ModeTint(world!.Mode);
+                _modeChip.Set(DashTheme.ModeLabel(world.Mode), new color(tint.r, tint.g, tint.b, 0.85f), DashTheme.OnAccent);
+            }
+        }
+        if (_roleChip != null)
+        {
+            _roleChip.SetActive(live);
+            if (live)
+                _roleChip.Set((world!.IsAuthority ? SessionLocale.Hosting : SessionLocale.Guest).Resolve(),
+                    DashTheme.Field, DashTheme.TextDim);
+        }
+    }
+
+    // TABS
 
     // Named entry for anything outside the screen that needs a tab up, the capture harness included.
     public bool ShowTab(string name)
     {
         for (int i = 0; i < _tabs.Count; i++)
         {
-            if (string.Equals(_tabs[i].name, name, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(_tabs[i].Name, name, StringComparison.OrdinalIgnoreCase))
             {
                 SelectTab(i);
                 return true;
@@ -230,13 +445,46 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
     {
         for (int i = 0; i < _tabs.Count; i++)
         {
-            var (page, tab, _) = _tabs[i];
-            if (page != null && !page.IsDestroyed)
-                page.ActiveSelf.Value = i == index;
-            if (tab != null && !tab.IsDestroyed)
-                tab.Tint.Value = i == index ? TabActiveFill : TabFill;
+            var tab = _tabs[i];
+            bool active = i == index;
+            if (tab.Page != null && !tab.Page.IsDestroyed)
+                tab.Page.ActiveSelf.Value = active;
+            if (active)
+                tab.Chip.SetPaint(DashTheme.Accent, DashTheme.AccentHover, DashTheme.Accent, DashTheme.OnAccent);
+            else
+                tab.Chip.SetPaint(color.Transparent, DashTheme.SurfaceHover, color.Transparent, DashTheme.TextDim);
         }
-        _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
+        // The tab that just came up may be showing a world the others moved on from, and its rows were
+        // last bound whenever it was last visible.
+        _accum = RefreshInterval;
+        World?.RunInUpdates(2, RefreshScrollbars);
+        MarkDirty();
+    }
+
+    private void RefreshScrollbars()
+    {
+        _settingsBar?.Refresh();
+        _usersBar?.Refresh();
+        _permissionsPanel?.RefreshScrollbar();
+    }
+
+    // A virtual list filling page, with the dash scrollbar on its right edge. Same geometry as the
+    // Permissions tab, so rows on all three tabs start and end in the same place.
+    private ListingView AttachListing(Slot page, string name, ListingTemplateMapper templates,
+        ListingItemSource items, out DashScrollbar bar)
+    {
+        var host = page.AddSlot(name);
+        host.AttachComponent<RectTransform>();
+        var element = host.AttachComponent<LayoutElement>();
+        element.FlexibleWidth.Value = 1f;
+        element.FlexibleHeight.Value = 1f;
+
+        var viewport = SettingsUI.Fill(host, "Viewport", ContentLeft, SettingsMetrics.PanelInset, ContentRight, 0f);
+        var view = ListingView.Attach(viewport, _style, templates, items);
+        bar = DashScrollbar.OnRightEdge(host, SettingsMetrics.PanelInset, 0f, SettingsMetrics.PanelInset);
+        bar.Bind(view.Scroll, SettingsUI.Rect(viewport),
+            view.ContentSlot == null ? null : SettingsUI.Rect(view.ContentSlot), MarkDirty);
+        return view;
     }
 
     // SETTINGS PAGE
@@ -244,699 +492,224 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
     private void BuildSettingsPage(Slot page)
     {
         _settingsPage = page;
-        RebuildSettings();
+        var labels = new SettingsLabelTemplate(_fonts);
+        var templates = new ListingTemplateMapper { DefaultHeight = SettingsMetrics.RowHeight };
+        templates.Map<ListingHeader>(new SettingsSectionTemplate(_fonts));
+        templates.Map<ListingToggle>(new SettingsToggleTemplate(_fonts));
+        templates.Map<ListingSlider>(new SettingsSliderTemplate(_fonts));
+        templates.Map<ListingAction>(new SettingsActionTemplate(_fonts));
+        templates.Map<ListingLabel>(labels);
+        templates.Fallback(labels);
+        templates.MapKind(KindChoice, new SessionChoiceTemplate(_fonts));
+        templates.MapKind(KindNote, new PermNoteTemplate(_fonts));
+        _settingsView = AttachListing(page, "Settings", templates, _settingsItems, out var bar);
+        _settingsBar = bar;
+    }
+
+    // The item set changes shape when the config turns up on a guest, when this machine becomes or stops
+    // being the authority, and when the world is or stops being hosted for a group.
+    private bool SettingsShapeChanged()
+    {
+        var world = _world;
+        if (world == null || world.IsDestroyed)
+            return _settingsHadConfig;
+        var config = world.Configuration;
+        return (config != null) != _settingsHadConfig
+            || world.IsAuthority != _settingsAuthority
+            || (config != null && config.HostGroupId.Value.Length > 0) != _settingsHostedForGroup;
     }
 
     private void RebuildSettings()
     {
-        var page = _settingsPage;
-        if (page == null)
+        if (_settingsView == null)
             return;
-        page.DestroyChildren();
-        _sections.Clear();
+        _settingsItems.ClearAll();
+        _settingsHadConfig = false;
 
-        var world = FocusedWorld;
-        if (world == null)
+        var world = _world;
+        if (world == null || world.IsDestroyed)
         {
-            AddRow(page, "No focused world.");
+            AddSettingsNote("none", SessionLocale.NoWorld);
             return;
         }
+        _settingsAuthority = world.IsAuthority;
 
         var config = world.Configuration;
         if (config == null)
         {
-            AddRow(page, "World settings are still syncing…");
+            AddSettingsNote("syncing", SessionLocale.Syncing);
             return;
         }
+        _settingsHadConfig = true;
+        _settingsHostedForGroup = config.HostGroupId.Value.Length > 0;
 
-        // Make it unmistakable WHICH world these settings belong to (they are per-world).
-        var titleRow = page.AddSlot("WorldTitle");
-        titleRow.AttachComponent<RectTransform>();
-        SetFixedHeight(titleRow, 26f);
-        var titleLabel = AddFillLabel(titleRow, $"Configuring: {WorldDisplayName(world)}", 16f, SectionTitleColor);
-        titleLabel.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        bool host = world.IsAuthority;
+        AddSettingsNote("intro", host ? SessionLocale.IntroHost : SessionLocale.IntroGuest);
 
-        // Masked, scrollable two-column form (it's taller than the panel) with a
-        // draggable scrollbar on the right. Every toggle/slider applies live in its
-        // callback - there is no "save settings" step. Save Changes under World Save
-        // Options persists the world's scene to disk, separate from these settings.
-        var area = page.AddSlot("ScrollArea");
-        area.AttachComponent<RectTransform>();
-        var areaElement = area.AttachComponent<LayoutElement>();
-        areaElement.FlexibleWidth.Value = 1f;
-        areaElement.FlexibleHeight.Value = 1f;
-        var areaLayout = area.AttachComponent<HorizontalLayout>();
-        areaLayout.Spacing.Value = 6f;
-        areaLayout.ForceExpandWidth.Value = false;
-        areaLayout.ForceExpandHeight.Value = true;
+        _settingsItems.AddRoot(new ListingHeader("h.world", SessionLocale.SectionWorld));
+        _settingsItems.AddRoot(new ListingLabel("world.name", SessionLocale.Name, () => WorldDisplayName(world)));
+        _settingsItems.AddRoot(new ListingLabel("world.description", SessionLocale.Description,
+            () => string.IsNullOrWhiteSpace(config.Description.Value)
+                ? SessionLocale.NoDescription.Resolve()
+                : config.Description.Value));
+        AddSlider(world, "world.maxusers", SessionLocale.MaxUsers, default, 1f, 64f, 1f,
+            () => config.MaxUsers.Value, v => config.MaxUsers.Value = (int)MathF.Round(v),
+            v => ((int)MathF.Round(v)).ToString());
+        AddToggle(world, "world.allowjoin", SessionLocale.AllowJoining, SessionLocale.AllowJoiningHint,
+            () => config.AllowJoin.Value, v => config.AllowJoin.Value = v);
 
-        var viewport = area.AddSlot("Viewport");
-        _viewportRect = viewport.AttachComponent<RectTransform>();
-        var viewportElement = viewport.AttachComponent<LayoutElement>();
-        viewportElement.FlexibleWidth.Value = 1f;
-        viewportElement.FlexibleHeight.Value = 1f;
-        viewport.AttachComponent<Mask>();
-        _scroll = viewport.AttachComponent<ScrollRect>();
-        _scroll.ScrollSensitivity.Value = new float2(1f, 1f);
+        _settingsItems.AddRoot(new ListingHeader("h.access", SessionLocale.SectionAccess));
+        AddAccess(world, config);
+        AddToggle(world, "access.hide", SessionLocale.HideFromLists, SessionLocale.NotActive,
+            () => config.HideFromSessionLists.Value, v => config.HideFromSessionLists.Value = v);
 
-        var content = viewport.AddSlot("Content");
-        _contentRect = content.AttachComponent<RectTransform>();
-        // Render-offset scrolling (off by default): give the content its own chunk so it slides as a unit
-        // while the viewport mask/background stay fixed. -xlinka
-        if (Canvas.ScrollRenderOffset)
-            content.AttachComponent<GraphicChunkRoot>();
-        // Top-pinned, full-width content strip; its HEIGHT is set explicitly by RecomputeContentHeight.
-        // (The ContentSizeFitter approach was reverted: it resized this rect mid-layout-pass and, combined
-        // with ScrollRect mutating the same rect, never let the canvas settle - it re-dirtied every frame and
-        // froze the deep Session form. The proper fix resolves self-size inside the single compute pass + scrolls
-        // by a render offset; until we do that migration, pin the height explicitly like before.) -xlinka
-        _contentRect.AnchorMin.Value = new float2(0f, 1f);
-        _contentRect.AnchorMax.Value = new float2(1f, 1f);
-        _contentRect.OffsetMin.Value = new float2(0f, -100f);
-        _contentRect.OffsetMax.Value = float2.Zero;
-        var columns = content.AttachComponent<HorizontalLayout>();
-        columns.Spacing.Value = 16f;
-        columns.ForceExpandWidth.Value = true;
-        columns.ForceExpandHeight.Value = true;
-        _scroll.Content.Target = _contentRect;
+        _settingsItems.AddRoot(new ListingHeader("h.session", SessionLocale.SectionSession));
+        // Tick rate is the SESSION's, not the machine's: a guest turning it down would only starve its
+        // own loop. The field is host-only at the authority; this just shows it read-only elsewhere.
+        AddSlider(world, "session.tickrate", SessionLocale.TickRate, SessionLocale.TickRateHint,
+            WorldSettings.MinTickRate, WorldSettings.MaxTickRate, 5f,
+            () => config.NetworkTickRate.Value <= 0 ? WorldSettings.DefaultTickRate : config.NetworkTickRate.Value,
+            v => config.NetworkTickRate.Value = System.Math.Clamp((int)MathF.Round(v),
+                WorldSettings.MinTickRate, WorldSettings.MaxTickRate),
+            v => SessionLocale.Hertz((int)MathF.Round(v)).Resolve());
+        AddToggle(world, "session.editmode", SessionLocale.EditMode, SessionLocale.NotActive,
+            () => config.EditMode.Value, v => config.EditMode.Value = v);
+        AddToggle(world, "session.mobile", SessionLocale.MobileFriendly, SessionLocale.NotActive,
+            () => config.MobileFriendly.Value, v => config.MobileFriendly.Value = v);
+        AddToggle(world, "session.kickidle", SessionLocale.KickIdle, SessionLocale.NotActive,
+            () => config.AutoKickAFK.Value, v => config.AutoKickAFK.Value = v);
+        AddSlider(world, "session.idlelimit", SessionLocale.IdleLimit, SessionLocale.NotActive, 1f, 120f, 1f,
+            () => config.MaxAFKMinutes.Value, v => config.MaxAFKMinutes.Value = (int)MathF.Round(v),
+            v => SessionLocale.Minutes((int)MathF.Round(v)).Resolve());
+        AddToggle(world, "session.cleanup", SessionLocale.CleanupAssets, SessionLocale.NotActive,
+            () => config.CleanupUnusedAssets.Value, v => config.CleanupUnusedAssets.Value = v);
+        AddSlider(world, "session.cleanupevery", SessionLocale.CleanupEvery, SessionLocale.NotActive, 30f, 1800f, 30f,
+            () => config.AssetCleanupInterval.Value, v => config.AssetCleanupInterval.Value = v, Duration);
 
-        _leftColumn = AddColumn(content);
-        _rightColumn = AddColumn(content);
-
-        _settingsBar = DashScrollbar.InColumn(area);
-        _settingsBar.Bind(_scroll, _viewportRect, _contentRect, () => _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty());
-
-        // LEFT: identity, basics, world save options.
-        var worldBody = AddSection(_leftColumn, "World");
-        AddRow(worldBody, $"World Name: {world.WorldName?.Value ?? world.Name}");
-        ConfigSliderRow(worldBody, world, "Max Users", 1f, 64f, config.MaxUsers.Value,
-            v => { config.MaxUsers.Value = (int)MathF.Round(v); return config.MaxUsers.Value.ToString(); },
-            config.MaxUsers.Value.ToString());
-        ConfigToggleRow(worldBody, world, "Mobile Friendly", config.MobileFriendly.Value, v => config.MobileFriendly.Value = v);
-        ConfigToggleRow(worldBody, world, "Allow Joining", config.AllowJoin.Value, v => config.AllowJoin.Value = v);
-        // No "Public" toggle - public-ness is just the "Anyone" access level below, not a separate flag. -xlinka
-        AddRow(worldBody, $"Description: {(string.IsNullOrEmpty(config.Description.Value) ? "(none)" : config.Description.Value)}");
-
-        var saveBody = AddSection(_leftColumn, "World Save Options");
-        // Save Changes writes the world back to its own file (the local home to its fixed path; any other
-        // world you host to a stable file named after it). Save As Copy writes an independent timestamped
-        // file. Both report success/failure on the button itself - no silent no-op.
-        // A world you joined as a guest has no local source file to overwrite, so Save Changes is
-        // disabled there; you can still snapshot the replicated scene with Save As Copy.
-        if (world.IsAuthority)
-            SaveButtonRow(saveBody, "Save Changes", SaveFill, (label) => SaveFocusedWorld(world, label));
-        else
-            DisabledSaveRow(saveBody, "Save Changes", "Host only");
-        SaveButtonRow(saveBody, "Save As Copy…", TabFill, (label) => SaveWorldCopy(world, label));
-
-        // RIGHT: who-can-join, session policy.
-        var accessBody = AddSection(_rightColumn, "Who Can Join This World?");
-        foreach (var level in Enum.GetValues<World.WorldAccessLevel>())
+        _settingsItems.AddRoot(new ListingHeader("h.saving", SessionLocale.SectionSaving));
+        // A world joined as a guest has no source of its own to write back over; a copy of the scene as
+        // it replicated here is still the guest's to take.
+        if (host)
         {
-            var captured = level;
-            RadioRow(accessBody, "join-access", PrettyAccess(level), config.AccessLevel.Value == level,
-                () =>
-                {
-                    // Host-only: changing access re-advertises the session + starts/stops the LAN beacon live
-                    // (WorldSettings.AccessLevel handler). Re-render so the new selection actually shows. -xlinka
-                    if (!world.IsAuthority) return;
-                    EditConfig(world, () => config.AccessLevel.Value = captured);
-                    RebuildSettings();
-                });
-        }
-
-        var sessionBody = AddSection(_rightColumn, "Session");
-        ConfigToggleRow(sessionBody, world, "Edit Mode", config.EditMode.Value, v => config.EditMode.Value = v);
-        ConfigToggleRow(sessionBody, world, "Auto-Kick AFK", config.AutoKickAFK.Value, v => config.AutoKickAFK.Value = v);
-        ConfigSliderRow(sessionBody, world, "Max AFK (min)", 1f, 120f, config.MaxAFKMinutes.Value,
-            v => { config.MaxAFKMinutes.Value = (int)MathF.Round(v); return $"{config.MaxAFKMinutes.Value} min"; },
-            $"{config.MaxAFKMinutes.Value} min");
-        ConfigToggleRow(sessionBody, world, "Hide From Lists", config.HideFromSessionLists.Value, v => config.HideFromSessionLists.Value = v);
-        ConfigSliderRow(sessionBody, world, "Autosave (sec)", 0f, 600f, config.AutoSaveInterval.Value,
-            v =>
+            ListingAction? save = null;
+            save = new ListingAction("save.changes", SessionLocale.SaveChanges)
             {
-                config.AutoSaveInterval.Value = MathF.Round(v / 30f) * 30f;
-                return config.AutoSaveInterval.Value <= 0f ? "Off" : $"{config.AutoSaveInterval.Value:0}s";
-            },
-            config.AutoSaveInterval.Value <= 0f ? "Off" : $"{config.AutoSaveInterval.Value:0}s");
-        // Tick rate is the SESSION's, not the machine's: it used to sit in per-client settings, where a
-        // guest lowering it only starved their own loop. The field is MarkHostOnly, so a guest's write is
-        // refused at the authority whatever the UI does - this just stops offering the control. -xlinka
-        int tickRate = config.NetworkTickRate.Value <= 0 ? WorldSettings.DefaultTickRate : config.NetworkTickRate.Value;
-        if (world.IsAuthority)
-        {
-            ConfigSliderRow(sessionBody, world, "Tick Rate", WorldSettings.MinTickRate, WorldSettings.MaxTickRate, tickRate,
-                v =>
-                {
-                    config.NetworkTickRate.Value = System.Math.Clamp(
-                        (int)MathF.Round(v / 5f) * 5, WorldSettings.MinTickRate, WorldSettings.MaxTickRate);
-                    return $"{config.NetworkTickRate.Value} Hz";
-                },
-                $"{tickRate} Hz");
+                ButtonLabel = SessionLocale.SaveChangesButton,
+                Invoke = () => SaveFocusedWorld(world, save!),
+            };
+            _settingsItems.AddRoot(save);
         }
         else
         {
-            AddRow(sessionBody, $"Tick Rate: {tickRate} Hz (set by the host)");
+            _settingsItems.AddRoot(new ListingLabel("save.changes", SessionLocale.SaveChanges,
+                () => SessionLocale.HostOnly.Resolve()));
         }
-        ConfigToggleRow(sessionBody, world, "Cleanup Assets", config.CleanupUnusedAssets.Value, v => config.CleanupUnusedAssets.Value = v);
-        ConfigSliderRow(sessionBody, world, "Cleanup Every (s)", 30f, 1800f, config.AssetCleanupInterval.Value,
-            v => { config.AssetCleanupInterval.Value = MathF.Round(v / 30f) * 30f; return $"{config.AssetCleanupInterval.Value:0}s"; },
-            $"{config.AssetCleanupInterval.Value:0}s");
-
-        RecomputeContentHeight();
-        // Size/position the scrollbar once layout has computed the rects.
-        World.RunInUpdates(2, RefreshScrollbars);
-    }
-
-    private static Slot AddColumn(Slot parent)
-    {
-        var column = parent.AddSlot("Column");
-        column.AttachComponent<RectTransform>();
-        var element = column.AttachComponent<LayoutElement>();
-        element.FlexibleWidth.Value = 1f;
-        element.FlexibleHeight.Value = 1f;
-        var layout = column.AttachComponent<VerticalLayout>();
-        layout.Spacing.Value = 4f;
-        layout.ForceExpandWidth.Value = true;
-        layout.ForceExpandHeight.Value = false;
-        return column;
-    }
-
-    // Adds a collapsible section: a clickable header (chevron + title) and a body of
-    // rows. Returns the body to fill; the caller adds rows to it.
-    private Slot AddSection(Slot column, string title)
-    {
-        var header = column.AddSlot(title + "Header");
-        header.AttachComponent<RectTransform>();
-        header.AttachComponent<GraphicChunkRoot>();
-        SetFixedHeight(header, 28f);
-        ApplyRoundedPanel(header, TabFill, RowBorder);
-        var hl = header.AttachComponent<HorizontalLayout>();
-        hl.Spacing.Value = 8f;
-        hl.PaddingLeft.Value = 6f;
-        hl.PaddingRight.Value = 6f;
-        hl.ForceExpandWidth.Value = false;
-        hl.ForceExpandHeight.Value = true;
-
-        var hb = RowBuilder(header);
-        hb.MinWidth(18f).PreferredWidth(18f).FlexibleWidth(0f);
-        var chevron = AddRowLabel(hb, "v", 15f, SectionTitleColor, TextHorizontalAlignment.Center);
-        hb.MinWidth(100f).FlexibleWidth(1f);
-        AddRowLabel(hb, title, 17f, SectionTitleColor, TextHorizontalAlignment.Left);
-        var button = header.AttachComponent<Button>();
-
-        var body = column.AddSlot(title + "Body");
-        body.AttachComponent<RectTransform>();
-        body.AttachComponent<LayoutElement>();
-        var bodyLayout = body.AttachComponent<VerticalLayout>();
-        bodyLayout.Spacing.Value = 3f;
-        bodyLayout.PaddingTop.Value = 2f;
-        bodyLayout.PaddingBottom.Value = 4f;
-        bodyLayout.ForceExpandWidth.Value = true;
-        bodyLayout.ForceExpandHeight.Value = false;
-
-        var section = new SettingsSection { Body = body, Chevron = chevron };
-        button.Clicked += (_, _) => ToggleSection(section);
-        _sections.Add(section);
-        return body;
-    }
-
-    private void ToggleSection(SettingsSection section)
-    {
-        section.Expanded = !section.Expanded;
-        section.Body.ActiveSelf.Value = section.Expanded;
-        section.Chevron.Content.Value = section.Expanded ? "v" : "›";
-        RecomputeContentHeight();
-        if (_scroll != null)
-            _scroll.NormalizedPosition = float2.Zero;
-        // The rects only update on the next rebuild, so size the handle a frame later.
-        World.RunInUpdates(1, RefreshScrollbars);
-        _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
-    }
-
-    // SCROLLBAR
-    // Both tabs drive a DashScrollbar; there is no bar code left on this screen beyond pointing them at
-    // their own scroll and refreshing them when a layout pass has had a chance to run.
-
-    private void RefreshScrollbars()
-    {
-        _settingsBar?.Refresh();
-        _permissionsPanel?.RefreshScrollbar();
-    }
-
-    // Size each expanded section body to its rows (collapsed bodies are hidden), then
-    // size the scroll content to the taller column so ScrollRect knows the range.
-    private void RecomputeContentHeight()
-    {
-        foreach (var section in _sections)
+        ListingAction? copy = null;
+        copy = new ListingAction("save.copy", SessionLocale.SaveCopy)
         {
-            var bodyElement = section.Body.GetComponent<LayoutElement>();
-            if (bodyElement == null)
-                continue;
-            float height = section.Expanded ? MeasureStack(section.Body) : 0f;
-            bodyElement.MinHeight.Value = height;
-            bodyElement.PreferredHeight.Value = height;
-        }
-
-        // Pin the content height to the taller column's measured stack so ScrollRect knows the range.
-        // (Explicit pin instead of a ContentSizeFitter - the fitter froze the canvas; see RebuildSettings.)
-        float total = MathF.Max(MeasureStack(_leftColumn), MeasureStack(_rightColumn)) + 6f;
-        if (_contentRect != null)
-        {
-            _contentRect.OffsetMin.Value = new float2(0f, -total);
-            _contentRect.OffsetMax.Value = float2.Zero;
-        }
-    }
-
-    // Sum of the active children's fixed heights plus the layout's spacing/padding.
-    private static float MeasureStack(Slot? container)
-    {
-        if (container == null)
-            return 0f;
-        var layout = container.GetComponent<VerticalLayout>();
-        float spacing = layout?.Spacing.Value ?? 0f;
-        float total = (layout?.PaddingTop.Value ?? 0f) + (layout?.PaddingBottom.Value ?? 0f);
-        int count = 0;
-        foreach (var child in container.Children)
-        {
-            if (!child.ActiveSelf.Value)
-                continue;
-            var element = child.GetComponent<LayoutElement>();
-            if (element == null)
-                continue;
-            total += element.PreferredHeight.Value;
-            count++;
-        }
-        if (count > 1)
-            total += spacing * (count - 1);
-        return total;
-    }
-
-    // A row (with the same pill as the others, for consistency) with the label on the left
-    // and a radio on the right; radios sharing a group are mutually exclusive.
-    private void RadioRow(Slot parent, string group, string label, bool isChecked, Action onSelect)
-    {
-        var row = parent.AddSlot(label);
-        row.AttachComponent<RectTransform>();
-        row.AttachComponent<GraphicChunkRoot>();
-        SetFixedHeight(row, 28f);
-        ApplyRoundedPanel(row, RowFill, RowBorder);
-        var h = row.AttachComponent<HorizontalLayout>();
-        h.Spacing.Value = 10f;
-        h.PaddingLeft.Value = 12f;
-        h.PaddingRight.Value = 12f;
-        h.ForceExpandWidth.Value = false;
-        h.ForceExpandHeight.Value = true;
-
-        var b = RowBuilder(row);
-        b.MinWidth(160f).FlexibleWidth(1f);
-        AddRowLabel(b, label, 15f, TextPrimary, TextHorizontalAlignment.Left);
-        b.MinWidth(26f).PreferredWidth(26f).FlexibleWidth(0f);
-        b.Radio(group, isChecked, (_, on) => { if (on) onSelect(); });
-    }
-
-    // Save row whose handler receives the button's own label Text, so it can show inline
-    // "Saved √" / "Save failed" feedback (then the label is restored after a moment).
-    private void SaveButtonRow(Slot parent, string label, color fill, Action<Text> onClick)
-    {
-        var row = parent.AddSlot(label);
-        row.AttachComponent<RectTransform>();
-        row.AttachComponent<GraphicChunkRoot>();
-        SetFixedHeight(row, 34f);
-        ApplyRoundedPanel(row, fill, RowBorder);
-        var button = row.AttachComponent<Button>();
-        var text = AddFillLabel(row, label, 16f, TextPrimary);
-        button.Clicked += (_, _) => onClick(text);
-    }
-
-    // A non-interactive, dimmed save row that states why it's unavailable (e.g. guest worlds).
-    private void DisabledSaveRow(Slot parent, string label, string reason)
-    {
-        var row = parent.AddSlot(label);
-        row.AttachComponent<RectTransform>();
-        row.AttachComponent<GraphicChunkRoot>();
-        SetFixedHeight(row, 34f);
-        ApplyRoundedPanel(row, TabFill, RowBorder);
-        var text = AddFillLabel(row, $"{label} ({reason})", 16f, TextDim);
-        text.Color.Value = TextDim;
-    }
-
-    // Briefly replace a save button's label with a result, then restore it.
-    private void ShowSaveFeedback(Text label, string original, bool ok)
-    {
-        if (label.IsDestroyed)
-            return;
-        label.Content.Value = ok ? "Saved √" : "Save failed";
-        label.Color.Value = ok ? new color(0.62f, 0.92f, 0.66f, 1f) : new color(0.95f, 0.52f, 0.54f, 1f);
-        MarkDirty();
-        World?.RunInSeconds(1.8f, () =>
-        {
-            if (label.IsDestroyed)
-                return;
-            label.Content.Value = original;
-            label.Color.Value = TextPrimary;
-            MarkDirty();
-        });
-    }
-
-    // Strip characters that aren't valid in a file name; fall back to a neutral default if empty.
-    private static string SafeFileName(string name)
-    {
-        var invalid = System.IO.Path.GetInvalidFileNameChars();
-        var sb = new System.Text.StringBuilder(name.Length);
-        foreach (var c in name)
-            sb.Append(System.Array.IndexOf(invalid, c) >= 0 ? '_' : c);
-        var cleaned = sb.ToString().Trim();
-        return string.IsNullOrEmpty(cleaned) ? "world" : cleaned;
-    }
-
-    private static string PrettyAccess(World.WorldAccessLevel level) => level switch
-    {
-        World.WorldAccessLevel.Private => "Private (invite only)",
-        World.WorldAccessLevel.LAN => "LAN (local network)",
-        World.WorldAccessLevel.Contacts => "Contacts",
-        World.WorldAccessLevel.ContactsPlus => "Contacts+",
-        World.WorldAccessLevel.Anyone => "Anyone (public)",
-        World.WorldAccessLevel.GroupMembers => "Group Members",
-        World.WorldAccessLevel.GroupPlus => "Group+",
-        World.WorldAccessLevel.GroupPublic => "Group Public",
-        World.WorldAccessLevel.RegisteredUsers => "Registered Users",
-        _ => level.ToString(),
-    };
-
-    // Save Changes: write the world back over its own file. The local home goes to its fixed plain
-    // path; any other hosted/loaded world goes to a stable file named after it (encrypted at rest).
-    // Save Changes: the local home writes back over its own file, the one save that stays on this
-    // machine because it IS this machine's home. Any other world goes up to the cloud inventory under
-    // its own name. -xlinka
-    private void SaveFocusedWorld(World world, Text label)
-    {
-        if (world.Name == "LocalHome")
-        {
-            ShowSaveFeedback(label, "Save Changes", world.SaveToFile(Lumora.Core.Engine.LocalHomeSavePath));
-            return;
-        }
-        UploadWorld(world, WorldDisplayName(world), label, "Save Changes");
-    }
-
-    // Save As Copy: a new, stamped item in the cloud inventory, the current world left untouched. The
-    // home is allowed here too; a copy of it is a saved world like any other.
-    private void SaveWorldCopy(World world, Text label)
-    {
-        var stem = world.Name == "LocalHome" ? "Home" : WorldDisplayName(world);
-        UploadWorld(world, $"{stem} {DateTime.Now:yyyy-MM-dd HH.mm}", label, "Save As Copy…");
-    }
-
-    private void UploadWorld(World world, string name, Text label, string original)
-    {
-        if (!Lumora.Core.Inventory.IsSignedIn)
-        {
-            ShowSaveFeedback(label, original, false);
-            return;
-        }
-        if (!label.IsDestroyed)
-            label.Content.Value = "Uploading…";
-        var task = Lumora.Core.Inventory.SaveWorldAsync(world, name, null);
-        _ = task.ContinueWith(t =>
-        {
-            bool ok = t.Status == System.Threading.Tasks.TaskStatus.RanToCompletion && t.Result.Ok;
-            var message = t.Status == System.Threading.Tasks.TaskStatus.RanToCompletion
-                ? t.Result.Message
-                : t.Exception?.GetBaseException().Message ?? "upload failed";
-            Logging.Logger.Log($"Save world '{name}': {message}");
-            World?.RunSynchronously(() => ShowSaveFeedback(label, original, ok));
-        });
-    }
-
-    // USERS PAGE - live list of session users; the host (authority) can change roles and kick.
-
-    private void BuildUsersPage(Slot page)
-    {
-        _usersPage = page;
-        RebuildUsersList();
-    }
-
-    private void RebuildUsersList()
-    {
-        var page = _usersPage;
-        if (page == null)
-            return;
-        page.DestroyChildren();
-
-        var world = FocusedWorld;
-        if (world == null)
-        {
-            AddRow(page, "No focused world.");
-            return;
-        }
-
-        var users = world.GetAllUsers();
-
-        var header = BeginRow(page, "UsersHeader");
-        var hb = RowBuilder(header);
-        hb.MinWidth(200f).FlexibleWidth(1f);
-        AddRowLabel(hb, $"{WorldDisplayName(world)} - users ({users.Count})", 16f, SectionTitleColor, TextHorizontalAlignment.Left);
-        AddInlineButton(header, "Refresh", TabFill, RebuildUsersList);
-
-        foreach (var user in users)
-            UserRow(page, world, user);
-
-        // Make the empty single-user case self-explanatory: there's nobody to moderate.
-        int moderatable = 0;
-        foreach (var user in users)
-            if (!user.IsLocal && world.DataModelPermissions.GetRole(user) != world.DataModelPermissions.HostRole)
-                moderatable++;
-        if (world.IsAuthority && moderatable == 0)
-            AddRow(page, "You're the host. Mute / Silence / Kick / Ban appear next to other users when they join.");
-
-        _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
-    }
-
-    private void UserRow(Slot page, World world, User user)
-    {
-        var permissions = world.DataModelPermissions;
-        var role = permissions.GetRole(user);
-        bool isHostUser = role == permissions.HostRole;
-
-        var row = BeginRow(page, "User");
-        var b = RowBuilder(row);
-
-        var name = user.UserName?.Value;
-        if (string.IsNullOrEmpty(name))
-            name = $"User {user.ReferenceID}";
-        if (user.IsLocal)
-            name += "  (You)";
-
-        b.MinWidth(150f).FlexibleWidth(1f);
-        AddRowLabel(b, name, 16f, TextPrimary, TextHorizontalAlignment.Left);
-
-        // Host moderation tools for other (non-host) users; everyone else sees the role read-only.
-        if (world.IsAuthority && !user.IsLocal && !isHostUser)
-        {
-            AddInlineButton(row, role.Name, TabFill, () =>
-            {
-                var next = NextAssignableRole(WorldModePermissions.AssignableRoles(permissions, world.Mode), role);
-                // Both halves, same as the Permissions panel: the config is the durable, REPLICATED
-                // assignment (guests' UIs and nameplates read it); the gate override is what takes
-                // effect this instant. Writing only the override left every guest blind to the change.
-                world.PermissionConfig?.SetRole(user, next.Name);
-                permissions.SetUserRole(user, next);
-                RebuildUsersList();
-            });
-            AddInlineButton(row, user.IsMuted.Value ? "Muted" : "Mute", user.IsMuted.Value ? AccentColor : TabFill, () =>
-            {
-                user.IsMuted.Value = !user.IsMuted.Value;
-                RebuildUsersList();
-            });
-            AddInlineButton(row, user.IsSilenced.Value ? "Silenced" : "Silence", user.IsSilenced.Value ? AccentColor : TabFill, () =>
-            {
-                user.IsSilenced.Value = !user.IsSilenced.Value;
-                RebuildUsersList();
-            });
-            AddInlineButton(row, "Respawn", TabFill, () => RequestUserRespawn(world, user));
-            AddInlineButton(row, "Kick", KickFill, () =>
-            {
-                user.Kick();
-                RebuildUsersList();
-            });
-            AddInlineButton(row, "Ban", KickFill, () =>
-            {
-                user.Ban();
-                RebuildUsersList();
-            });
-        }
-        else
-        {
-            b.MinWidth(70f).PreferredWidth(70f).FlexibleWidth(0f);
-            AddRowLabel(b, role.Name, 15f, isHostUser ? AccentColor : TextDim, TextHorizontalAlignment.Right);
-            // You can always respawn yourself (e.g. if stuck in geometry) - works solo too.
-            if (user.IsLocal)
-                AddInlineButton(row, "Respawn", TabFill, () => RequestUserRespawn(world, user));
-        }
-
-        if (!user.IsLocal)
-            AddLocalAudioControls(row, user);
-    }
-
-    // Your ears, nobody else's. Mute / Silence above are the host's decision and replicate; these two
-    // write local state only, so turning somebody down here does not turn them down for the room and
-    // does not need the authority's permission either. -xlinka
-    private void AddLocalAudioControls(Slot row, User user)
-    {
-        var b = RowBuilder(row);
-
-        Text? volumeText = null;
-        var slider = b.Slider(user.LocalVolume, 0f, 1f, (_, v) =>
-        {
-            user.LocalVolume = v;
-            if (volumeText != null && !volumeText.IsDestroyed)
-                volumeText.Content.Value = FormatVolume(v);
-        });
-        var sliderLayout = slider.Slot.GetComponent<LayoutElement>() ?? slider.Slot.AttachComponent<LayoutElement>();
-        sliderLayout.MinWidth.Value = 96f;
-        sliderLayout.PreferredWidth.Value = 96f;
-        sliderLayout.FlexibleWidth.Value = 0f;
-
-        b.MinWidth(44f).PreferredWidth(44f).FlexibleWidth(0f);
-        volumeText = AddRowLabel(b, FormatVolume(user.LocalVolume), 14f, TextDim, TextHorizontalAlignment.Right);
-
-        bool blocked = user.IsAudioLocallyBlocked;
-        AddInlineButton(row, blocked ? "Unblock audio" : "Block audio", blocked ? KickFill : TabFill, 112f, () =>
-        {
-            user.SetAudioLocallyBlocked(!user.IsAudioLocallyBlocked);
-            RebuildUsersList();
-        });
-    }
-
-    private static string FormatVolume(float value) => $"{value * 100f:0}%";
-
-    private static DataModelPermissionRole NextAssignableRole(System.Collections.Generic.IReadOnlyList<DataModelPermissionRole> roles, DataModelPermissionRole current)
-    {
-        int index = -1;
-        for (int i = 0; i < roles.Count; i++)
-        {
-            if (roles[i] == current)
-            {
-                index = i;
-                break;
-            }
-        }
-        return roles[(index + 1) % roles.Count];
-    }
-
-    private static void RequestUserRespawn(World world, User user)
-    {
-        // Reach the target's character via their UserRoot and teleport it back to spawn. Works where
-        // the host has authority over the character transform; logs if the character isn't reachable.
-        var character = user.Root?.GetRegisteredComponent<Lumora.Core.Components.CharacterController>();
-        if (character == null)
-        {
-            Lumora.Core.Logging.Logger.Log($"[Session] Respawn: no reachable character for '{user.UserName?.Value}'.");
-            return;
-        }
-        character.Teleport(new float3(0f, 1f, 0f));
-        _ = world;
-    }
-
-    // 70px-wide inline button; delegates to the shared width-parameterized builder.
-    private void AddInlineButton(Slot row, string label, color fill, Action onClick)
-        => AddInlineButton(row, label, fill, 70f, onClick);
-
-    // PERMISSIONS PAGE - who is here and what role they hold, one matrix of what each role can do, and
-    // what happens when someone keeps getting refused. Roles are presets over the HARD gate; the host
-    // decides and the sync layer refuses everyone else whatever the UI drew. Built once onto the Listing
-    // system and REBOUND from there: the slots are not torn down per refresh, only the item set is.
-
-    private void BuildPermissionsPage(Slot page)
-    {
-        _permissionsPage = page;
-
-        // House palette, not the ListingStyle defaults. Those are raw literals that never went through the
-        // theme's sRGB decode, so they land about two stops brighter than they read - that is where the
-        // pale lavender rows came from. RoundedSprite stays null: the permission rows paint procedural
-        // rounded panels, so nothing on this page wants the nine-slice border sprite. -xlinka
-        var style = new ListingStyle
-        {
-            Font = _dashboard?.Font.Target,
-            CornerRadius = DashTheme.RadiusControl,
-            RowHeight = SettingsMetrics.RowHeight,
-            RowSpacing = DashTheme.Gap,
-            RowFill = DashTheme.Surface,
-            RowBorder = DashTheme.Outline,
-            RowSelectedFill = DashTheme.SurfaceHover,
-            ControlFill = DashTheme.Surface,
-            NeutralFill = DashTheme.Surface,
-            AccentFill = DashTheme.Accent,
-            WarningFill = DashTheme.Negative,
-            DisabledFill = DashTheme.Field,
-            Accent = DashTheme.Accent,
-            TextPrimary = DashTheme.Text,
-            TextDim = DashTheme.TextDim,
-            TextDisabled = DashTheme.TextMuted,
-            HeaderText = DashTheme.TextMuted,
+            ButtonLabel = SessionLocale.SaveCopyButton,
+            Invoke = () => SaveWorldCopy(world, copy!),
         };
+        _settingsItems.AddRoot(copy);
+        AddSlider(world, "save.autosave", SessionLocale.Autosave, SessionLocale.NotActive, 0f, 600f, 30f,
+            () => config.AutoSaveInterval.Value, v => config.AutoSaveInterval.Value = v,
+            v => v <= 0f ? SessionLocale.Off.Resolve() : Duration(v));
+    }
 
-        _permissionsPanel = new SessionPermissionsPanel();
-        _permissionsPanel.Attach(page, style);
+    private void AddSettingsNote(string key, LocaleText text)
+        => _settingsItems.AddRoot(new ListingCustom(key, KindNote, text));
 
-        if (!_localeHooked)
+    // The five levels for an ordinary world, members-only or anyone for one hosted for a group. A world
+    // saved on a level no screen offers any more still shows it, as one more pill at the end, so the host
+    // can see where it is and move it off.
+    private void AddAccess(World world, WorldSettings config)
+    {
+        bool forGroup = config.HostGroupId.Value.Length > 0;
+        var levels = new List<World.WorldAccessLevel>(AccessLabels.Offered(forGroup));
+        if (!levels.Contains(config.AccessLevel.Value))
+            levels.Add(config.AccessLevel.Value);
+
+        if (!world.IsAuthority)
         {
-            LocaleManager.Changed += OnLocaleChanged;
-            _localeHooked = true;
+            _settingsItems.AddRoot(new ListingLabel("access.level", SessionLocale.WhoCanJoin,
+                () => AccessLabels.Label(config.AccessLevel.Value).Resolve()));
+            return;
         }
 
-        RebuildPermissions();
-    }
+        var options = new List<string>(levels.Count);
+        for (int i = 0; i < levels.Count; i++)
+            options.Add(AccessLabels.Label(levels[i]).Resolve());
 
-    private void RebuildPermissions()
-    {
-        _permissionsPanel?.Bind(FocusedWorld);
-        _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
-    }
-
-    // ROW / WIDGET HELPERS
-
-    private void AddRow(Slot page, string text)
-    {
-        var row = BeginRow(page, "Info");
-        var label = AddFillLabel(row, text, 16f, TextDim);
-        label.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
-    }
-
-    private void SliderRow(Slot page, string label, float min, float max, float value, Func<float, string> applyAndFormat)
-    {
-        var row = BeginRow(page, label);
-        var b = RowBuilder(row);
-
-        b.MinWidth(178f).PreferredWidth(178f).FlexibleWidth(0f);
-        AddRowLabel(b, label, 15f, TextPrimary, TextHorizontalAlignment.Left);
-
-        Text? valueText = null;
-        var slider = b.Slider(value, min, max, (_, v) =>
+        _settingsItems.AddRoot(new SessionChoiceItem("access.level", SessionLocale.WhoCanJoin)
         {
-            var formatted = applyAndFormat(v);
-            if (valueText != null && !valueText.IsDestroyed)
-                valueText.Content.Value = formatted;
+            Kind = KindChoice,
+            Options = options,
+            Hint = () => AccessLabels.Hint(config.AccessLevel.Value, config.HostGroupId.Value.Length > 0),
+            Read = () => levels.IndexOf(config.AccessLevel.Value),
+            // Changing access re-advertises the session and starts or stops the LAN beacon live
+            // (WorldSettings.AccessLevel's handler).
+            Write = index =>
+            {
+                if (index >= 0 && index < levels.Count)
+                    EditConfig(world, () => config.AccessLevel.Value = levels[index]);
+            },
         });
-        var sliderLayout = slider.Slot.GetComponent<LayoutElement>() ?? slider.Slot.AttachComponent<LayoutElement>();
-        sliderLayout.MinWidth.Value = 120f;
-        sliderLayout.PreferredWidth.Value = 240f;
-        sliderLayout.FlexibleWidth.Value = 1f;
+    }
 
-        b.MinWidth(80f).PreferredWidth(80f).FlexibleWidth(0f);
-        valueText = AddRowLabel(b, applyAndFormat(value), 15f, TextDim, TextHorizontalAlignment.Right);
+    // A switch for the host, the value in words for everyone else.
+    private void AddToggle(World world, string key, LocaleText label, LocaleText hint, Func<bool> read, Action<bool> write)
+    {
+        if (world.IsAuthority)
+        {
+            _settingsItems.AddRoot(new ListingToggle(key, label)
+            {
+                DetailText = hint,
+                Read = read,
+                Write = value => EditConfig(world, () => write(value)),
+            });
+            return;
+        }
+        _settingsItems.AddRoot(new ListingLabel(key, label,
+            () => (read() ? SessionLocale.On : SessionLocale.Off).Resolve()));
+    }
+
+    private void AddSlider(World world, string key, LocaleText label, LocaleText hint, float min, float max, float step,
+        Func<float> read, Action<float> write, Func<float, string> format)
+    {
+        if (world.IsAuthority)
+        {
+            _settingsItems.AddRoot(new ListingSlider(key, label)
+            {
+                DetailText = hint,
+                Min = min,
+                Max = max,
+                Step = step,
+                Read = read,
+                Write = value => EditConfig(world, () => write(value)),
+                Format = format,
+            });
+            return;
+        }
+        _settingsItems.AddRoot(new ListingLabel(key, label, () => format(read())));
+    }
+
+    private static string Duration(float seconds)
+    {
+        int total = (int)MathF.Round(seconds);
+        if (total < 60)
+            return SessionLocale.Seconds(total).Resolve();
+        if (total % 60 == 0)
+            return SessionLocale.Minutes(total / 60).Resolve();
+        return $"{SessionLocale.Minutes(total / 60).Resolve()} {SessionLocale.Seconds(total % 60).Resolve()}";
     }
 
     // THE SANCTIONED WRITER.
     //
-    // Every member of WorldSettings is config-locked, which means a write that does not open the world's
-    // edit scope is refused at the datamodel - by design, so an inspector row, a tool, a script or a
-    // reference card cannot author the world's settings from inside the world. This dashboard is the one
-    // surface that may, and these three helpers are the only place it does it.
-    //
-    // Host-gated as well, because the authority refuses a guest's delta for these anyway: without the
-    // gate a guest's toggle would move, write a value nobody else ever sees and desync their own view of
-    // the world until the next resync. A guest gets the value read out instead. -xlinka
+    // Every member of WorldSettings is config-locked, so a write that does not open the world's edit scope
+    // is refused at the datamodel - by design, so an inspector row, a tool, a script or a reference card
+    // cannot author the world's settings from inside the world. This screen is the one surface that may,
+    // and this is the only place it does. Host-gated as well, because the authority refuses a guest's
+    // delta for these anyway. -xlinka
     private static void EditConfig(World world, Action apply)
     {
         if (world == null || world.IsDestroyed || !world.IsAuthority)
@@ -945,50 +718,277 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
         apply();
     }
 
-    private void ConfigToggleRow(Slot body, World world, string label, bool value, Action<bool> apply)
+    // SAVING
+
+    // Save changes: the local home writes back over its own file, the one save that stays on this machine
+    // because it IS this machine's home. Any other world goes up to the cloud inventory under its own name.
+    // -xlinka
+    private void SaveFocusedWorld(World world, ListingAction action)
     {
-        if (world.IsAuthority)
-            ToggleRow(body, label, value, v => EditConfig(world, () => apply(v)));
-        else
-            AddRow(body, $"{label}: {(value ? "On" : "Off")} (set by the host)");
+        if (world.Name == "LocalHome")
+        {
+            ShowActionResult(action, SessionLocale.SaveChangesButton,
+                world.SaveToFile(Lumora.Core.Engine.LocalHomeSavePath) ? SessionLocale.Saved : SessionLocale.SaveFailed);
+            return;
+        }
+        UploadWorld(world, WorldDisplayName(world), action, SessionLocale.SaveChangesButton);
     }
 
-    private void ConfigSliderRow(Slot body, World world, string label, float min, float max, float value,
-        Func<float, string> applyAndFormat, string readOnlyText)
+    // Save a copy: a new, stamped item in the cloud inventory, the current world left untouched. The home
+    // is allowed here too; a copy of it is a saved world like any other.
+    private void SaveWorldCopy(World world, ListingAction action)
     {
-        if (!world.IsAuthority)
+        var stem = world.Name == "LocalHome" ? "Home" : WorldDisplayName(world);
+        UploadWorld(world, $"{stem} {DateTime.Now:yyyy-MM-dd HH.mm}", action, SessionLocale.SaveCopyButton);
+    }
+
+    private void UploadWorld(World world, string name, ListingAction action, LocaleText idle)
+    {
+        if (!Lumora.Core.Inventory.IsSignedIn)
         {
-            AddRow(body, $"{label}: {readOnlyText} (set by the host)");
+            ShowActionResult(action, idle, SessionLocale.SignInFirst);
+            return;
+        }
+        SetActionLabel(action, SessionLocale.Uploading);
+        var task = Lumora.Core.Inventory.SaveWorldAsync(world, name, null);
+        _ = task.ContinueWith(t =>
+        {
+            bool ok = t.Status == System.Threading.Tasks.TaskStatus.RanToCompletion && t.Result.Ok;
+            var message = t.Status == System.Threading.Tasks.TaskStatus.RanToCompletion
+                ? t.Result.Message
+                : t.Exception?.GetBaseException().Message ?? "upload failed";
+            Logging.Logger.Log($"Save world '{name}': {message}");
+            World?.RunSynchronously(() => ShowActionResult(action, idle, ok ? SessionLocale.Saved : SessionLocale.SaveFailed));
+        });
+    }
+
+    // The result rides the button itself for a moment, then the button goes back to what it does.
+    private void ShowActionResult(ListingAction action, LocaleText idle, LocaleText result)
+    {
+        if (IsDestroyed)
+            return;
+        SetActionLabel(action, result);
+        World?.RunInSeconds(FeedbackSeconds, () =>
+        {
+            if (!IsDestroyed)
+                SetActionLabel(action, idle);
+        });
+    }
+
+    private void SetActionLabel(ListingAction action, LocaleText label)
+    {
+        action.ButtonLabel = label;
+        _settingsView?.RefreshValues();
+        MarkDirty();
+    }
+
+    // USERS PAGE
+
+    private void BuildUsersPage(Slot page)
+    {
+        _usersPage = page;
+        var templates = new ListingTemplateMapper { DefaultHeight = SessionUserRowTemplate.RowHeight };
+        templates.Map<ListingHeader>(new SettingsSectionTemplate(_fonts));
+        templates.MapKind(KindUser, new SessionUserRowTemplate(_fonts, this));
+        templates.MapKind(KindNote, new PermNoteTemplate(_fonts));
+        templates.Fallback(new SettingsLabelTemplate(_fonts));
+        _usersView = AttachListing(page, "Users", templates, _userItems, out var bar);
+        _usersBar = bar;
+    }
+
+    private void RebuildUsers()
+    {
+        if (_usersView == null)
+            return;
+        _userItems.ClearAll();
+        _userSignature = BuildUserSignature();
+
+        var world = _world;
+        if (world == null || world.IsDestroyed)
+        {
+            _userItems.AddRoot(new ListingCustom("none", KindNote, SessionLocale.NoWorld));
             return;
         }
 
-        SliderRow(body, label, min, max, value, v =>
+        var users = world.GetAllUsers();
+        _userItems.AddRoot(new ListingHeader("h.people",
+            LocaleText.Plain($"{SessionLocale.People.Resolve()} · {users.Count}")));
+        foreach (var user in users)
         {
-            string formatted = readOnlyText;
-            EditConfig(world, () => formatted = applyAndFormat(v));
-            return formatted;
-        });
+            if (user == null || user.IsDestroyed)
+                continue;
+            // Keyed on identity, not name: a name arriving late must not read as a new row.
+            string key = "user." + (string.IsNullOrEmpty(user.UserID.Value)
+                ? user.ReferenceID.ToString()
+                : user.UserID.Value);
+            _userItems.AddRoot(new ListingCustom(key, KindUser, LocaleText.Plain(SessionPermissionsPanel.DisplayName(user)))
+            {
+                Tag = user,
+            });
+        }
+        if (users.Count <= 1)
+            _userItems.AddRoot(new ListingCustom("alone", KindNote,
+                world.IsAuthority ? SessionLocale.AloneHost : SessionLocale.AloneGuest));
     }
 
-    private void ToggleRow(Slot page, string label, bool value, Action<bool> apply)
+    private string BuildUserSignature()
     {
-        var row = BeginRow(page, label);
-        var b = RowBuilder(row);
-
-        b.MinWidth(178f).PreferredWidth(178f).FlexibleWidth(0f);
-        AddRowLabel(b, label, 15f, TextPrimary, TextHorizontalAlignment.Left);
-
-        Text? stateText = null;
-        b.MinWidth(28f).PreferredWidth(28f).FlexibleWidth(0f);
-        b.Checkbox(value, (_, isChecked) =>
+        var world = _world;
+        if (world == null || world.IsDestroyed)
+            return string.Empty;
+        var users = world.GetAllUsers();
+        var builder = new System.Text.StringBuilder(users.Count * 12);
+        for (int i = 0; i < users.Count; i++)
         {
-            apply(isChecked);
-            if (stateText != null && !stateText.IsDestroyed)
-                stateText.Content.Value = isChecked ? "On" : "Off";
-        });
-
-        b.MinWidth(80f).FlexibleWidth(1f);
-        stateText = AddRowLabel(b, value ? "On" : "Off", 15f, TextDim, TextHorizontalAlignment.Left);
+            var user = users[i];
+            if (user == null || user.IsDestroyed)
+                continue;
+            builder.Append(user.ReferenceID).Append(':');
+        }
+        return builder.ToString();
     }
 
+    // USER ROW ACTIONS. Every one re-checks what the row showed: the row is a picture from the last bind.
+
+    internal bool IsHostUser(User user)
+    {
+        var permissions = _world?.DataModelPermissions;
+        return permissions != null && ReferenceEquals(permissions.GetRole(user), permissions.HostRole);
+    }
+
+    // The host's moderation, on other people's rows only. The gate never acts against the host, so the
+    // host's own row gets none.
+    internal bool CanModerate(User user)
+        => _world != null && !_world.IsDestroyed && _world.IsAuthority && !user.IsLocal && !IsHostUser(user);
+
+    internal string DescribeUser(User user, bool hostUser)
+    {
+        string role = hostUser ? RoleLabels.Host.Resolve() : RoleLabels.Of(_world?.DataModelPermissions?.GetRole(user));
+        return user.IsLocal ? $"{role} · {SessionLocale.You.Resolve()}" : role;
+    }
+
+    // Mute and Silence are the host's decision about someone else's record and replicate. The social
+    // freeze refuses every edit of what the actor does not own, the host included, which is right for the
+    // world's content and wrong for a mute, hence the bypass - on the authority only. -xlinka
+    internal void ToggleMuted(User user)
+    {
+        var world = _world;
+        if (world == null || !CanModerate(user))
+            return;
+        using (world.DataModelPermissions?.EnterSystemBypass())
+            user.IsMuted.Value = !user.IsMuted.Value;
+        _usersView?.RefreshValues();
+    }
+
+    internal void ToggleSilenced(User user)
+    {
+        var world = _world;
+        if (world == null || !CanModerate(user))
+            return;
+        using (world.DataModelPermissions?.EnterSystemBypass())
+            user.IsSilenced.Value = !user.IsSilenced.Value;
+        _usersView?.RefreshValues();
+    }
+
+    // Your ears, nobody else's: local state only, so it needs no authority.
+    internal void ToggleBlocked(User user)
+    {
+        if (user.IsLocal)
+            return;
+        user.SetAudioLocallyBlocked(!user.IsAudioLocallyBlocked);
+        _usersView?.RefreshValues();
+    }
+
+    internal void RequestKick(User user)
+    {
+        if (!CanModerate(user))
+            return;
+        string name = SessionPermissionsPanel.DisplayName(user);
+        ModalHost.Confirm(_usersPage, PermissionLocale.KickTitle, PermissionLocale.KickMessage(name),
+            PermissionLocale.KickConfirm, () =>
+            {
+                if (user.IsDestroyed)
+                    return;
+                user.Kick();
+                RebuildUsers();
+            });
+    }
+
+    internal void RequestBan(User user)
+    {
+        var world = _world;
+        if (world == null || !CanModerate(user))
+            return;
+        string name = SessionPermissionsPanel.DisplayName(user);
+        ModalHost.Confirm(_usersPage, SessionLocale.BanTitle, SessionLocale.BanMessage(name, WorldDisplayName(world)),
+            SessionLocale.Ban, () =>
+            {
+                if (user.IsDestroyed)
+                    return;
+                user.Ban();
+                RebuildUsers();
+            });
+    }
+
+    // Back to spawn through the user's character. Works where this machine has authority over that
+    // character's transform: your own, or anyone's on the host.
+    internal void Respawn(User user)
+    {
+        if (!user.IsLocal && !CanModerate(user))
+            return;
+        var character = user.Root?.GetRegisteredComponent<Lumora.Core.Components.CharacterController>();
+        if (character == null)
+        {
+            Lumora.Core.Logging.Logger.Log($"[Session] Respawn: no reachable character for '{user.UserName?.Value}'.");
+            return;
+        }
+        character.Teleport(new float3(0f, 1f, 0f));
+    }
+
+    // PERMISSIONS PAGE - roles, what each role can do, and what happens when someone keeps getting
+    // refused. Roles are presets over the HARD gate; the host decides and the sync layer refuses everyone
+    // else whatever the UI drew.
+
+    private void BuildPermissionsPage(Slot page)
+    {
+        _permissionsPage = page;
+        _permissionsPanel = new SessionPermissionsPanel();
+        _permissionsPanel.Attach(page, _style);
+    }
+}
+
+// A small filled label on the header: the world's mode in its own colour, and whether this machine is
+// hosting it.
+internal sealed class SessionHeaderChip
+{
+    private readonly Slot _slot;
+    private readonly RoundedPanel _panel;
+    private readonly Text _text;
+
+    private SessionHeaderChip(Slot slot, RoundedPanel panel, Text text)
+    {
+        _slot = slot;
+        _panel = panel;
+        _text = text;
+    }
+
+    // Placed inside parent from its left edge, full height.
+    public static SessionHeaderChip Build(Slot parent, string name, IAssetProvider<FontSet>? font, float left, float width)
+    {
+        var slot = SettingsUI.Child(parent, name, float2.Zero, new float2(0f, 1f), new float2(left, 0f),
+            new float2(left + width, 0f));
+        var panel = SettingsUI.Panel(slot, DashTheme.Field, color.Transparent, DashTheme.RadiusChip);
+        var text = SettingsUI.FillLabel(slot, "Text", font, DashTheme.FontLabel, DashTheme.TextDim,
+            TextHorizontalAlignment.Center, shrinkToFit: true);
+        return new SessionHeaderChip(slot, panel, text);
+    }
+
+    public void Set(string content, in color fill, in color textColor)
+    {
+        ListingStyle.SetText(_text, content);
+        ListingStyle.SetTextColor(_text, textColor);
+        SettingsUI.SetFill(_panel, fill);
+    }
+
+    public void SetActive(bool active) => ListingStyle.SetActive(_slot, active);
 }

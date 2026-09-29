@@ -32,7 +32,7 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
     private const int CardHeight = 3;
     private const int RightColumn = Columns - CardWidth;
     private const int AccountWidth = 20;
-    // Action cards are the reference's proportion: eleven of sixty-four columns, not the account tile's twenty.
+    // Action cards are eleven of sixty-four columns wide, not the account tile's twenty.
     private const int ActionWidth = 11;
     private const int AccountHeight = 7;
 
@@ -145,6 +145,8 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
     }
 
     // KEY INPUT
+
+    public bool HasFieldFocus => Account?.HasFieldFocus ?? false;
 
     public bool ConsumeChar(char c) => Account?.ConsumeChar(c) ?? false;
 
@@ -284,7 +286,7 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
         foreach (SessionVisibility visibility in Enum.GetValues<SessionVisibility>())
         {
             var captured = visibility;
-            RadioRow(_visibilityStack, "home-access", PrettyVisibility(visibility), visibility == _visibility,
+            RadioRow(_visibilityStack, "home-access", AccessLabels.Label(visibility).Resolve(), visibility == _visibility,
                 () => _visibility = captured);
         }
 
@@ -429,14 +431,6 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
         _ => template,
     };
 
-    private static string PrettyVisibility(SessionVisibility visibility) => visibility switch
-    {
-        SessionVisibility.Private => "Private (invite only)",
-        SessionVisibility.Contacts => "Contacts",
-        SessionVisibility.Public => "Anyone",
-        _ => visibility.ToString(),
-    };
-
     private static string PrettyMode(WorldMode mode) => mode switch
     {
         WorldMode.Builder => "Builder (full editing)",
@@ -450,8 +444,7 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
     private HostGroupOption? SelectedHostGroup
         => _hostGroupIndex > 0 && _hostGroupIndex <= _hostGroups.Count ? _hostGroups[_hostGroupIndex - 1] : null;
 
-    private static string GroupAccessLabel(bool membersOnly)
-        => (membersOnly ? HostForGroups.Members : HostForGroups.Public).Resolve();
+    private static string GroupAccessLabel(bool membersOnly) => AccessLabels.GroupLabel(membersOnly).Resolve();
 
     // 0 is Nobody, then one step per group, wrapping. A radio per group would grow the dialog by however
     // many groups somebody is in.

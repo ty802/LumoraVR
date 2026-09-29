@@ -1518,7 +1518,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         if (!running || world.IsLoading)
             facts.Add(world.LoadStateDescription.Resolve());
         if (access.HasValue)
-            facts.Add(AccessLabel(access.Value));
+            facts.Add(AccessLabels.Label(access.Value).Resolve());
         if (focused)
             facts.Add("You are here");
         BrowserParts.SetText(_detailFacts, facts.Count == 0 ? "Open" : string.Join(" · ", facts));
@@ -1858,7 +1858,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         foreach (SessionVisibility visibility in Enum.GetValues<SessionVisibility>())
         {
             var captured = visibility;
-            string label = PrettyVisibility(visibility);
+            string label = AccessLabels.Label(visibility).Resolve();
             var pill = _parts.AddButton(accessGroup, label, PillWidth(label), DashTheme.ControlHeight,
                 DashTheme.Surface, DashTheme.SurfaceHover, DashTheme.SurfacePressed, DashTheme.TextDim,
                 BrowserParts.Weight.Semibold, () => SelectVisibility(captured));
@@ -1950,8 +1950,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
     private static List<string> GroupAccessLabels()
         => new() { GroupAccessLabel(true), GroupAccessLabel(false) };
 
-    private static string GroupAccessLabel(bool membersOnly)
-        => (membersOnly ? HostForGroups.Members : HostForGroups.Public).Resolve();
+    private static string GroupAccessLabel(bool membersOnly) => AccessLabels.GroupLabel(membersOnly).Resolve();
 
 
     // Lato at FontSmall runs about 5.6 units a character and the pill carries 26 of its own padding.
@@ -1979,7 +1978,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
     {
         var labels = new List<string>();
         foreach (SessionVisibility visibility in Enum.GetValues<SessionVisibility>())
-            labels.Add(PrettyVisibility(visibility));
+            labels.Add(AccessLabels.Label(visibility).Resolve());
         return labels;
     }
 
@@ -2330,6 +2329,8 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         }
     }
 
+    public bool HasFieldFocus => _focus != FieldFocus.None;
+
     public bool ConsumeChar(char c)
     {
         if (_focus == FieldFocus.None)
@@ -2553,16 +2554,6 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
 
     private static string UserCount(int n) => n == 1 ? "1 user" : $"{n} users";
 
-    private static string AccessLabel(World.WorldAccessLevel level) => level switch
-    {
-        World.WorldAccessLevel.Private => "Private",
-        World.WorldAccessLevel.LAN => "LAN",
-        World.WorldAccessLevel.Contacts => "Contacts",
-        World.WorldAccessLevel.ContactsPlus => "Contacts+",
-        World.WorldAccessLevel.Anyone => "Public",
-        _ => level.ToString(),
-    };
-
     private static string PrettyTemplate(string template) => template switch
     {
         "LocalHome" => "Home Space",
@@ -2577,15 +2568,6 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         WorldMode.Social => "Social (no editing)",
         WorldMode.Event => "Event (view only)",
         _ => mode.ToString(),
-    };
-
-    private static string PrettyVisibility(SessionVisibility visibility) => visibility switch
-    {
-        SessionVisibility.Private => "Private (invite only)",
-        SessionVisibility.LAN => "LAN (local network)",
-        SessionVisibility.Contacts => "Contacts",
-        SessionVisibility.Public => "Anyone",
-        _ => visibility.ToString(),
     };
 
     private readonly struct CardData

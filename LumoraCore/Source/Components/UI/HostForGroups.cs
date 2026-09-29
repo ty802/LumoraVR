@@ -38,8 +38,6 @@ internal static class HostForGroups
 {
     public static readonly LocaleText Label = "Worlds.HostFor".AsLocale("Host for");
     public static readonly LocaleText Nobody = "Worlds.HostFor.Nobody".AsLocale("Nobody");
-    public static readonly LocaleText Members = "Worlds.HostFor.Members".AsLocale("Members");
-    public static readonly LocaleText Public = "Worlds.HostFor.Public".AsLocale("Public");
 
     public static LocaleText DefaultWorldName(string groupName)
         => "Worlds.HostFor.DefaultName".AsLocale("{0} world", groupName);

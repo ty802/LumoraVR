@@ -20,10 +20,14 @@ internal sealed class ToggleSwitch
 {
     public const float TrackWidth = 44f;
     public const float TrackHeight = 24f;
+    public const float StateGap = 12f;
+    public const float StateWidth = 46f;
+    public const float Width = TrackWidth + StateGap + StateWidth;
     private const float KnobSize = 18f;
     private const float KnobMargin = 3f;
-    private const float StateGap = 12f;
-    private const float StateWidth = 46f;
+    private const float InheritedAlpha = 0.30f;
+    private const float InheritedHoverAlpha = 0.45f;
+    private const float InheritedOutlineAlpha = 0.55f;
 
     private readonly RoundedPanel _track;
     private readonly RoundedPanel _knob;
@@ -73,5 +77,48 @@ internal sealed class ToggleSwitch
 
         ListingStyle.SetText(_state, on ? "On" : "Off");
         ListingStyle.SetTextColor(_state, interactable ? DashTheme.TextDim : DashTheme.TextMuted);
+    }
+
+    // The permission matrix's switch: green and to the right when the role gets it, red and to the left
+    // when it does not. solid is an answer the host chose; a faded one is the world mode's and moves with
+    // it. A switch the mode has forced off goes grey, because no press can change it. -xlinka
+    public void SetVerdict(bool allowed, bool solid, bool forced, bool hovered, string word)
+    {
+        color tone = allowed ? DashTheme.Positive : DashTheme.Negative;
+        color fill;
+        color outline;
+        color knob;
+        color text;
+        if (forced)
+        {
+            fill = DashTheme.Field;
+            outline = DashTheme.Outline;
+            knob = DashTheme.TextMuted;
+            text = DashTheme.TextMuted;
+        }
+        else if (solid)
+        {
+            fill = hovered ? (allowed ? DashTheme.PositiveHover : DashTheme.NegativeHover) : tone;
+            outline = tone;
+            knob = DashTheme.OnAccent;
+            text = tone;
+        }
+        else
+        {
+            fill = tone.WithAlpha(hovered ? InheritedHoverAlpha : InheritedAlpha);
+            outline = tone.WithAlpha(InheritedOutlineAlpha);
+            knob = DashTheme.Text;
+            text = DashTheme.TextDim;
+        }
+        SettingsUI.SetPaint(_track, fill, outline);
+        SettingsUI.SetFill(_knob, knob);
+
+        bool right = allowed && !forced;
+        float left = right ? TrackWidth - KnobMargin - KnobSize : KnobMargin;
+        SettingsUI.SetOffsets(_knobRect,
+            new float2(left, -KnobSize * 0.5f), new float2(left + KnobSize, KnobSize * 0.5f));
+
+        ListingStyle.SetText(_state, word);
+        ListingStyle.SetTextColor(_state, text);
     }
 }

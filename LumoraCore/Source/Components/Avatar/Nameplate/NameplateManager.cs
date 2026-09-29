@@ -8,7 +8,8 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
 
-// The composition root for one user's nameplate: background panel, name, badge row, status dot.
+// The composition root for one user's nameplate: plate body and its hairline, the accent bar, the name,
+// the badge row, the group card and the status dot.
 //
 // LOCAL, TOP TO BOTTOM. This component and every slot, mesh, material and renderer under it is minted in
 // the local RefID byte, so a nameplate adds no sync member, no delta, and nothing to a save. Every peer
@@ -30,6 +31,7 @@ public sealed class NameplateManager : UserRootComponent
     private const string PlateSlotName = "Plate";
     private const string PanelSlotName = "Panel";
     private const string RimSlotName = "Rim";
+    private const string AccentSlotName = "Accent";
     private const string LabelSlotName = "Label";
     private const string BadgeRowSlotName = "Badges";
     private const string StatusSlotName = "Status";
@@ -40,23 +42,57 @@ public sealed class NameplateManager : UserRootComponent
     // second, and it only touches geometry when the answer actually moved.
     private const float ReconcileInterval = 0.5f;
 
-    private const float PanelPadX = 0.05f;
-    private const float PanelPadY = 0.035f;
-    private const float BadgeSize = 0.05f;
-    private const float BadgeGap = 0.008f;
-    private const float RowGap = 0.018f;
-    private const float StatusSize = 0.032f;
-    private const float StatusGap = 0.016f;
+    // ONE SPACING UNIT. Every inset, gap and chip on the plate is a multiple of it, which is the whole
+    // reason the badge row reads even: the gap between two chips, the gap from the chips to the plate and
+    // the plate's own inset were three unrelated numbers before and no two of them lined up. -xlinka
+    private const float Gap = 0.012f;
+
+    // Total inset, not per side: the panel is the name plus this.
+    private const float PanelPadX = Gap * 3f;
+    private const float PanelPadY = Gap * 2f;
+    private const float BadgeGap = Gap * 0.6f;
+
+    // The group card's base unit. The chips are sized off the TEXT instead (ChipSize) so the row scales
+    // with whatever TextSize a world set rather than only reading right at the default. -xlinka
+    private const float CardUnit = Gap * 3.5f;
+
+    // Chip side as a fraction of the name's size. The row sits ABOVE the plate, so a chip is not bound by
+    // the name's line box and can run a little over it without pushing the plate around. -xlinka
+    private const float ChipHeightRatio = 0.8f;
+    // How much of a chip the mark inside it takes. The icon art is drawn to the edge of its own square and
+    // a letter is not, so the two need different numbers to sit at the same optical size.
+    private const float IconScale = 0.66f;
+    private const float GlyphScale = 0.62f;
+    // A two-letter mark (the role chips) steps down so both letters fit the same square.
+    private const float PairGlyphScale = 0.44f;
+    private const float RowGap = Gap * 1.2f;
+    private const float StatusSize = Gap * 2.2f;
+    private const float StatusGap = Gap;
     private const float PanelDepth = -0.004f;
     private const float ChipDepth = -0.002f;
+    private const float IconDepth = -0.001f;
 
-    // Metres of real corner geometry, not a texture radius. Deliberately small: a plate is read at a
-    // glance from across a room and heavy rounding turns a name panel into a pill. The rim sits at the
-    // SAME depth as the panel and grows outward from its outline, so the two share an edge and there
-    // is no second alpha layer stacked behind the panel to darken it.
-    private const float PanelCornerRadius = 0.02f;
-    private const float ChipCornerRadius = 0.012f;
-    private const float RimWidth = 0.008f;
+    // Corner geometry as a FRACTION of the piece it rounds, not a fixed metre count, so the plate keeps a
+    // dash card's corner at every name length instead of turning into a pill on a short name. The numbers
+    // are the dash's own ratios: RadiusCard over a card's height, RadiusChip over ChipHeight. -xlinka
+    private const float PanelRadiusRatio = 0.26f;
+    private const float ChipRadiusRatio = 0.27f;
+
+    // A hairline, the same line the dash draws round a card. The ring sits at the SAME depth as the panel
+    // and grows outward from its outline, so the two share an edge and there is no second alpha layer
+    // stacked behind the panel to darken it.
+    private const float RimWidth = 0.002f;
+
+    // The one place the user's own colour still lands: a short bar on the plate's bottom edge instead of
+    // the fat coloured border that used to wrap the whole thing.
+    private const float AccentHeight = 0.004f;
+    private const float AccentWidthRatio = 0.26f;
+    private const float AccentInset = Gap * 0.35f;
+
+    // A display name is whatever somebody typed, and a 60-character one draws a plate wider than the
+    // avatar wearing it and shoves the badge row out with it. Clipped for DRAWING only - nothing else
+    // reads this, and the name on the wire is untouched. -xlinka
+    private const int MaxNameChars = 26;
 
     // THE GROUP CARD
     //
@@ -64,14 +100,15 @@ public sealed class NameplateManager : UserRootComponent
     // corners take the panel's radius and the bottom two the chip's, which is what makes it read as part
     // of the plate: a card rounded the same all the way round looks like a separate thing that happens to
     // be nearby. The gap is one hairline of daylight, not a margin. -xlinka
-    private const float GroupCardGap = 0.004f;
-    private const float GroupCardHeight = BadgeSize * 1.3f;
-    private const float GroupIconSize = BadgeSize;
-    private const float GroupDotSize = BadgeSize * 0.3f;
-    private const float GroupContentGap = 0.01f;
+    private const float GroupCardGap = Gap * 0.3f;
+    private const float GroupCardHeight = CardUnit * 1.3f;
+    private const float GroupIconSize = CardUnit;
+    private const float GroupDotSize = CardUnit * 0.3f;
+    private const float GroupContentGap = Gap * 0.7f;
     private const float GroupTagScale = 0.8f;
-    // How much of the group colour lands over the plate's own panel colour.
-    private const float GroupFillStrength = 0.85f;
+    // How much of the group colour lands over the plate's own tint. Held back from the slab it used to be
+    // so the card still reads as part of the plate rather than a sticker on top of it.
+    private const float GroupFillStrength = 0.6f;
 
     public readonly Sync<float> HeightOffset = new();
     public readonly Sync<float> TextSize = new();
@@ -94,20 +131,30 @@ public sealed class NameplateManager : UserRootComponent
     // show it, because there the point of view is not behind your eyes.
     public readonly Sync<bool> HideInFirstPerson = new();
 
-    // Colour is NOT a knob here. The name, its outline and the panel behind it come from the equip
-    // manager's replicated Badge* fields, so a world or an avatar authors one answer and every viewer
-    // draws the same plate. The constants below are only what a plate falls back to when there is no
-    // equip manager to ask, which in practice means a template that spawned a user root by hand. -xlinka
-    private static readonly color FallbackPanel = new color(0.04f, 0.05f, 0.07f, 0.62f);
-    private static readonly color FallbackRim = new color(0.14f, 0.15f, 0.19f, 0.85f);
-    private static readonly color FallbackText = new color(0.95f, 0.97f, 1f, 1f);
-    private static readonly color FallbackOutline = new color(0f, 0f, 0f, 0.9f);
+    // Colour is NOT a knob here. The plate BODY belongs to the theme - one tint, one hairline, the same
+    // ones a dash card is drawn with - because twenty people authoring twenty background colours is how a
+    // room ends up with twenty different plates and no readable one. What stays authored is the ink, its
+    // outline and the accent bar: the name is whoever's it is, and the accent is the supporter-reward
+    // colour the equip manager replicates. The constants below are what those fall back to when there is
+    // no equip manager to ask, which in practice means a template that spawned a user root by hand.
+    private static readonly color FallbackText = NameplateTheme.NameInk;
+    private static readonly color FallbackOutline = NameplateTheme.NameOutline;
+    private static readonly color FallbackAccent = NameplateTheme.Accent;
+
+    // What the equip manager hands somebody nobody granted a colour to: a near-black neutral that was only
+    // ever meant to be invisible behind a border. As an underline it is a grey smear under every name in
+    // the room, so the plate reads that exact value as "ungranted" and draws the house accent instead. A
+    // granted colour is anything else and still wins. Compared here, never written: the default belongs to
+    // the equip manager. -xlinka
+    private static readonly color UngrantedAccent = new color(0.14f, 0.15f, 0.19f, 0.85f);
 
     private Slot? _plate;
     private Slot? _badgeRow;
+    private Slot? _accentSlot;
     private TextRenderer? _label;
     private Meshes.RoundedQuadMesh? _panelMesh;
     private Meshes.RoundedQuadRingMesh? _rimMesh;
+    private Meshes.RoundedQuadMesh? _accentMesh;
     private Meshes.RoundedQuadMesh? _statusMesh;
 
     private Slot? _groupCard;
@@ -142,8 +189,7 @@ public sealed class NameplateManager : UserRootComponent
     private float2 _cardLaidOutFor = new float2(-1f, -1f);
 
     private float _reconcileCountdown;
-    private bool _diagnosed;
-    private float _diagnoseCountdown = 4f;
+    private float _chipsBuiltFor = -1f;
     private bool _hasCustomBadgeDriver;
     private bool _avatarShowing;
     private bool _badgesDirty = true;
@@ -163,7 +209,9 @@ public sealed class NameplateManager : UserRootComponent
     {
         base.OnInit();
         HeightOffset.Value = 0.35f;
-        TextSize.Value = 0.07f;
+        // Smaller than it was: a name over a head is a label, not a sign, and the plate around it is
+        // tighter now so the old size filled the whole thing.
+        TextSize.Value = 0.06f;
         MaxViewDistance.Value = 40f;
         IdleSeconds.Value = 60f;
         ShowBadges.Value = true;
@@ -182,7 +230,7 @@ public sealed class NameplateManager : UserRootComponent
         base.OnStart();
 
         HeightOffset.OnChanged += _ => MarkLayoutDirty();
-        TextSize.OnChanged += _ => _labelDirty = true;
+        TextSize.OnChanged += _ => { _labelDirty = true; _badgesDirty = true; };
         MaxViewDistance.OnChanged += _ => ApplyViewDistance();
         IdleSeconds.OnChanged += _ => _activity.IdleThreshold = MathF.Max(1f, IdleSeconds.Value);
         ShowBadges.OnChanged += _ => _badgesDirty = true;
@@ -225,11 +273,10 @@ public sealed class NameplateManager : UserRootComponent
 
         if (_equip != null && !_equip.IsDestroyed)
         {
-            _equipChanged = _ => { _labelDirty = true; ApplyPanelColor(); ApplyRimColor(); };
+            _equipChanged = _ => { _labelDirty = true; ApplyAccentColor(); };
             _equip.BadgeText.Changed += _equipChanged;
             _equip.BadgeColor.Changed += _equipChanged;
             _equip.BadgeOutline.Changed += _equipChanged;
-            _equip.BadgeBackground.Changed += _equipChanged;
             _equip.BadgeRim.Changed += _equipChanged;
         }
 
@@ -240,8 +287,7 @@ public sealed class NameplateManager : UserRootComponent
         _labelDirty = true;
         _badgesDirty = true;
         _groupDirty = true;
-        ApplyPanelColor();
-        ApplyRimColor();
+        ApplyAccentColor();
     }
 
     // Read the config through RootSlot rather than World.PermissionConfig: that property ATTACHES the
@@ -308,22 +354,32 @@ public sealed class NameplateManager : UserRootComponent
         plate.GetOrAttachComponent<ImmutableComponent>();
         _plate = plate;
 
+        float startHeight = TextSize.Value + PanelPadY;
+
         var rim = plate.AddSlot(RimSlotName);
         rim.LocalPosition.Value = new float3(0f, 0f, PanelDepth);
         _rimMesh = rim.AttachComponent<Meshes.RoundedQuadRingMesh>();
-        _rimMesh.Size.Value = new float2(0.4f, 0.12f);
-        _rimMesh.CornerRadius.Value = PanelCornerRadius;
+        _rimMesh.Size.Value = new float2(0.4f, startHeight);
+        _rimMesh.CornerRadius.Value = startHeight * PanelRadiusRatio;
         _rimMesh.RimWidth.Value = RimWidth;
         AttachRenderer(rim, _rimMesh, theme.PlateMaterial);
-        ApplyRimColor();
 
         var panel = plate.AddSlot(PanelSlotName);
         panel.LocalPosition.Value = new float3(0f, 0f, PanelDepth);
         _panelMesh = panel.AttachComponent<Meshes.RoundedQuadMesh>();
-        _panelMesh.Size.Value = new float2(0.4f, 0.12f);
-        _panelMesh.CornerRadius.Value = PanelCornerRadius;
+        _panelMesh.Size.Value = new float2(0.4f, startHeight);
+        _panelMesh.CornerRadius.Value = startHeight * PanelRadiusRatio;
         AttachRenderer(panel, _panelMesh, theme.PlateMaterial);
-        ApplyPanelColor();
+        ApplyPlateColors();
+
+        var accent = plate.AddSlot(AccentSlotName);
+        accent.LocalPosition.Value = new float3(0f, 0f, ChipDepth);
+        _accentSlot = accent;
+        _accentMesh = accent.AttachComponent<Meshes.RoundedQuadMesh>();
+        _accentMesh.Size.Value = new float2(AccentHeight * 4f, AccentHeight);
+        _accentMesh.CornerRadius.Value = AccentHeight * 0.5f;
+        AttachRenderer(accent, _accentMesh, theme.PlateMaterial);
+        ApplyAccentColor();
 
         var label = plate.AddSlot(LabelSlotName);
         _label = label.AttachComponent<TextRenderer>();
@@ -332,11 +388,11 @@ public sealed class NameplateManager : UserRootComponent
         _label.Size.Value = TextSize.Value;
         _label.HorizontalAlign.Value = TextHorizontalAlignment.Center;
         _label.VerticalAlign.Value = TextVerticalAlignment.Middle;
-        // A readable ring in atlas texels. Without it a light name over a light wall is unreadable the
-        // moment the panel fades out at range. Keep it well under the MSDF field's representable range:
-        // the shader caps the shift at ~1.4 texels of a pixel-range-4 atlas, and past that the ring
-        // swallows the glyph quad whole. -xlinka
-        _label.OutlineThickness.Value = 1.2f;
+        // A ring in atlas texels, kept faint on purpose: the plate under the name does the contrast work
+        // now, and the ring is only there for the range where the plate has faded out from under it. Well
+        // under the MSDF field's representable range either way - the shader caps the shift at ~1.4 texels
+        // of a pixel-range-4 atlas, and past that the ring swallows the glyph quad whole. -xlinka
+        _label.OutlineThickness.Value = 0.6f;
 
         _badgeRow = plate.AddSlot(BadgeRowSlotName);
         ComposeGroupCard(plate, theme);
@@ -368,8 +424,8 @@ public sealed class NameplateManager : UserRootComponent
         card.LocalPosition.Value = new float3(0f, 0f, PanelDepth);
         _groupCardMesh = card.AttachComponent<Meshes.RoundedQuadMesh>();
         _groupCardMesh.Size.Value = new float2(GroupCardHeight, GroupCardHeight);
-        _groupCardMesh.CornerRadius.Value = PanelCornerRadius;
-        _groupCardMesh.BottomCornerRadius.Value = ChipCornerRadius;
+        _groupCardMesh.CornerRadius.Value = GroupCardHeight * PanelRadiusRatio;
+        _groupCardMesh.BottomCornerRadius.Value = GroupCardHeight * ChipRadiusRatio;
         AttachRenderer(card, _groupCardMesh, theme?.PlateMaterial);
         card.ActiveSelf.Value = false;
         _groupCard = card;
@@ -378,7 +434,7 @@ public sealed class NameplateManager : UserRootComponent
         icon.LocalPosition.Value = new float3(0f, 0f, ChipDepth);
         _groupIconMesh = icon.AttachComponent<Meshes.RoundedQuadMesh>();
         _groupIconMesh.Size.Value = new float2(GroupIconSize, GroupIconSize);
-        _groupIconMesh.CornerRadius.Value = ChipCornerRadius;
+        _groupIconMesh.CornerRadius.Value = GroupIconSize * ChipRadiusRatio;
         _groupIconMesh.UseVertexColors.Value = false;
         // Its own material, not the shared plate one: the plate material carries no texture on purpose and
         // every plate in the world shares it, so pointing that at one user's icon would put that icon on
@@ -460,30 +516,6 @@ public sealed class NameplateManager : UserRootComponent
             }
 
             Reconcile();
-        }
-
-        if (!_diagnosed && _label != null && (_diagnoseCountdown -= delta) <= 0f)
-        {
-            _diagnosed = true;
-            if (string.IsNullOrEmpty(_label.Text.Value))
-                ApplyLabel();
-            var fontSet = _label.Font.Target?.Asset;
-            int renderers = 0, materials = 0;
-            string materialKinds = "";
-            if (_label.Slot != null)
-            {
-                foreach (var mr in _label.Slot.GetComponentsInChildren<MeshRenderer>())
-                {
-                    renderers++;
-                    materials += mr.Materials.Count;
-                    for (int i = 0; i < mr.Materials.Count; i++)
-                        materialKinds += (mr.Materials[i]?.GetType().Name ?? "null") + ",";
-                }
-            }
-            Logging.Logger.Log($"NameplateManager diag: text='{_label.Text.Value}' fontTarget={_label.Font.Target != null} " +
-                $"fontAsset={fontSet != null} fontValid={fontSet?.IsValid ?? false} rendered={_label.RenderedSize} " +
-                $"labelActive={_label.Slot?.IsActive} plateVisible={_plateVisible} avatarShowing={_avatarShowing} " +
-                $"equip={_equip != null} color={_label.Color.Value} renderers={renderers} materials={materials} kinds={materialKinds}");
         }
 
         UpdateVisibility();
@@ -592,7 +624,7 @@ public sealed class NameplateManager : UserRootComponent
         if (string.IsNullOrEmpty(name))
             name = "User";
 
-        _label.Text.Value = name;
+        _label.Text.Value = Clip(name);
         _label.Size.Value = TextSize.Value;
 
         bool authored = _equip != null && !_equip.IsDestroyed;
@@ -604,21 +636,54 @@ public sealed class NameplateManager : UserRootComponent
         MarkLayoutDirty();
     }
 
-    private void ApplyPanelColor()
+    // Trailing dots rather than an ellipsis character: the shipping face does not carry every dot glyph a
+    // designer would reach for, and a name that ends in a missing-glyph box is worse than one that ends in
+    // three periods. Backs off a character if the cut would land inside a surrogate pair. -xlinka
+    private static string Clip(string name)
     {
-        if (_panelMesh == null || _panelMesh.IsDestroyed)
-            return;
-        _panelMesh.Color = _equip != null && !_equip.IsDestroyed ? _equip.BadgeBackground.Value : FallbackPanel;
+        if (name.Length <= MaxNameChars)
+            return name;
+
+        int cut = MaxNameChars - 3;
+        if (char.IsHighSurrogate(name[cut - 1]))
+            cut--;
+        return name.Substring(0, cut).TrimEnd() + "...";
     }
 
-    // The rim is the supporter-reward surface: one authored colour living on the EQUIP manager, which
-    // replicates, painted into a mesh that does not. The plate itself stays local top to bottom.
-    private void ApplyRimColor()
+    // The body of the plate is the theme's, not anybody's: the dash tint with a hairline round it. No blur
+    // behind it - one frosted panel is a dash, twenty of them over twenty heads is twenty screen-grab and
+    // blur passes for a label the size of a postcard, so the glass here is tint only. -xlinka
+    private void ApplyPlateColors()
     {
-        if (_rimMesh == null || _rimMesh.IsDestroyed)
-            return;
-        _rimMesh.Color = _equip != null && !_equip.IsDestroyed ? _equip.BadgeRim.Value : FallbackRim;
+        if (_panelMesh != null && !_panelMesh.IsDestroyed)
+            _panelMesh.Color = NameplateTheme.PlateFill;
+        if (_rimMesh != null && !_rimMesh.IsDestroyed)
+            _rimMesh.Color = NameplateTheme.PlateEdge;
     }
+
+    // The accent is the supporter-reward surface: one authored colour living on the EQUIP manager, which
+    // replicates, painted into a mesh that does not. It used to be the whole border; a bar under the name
+    // says the same thing without wrapping every plate in a colour that fights the one next to it.
+    private void ApplyAccentColor()
+    {
+        if (_accentMesh == null || _accentMesh.IsDestroyed)
+            return;
+
+        if (_equip == null || _equip.IsDestroyed)
+        {
+            _accentMesh.Color = FallbackAccent;
+            return;
+        }
+
+        var rim = _equip.BadgeRim.Value;
+        _accentMesh.Color = rim.a <= 0f || NearlySame(rim, UngrantedAccent) ? FallbackAccent : rim;
+    }
+
+    // Loose compare because the value makes a round trip through a save and the wire before it gets here,
+    // and a rim that came back a thousandth off the default is still the default.
+    private static bool NearlySame(in color a, in color b)
+        => MathF.Abs(a.r - b.r) < 0.004f && MathF.Abs(a.g - b.g) < 0.004f
+           && MathF.Abs(a.b - b.b) < 0.004f && MathF.Abs(a.a - b.a) < 0.004f;
 
     private void ApplyStatusColor()
     {
@@ -651,6 +716,11 @@ public sealed class NameplateManager : UserRootComponent
 
     // BADGES
 
+    // The chip's side, off the name rather than a fixed metre count, so the row scales with whatever
+    // TextSize the world set instead of towering over the plate at a big one and rattling round it at a
+    // small one.
+    private float ChipSize => MathF.Max(0.001f, TextSize.Value) * ChipHeightRatio;
+
     private void RebuildBadges()
     {
         if (_badgeRow == null || _badgeRow.IsDestroyed)
@@ -663,8 +733,13 @@ public sealed class NameplateManager : UserRootComponent
             NameplateBadgeRegistry.Collect(in context, _wanted);
         }
 
-        if (SameBadges(_wanted, _drawn))
+        // Chip geometry is baked when a chip is built, so a TextSize change has to rebuild the row even
+        // when the badge SET is identical. Tracked as a number rather than by clearing what was drawn,
+        // because the drawn list is what the compare above is for. -xlinka
+        float chip = ChipSize;
+        if (SameBadges(_wanted, _drawn) && MathF.Abs(chip - _chipsBuiltFor) < 1e-6f)
             return;
+        _chipsBuiltFor = chip;
 
         _badgeRow.DestroyChildren();
 
@@ -674,22 +749,46 @@ public sealed class NameplateManager : UserRootComponent
 
         _drawn.Clear();
         _drawn.AddRange(_wanted);
-        SpreadBadgeRow(_panelMesh != null && !_panelMesh.IsDestroyed ? _panelMesh.Size.Value.y : 0.12f);
+        // No placement here: the row rides the plate's top edge, so where it goes depends on the panel
+        // height the shaped name produced and Layout is the only thing that knows it.
         MarkLayoutDirty();
         ApplyViewDistance();
     }
 
+    // A chip is a FILLED square in the badge's own colour with its mark cut out of it in dark ink: a
+    // letter for the things a letter says (host, role), the icon set the rest of the UI already uses for
+    // the things that have a picture (voice). Both branches sit on the same square so the row measures the
+    // same whichever a source hands back. Neither colour is chosen here - the badge carries both. -xlinka
     private void BuildBadge(Slot row, in NameplateBadge badge, NameplateTheme? theme)
     {
         var slot = row.AddSlot(BadgeSlotPrefix + badge.Key);
+        float size = ChipSize;
 
         var chip = slot.AddSlot("Chip");
         chip.LocalPosition.Value = new float3(0f, 0f, ChipDepth);
         var chipMesh = chip.AttachComponent<Meshes.RoundedQuadMesh>();
-        chipMesh.Size.Value = new float2(BadgeSize, BadgeSize);
-        chipMesh.CornerRadius.Value = ChipCornerRadius;
+        chipMesh.Size.Value = new float2(size, size);
+        chipMesh.CornerRadius.Value = size * ChipRadiusRatio;
         chipMesh.Color = badge.Chip;
         AttachRenderer(chip, chipMesh, theme?.PlateMaterial);
+
+        if (!string.IsNullOrEmpty(badge.IconName))
+        {
+            // The material is shared per icon kind across the whole world and carries no tint, so the ink
+            // goes on the mesh corners instead. Nothing here mints a texture.
+            var material = theme?.IconMaterial(badge.IconName);
+            if (material == null)
+                return;
+
+            var iconSlot = slot.AddSlot("Icon");
+            iconSlot.LocalPosition.Value = new float3(0f, 0f, IconDepth);
+            var iconMesh = iconSlot.AttachComponent<Meshes.RoundedQuadMesh>();
+            iconMesh.Size.Value = new float2(size * IconScale, size * IconScale);
+            iconMesh.CornerRadius.Value = 0f;
+            iconMesh.Color = badge.Ink;
+            AttachRenderer(iconSlot, iconMesh, material);
+            return;
+        }
 
         if (string.IsNullOrEmpty(badge.Glyph))
             return;
@@ -699,7 +798,7 @@ public sealed class NameplateManager : UserRootComponent
         if (theme?.Font != null)
             glyph.Font.Target = theme.Font;
         glyph.Text.Value = badge.Glyph;
-        glyph.Size.Value = BadgeSize * 0.72f;
+        glyph.Size.Value = size * (badge.Glyph.Length > 1 ? PairGlyphScale : GlyphScale);
         glyph.Color.Value = badge.Ink;
         glyph.HorizontalAlign.Value = TextHorizontalAlignment.Center;
         glyph.VerticalAlign.Value = TextVerticalAlignment.Middle;
@@ -729,8 +828,8 @@ public sealed class NameplateManager : UserRootComponent
         {
             _cardActive = active;
             card.ActiveSelf.Value = active;
-            // The badge row and the status dot sit above whatever the card takes, so their placement is
-            // stale the moment the card appears or goes.
+            // The status dot sits above whatever the card takes, so its placement is stale the moment the
+            // card appears or goes.
             MarkLayoutDirty();
         }
         if (!active)
@@ -823,13 +922,13 @@ public sealed class NameplateManager : UserRootComponent
         }
     }
 
-    // The group colour laid over the plate's own panel colour at GroupFillStrength, composited here rather
+    // The group colour laid over the plate's own tint at GroupFillStrength, composited here rather
     // than stacked as a second translucent quad: two alpha layers over the same pixels come out darker
     // than one and the card would not match the plate it is sitting on. A clear group colour (nothing
     // parsed) falls straight back to the plate's own tint. -xlinka
-    private color CompositeGroupFill(in color group)
+    private static color CompositeGroupFill(in color group)
     {
-        var plate = _equip != null && !_equip.IsDestroyed ? _equip.BadgeBackground.Value : FallbackPanel;
+        var plate = NameplateTheme.PlateFill;
         if (group.a <= 0f)
             return plate;
 
@@ -859,7 +958,8 @@ public sealed class NameplateManager : UserRootComponent
     private static float Luminance(in color value)
         => 0.2126f * value.r + 0.7152f * value.g + 0.0722f * value.b;
 
-    // How much room the card takes out of the plate's top edge, badge row and status included.
+    // How much room the card takes off the plate's top edge. Everything that stacks above the plate - the
+    // badge row and the status dot - steps over this rather than over the card's own geometry.
     private float GroupCardOffset => _cardActive ? GroupCardHeight + RowGap : 0f;
 
     // Content runs left to right at a fixed height, so the only thing that has to wait on shaping is the
@@ -941,29 +1041,53 @@ public sealed class NameplateManager : UserRootComponent
         if (size.x <= 0f || size.y <= 0f)
             return;
 
+        float panelHeight = size.y + PanelPadY;
+
         // The card runs on its own guard: its width waits on the TAG shaping, which lands on a different
         // frame from the name's, and the name not having moved is no reason to leave the card unplaced.
-        LayoutGroupCard(size.y + PanelPadY);
+        LayoutGroupCard(panelHeight);
 
         if ((size - _laidOutFor).LengthSquared < 1e-8f)
             return;
         _laidOutFor = size;
 
-        var panelSize = new float2(size.x + PanelPadX, size.y + PanelPadY);
+        // CHIPS ABOVE, NAME INSIDE. The row is its own line sitting on the plate's top edge, so the plate
+        // is drawn round the WIDER of the two rather than round the pair: a long name never shoves the
+        // chips sideways and a long chip row never stretches the name's own padding. -xlinka
+        float panelWidth = MathF.Max(size.x, BadgeRowSpan()) + PanelPadX;
+        var panelSize = new float2(panelWidth, panelHeight);
+        float radius = panelHeight * PanelRadiusRatio;
         if (_panelMesh != null && !_panelMesh.IsDestroyed)
+        {
             _panelMesh.Size.Value = panelSize;
+            _panelMesh.CornerRadius.Value = radius;
+        }
         // Same size and same radius as the panel: the band INNER outline is the panel outline, so it
         // hugs the edge at every width the name grows to.
         if (_rimMesh != null && !_rimMesh.IsDestroyed)
+        {
             _rimMesh.Size.Value = panelSize;
+            _rimMesh.CornerRadius.Value = radius;
+        }
 
-        SpreadBadgeRow(size.y + PanelPadY);
+        if (_accentMesh != null && !_accentMesh.IsDestroyed && _accentSlot != null && !_accentSlot.IsDestroyed)
+        {
+            _accentMesh.Size.Value = new float2(MathF.Max(panelWidth * AccentWidthRatio, AccentHeight * 4f),
+                AccentHeight);
+            _accentSlot.LocalPosition.Value = new float3(0f,
+                -panelHeight * 0.5f + AccentInset + AccentHeight * 0.5f, ChipDepth);
+        }
+
+        SpreadBadgeRow(panelHeight);
+        var labelSlot = _label.Slot;
+        if (labelSlot != null && !labelSlot.IsDestroyed)
+            labelSlot.LocalPosition.Value = float3.Zero;
 
         var status = _plate.FindChild(StatusSlotName, recursive: false);
         if (status != null && !status.IsDestroyed)
         {
             status.ActiveSelf.Value = ShowStatus.Value;
-            float statusX = -((size.x + PanelPadX) * 0.5f + StatusGap + StatusSize * 0.5f);
+            float statusX = -(panelWidth * 0.5f + StatusGap + StatusSize * 0.5f);
             status.LocalPosition.Value = new float3(statusX, GroupCardOffset, 0f);
         }
 
@@ -972,24 +1096,30 @@ public sealed class NameplateManager : UserRootComponent
             positioner.VerticalOffset.Value = HeightOffset.Value;
     }
 
-    // Chips are centred as a row, so the row has to be re-spread whenever its member count changes as
-    // well as whenever the name resizes. Called from both, because a chip added before the font atlas has
-    // finished loading would otherwise sit at the origin under every other chip until the name shapes.
+    // The row is centred over the name, one RowGap of daylight off the plate's top edge, and it steps over
+    // the group card when there is one. Slot order is registry order, which is host, role, voice by Order.
     private void SpreadBadgeRow(float panelHeight)
     {
         if (_badgeRow == null || _badgeRow.IsDestroyed)
             return;
 
-        // Badges ride above whatever the group card took, so a plate with a card gets its chips clear of it
-        // and a plate without one lays out exactly as it did before the card existed.
+        float chip = ChipSize;
         _badgeRow.LocalPosition.Value = new float3(0f,
-            panelHeight * 0.5f + RowGap + BadgeSize * 0.5f + GroupCardOffset, 0f);
+            panelHeight * 0.5f + GroupCardOffset + RowGap + chip * 0.5f, 0f);
 
+        float left = BadgeRowSpan() * -0.5f;
         var children = _badgeRow.Children;
-        float span = children.Count > 0 ? children.Count * BadgeSize + (children.Count - 1) * BadgeGap : 0f;
-        float x = -span * 0.5f + BadgeSize * 0.5f;
         for (int i = 0; i < children.Count; i++)
-            children[i].LocalPosition.Value = new float3(x + i * (BadgeSize + BadgeGap), 0f, 0f);
+            children[i].LocalPosition.Value = new float3(left + chip * 0.5f + i * (chip + BadgeGap), 0f, 0f);
+    }
+
+    // What the chip row measures, off the chips that are actually BUILT rather than the list the registry
+    // last handed back: the two can disagree for one update while a rebuild is pending, and the panel is
+    // sized off this.
+    private float BadgeRowSpan()
+    {
+        int count = _badgeRow == null || _badgeRow.IsDestroyed ? 0 : _badgeRow.Children.Count;
+        return count > 0 ? count * ChipSize + (count - 1) * BadgeGap : 0f;
     }
 
     // TEARDOWN
@@ -1022,7 +1152,6 @@ public sealed class NameplateManager : UserRootComponent
             _equip.BadgeText.Changed -= _equipChanged;
             _equip.BadgeColor.Changed -= _equipChanged;
             _equip.BadgeOutline.Changed -= _equipChanged;
-            _equip.BadgeBackground.Changed -= _equipChanged;
             _equip.BadgeRim.Changed -= _equipChanged;
         }
         _equipChanged = null;

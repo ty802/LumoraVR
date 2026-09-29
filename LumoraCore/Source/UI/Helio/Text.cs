@@ -45,6 +45,9 @@ public class Text : Graphic, ILayoutElement
     public readonly Sync<bool> AutoSizeHorizontal;
     public readonly Sync<bool> AutoSizeVertical;
     public readonly Sync<float> AutoSizeMin;
+    // Opt-in for clipped editors: pan the shaped text to keep its active caret inside this rect.
+    // Rendering only; it never changes layout, text, selection indices or the wrapping width.
+    public readonly Sync<bool> KeepCaretVisible;
 
     private string _content = string.Empty;
     private IAssetProvider<FontSet>? _font;
@@ -63,6 +66,8 @@ public class Text : Graphic, ILayoutElement
     private bool _autoH;
     private bool _autoV;
     private float _autoMin;
+    private bool _keepCaretVisible;
+    private float2 _editOffset;
     // Text actually fed to the shaper: the raw Content, or the tag-stripped text in rich mode.
     private string _shapedText = string.Empty;
     private readonly List<color> _colors = new();
@@ -120,6 +125,7 @@ public class Text : Graphic, ILayoutElement
         AutoSizeHorizontal = new Sync<bool>(this, false);
         AutoSizeVertical = new Sync<bool>(this, false);
         AutoSizeMin = new Sync<float>(this, 6f);
+        KeepCaretVisible = new Sync<bool>(this, false);
     }
 
     public override bool RequiresPreGraphicsCompute => true;
@@ -235,6 +241,7 @@ public class Text : Graphic, ILayoutElement
         _autoH = AutoSizeHorizontal.Value;
         _autoV = AutoSizeVertical.Value;
         _autoMin = AutoSizeMin.Value;
+        _keepCaretVisible = KeepCaretVisible.Value;
 
         // Strip inline tags into _shapedText (+ per-char _colors) so shaping/layout is
         // identical to plain text; plain mode shapes Content directly.
@@ -308,8 +315,43 @@ public class Text : Graphic, ILayoutElement
         if (_rawLineHeight <= 0f)
             _rawLineHeight = _size;
 
+        UpdateCaretViewport(rect);
+
         return default;
     }
+
+    private void UpdateCaretViewport(in Rect rect)
+    {
+        var lines = _shaper.Lines;
+        if (!_keepCaretVisible || _caretPos < 0 || lines.Count == 0 || rect.width <= 2f || rect.height <= 0f)
+        {
+            _editOffset = float2.Zero;
+            return;
+        }
+        TryGetCaretPos(lines, _caretPos, out int lineIndex, out float caretX);
+        float x = AlignLineStart(rect, lines[lineIndex].Width, LineAlign(lines[lineIndex])) + caretX + _editOffset.x;
+        if (x > rect.xMax - 2f) _editOffset.x -= x - (rect.xMax - 2f);
+        else if (x < rect.xMin) _editOffset.x += rect.xMin - x;
+
+        float blockHeight = 0f;
+        for (int i = 0; i < lines.Count; i++)
+            blockHeight += LineHeightFor(lines[i]) * lines[i].MaxSizeScale;
+        float top = _vAlign switch
+        {
+            TextVerticalAlignment.Middle => rect.yMin + (rect.height + blockHeight) * 0.5f,
+            TextVerticalAlignment.Bottom => rect.yMin + blockHeight,
+            _ => rect.yMax,
+        };
+        for (int i = 0; i < lineIndex; i++)
+            top -= LineHeightFor(lines[i]) * lines[i].MaxSizeScale;
+        top += _editOffset.y;
+        float height = System.Math.Min(rect.height, LineHeightFor(lines[lineIndex]) * lines[lineIndex].MaxSizeScale);
+        if (top > rect.yMax) _editOffset.y -= top - rect.yMax;
+        else if (top - height < rect.yMin) _editOffset.y += rect.yMin - (top - height);
+    }
+
+    private Rect RenderRect(Rect rect) => Rect.FromMinMax(
+        new float2(rect.xMin, rect.yMin) + _editOffset, new float2(rect.xMax, rect.yMax) + _editOffset);
 
     // Where the glyphs will actually land, worked out before anything is emitted so the chunk batcher can
     // decide whether this label may share a surface. The rect on its own is not an answer: with wrapping off
@@ -323,7 +365,7 @@ public class Text : Graphic, ILayoutElement
         if (rectTransform == null)
             return null;
 
-        var rect = rectTransform.LocalComputeRect;
+        var rect = RenderRect(rectTransform.LocalComputeRect);
         var lines = _shaper.Lines;
         if (lines.Count == 0 || string.IsNullOrEmpty(_shapedText))
             return rect;
@@ -493,7 +535,7 @@ public class Text : Graphic, ILayoutElement
 
     private void LayoutAndEmit(GraphicsChunk.RenderData renderData, PhosMesh mesh)
     {
-        var rect = RectTransform!.LocalComputeRect;
+        var rect = RenderRect(RectTransform!.LocalComputeRect);
         // Shaping + metrics were done on the main thread in PreGraphicsCompute; the worker only
         // positions the already-shaped glyphs (no font-server calls off-main). - xlinka
         var lines = _shaper.Lines;

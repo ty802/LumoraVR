@@ -3,14 +3,19 @@
 
 using System;
 using System.Collections.Generic;
+using Lumora.Core.Components.UI;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
 
 // One chip on a nameplate's badge row. A value type on purpose: the manager collects a fresh list every
 // reconcile and compares it against what it drew, so a badge has to be cheap to build and cheap to
-// compare. Glyph is drawn with the plate font, so it must be text the shipping font actually has - a
-// letter, not a private-use icon. There are no image assets in this path. -xlinka
+// compare.
+//
+// A badge carries EITHER a glyph or an icon, never both. A glyph is drawn with the plate font, so it has
+// to be text the shipping face actually has - a letter, not a private-use codepoint. An icon names a file
+// under Assets/Textures/Icons and the world's theme keeps one material per icon kind, so a room full of
+// the same chip costs one texture, not one per plate. -xlinka
 public readonly struct NameplateBadge : IEquatable<NameplateBadge>
 {
     // Stable id. Doubles as the chip's slot name and as the dedup key, so two sources cannot fight over
@@ -18,6 +23,9 @@ public readonly struct NameplateBadge : IEquatable<NameplateBadge>
     public readonly string Key;
 
     public readonly string Glyph;
+
+    // File name under Assets/Textures/Icons, without the extension. Empty on a letter badge.
+    public readonly string IconName;
 
     public readonly color Chip;
 
@@ -27,20 +35,38 @@ public readonly struct NameplateBadge : IEquatable<NameplateBadge>
     public readonly int Order;
 
     public NameplateBadge(string key, string glyph, color chip, color ink, int order)
+        : this(key, glyph, string.Empty, chip, ink, order)
+    {
+    }
+
+    public NameplateBadge(string key, string glyph, string? iconName, color chip, color ink, int order)
     {
         Key = key ?? string.Empty;
         Glyph = glyph ?? string.Empty;
+        IconName = iconName ?? string.Empty;
         Chip = chip;
         Ink = ink;
         Order = order;
     }
 
+    // A letter chip. The meaning rides the FILL, not the letter: one dark square with a coloured letter on
+    // it beside a name reads as a dead pixel, and the same square filled with the colour reads at ten
+    // metres. The letter is cut out of it in dark ink. -xlinka
+    public static NameplateBadge Letter(string key, string glyph, color chip, int order)
+        => new NameplateBadge(key, glyph, string.Empty, chip, NameplateBadgeColors.Ink, order);
+
+    // An icon chip: the state colour fills the chip and the artwork is tinted to the same dark ink, so the
+    // glyph reads as a hole in the colour rather than a coloured drawing on a dark square.
+    public static NameplateBadge Icon(string key, string iconName, color chip, int order)
+        => new NameplateBadge(key, string.Empty, iconName, chip, NameplateBadgeColors.Ink, order);
+
     public bool Equals(NameplateBadge other)
-        => Key == other.Key && Glyph == other.Glyph && Chip == other.Chip && Ink == other.Ink && Order == other.Order;
+        => Key == other.Key && Glyph == other.Glyph && IconName == other.IconName
+           && Chip == other.Chip && Ink == other.Ink && Order == other.Order;
 
     public override bool Equals(object? obj) => obj is NameplateBadge other && Equals(other);
 
-    public override int GetHashCode() => HashCode.Combine(Key, Glyph, Order);
+    public override int GetHashCode() => HashCode.Combine(Key, Glyph, IconName, Order);
 }
 
 // What a badge source gets to look at. Everything here is already replicated state or a local read of
@@ -166,30 +192,39 @@ public static class NameplateBadgeRegistry
 // Three, and only the three that have a real signal behind them. A badge that cannot be derived from
 // replicated state or from the gate is a badge that lies on somebody's plate.
 
+// The ink a chip is read by. Straight off the dash tokens, so a role over somebody's head is the colour
+// that role already has on the session screen, and every one of these is stored linear like the rest of
+// the palette: a chip mesh takes it as a vertex colour with no conversion in between. -xlinka
 public static class NameplateBadgeColors
 {
-    public static readonly color Host = new color(1f, 0.78f, 0.28f, 1f);
-    public static readonly color Admin = new color(1f, 0.47f, 0.36f, 1f);
-    public static readonly color Moderator = new color(0.42f, 0.71f, 1f, 1f);
-    public static readonly color Builder = new color(0.53f, 0.88f, 0.56f, 1f);
-    public static readonly color Guest = new color(0.78f, 0.78f, 0.84f, 1f);
-    public static readonly color Spectator = new color(0.6f, 0.6f, 0.66f, 1f);
-    public static readonly color Ink = new color(0.06f, 0.07f, 0.09f, 1f);
+    // What a mark on a filled chip is cut out in: the plate's own tint taken to full alpha. It sits ON the
+    // colour rather than on the plate behind it, so it cannot be the translucent fill or the chip shows
+    // through the letter. One ink for every chip on purpose - the chip says which badge it is, the mark
+    // only has to be legible on it. -xlinka
+    public static readonly color Ink =
+        new color(DashTheme.Panel.r, DashTheme.Panel.g, DashTheme.Panel.b, 1f);
 
-    public static readonly color Muted = new color(0.94f, 0.33f, 0.42f, 1f);
-    public static readonly color Whisper = new color(0.55f, 0.62f, 0.78f, 1f);
-    public static readonly color Shout = new color(0.96f, 0.71f, 0.29f, 1f);
-    public static readonly color Broadcast = new color(0.80f, 0.45f, 0.95f, 1f);
+    public static readonly color Host = DashTheme.Warning;
+    public static readonly color Admin = DashTheme.Negative;
+    public static readonly color Moderator = DashTheme.IconBlue;
+    public static readonly color Builder = DashTheme.Positive;
+    public static readonly color Member = DashTheme.TextDim;
+    public static readonly color Viewer = DashTheme.TextMuted;
 
+    public static readonly color Muted = DashTheme.Negative;
+    public static readonly color Whisper = DashTheme.TextDim;
+    public static readonly color Shout = DashTheme.Warning;
+    public static readonly color Broadcast = DashTheme.ModeEvent;
+
+    // Keyed on the gate's role identifiers, not the words on screen (see RoleLabels).
     public static color ForRole(string? roleName) => roleName switch
     {
         "Host" => Host,
         "Admin" => Admin,
         "Moderator" => Moderator,
         "Builder" => Builder,
-        "Guest" => Guest,
-        "Spectator" => Spectator,
-        _ => Guest,
+        "Spectator" => Viewer,
+        _ => Member,
     };
 }
 
@@ -203,7 +238,7 @@ internal sealed class HostBadgeSource : INameplateBadgeSource
         if (!ReferenceEquals(permissions.GetRole(context.User), permissions.HostRole))
             return;
 
-        output.Add(new NameplateBadge("host", "H", NameplateBadgeColors.Host, NameplateBadgeColors.Ink, 0));
+        output.Add(NameplateBadge.Letter("host", "H", NameplateBadgeColors.Host, 0));
     }
 }
 
@@ -226,8 +261,8 @@ internal sealed class RoleBadgeSource : INameplateBadgeSource
         if (fallback != null && ReferenceEquals(role, fallback))
             return;
 
-        output.Add(new NameplateBadge("role", Initial(role.Name),
-            NameplateBadgeColors.ForRole(role.Name), NameplateBadgeColors.Ink, 1));
+        output.Add(NameplateBadge.Letter("role", RoleLabels.Badge(role.Name),
+            NameplateBadgeColors.ForRole(role.Name), 1));
     }
 
     // The role this world lands an UNASSIGNED joiner on: the host's configured joiner default when it
@@ -250,9 +285,6 @@ internal sealed class RoleBadgeSource : INameplateBadgeSource
             return named;
         return permissions.GetDefaultRole(DataModelAccessClass.Visitor);
     }
-
-    private static string Initial(string? roleName)
-        => string.IsNullOrEmpty(roleName) ? "?" : roleName!.Substring(0, 1).ToUpperInvariant();
 }
 
 
@@ -272,25 +304,22 @@ internal sealed class VoiceBadgeSource : INameplateBadgeSource
         if (user.ActiveVoiceMode == Lumora.Core.Audio.VoiceMode.Mute
             || user.IsMuted.Value || user.IsSilenced.Value)
         {
-            output.Add(new NameplateBadge("voice", "M", NameplateBadgeColors.Muted,
-                NameplateBadgeColors.Ink, 2));
+            output.Add(NameplateBadge.Icon("voice", "mute", NameplateBadgeColors.Muted, 2));
             return;
         }
 
-        // Normal is what everyone is by default, and a chip on every head is noise, not information.
+        // Normal is what everyone is by default, and a chip on every head is noise, not information. The
+        // mic icon is the one in the set with nothing to say here for that reason. -xlinka
         switch (user.ActiveVoiceMode)
         {
             case Lumora.Core.Audio.VoiceMode.Whisper:
-                output.Add(new NameplateBadge("voice", "W", NameplateBadgeColors.Whisper,
-                    NameplateBadgeColors.Ink, 2));
+                output.Add(NameplateBadge.Icon("voice", "whisper", NameplateBadgeColors.Whisper, 2));
                 break;
             case Lumora.Core.Audio.VoiceMode.Shout:
-                output.Add(new NameplateBadge("voice", "S", NameplateBadgeColors.Shout,
-                    NameplateBadgeColors.Ink, 2));
+                output.Add(NameplateBadge.Icon("voice", "shout", NameplateBadgeColors.Shout, 2));
                 break;
             case Lumora.Core.Audio.VoiceMode.Broadcast:
-                output.Add(new NameplateBadge("voice", "B", NameplateBadgeColors.Broadcast,
-                    NameplateBadgeColors.Ink, 2));
+                output.Add(NameplateBadge.Icon("voice", "broadcast", NameplateBadgeColors.Broadcast, 2));
                 break;
         }
     }

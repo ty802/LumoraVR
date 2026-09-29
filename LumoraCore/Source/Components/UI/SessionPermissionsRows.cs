@@ -41,7 +41,7 @@ internal sealed class PermMatrixItem : ListingItem
 
 // A pill row whose selected option can be an answer the host did not choose. Dimmed() saying true is the
 // row telling the template "this came from the world mode", which paints the lit pill grey with a ring
-// instead of in the accent - the same distinction the capability cells draw. -xlinka
+// instead of in the accent - the same distinction the capability switches draw by fading. -xlinka
 internal sealed class PermChoiceItem : ListingChoice
 {
     public Func<bool>? Dimmed;
@@ -65,10 +65,9 @@ internal static class PermMetrics
     public const float CapInset = 7f;
     public const float ScaleInset = 8f;
 
-    // A capability cell is two pills and, when the world mode has taken the answer out of the host's
-    // hands, one small line under them. The reset pill rides a band above the role names rather than
-    // beside them, so the column table underneath stays exactly aligned with the rows it heads.
-    public const float CapPillGap = 6f;
+    // A capability cell is a switch and, when the world mode has taken the answer out of the host's
+    // hands, one small line under it. The reset pill rides a band above the role names rather than beside
+    // them, so the column table underneath stays exactly aligned with the rows it heads.
     public const float CapNoteHeight = 13f;
     public const float ResetBand = 24f;
     public const float ResetWidth = 164f;
@@ -328,61 +327,66 @@ internal sealed class PermCell
         => SettingsUI.SetPaint(Panel, _hovered && Button.Interactable.Value ? _hoverFill : _fill, _outline);
 }
 
-// A CAPABILITY CELL: Yes | No
+// A CAPABILITY CELL: one switch
 //
-// The owner's read of the old cell was "Default is confusing, it's like yes or no?", and he was right -
-// it was three states dressed as one word, and the word was the setting rather than the outcome. So the
-// cell says the outcome: two pills, and the lit one is what a user in that role actually gets, asked of
-// the gate itself rather than inferred from the toggle. Press either one and it becomes a decision.
+// Green and to the right is what a user in that role gets, red and to the left is what they do not, so
+// the whole matrix reads at a glance before a single word does. The switch shows the gate's own answer,
+// not the stored toggle, and pressing it writes the other answer as the host's decision.
 //
-// The tri-state did not go anywhere. It is still what the config stores and what the gate resolves; what
-// changed is that Inherit stopped being a thing you press and became a thing you can SEE - the lit pill
-// goes grey with a ring instead of taking a colour, which is what the legend line means by "dimmed". A
-// mode ceiling is the one answer nobody can press past, so both pills go dead and the cell says why.
-// -xlinka
-internal sealed class PermCapCell
+// The tri-state is still what the config stores and what the gate resolves. Inherit shows as a faded
+// switch: that answer belongs to the world mode and moves with it. A solid one is the host's. A mode
+// ceiling is the one answer nobody can press past, so that switch goes grey and dead and the cell says
+// why underneath. The whole cell is the press target. -xlinka
+internal sealed class PermSwitchCell
 {
     public readonly Slot Slot;
-    public readonly SettingsChip Allow;
-    public readonly SettingsChip Deny;
+    public readonly Button Button;
 
+    private readonly ToggleSwitch _switch;
     private readonly Text _note;
-    private readonly RectTransform _pillsRect;
+    private readonly RectTransform _switchRect;
 
-    private PermCapCell(Slot slot, SettingsChip allow, SettingsChip deny, Text note, RectTransform pillsRect)
+    private bool _allowed;
+    private bool _solid;
+    private bool _forced;
+    private string _word = string.Empty;
+    private bool _hovered;
+
+    private PermSwitchCell(Slot slot, Button button, ToggleSwitch toggle, Text note, RectTransform switchRect)
     {
         Slot = slot;
-        Allow = allow;
-        Deny = deny;
+        Button = button;
+        _switch = toggle;
         _note = note;
-        _pillsRect = pillsRect;
+        _switchRect = switchRect;
     }
 
-    public static PermCapCell Build(Slot host, SettingsFonts fonts)
+    public static PermSwitchCell Build(Slot host, SettingsFonts fonts)
     {
-        var pills = SettingsUI.Child(host, "Pills", float2.Zero, float2.One, float2.Zero, float2.Zero);
-        float half = PermMetrics.CapPillGap * 0.5f;
+        var button = host.AttachComponent<Button>();
 
-        var allowHost = SettingsUI.Child(pills, "Yes", float2.Zero, new float2(0.5f, 1f),
-            float2.Zero, new float2(-half, 0f));
-        var allow = SettingsChip.Build(allowHost, fonts.Medium, DashTheme.FontSmall, DashTheme.RadiusControl);
-
-        var denyHost = SettingsUI.Child(pills, "No", new float2(0.5f, 0f), float2.One,
-            new float2(half, 0f), float2.Zero);
-        var deny = SettingsChip.Build(denyHost, fonts.Medium, DashTheme.FontSmall, DashTheme.RadiusControl);
+        // Centred on its own width so the switch sits in the middle of its column whatever the column
+        // count, with the state word riding beside it.
+        float half = ToggleSwitch.Width * 0.5f;
+        var group = SettingsUI.Child(host, "Switch", new float2(0.5f, 0f), new float2(0.5f, 1f),
+            new float2(-half, 0f), new float2(half, 0f));
+        var toggle = ToggleSwitch.Build(group, fonts.Medium);
 
         var note = SettingsUI.Label(host, "Note", fonts.Body, DashTheme.FontLabel, DashTheme.TextMuted,
             TextHorizontalAlignment.Center, float2.Zero, new float2(1f, 0f), float2.Zero,
             new float2(0f, PermMetrics.CapNoteHeight));
         note.Slot.ActiveSelf.Value = false;
 
-        return new PermCapCell(host, allow, deny, note, SettingsUI.Rect(pills));
+        var cell = new PermSwitchCell(host, button, toggle, note, SettingsUI.Rect(group));
+        button.HoverEntered += _ => cell.SetHovered(true);
+        button.HoverExited += _ => cell.SetHovered(false);
+        return cell;
     }
 
-    // allowed is the gate's own answer for this role, so it is what lights. state is only how the answer
-    // was arrived at, which is what decides whether the lit pill takes a colour or stays grey.
-    public void Paint(string yes, string no, bool allowed, DataModelPermissionToggle state, bool forced,
-        bool interactable, string note, in color noteColor)
+    // allowed is the gate's answer for this role. A switch is solid only when the stored choice IS the
+    // answer: a Grant the mode overruled is not the host's green, it is the mode's red.
+    public void Paint(string word, bool allowed, DataModelPermissionToggle state, bool forced, bool interactable,
+        string note, in color noteColor)
     {
         bool hasNote = note.Length > 0;
         ListingStyle.SetActive(_note.Slot, hasNote);
@@ -391,45 +395,35 @@ internal sealed class PermCapCell
             ListingStyle.SetText(_note, note);
             ListingStyle.SetTextColor(_note, noteColor);
         }
-        // The pills centre in the whole cell with no note and in the space above it with one, so a cell
-        // that has something to say still lines up with the ones that do not.
-        SettingsUI.SetOffsets(_pillsRect, new float2(0f, hasNote ? PermMetrics.CapNoteHeight : 0f), float2.Zero);
+        // The switch centres in the whole cell with no note and in the space above it with one.
+        float half = ToggleSwitch.Width * 0.5f;
+        SettingsUI.SetOffsets(_switchRect, new float2(-half, hasNote ? PermMetrics.CapNoteHeight : 0f),
+            new float2(half, 0f));
 
-        // A choice only counts as the host's when it is also the answer. A Grant the world mode overruled
-        // is not something to paint green: the role does not get it, and the cell has to say so.
-        bool chosen = !forced
+        _allowed = allowed;
+        _solid = !forced
             && ((state == DataModelPermissionToggle.Grant && allowed)
                 || (state == DataModelPermissionToggle.Deny && !allowed));
+        _forced = forced;
+        _word = word;
+
         bool live = interactable && !forced;
-
-        PaintPill(Allow, yes, allowed, chosen, positive: true, live);
-        PaintPill(Deny, no, !allowed, chosen, positive: false, live);
+        ListingStyle.SetInteractable(Button, live);
+        if (!live)
+            _hovered = false;
+        Repaint();
     }
 
-    private static void PaintPill(SettingsChip chip, string label, bool lit, bool chosen, bool positive, bool live)
+    private void SetHovered(bool value)
     {
-        ListingStyle.SetText(chip.Text, label);
-        if (!lit)
-        {
-            // The answer this role does not get. Quiet enough that the eye lands on the other one, still
-            // readable enough to be worth pressing.
-            chip.SetPaint(DashTheme.Field, DashTheme.SurfaceHover, color.Transparent, DashTheme.TextMuted);
-        }
-        else if (chosen)
-        {
-            chip.SetPaint(positive ? PermPaint.AllowFill : PermPaint.DenyFill,
-                positive ? PermPaint.AllowHover : PermPaint.DenyHover,
-                positive ? DashTheme.Positive : DashTheme.Negative,
-                positive ? DashTheme.Positive : DashTheme.Negative,
-                PermPaint.LitRing);
-        }
-        else
-        {
-            chip.SetPaint(DashTheme.Surface, DashTheme.SurfaceHover, DashTheme.Outline, DashTheme.TextDim,
-                PermPaint.LitRing);
-        }
-        chip.SetInteractable(live);
+        if (_hovered == value)
+            return;
+        _hovered = value;
+        Repaint();
     }
+
+    private void Repaint()
+        => _switch.SetVerdict(_allowed, _solid, _forced, _hovered && Button.Interactable.Value, _word);
 }
 
 // ONE SESSION USER
@@ -625,7 +619,7 @@ internal sealed class PermUserRowTemplate : ListingRowTemplate
             var role = Panel.RoleOf(user);
             if (!controls)
             {
-                ListingStyle.SetText(RoleText, isHostRow ? string.Empty : role?.Name ?? string.Empty);
+                ListingStyle.SetText(RoleText, isHostRow ? string.Empty : RoleLabels.Of(role));
                 ListingStyle.SetTextColor(RoleText, DashTheme.TextDim);
                 return;
             }
@@ -634,7 +628,7 @@ internal sealed class PermUserRowTemplate : ListingRowTemplate
             Roles.Grow(roles.Count);
             Roles.Layout(roles.Count);
             for (int i = 0; i < roles.Count; i++)
-                Roles.Paint(i, roles[i].Name, role != null && ReferenceEquals(role, roles[i]), true);
+                Roles.Paint(i, RoleLabels.Of(roles[i]), role != null && ReferenceEquals(role, roles[i]), true);
 
             ListingStyle.SetText(Kick.Text, PermissionLocale.Kick.Resolve());
             Kick.SetPaint(PermPaint.DangerFill, PermPaint.DangerHover, DashTheme.Outline, DashTheme.Negative);
@@ -713,10 +707,6 @@ internal static class PermPaint
     // ring is what separates "this is the answer" from "this is the other option".
     public const float LitRing = 2f;
 
-    public static readonly color AllowFill = DashTheme.Positive.WithAlpha(0.16f);
-    public static readonly color AllowHover = DashTheme.Positive.WithAlpha(0.26f);
-    public static readonly color DenyFill = DashTheme.Negative.WithAlpha(0.16f);
-    public static readonly color DenyHover = DashTheme.Negative.WithAlpha(0.26f);
     public static readonly color DangerFill = DashTheme.Negative.WithAlpha(0.14f);
     public static readonly color DangerHover = DashTheme.Negative.WithAlpha(0.26f);
 }
@@ -790,11 +780,9 @@ internal sealed class PermMatrixRowTemplate : ListingRowTemplate
             single.Button.SetAction(_relay.OnMatrixCellPressed);
 
             var capHost = SettingsUI.Child(host, "Caps", float2.Zero, float2.One, float2.Zero, float2.Zero);
-            var caps = PermCapCell.Build(capHost, _fonts);
-            _relay.Register(caps.Allow.Button, listingRow, i);
-            caps.Allow.Button.SetAction(_relay.OnCapAllowPressed);
-            _relay.Register(caps.Deny.Button, listingRow, i);
-            caps.Deny.Button.SetAction(_relay.OnCapDenyPressed);
+            var caps = PermSwitchCell.Build(capHost, _fonts);
+            _relay.Register(caps.Button, listingRow, i);
+            caps.Button.SetAction(_relay.OnCapTogglePressed);
 
             listingRow.Columns.Add(new Column { Host = host, Single = single, Caps = caps });
         }
@@ -817,7 +805,7 @@ internal sealed class PermMatrixRowTemplate : ListingRowTemplate
     {
         public required Slot Host;
         public required PermCell Single;
-        public required PermCapCell Caps;
+        public required PermSwitchCell Caps;
     }
 
     private sealed class MatrixRow : ListingRow
@@ -889,8 +877,7 @@ internal sealed class PermMatrixRowTemplate : ListingRowTemplate
                 bool allowed = Panel.CapAllows(role, domain);
                 bool forced = Panel.ModeForcesOff(domain);
                 column.Caps.Paint(
-                    PermissionLocale.ToggleAllow.Resolve(),
-                    PermissionLocale.ToggleDeny.Resolve(),
+                    (allowed && !forced ? PermissionLocale.ToggleAllow : PermissionLocale.ToggleDeny).Resolve(),
                     allowed,
                     Panel.CapState(role.Name, domain),
                     forced,
@@ -904,7 +891,7 @@ internal sealed class PermMatrixRowTemplate : ListingRowTemplate
             if (kind == PermMatrixKind.Header)
             {
                 cell.SetPaint(color.Transparent, color.Transparent, color.Transparent, DashTheme.TextMuted);
-                ListingStyle.SetText(cell.Title, role.Name);
+                ListingStyle.SetText(cell.Title, RoleLabels.Of(role));
                 cell.SetNote(string.Empty, DashTheme.TextMuted);
                 cell.SetInteractable(false);
                 return;

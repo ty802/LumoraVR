@@ -40,10 +40,10 @@ public static class PermissionLocale
 
     public static readonly LocaleText RoleClasses = "Session.Perm.Roles".AsLocale("Who gets which role");
     public static readonly LocaleText RoleClassesNote = "Session.Perm.Roles.Note".AsLocale(
-        "Contacts count as signed in until contacts exist. Group members only apply in a world hosted for a group.");
+        "Friends count as signed in until friends lists exist. Group members only apply in a world hosted for a group.");
     public static readonly LocaleText ClassAnonymous = "Session.Perm.Roles.Anonymous".AsLocale("Not signed in");
     public static readonly LocaleText ClassVisitor = "Session.Perm.Roles.Visitor".AsLocale("Signed in");
-    public static readonly LocaleText ClassContact = "Session.Perm.Roles.Contact".AsLocale("Contacts");
+    public static readonly LocaleText ClassContact = "Session.Perm.Roles.Contact".AsLocale("Friends");
     public static readonly LocaleText ClassGroup = "Session.Perm.Roles.Group".AsLocale("Group members");
     // The quiet marker beside a role pill: this person is on the group's roster, which is why they land
     // where they land. Not a badge, not a title, and deliberately not a word anyone could read as staff.
@@ -56,14 +56,15 @@ public static class PermissionLocale
     public static readonly LocaleText CapExport = "Session.Perm.Cap.Export".AsLocale("Export");
     public static readonly LocaleText CapToolUse = "Session.Perm.Cap.ToolUse".AsLocale("Use tools");
     public static readonly LocaleText CapTouch = "Session.Perm.Cap.Touch".AsLocale("Touch things");
+    public static readonly LocaleText CapScript = "Session.Perm.Cap.Script".AsLocale("Run their scripts");
 
     // Read once, under the matrix header, by someone who has never seen a permission table.
     public static readonly LocaleText CapsLegend = "Session.Perm.Caps.Legend".AsLocale(
-        "The lit answer is what that role gets. Dimmed means it comes from the world mode.");
+        "Green is allowed, red is not. A faded switch follows the world mode; flip it to set your own answer.");
     public static readonly LocaleText CapsReset =
         "Session.Perm.Caps.Reset".AsLocale("Reset to mode defaults");
     public static readonly LocaleText RoleGuide =
-        "Session.Perm.Caps.RoleGuide".AsLocale("Admin does anything · Builder builds and changes the world · Moderator manages people · User brings and uses their own things · Spectator only looks");
+        "Session.Perm.Caps.RoleGuide".AsLocale("Co-host does anything · Creator builds and changes the world · Moderator manages people · Member brings and uses their own things · Viewer only looks");
     public static readonly LocaleText ToggleAllow = "Session.Perm.Toggle.Allow".AsLocale("Yes");
     public static readonly LocaleText ToggleDeny = "Session.Perm.Toggle.Deny".AsLocale("No");
 
@@ -179,7 +180,7 @@ public sealed class SessionPermissionRelay : Component
         row.Bind(choice);
     }
 
-    // The scale bounds. A capability cell is two pills now and answers through the pair below, so the
+    // The scale bounds. A capability cell is a switch and answers through OnCapTogglePressed, so the
     // single-pill path is down to the two rows that still are one pill.
     [SyncMethod]
     public void OnMatrixCellPressed(Button button, UIInteractionContext context)
@@ -204,27 +205,21 @@ public sealed class SessionPermissionRelay : Component
         }
     }
 
-    // Yes and No are two buttons, not one cycled cell, so each one says outright what it writes. Pressing
-    // the answer a role already has still writes it, which is what turns an inherited answer into a
-    // decision the world mode can no longer move.
+    // A switch flips the answer the role gets NOW, read off the gate at press time rather than off the
+    // paint: an answer another peer or the mode moved since the last bind flips from where it really is.
     [SyncMethod]
-    public void OnCapAllowPressed(Button button, UIInteractionContext context)
-        => WriteCap(button, DataModelPermissionToggle.Grant);
-
-    [SyncMethod]
-    public void OnCapDenyPressed(Button button, UIInteractionContext context)
-        => WriteCap(button, DataModelPermissionToggle.Deny);
-
-    private void WriteCap(Button button, DataModelPermissionToggle value)
+    public void OnCapTogglePressed(Button button, UIInteractionContext context)
     {
         if (!Resolve(button, out var row, out int index) || row.Item is not PermMatrixItem matrix)
             return;
         if (!matrix.Interactable || matrix.Row != PermMatrixKind.Capability)
             return;
         var roles = Panel!.AssignableRoles();
-        if (index < 0 || index >= roles.Count)
+        if (index < 0 || index >= roles.Count || Panel.ModeForcesOff(matrix.Domain))
             return;
-        Panel.SetCap(roles[index].Name, matrix.Domain, value);
+        bool allowed = Panel.CapAllows(roles[index], matrix.Domain);
+        Panel.SetCap(roles[index].Name, matrix.Domain,
+            allowed ? DataModelPermissionToggle.Deny : DataModelPermissionToggle.Grant);
     }
 
     [SyncMethod]
@@ -280,6 +275,7 @@ public sealed class SessionPermissionsPanel
         DataModelPermissionDomain.Export,
         DataModelPermissionDomain.ToolUse,
         DataModelPermissionDomain.Touch,
+        DataModelPermissionDomain.Script,
     };
 
     // The classes the host answers for, in the order the section reads them. Host is not here: nobody
@@ -592,7 +588,8 @@ public sealed class SessionPermissionsPanel
 
             if (!host)
             {
-                _items.AddRoot(new ListingLabel(key, ClassLabel(accessClass), () => ClassRoleName(accessClass)));
+                _items.AddRoot(new ListingLabel(key, ClassLabel(accessClass),
+                    () => RoleLabels.Of(ResolveClassRole(accessClass, out _))));
                 continue;
             }
 
@@ -600,7 +597,7 @@ public sealed class SessionPermissionsPanel
             var names = new List<string>(roles.Count);
             for (int i = 0; i < roles.Count; i++)
             {
-                options.Add(roles[i].Name);
+                options.Add(RoleLabels.Of(roles[i]));
                 names.Add(roles[i].Name);
             }
 
@@ -750,25 +747,22 @@ public sealed class SessionPermissionsPanel
 
         string roleName = _scaleRole;
         _items.AddRoot(new ListingSlider("scale.edit", minimum
-            ? PermissionLocale.MinScaleFor(roleName)
-            : PermissionLocale.MaxScaleFor(roleName))
+            ? PermissionLocale.MinScaleFor(RoleLabels.Of(roleName))
+            : PermissionLocale.MaxScaleFor(RoleLabels.Of(roleName)))
         {
             Min = 0f,
             Max = minimum ? 5f : 20f,
             Step = minimum ? 0.05f : 0.25f,
             DetailText = PermissionLocale.ScaleHint,
             Read = () => ReadScale(roleName, minimum),
-            Write = value =>
+            Write = value => EditConfig(config =>
             {
-                var entry = GetOrAddCap(roleName);
-                if (entry == null || entry.World == null)
-                    return;
-                using var configEdit = entry.World.EnterConfigEdit();
+                var entry = config.GetOrAddCap(roleName);
                 if (minimum)
                     entry.MinScale.Value = value;
                 else
                     entry.MaxScale.Value = value;
-            },
+            }),
             Format = DescribeScale,
         });
     }
@@ -855,32 +849,27 @@ public sealed class SessionPermissionsPanel
         if (roles == null || roleIndex < 0 || roleIndex >= roles.Count)
             return;
 
-        var config = GetWritableConfig();
-        if (config == null)
+        if (GetWritableConfig() == null)
             return;
         // The config is the durable half (it survives the user leaving and it saves with the world); the
         // gate's own session override is what takes effect this instant. Both, so a role change holds
         // whether the user reconnects or not.
-        config.SetRole(user, roles[roleIndex].Name);
-        world.DataModelPermissions?.SetUserRole(user, roles[roleIndex]);
+        var role = roles[roleIndex];
+        EditConfig(config => config.SetRole(user, role.Name));
+        world.DataModelPermissions?.SetUserRole(user, role);
         _view?.RefreshValues();
         MarkDirty();
     }
 
-    // Press Yes and the role gets Grant, press No and it gets Deny. The tri-state is still what the config
-    // stores and what the gate resolves; there is just no longer a press that lands on Inherit, because
-    // "cycle until it says the thing you want" was never a control anybody could read. Getting back to the
-    // mode's own answer is the header's reset, which is a deliberate act rather than a third click. -xlinka
+    // A switch press writes Grant or Deny. The tri-state is still what the config stores and what the gate
+    // resolves; there is just no press that lands on Inherit, because "cycle until it says the thing you
+    // want" was never a control anybody could read. Getting back to the mode's own answer is the header's
+    // reset, which is a deliberate act rather than a third click. -xlinka
     internal void SetCap(string roleName, DataModelPermissionDomain domain, DataModelPermissionToggle value)
     {
-        var entry = GetOrAddCap(roleName);
-        if (entry == null || entry.World == null)
+        if (CapState(roleName, domain) == value)
             return;
-        var field = ToggleField(entry, domain);
-        if (field.Value == value)
-            return;
-        using (entry.World.EnterConfigEdit())
-            field.Value = value;
+        EditConfig(config => ToggleField(config.GetOrAddCap(roleName), domain).Value = value);
         _view?.RefreshValues();
         MarkDirty();
     }
@@ -896,7 +885,7 @@ public sealed class SessionPermissionsPanel
             return;
 
         bool changed = false;
-        using (config.World!.EnterConfigEdit())
+        EditConfig(_ =>
         {
             foreach (var entry in config.RoleCaps)
             {
@@ -911,7 +900,7 @@ public sealed class SessionPermissionsPanel
                     changed = true;
                 }
             }
-        }
+        });
 
         if (!changed)
             return;
@@ -1067,12 +1056,6 @@ public sealed class SessionPermissionsPanel
         return null;
     }
 
-    private PermissionRoleCapEntry? GetOrAddCap(string roleName)
-    {
-        var config = GetWritableConfig();
-        return config?.GetOrAddCap(roleName);
-    }
-
     private WorldPermissionConfig? GetWritableConfig()
     {
         var world = _world;
@@ -1087,7 +1070,8 @@ public sealed class SessionPermissionsPanel
     // Every member of WorldPermissionConfig is config-locked, so a write that does not open the world's
     // edit scope is refused at the datamodel - including one made from a scene inspector row by the host.
     // This panel is host-gated already (GetWritableConfig), so this only adds the scope, in one place
-    // rather than at each of the six places that used to write a field directly. -xlinka
+    // rather than at each of the places that write a field or add an entry. The scope is also what gets
+    // the write past a Social or Event world's freeze (see World.EnterConfigEdit). -xlinka
     private void EditConfig(Action<WorldPermissionConfig> apply)
     {
         var config = GetWritableConfig();
@@ -1168,6 +1152,7 @@ public sealed class SessionPermissionsPanel
             DataModelPermissionDomain.SaveCopy => entry.SaveCopy,
             DataModelPermissionDomain.Export => entry.Export,
             DataModelPermissionDomain.ToolUse => entry.ToolUse,
+            DataModelPermissionDomain.Script => entry.Script,
             _ => entry.Touch,
         };
 
@@ -1213,6 +1198,7 @@ public sealed class SessionPermissionsPanel
         DataModelPermissionDomain.SaveCopy => PermissionLocale.CapSaveCopy,
         DataModelPermissionDomain.Export => PermissionLocale.CapExport,
         DataModelPermissionDomain.ToolUse => PermissionLocale.CapToolUse,
+        DataModelPermissionDomain.Script => PermissionLocale.CapScript,
         _ => PermissionLocale.CapTouch,
     };
 

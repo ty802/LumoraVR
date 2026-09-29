@@ -33,7 +33,8 @@ public sealed class DataTreeValue : DataTreeNode
 
     public DataTreeValue(string? value) => Value = PreprocessString(value);
 
-    public DataTreeValue(Uri? url) => Value = url == null ? null : "@" + url;
+    // As written, never ToString: that lowercases the host, and a local:// machine id is case-sensitive.
+    public DataTreeValue(Uri? url) => Value = url == null ? null : "@" + url.OriginalString;
 
     /// <summary>Store a string verbatim, bypassing the '@' URL-escaping (use only when intended).</summary>
     public static DataTreeValue RawString(string? value) => new() { Value = value };

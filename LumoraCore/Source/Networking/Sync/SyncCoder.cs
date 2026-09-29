@@ -27,7 +27,9 @@ public static class SyncCoder
         [typeof(float)] = (w, v) => w.Write((float)v),
         [typeof(double)] = (w, v) => w.Write((double)v),
         [typeof(string)] = (w, v) => w.Write((string)v ?? string.Empty),
-        [typeof(Uri)] = (w, v) => w.Write(((Uri)v)?.ToString() ?? string.Empty),
+        // OriginalString, not ToString: that one lowercases the host, and a local:// machine id is
+        // case-sensitive, so the owner of a client-imported asset could never be found. -xlinka
+        [typeof(Uri)] = (w, v) => w.Write(((Uri)v)?.OriginalString ?? string.Empty),
         [typeof(float2)] = (w, v) => { var f = (float2)v; w.Write(f.x); w.Write(f.y); },
         [typeof(float3)] = (w, v) => { var f = (float3)v; w.Write(f.x); w.Write(f.y); w.Write(f.z); },
         [typeof(float4)] = (w, v) => { var f = (float4)v; w.Write(f.x); w.Write(f.y); w.Write(f.z); w.Write(f.w); },
@@ -40,6 +42,7 @@ public static class SyncCoder
         [typeof(BoundingBox)] = (w, v) => EncodeBoundingBox(w, (BoundingBox)v),
         [typeof(BodyNode)] = (w, v) => w.Write((int)(BodyNode)v),
         [typeof(BodyNode?)] = (w, v) => EncodeNullableBodyNode(w, (BodyNode?)v),
+        [typeof(float?)] = (w, v) => EncodeNullableFloat(w, (float?)v),
         [typeof(object)] = (w, v) => EncodeObject(w, v),
     };
 
@@ -79,6 +82,7 @@ public static class SyncCoder
         [typeof(BoundingBox)] = r => DecodeBoundingBox(r),
         [typeof(BodyNode)] = r => (BodyNode)r.ReadInt32(),
         [typeof(BodyNode?)] = r => DecodeNullableBodyNode(r)!,
+        [typeof(float?)] = r => DecodeNullableFloat(r)!,
         [typeof(object)] = r => DecodeObject(r),
     };
 
@@ -109,6 +113,7 @@ public static class SyncCoder
         [typeof(BoundingBox)] = new BoundingBox(),
         [typeof(BodyNode)] = BodyNode.NONE,
         [typeof(BodyNode?)] = null!,
+        [typeof(float?)] = null!,
         [typeof(object)] = null!,
     };
 
@@ -277,6 +282,28 @@ public static class SyncCoder
         if (hasValue)
         {
             return (BodyNode)reader.ReadInt32();
+        }
+        return null;
+    }
+
+    // Same marker-then-payload shape as the nullable body node: an avatar's optional clip planes are
+    // a float? per plane, and a nullable with no coder silently falls through to the object encoder.
+    private static void EncodeNullableFloat(BinaryWriter writer, float? value)
+    {
+        bool hasValue = value.HasValue;
+        writer.Write(hasValue);
+        if (hasValue)
+        {
+            writer.Write(value.GetValueOrDefault());
+        }
+    }
+
+    private static float? DecodeNullableFloat(BinaryReader reader)
+    {
+        bool hasValue = reader.ReadBoolean();
+        if (hasValue)
+        {
+            return reader.ReadSingle();
         }
         return null;
     }

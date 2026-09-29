@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -33,7 +33,7 @@ public interface IInspectorActionContextHandler
 // Authority builds the replicated UI; selection/expansion synced so all peers agree. Local-only
 // slots and [HideInInspector] components never appear.
 [ComponentCategory("Utility/Inspectors")]
-public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspectorActionContextHandler
+public partial class SceneInspectorPanel : Component, IInspectorActionHandler, IInspectorActionContextHandler
 {
     public readonly SyncRef<Slot> Root;
     public readonly SyncRef<Slot> Selected;
@@ -45,6 +45,13 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
     private readonly SyncRef<Text> _selectedTitle;
     private readonly SyncRef<Text> _rootTitle;
     private readonly SyncRef<ComponentSelectorPanel> _selector;
+
+    // The header actions that have no meaning on the world root. Held so the selection pass can take
+    // them out of the toolbar entirely rather than leaving buttons that look live and do nothing.
+    private readonly SyncRef<Slot> _insertParentButton;
+    private readonly SyncRef<Slot> _duplicateButton;
+    private readonly SyncRef<Slot> _destroyAssetsButton;
+    private readonly SyncRef<Slot> _destroyButton;
 
     private bool _hierarchyDirty = true;
     private bool _componentsDirty = true;
@@ -98,6 +105,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
 
         public Text? Label;
         public Text? ExpanderLabel;
+        public Text? BranchLabel;
         public Image? Background;
         public color BaseColor;
         public bool EffectivePersistent;
@@ -122,6 +130,10 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         _selectedTitle = new SyncRef<Text>(this);
         _rootTitle = new SyncRef<Text>(this);
         _selector = new SyncRef<ComponentSelectorPanel>(this);
+        _insertParentButton = new SyncRef<Slot>(this);
+        _duplicateButton = new SyncRef<Slot>(this);
+        _destroyAssetsButton = new SyncRef<Slot>(this);
+        _destroyButton = new SyncRef<Slot>(this);
     }
 
     // A slot under an ImmutableComponent is not editable content, so a panel aimed at one would be a
@@ -190,24 +202,24 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
     // Open-from-a-card entry point. Spawn() drops every panel on the same head-relative spot, so opening
     // the same thing twice stacked two identical panels on top of each other: they z-fight (rows fading in
     // and out), the tree lists "Inspector" once per copy, and the extras read as phantom objects because you
-    // only ever see the front one. A panel already rooted at the slot is reused and just re-selects; a new
-    // root goes beside the panel nearest the card, never onto the head spot a panel is already using. -xlinka
+    // only ever see the front one. A tab already rooted at the slot comes to the front and re-selects; a new
+    // root becomes a tab in the panel nearest the card when one is within reach, else a panel of its own.
+    // -xlinka
     public static SceneInspectorPanel? OpenOrFocus(World world, Slot rootTarget, float3 near)
     {
         if (RefuseLocked(world) || RefuseProtected(rootTarget, "open"))
             return null;
 
-        SceneInspectorPanel? sameRoot = null;
         SceneInspectorPanel? nearest = null;
-        float nearestDist = float.MaxValue;
+        float nearestDist = TabReach * TabReach;
         foreach (var panel in world.RootSlot.GetComponentsInChildren<SceneInspectorPanel>())
         {
             if (panel.IsDestroyed || panel.Slot == null || panel.Slot.IsDestroyed)
                 continue;
-            if (ReferenceEquals(panel.Root.Target, rootTarget))
+            if (panel.HasTabFor(rootTarget))
             {
-                sameRoot = panel;
-                break;
+                panel.OpenTab(rootTarget);
+                return panel;
             }
             float d = (panel.Slot.GlobalPosition - near).LengthSquared;
             if (d < nearestDist)
@@ -216,32 +228,32 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
                 nearest = panel;
             }
         }
-        if (sameRoot != null)
+        if (nearest != null)
         {
-            sameRoot.Selected.Target = rootTarget;
-            return sameRoot;
+            nearest.OpenTab(rootTarget);
+            return nearest;
         }
-        return nearest != null ? SpawnAdjacent(nearest, rootTarget) : Spawn(world, rootTarget);
+        return Spawn(world, rootTarget);
     }
 
-    // reference rows use this to open their target without losing the current view
-    public static SceneInspectorPanel? SpawnAdjacent(SceneInspectorPanel origin, Slot rootTarget)
+    // Metres. A card dropped further than this from every panel opens a panel of its own rather than a
+    // tab somewhere across the world.
+    private const float TabReach = 2.5f;
+
+    private bool HasTabFor(Slot root)
     {
-        if (origin == null || RefuseLocked(origin.World) || RefuseProtected(rootTarget, "open beside"))
-            return null;
-
-        var panelSlot = origin.Slot.Parent?.AddSlot("Inspector") ?? origin.World.RootSlot.AddSlot("Inspector");
-        panelSlot.Persistent.Value = false;
-        panelSlot.Tag.Value = "Developer";
-        panelSlot.GlobalPosition = origin.Slot.GlobalPosition + origin.Slot.GlobalRotation * new float3(0.72f, 0f, 0f);
-        panelSlot.GlobalRotation = origin.Slot.GlobalRotation;
-        panelSlot.LocalScale.Value = origin.Slot.LocalScale.Value;
-
-        var panel = panelSlot.AttachComponent<SceneInspectorPanel>();
-        panel.Root.Target = rootTarget;
-        panel.Selected.Target = rootTarget;
-        return panel;
+        if (ReferenceEquals(Root.Target, root))
+            return true;
+        foreach (var tab in Tabs)
+        {
+            if (tab is { IsDestroyed: false } && ReferenceEquals(tab.Root.Target, root))
+                return true;
+        }
+        return false;
     }
+
+    public static SceneInspectorPanel? SpawnAdjacent(SceneInspectorPanel origin, Slot rootTarget)
+        => SpawnBeside(origin, rootTarget, new float3(0.72f, 0f, 0f));
 
     public override void OnAttach()
     {
@@ -255,6 +267,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         // doesn't hog the view. Content still scrolls on overflow (bounded viewport), so height isn't the lever. -xlinka
         shell.Size.Value = new float2(1000f, 1360f);
         theme.ApplyTo(shell);
+        Slot.GetOrAttachComponent<PanelWorkspace>();
 
         shell.RebuildContent(BuildLayout);
         _hierarchyDirty = true;
@@ -279,11 +292,20 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         // ExpandedSlots stays the synced source of truth, so watching the LIST catches a toggle from
         // any peer as well as our own button, and the reconcile touches only the rows that disagree.
         ExpandedSlots.OnChanged += OnExpandedSlotsChanged;
+        // Same for sections: a press sets the rebuild flag only on the presser's machine, and the
+        // authority is the one that rebuilds.
+        ExpandedComponents.OnChanged += OnExpandedComponentsChanged;
     }
 
     private void OnExpandedSlotsChanged(SyncFieldList<ulong> list)
     {
         _expansionDirty = true;
+        MarkChangeDirty();
+    }
+
+    private void OnExpandedComponentsChanged(SyncFieldList<ulong> list)
+    {
+        _componentsDirty = true;
         MarkChangeDirty();
     }
 
@@ -309,13 +331,14 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         if (slot == null || IsUiChrome(slot) || IsHiddenFromTree(slot) || !IsUnderDisplayedRoot(slot))
             return;
 
-        // The displayed ROOT died: the whole panel is a husk pointing at nothing - close it. Target
-        // reads through RawTarget because a destroyed ref's Target already reads null here. Deferred:
-        // this fires mid slot-removal and destroying the panel inline would re-enter the event.
+        // The displayed ROOT died: that tab is a husk pointing at nothing - close it, and the panel with
+        // it when it was the last one. Target reads through RawTarget because a destroyed ref's Target
+        // already reads null here. Deferred: this fires mid slot-removal and closing inline would re-enter
+        // the event.
         var root = Root.RawTarget;
         if (root != null && (ReferenceEquals(root, slot) || root.IsDestroyed))
         {
-            World?.RunSynchronously(() => { if (!IsDestroyed) Slot.Destroy(); });
+            World?.RunSynchronously(CloseActiveTabOrPanel);
             return;
         }
 
@@ -396,35 +419,30 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         InspectorUI.ApplyTheme(ui, Slot);
 
         var vLayout = page.AttachComponent<VerticalLayout>();
-        vLayout.Spacing.Value = 8f;
-        vLayout.PaddingLeft.Value = 8f;
-        vLayout.PaddingRight.Value = 8f;
-        vLayout.PaddingTop.Value = 8f;
-        vLayout.PaddingBottom.Value = 8f;
+        vLayout.Spacing.Value = 6f;
+        vLayout.PaddingLeft.Value = 6f;
+        vLayout.PaddingRight.Value = 6f;
+        vLayout.PaddingTop.Value = 6f;
+        vLayout.PaddingBottom.Value = 6f;
         vLayout.ForceExpandWidth.Value = true;
         vLayout.ForceExpandHeight.Value = false;
 
-        InspectorUI.FixedRow(page, "Header", 42f, out var headerUi, Slot);
-        headerUi.PushStyle();
-        headerUi.FlexibleWidth(1f);
-        _selectedTitle.Target = headerUi.Text("", InspectorUI.FontSize + 3f, InspectorUI.TextColor);
-        InspectorUI.FillParent(_selectedTitle.Target.RectTransform!);
-        _selectedTitle.Target.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
-        _selectedTitle.Target.VerticalAlignment.Value = TextVerticalAlignment.Middle;
-        // Slot names are user content and may carry inline style tags; render them styled.
-        _selectedTitle.Target.RichText.Value = true;
-        headerUi.PopStyle();
-        // Compact toolbar: short text labels on tight fixed widths (no icon art exists yet).
-        InspectorUI.RelayButton(headerUi, this, "addchild", "+ Child", 78f);
-        InspectorUI.RelayButton(headerUi, this, "insertparent", "+ Parent", 84f);
-        InspectorUI.RelayButton(headerUi, this, "duplicate", "Dup", 50f);
-        // Gizmo T/R/S mode switching lives on the radial CONTEXT MENU (GizmoModeMenuSource on the dev
-        // tool) - spatial tool, spatial control. No header buttons for it here.
-        headerUi.PushStyle();
-        headerUi.TextColor(InspectorUI.DangerColor);
-        InspectorUI.RelayButton(headerUi, this, "destroyassets", "Destroy Keep Assets", 172f);
-        InspectorUI.RelayButton(headerUi, this, "destroy", "Destroy", 74f);
-        headerUi.PopStyle();
+        BuildHeaderBar();
+        BuildSelectionRow(page);
+
+        // Destructive actions sit at the far end, away from the ones you press all day.
+        InspectorUI.FixedRow(page, "Actions", ChromeRowHeight, out var actionsUi, Slot);
+        actionsUi.FontSize(ChromeFontSize);
+        InspectorUI.RelayButton(actionsUi, this, "addchild", "+ Child", 74f);
+        _insertParentButton.Target = InspectorUI.RelayButton(actionsUi, this, "insertparent", "+ Parent", 84f).Slot;
+        _duplicateButton.Target = InspectorUI.RelayButton(actionsUi, this, "duplicate", "Duplicate", 88f).Slot;
+        actionsUi.PushStyle().FlexibleWidth(1f);
+        actionsUi.Empty("Spacer");
+        actionsUi.PopStyle();
+        actionsUi.PushStyle().TextColor(InspectorUI.DangerColor);
+        _destroyAssetsButton.Target = InspectorUI.RelayButton(actionsUi, this, "destroyassets", "Destroy Keep Assets", 160f).Slot;
+        _destroyButton.Target = InspectorUI.RelayButton(actionsUi, this, "destroy", "Destroy", 76f).Slot;
+        actionsUi.PopStyle();
 
         var bodyRow = page.AddSlot("Body");
         bodyRow.AttachComponent<RectTransform>();
@@ -432,16 +450,17 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         bodyLE.FlexibleHeight.Value = 1f;
         bodyLE.MinHeight.Value = 400f;
         var bodyLayout = bodyRow.AttachComponent<HorizontalLayout>();
-        bodyLayout.Spacing.Value = 8f;
+        bodyLayout.Spacing.Value = 4f;
         bodyLayout.ForceExpandHeight.Value = true;
         bodyLayout.ForceExpandWidth.Value = false;
 
         var leftCol = bodyRow.AddSlot("Hierarchy");
         leftCol.AttachComponent<RectTransform>();
         var leftLE = leftCol.AttachComponent<LayoutElement>();
-        leftLE.MinWidth.Value = 300f;
-        leftLE.PreferredWidth.Value = 340f;
+        leftLE.MinWidth.Value = MinHierarchyWidth;
+        leftLE.PreferredWidth.Value = HierarchyWidth.Value;
         leftLE.FlexibleWidth.Value = 0f;
+        _hierarchyColumn.Target = leftLE;
         var leftImage = leftCol.AttachComponent<Image>();
         leftImage.Tint.Value = InspectorUI.PaneColor;
         leftImage.CornerRadius.Value = DashTheme.RadiusCard;
@@ -455,24 +474,21 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         leftLayout.ForceExpandWidth.Value = true;
         leftLayout.ForceExpandHeight.Value = false;
 
-        InspectorUI.FixedRow(leftCol, "RootRow", 34f, out var rootUi, Slot);
-        rootUi.PushStyle();
-        rootUi.FlexibleWidth(1f);
-        _rootTitle.Target = rootUi.Text("Root:", InspectorUI.FontSize + 1f, InspectorUI.MutedColor);
-        InspectorUI.FillParent(_rootTitle.Target.RectTransform!);
-        _rootTitle.Target.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
-        _rootTitle.Target.VerticalAlignment.Value = TextVerticalAlignment.Middle;
-        _rootTitle.Target.RichText.Value = true;
+        InspectorUI.FixedRow(leftCol, "RootRow", 30f, out var rootUi, Slot);
+        _rootTitle.Target = ClippedLabel(rootUi, "Root", 1f, ChromeFontSize, InspectorUI.MutedColor, TextHorizontalAlignment.Left);
+        rootUi.PushStyle().FontSize(ChromeFontSize);
+        InspectorUI.RelayButton(rootUi, this, "rootup", "↑ Up", 56f);
         rootUi.PopStyle();
-        InspectorUI.RelayButton(rootUi, this, "rootup", "Up", 60f);
 
-        _hierarchyContent.Target = BuildScrollList(leftCol, "Tree", TreeSpacing);
+        _hierarchyContent.Target = BuildScrollList(leftCol, "Tree", TreeSpacing, tree: true);
+
+        BuildDivider(bodyRow);
 
         var rightCol = bodyRow.AddSlot("Detail");
         rightCol.AttachComponent<RectTransform>();
         var rightLE = rightCol.AttachComponent<LayoutElement>();
         rightLE.FlexibleWidth.Value = 1f;
-        rightLE.MinWidth.Value = 500f;
+        rightLE.MinWidth.Value = MinDetailWidth;
         var rightImage = rightCol.AttachComponent<Image>();
         rightImage.Tint.Value = InspectorUI.PaneColor;
         rightImage.CornerRadius.Value = DashTheme.RadiusCard;
@@ -486,16 +502,19 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         rightLayout.ForceExpandWidth.Value = true;
         rightLayout.ForceExpandHeight.Value = false;
 
-        _componentsContent.Target = BuildScrollList(rightCol, "Sections", 3f);
+        _componentsContent.Target = BuildScrollList(rightCol, "Sections", 3f, tree: false);
 
-        InspectorUI.FixedRow(page, "Footer", 42f, out var footerUi, Slot);
+        // Right padding keeps the button clear of the resize corner.
+        var footer = InspectorUI.FixedRow(page, "Footer", ChromeRowHeight + 4f, out var footerUi, Slot);
+        footer.GetComponent<HorizontalLayout>()!.PaddingRight.Value = 36f;
         footerUi.PushStyle();
         footerUi.FlexibleWidth(1f);
         InspectorUI.RelayButton(footerUi, this, "attach", "Attach Component...", 0f);
         footerUi.PopStyle();
+        BuildResizeHandle();
     }
 
-    private Slot BuildScrollList(Slot column, string name, float spacing)
+    private Slot BuildScrollList(Slot column, string name, float spacing, bool tree)
     {
         var host = column.AddSlot(name);
         host.AttachComponent<RectTransform>();
@@ -506,7 +525,10 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         var scrollUi = new UIBuilder(host);
         InspectorUI.ApplyTheme(scrollUi, Slot);
         var scroll = scrollUi.ScrollRect(out var content, null, color.Transparent);
-        InspectorUI.FillParent(scroll.Slot.GetComponent<RectTransform>()!);
+        var viewport = scroll.Slot.GetComponent<RectTransform>()!;
+        InspectorUI.FillParent(viewport);
+        viewport.OffsetMax.Value = new float2(-(ScrollColumn + 2f), 0);
+        BuildScrollControls(host, scroll, content, tree);
 
         var contentLayout = content.Slot.AttachComponent<VerticalLayout>();
         contentLayout.Spacing.Value = spacing;
@@ -560,6 +582,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
             _componentsDirty = false;
             RebuildComponents();
         }
+        RefreshWorkspace();
     }
 
     // Full rebuild: only for a tree rooted somewhere else, where nothing on screen can be reused.
@@ -717,6 +740,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
             _subscribedWorld = null;
         }
         ExpandedSlots.OnChanged -= OnExpandedSlotsChanged;
+        ExpandedComponents.OnChanged -= OnExpandedComponentsChanged;
         ClearRows();
         ClearRootNameSubscription();
         ClearTitleSubscription();
@@ -945,21 +969,13 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
             row.ChildContainer = CreateChildContainer(row.NodeSlot);
         var container = row.ChildContainer;
 
-        // Rows follow scene order: children sort by OrderOffset, ties keep their child-list order
-        // (List.Sort is unstable, so the original index is the tiebreaker).
-        var ordered = new List<(Slot Child, int Index)>();
-        int childIndex = 0;
+        // Rows follow scene order, which the child list already is on every machine.
+        var ordered = new List<Slot>();
         foreach (var child in target.Children)
         {
             if (!IsHiddenFromTree(child))
-                ordered.Add((child, childIndex));
-            childIndex++;
+                ordered.Add(child);
         }
-        ordered.Sort(static (a, b) =>
-        {
-            int byOffset = a.Child.OrderOffset.Value.CompareTo(b.Child.OrderOffset.Value);
-            return byOffset != 0 ? byOffset : a.Index.CompareTo(b.Index);
-        });
 
         var existing = new Dictionary<ulong, HierarchyRow>(row.Children.Count);
         for (int i = 0; i < row.Children.Count; i++)
@@ -967,19 +983,15 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
 
         var placed = new List<HierarchyRow>(ordered.Count);
         int refused = 0;
-        bool reordered = false;
         for (int i = 0; i < ordered.Count; i++)
         {
-            ulong childId = ordered[i].Child.ReferenceID.RawValue;
+            ulong childId = ordered[i].ReferenceID.RawValue;
             if (existing.TryGetValue(childId, out var childRow))
             {
                 // An untouched child keeps its row, its whole subtree and its baked chunk; only its
                 // position in the container's child list can change.
                 if (childRow.NodeSlot.SiblingIndex != placed.Count)
-                {
                     container.MoveChildToIndex(childRow.NodeSlot, placed.Count);
-                    reordered = true;
-                }
                 placed.Add(childRow);
                 continue;
             }
@@ -990,7 +1002,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
                 refused++;
                 continue;
             }
-            var built = BuildRow(container, ordered[i].Child, row.Depth + 1, row,
+            var built = BuildRow(container, ordered[i], row.Depth + 1, row,
                 row.EffectivePersistent, placed.Count);
             if (built != null)
                 placed.Add(built);
@@ -1005,11 +1017,6 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
 
         row.Children.Clear();
         row.Children.AddRange(placed);
-
-        // Moving slots inside a child list is invisible to the layout until something says the
-        // structure changed; adding or destroying a row signals itself through its RectTransform.
-        if (reordered)
-            container.GetComponent<RectTransform>()?.NotifyComponentsChanged();
 
         UpdateOverflowRow(row, refused);
     }
@@ -1043,6 +1050,8 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         markerUi.PopStyle();
         row.OverflowRow = marker;
+        // A new slot sorts by its offset, and rows moved into place carry theirs, so it is put last.
+        container.MoveChildToIndex(marker, row.Children.Count);
     }
 
     private HierarchyRow? BuildRow(Slot container, Slot target, int depth, HierarchyRow? parent,
@@ -1102,7 +1111,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         row.Background = rowBackground;
         rowSlot.GetComponent<HorizontalLayout>()!.PaddingLeft.Value = 4f + row.Depth * IndentPerDepth;
 
-        // Gripping a tree row pulls a card for the slot.
+        // The ≡ cell at the end of the row pulls a card for the slot.
         var rowSource = rowSlot.AttachComponent<ReferenceProxySource>();
         rowSource.Target.Target = target;
 
@@ -1137,6 +1146,15 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         row.Label = nameText;
         ui.PopStyle();
         ui.PopStyle();
+
+        // Unfolds the whole branch. Blank on a childless row, like the expander, for the same reason.
+        ui.PushStyle();
+        ui.BackgroundColor(color.Transparent);
+        ui.TextColor(InspectorUI.MutedColor);
+        var branch = InspectorUI.RelayButton(ui, this, $"branch:{row.TargetId}", "", 24f);
+        row.BranchLabel = branch.Slot.GetComponentInChildren<Text>();
+        ui.PopStyle();
+        BuildReferenceGrip(ui, rowSource);
 
         ui.PushStyle();
         ui.MinWidth(28f);
@@ -1199,9 +1217,14 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         var label = row.ExpanderLabel;
         if (label == null || label.IsDestroyed || row.Target == null || row.Target.IsDestroyed)
             return;
-        string glyph = HasVisibleChildren(row.Target) ? (row.Expanded ? "v" : ">") : "";
+        bool hasChildren = HasVisibleChildren(row.Target);
+        string glyph = hasChildren ? (row.Expanded ? "v" : ">") : "";
         if (label.Content.Value != glyph)
             label.Content.Value = glyph;
+        var branch = row.BranchLabel;
+        string branchGlyph = hasChildren ? "↘" : "";
+        if (branch != null && !branch.IsDestroyed && branch.Content.Value != branchGlyph)
+            branch.Content.Value = branchGlyph;
     }
 
     // Every row watches its OWN slot: child add/remove queues this row's container, an OrderOffset
@@ -1357,7 +1380,9 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
 
         var title = _selectedTitle.Target;
         if (title != null && !title.IsDestroyed)
-            title.Content.Value = selected == null ? "Slot: <none>" : $"Slot: {selected.SlotName.Value}";
+            title.Content.Value = selected == null ? "<i>nothing selected</i>" : selected.SlotName.Value ?? "Slot";
+
+        UpdateHeaderActions(selected);
 
         ClearTitleSubscription();
         if (selected != null && !selected.IsDestroyed)
@@ -1367,7 +1392,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
             {
                 var titleText = _selectedTitle.Target;
                 if (titleText != null && !titleText.IsDestroyed)
-                    titleText.Content.Value = $"Slot: {value}";
+                    titleText.Content.Value = value ?? "Slot";
             };
             _titleNameField.OnChanged += _titleNameHandler;
         }
@@ -1378,7 +1403,8 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
 
         BuildSlotSection(container, selected);
 
-        foreach (var component in selected.GetAllComponents())
+        _builtOrder = OrderSignature(selected);
+        foreach (var component in OrderedComponents(selected))
         {
             if (component == null || component.IsDestroyed)
                 continue;
@@ -1387,6 +1413,28 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
                 continue;
             BuildComponentSection(container, component);
         }
+    }
+
+    // + Parent, Dup, Destroy and Destroy Keep Assets are gone for the world root, not greyed: the root
+    // is not a thing any of them can be done to, and an offer that always refuses reads as a bug. The
+    // relay handlers refuse it as well, so a peer driving the synced Selected field at a button that is
+    // hidden on their own screen gets nothing. + Child and Attach Component stay: building ON the root
+    // is ordinary work. -xlinka
+    private void UpdateHeaderActions(Slot? selected)
+    {
+        bool offer = selected != null && !selected.IsDestroyed && !selected.IsRootSlot;
+        SetActionVisible(_insertParentButton.Target, offer);
+        SetActionVisible(_duplicateButton.Target, offer);
+        SetActionVisible(_destroyAssetsButton.Target, offer);
+        SetActionVisible(_destroyButton.Target, offer);
+    }
+
+    private static void SetActionVisible(Slot? button, bool visible)
+    {
+        if (button == null || button.IsDestroyed)
+            return;
+        if (button.ActiveSelf.Value != visible)
+            button.ActiveSelf.Value = visible;
     }
 
     // Editable rows for the slot itself (Name, Parent, Tag, Active, Persistent, Position, Rotation,
@@ -1478,14 +1526,16 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         headerImage.Tint.Value = InspectorUI.HeaderColor;
         headerImage.CornerRadius.Value = DashTheme.RadiusControl;
 
-        // Gripping the header pulls a card for the component.
+        // Only the handle at the left pulls the component's card, so a squeeze while pressing anything
+        // else on the header never hands you one.
         var headerSource = header.AttachComponent<ReferenceProxySource>();
         headerSource.Target.Target = component;
+        BuildComponentHandle(ui, component, headerSource);
 
         ui.PushStyle();
         ui.BackgroundColor(color.Transparent);
         ui.TextColor(InspectorUI.MutedColor);
-        InspectorUI.RelayButton(ui, this, $"comp:{componentId}", expanded ? "v" : ">", 28f);
+        SetChipColors(InspectorUI.RelayButton(ui, this, $"comp:{componentId}", expanded ? "v" : ">", 26f), color.Transparent);
         ui.PopStyle();
 
         ui.PushStyle();
@@ -1520,7 +1570,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
             bool gizmoUp = Gizmos.GizmoHelper.HasComponentGizmo(component);
             ui.PushStyle();
             ui.TextColor(gizmoUp ? InspectorUI.CyanColor : InspectorUI.MutedColor);
-            InspectorUI.RelayButton(ui, this, $"gizmo:{componentId}", "Giz", 42f);
+            InspectorUI.RelayButton(ui, this, $"gizmo:{componentId}", "Giz", 40f);
             ui.PopStyle();
         }
 
@@ -1529,16 +1579,18 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         // refused at the datamodel, so the header does not offer them in the first place. -xlinka
         if (!WorldConfigLock.IsConfigComponent(component))
         {
-            InspectorUI.RelayButton(ui, this, $"dupcomp:{componentId}", "Dup", 52f);
+            InspectorUI.RelayButton(ui, this, $"dupcomp:{componentId}", "Dup", 46f);
 
             ui.PushStyle();
-            ui.TextColor(InspectorUI.DangerColor);
-            InspectorUI.RelayButton(ui, this, $"remove:{componentId}", "X", 30f);
+            ui.TextColor(InspectorUI.DangerColor).FontSize(InspectorUI.FontSize + 3f);
+            InspectorUI.RelayButton(ui, this, $"remove:{componentId}", "×", 30f);
             ui.PopStyle();
         }
 
         if (!expanded)
             return;
+
+        BuildComponentNote(container, component);
 
         if (component is ICustomInspector custom)
         {
@@ -1599,12 +1651,21 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
     }
 
     // destructive actions detour through a confirmation on the pressing user's radial menu;
-    // everything else falls straight through to the plain handler
+    // everything else falls straight through to the plain handler, with the presser remembered for the
+    // actions that are about THEM (pin to me, jump to my root)
     public void HandleInspectorAction(string argument, UIInteractionContext context)
     {
         if (TryConfirmDestructiveAction(argument, context))
             return;
-        HandleInspectorAction(argument);
+        _actionActor = context.Actor;
+        try
+        {
+            HandleInspectorAction(argument);
+        }
+        finally
+        {
+            _actionActor = null;
+        }
     }
 
     private static readonly float[] DestroyConfirmFill = { 0.48f, 0.15f, 0.18f, 0.92f };
@@ -1652,6 +1713,9 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
     private void HandleInspectorActionCore(string argument)
     {
         if (string.IsNullOrEmpty(argument))
+            return;
+
+        if (HandleWorkspaceAction(argument, _actionActor ?? World?.LocalUser))
             return;
 
         if (argument.StartsWith("expand:", StringComparison.Ordinal) && ulong.TryParse(argument[7..], out ulong slotId))
@@ -1751,7 +1815,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
             case "duplicate":
             {
                 var selected = Selected.Target;
-                if (selected == null || selected == Root.Target) return;
+                if (selected == null || selected == Root.Target || selected.IsRootSlot) return;
                 var copy = selected.Duplicate();
                 if (copy == null) return;
                 RecordUndo(SlotExistenceUndoBatch.Created(World, new[] { copy }, UndoLocale.Duplicate));

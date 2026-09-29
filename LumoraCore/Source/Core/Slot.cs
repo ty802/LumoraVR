@@ -74,11 +74,9 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     public event Action<Slot, string> OnNameChanged = null!;
 
-    public event Action<Slot> ChildrenOrderInvalidated
-    {
-        add { }
-        remove { }
-    }
+    // Fired on a slot when one of its children changed places among the others. Adding and removing a
+    // child have their own events.
+    public event Action<Slot> ChildOrderChanged = null!;
 
     // Simplified event aliases for UI compatibility
     public event Action<Slot> ActiveChanged = null!;
@@ -210,6 +208,61 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
         _parent?.MarkProtected(forcePersistent);
     }
+
+    // THE WORLD ROOT
+    //
+    // The root is the world. Nothing standing inside it may disable it, move it, unparent it, copy it or
+    // take it down, and that includes the host: a root that can be switched off or dragged under
+    // something is a world that can be bricked from one inspector row, and every peer inherits it.
+    //
+    // Two halves, because there are two ways at it. The member half marks the pose, the active and
+    // persistent flags, the ordering and the parent link host-only (no peer may author them),
+    // non-drivable (no drive may either) and config-locked (no local write lands outside an explicit edit
+    // scope, which nothing in-world opens for the root). The structural half is MarkProtected, which is
+    // what Destroy, DestroyPreservingAssets and RemoveFromHierarchy read.
+    //
+    // Name and Tag stay writable: renaming the world's root is cosmetic and harmless. -xlinka
+    internal void MarkAsWorldRoot()
+    {
+        MarkProtected();
+
+        LockRootMember(ActiveSelf);
+        LockRootMember(Persistent);
+        LockRootMember(LocalPosition);
+        LockRootMember(LocalRotation);
+        LockRootMember(LocalScale);
+        LockRootMember(OrderOffset);
+        LockRootMember(ParentSlotRef);
+    }
+
+    private static void LockRootMember(ConflictingSyncElement member)
+    {
+        member.MarkHostOnly();
+        member.MarkNonDrivable();
+        member.MarkConfigLocked();
+    }
+
+    // One Warn per refusal reason per slot: a tool that retries (a drag that keeps proposing a reparent)
+    // would otherwise write the same line every frame.
+    private int _rootRefusalWarned;
+
+    private bool RefuseOnRoot(string operation, int reasonBit)
+    {
+        if (!IsRootSlot)
+            return false;
+        if ((_rootRefusalWarned & reasonBit) == 0)
+        {
+            _rootRefusalWarned |= reasonBit;
+            Logging.Logger.Warn($"Slot: refused {operation} on the world root - the world root is fixed for the session.");
+        }
+        return true;
+    }
+
+    private const int RootRefusalDestroy = 1 << 0;
+    private const int RootRefusalStrip = 1 << 1;
+    private const int RootRefusalDuplicate = 1 << 2;
+    private const int RootRefusalReparent = 1 << 3;
+    private const int RootRefusalRemove = 1 << 4;
 
     // Cached nearest-ancestor UserRoot for this slot. Components that need to
     // know "which user does this belong to" should read ActiveUserRoot
@@ -406,6 +459,14 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     {
         if (IsRemoved)
         {
+            return;
+        }
+
+        // The root has nowhere to go. A null target resolves to the root itself further down and is a
+        // silent no-op; anything else is somebody trying to hang the world off a prop. -xlinka
+        if (IsRootSlot && newParent != null && !ReferenceEquals(newParent, this))
+        {
+            RefuseOnRoot("reparent", RootRefusalReparent);
             return;
         }
 
@@ -1223,6 +1284,33 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         ComponentAdded += HandleComponentAdded;
         ComponentRemoved += HandleComponentRemoved;
+        ParentSlotRef.CheckRemoteSets(AllowsRemoteMove);
+    }
+
+    // SPAWN, for a move. Without the Spawn domain a user keeps what they build under their own things,
+    // and a slot they made under their root may not be carried out into the world afterwards any more
+    // than it could have been made there. Only the sender's own slots are this question; moving anything
+    // else is for the gate and the grab rules. A parent in the sender's byte may be new in the same batch,
+    // which the registry's own Spawn check follows up. -xlinka
+    private bool AllowsRemoteMove(User? sender, RefID claimed, Slot? newParent)
+    {
+        var world = World;
+        if (world == null || sender == null)
+            return true;
+
+        byte senderByte = sender.AllocationID.Value;
+        if (ReferenceID.GetUserByte() != senderByte)
+            return true;
+
+        var permissions = world.DataModelPermissions;
+        if (permissions == null || permissions.AllowsDomain(sender, DataModelPermissionDomain.Spawn))
+            return true;
+
+        if (claimed.GetUserByte() == senderByte)
+            return true;
+
+        Lumora.Warden.IPermissionTarget? target = newParent;
+        return target != null && target.IsUnderActorRoot(sender);
     }
 
     private void InitializeSyncFields()
@@ -1287,6 +1375,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         };
         OrderOffset.OnChanged += _ =>
         {
+            _parent?.Reposition(this);
             OrderOffsetChanged?.Invoke(this);
         };
 
@@ -1346,8 +1435,18 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         if (IsRootSlot)
         {
+            // A null here is the root's own shape, and a save writes it out like any other member, so a
+            // load reports it back every single time. Nothing is wrong and there is nothing to undo.
+            if (syncRef.Target == null)
+                return;
+
             Logging.Logger.Warn($"Tried to assign root slot parent. NewParent={syncRef.Target}");
-            World?.RunSynchronously(() => syncRef.Target = null!);
+            // The member is config-locked, so the correction needs the scope the engine's own paths use.
+            World?.RunSynchronously(() =>
+            {
+                using (WorldConfigEdit.Enter())
+                    syncRef.Target = null!;
+            });
             return;
         }
 
@@ -1389,6 +1488,12 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             return;
         }
 
+        MoveUnder(target);
+    }
+
+    // This peer's hierarchy half of a parent change: lists, cached transforms, events, the hook.
+    private void MoveUnder(Slot target)
+    {
         var oldParent = _parent;
         if (_parent != null)
         {
@@ -1408,6 +1513,18 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         {
             QueueHookUpdate();
         }
+    }
+
+    // Moves this slot under a new parent in this peer's hierarchy only, leaving ParentSlotRef as it is. For
+    // a slot whose parent was destroyed out from under it: the authority writes the real move, and this
+    // keeps the slot alive and attached until that write lands. The replicated value then names the parent
+    // it already has, so it lands as a no-op. -xlinka
+    internal void ReattachLocally(Slot newParent)
+    {
+        if (IsDestroyed || newParent == null || newParent.IsDestroyed || ReferenceEquals(newParent, _parent)
+            || ReferenceEquals(newParent, this) || newParent.IsDescendantOf(this))
+            return;
+        MoveUnder(newParent);
     }
 
 	public void Initialize(World world)
@@ -1581,28 +1698,20 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         if (refController == null)
             return;
 
-        bool startedLocalBlock = false;
-        if (IsLocalElement && !refController.IsInLocalAllocation)
+        bool needsLocalBlock = IsLocalElement && !refController.IsInLocalAllocation;
+        using (refController.ElementAllocationScope(RefID.Null, needsLocalBlock))
         {
-            refController.LocalAllocationBlockBegin();
-            startedLocalBlock = true;
-        }
+            var existing = _components.ToArray();
+            _components.Clear();
 
-        var existing = _components.ToArray();
-        _components.Clear();
+            foreach (var component in existing)
+            {
+                if (component == null)
+                    continue;
 
-        foreach (var component in existing)
-        {
-            if (component == null)
-                continue;
-
-            var key = refController.PeekID();
-            componentCollection.Add(key, component, isNewlyCreated: true, skipSync: true);
-        }
-
-        if (startedLocalBlock)
-        {
-            refController.LocalAllocationBlockEnd();
+                var key = refController.PeekID();
+                componentCollection.Add(key, component, isNewlyCreated: true, skipSync: true);
+            }
         }
     }
 
@@ -1999,8 +2108,20 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         if (node is not DataTreeDictionary dictionary)
             return;
 
-        // Members first (associates this slot's RefID with its saved GUID).
-        base.Load(dictionary, control);
+        // Members first (associates this slot's RefID with its saved GUID). The root's pose, flags and
+        // ordering are config-locked, so putting a save back into them needs the scope; scoped around the
+        // member pass only, so the subtree underneath loads under the ordinary rules. -xlinka
+        if (IsRootSlot)
+        {
+            using (WorldConfigEdit.Enter())
+                base.Load(dictionary, control);
+        }
+        else
+        {
+            base.Load(dictionary, control);
+            // A load sets the order offset without a change event, after the slot already took its place.
+            _parent?.Reposition(this);
+        }
 
         if (dictionary.TryGetList("Components") is { } componentList)
         {
@@ -2452,17 +2573,27 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             return AddSlot(name);
 
         var refController = World.ReferenceController;
-        refController?.LocalAllocationBlockBegin();
+        if (refController == null)
+        {
+            var unscoped = new Slot();
+            unscoped.Name.Value = name;
+            unscoped.Parent = this;
+            unscoped.Initialize(World);
+            World.RegisterSlot(unscoped);
+            return unscoped;
+        }
 
-        var slot = new Slot();
-        slot.Name.Value = name;
-        slot.Parent = this;
-        slot.Initialize(World);
-        World.RegisterSlot(slot);
-
-        refController?.LocalAllocationBlockEnd();
-
-        return slot;
+        // Initialize runs the slot's members and hook, and RegisterSlot runs the world's slot-added
+        // listeners; a throw out of either used to skip the end of the block. -xlinka
+        using (refController.LocalAllocationScope())
+        {
+            var slot = new Slot();
+            slot.Name.Value = name;
+            slot.Parent = this;
+            slot.Initialize(World);
+            World.RegisterSlot(slot);
+            return slot;
+        }
     }
 
     private bool ShouldStoreInLocalChildren(Slot child)
@@ -2485,7 +2616,10 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         if (!list.Contains(child))
         {
-            list.Add(child);
+            if (ReferenceEquals(list, _children))
+                _children.Insert(OrderedIndex(child), child);
+            else
+                list.Add(child);
             if (IsInInitPhase && !refiled)
             {
                 childInitializables.Add(child);
@@ -2496,6 +2630,62 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
                 RaiseSubtreeStructureChanged();
             }
         }
+        else if (ReferenceEquals(list, _children))
+        {
+            // The attach Initialize repeats. The child was filed before it had a RefID and has one now.
+            Reposition(child);
+        }
+    }
+
+    // ORDER
+    //
+    // The shared child list is kept sorted by order offset, then RefID, both replicated, so every machine
+    // lists a slot's children the same way whatever order it heard about them in. A new slot takes offset 0
+    // and the newest RefID of its author, so things made one after another stay in the order they were
+    // made. A move writes offsets, which is how it reaches everyone. Local children of a shared slot are
+    // nobody else's business and stay in the order they came. -xlinka
+
+    // Room left on either side of a written offset, so the next move usually finds space without
+    // renumbering anyone else.
+    private const long OrderStep = 100;
+
+    private static int CompareOrder(Slot a, Slot b)
+    {
+        int byOffset = a.OrderOffset.Value.CompareTo(b.OrderOffset.Value);
+        return byOffset != 0 ? byOffset : OrderId(a).CompareTo(OrderId(b));
+    }
+
+    // A slot filed before it has a RefID sorts as the newest.
+    private static ulong OrderId(Slot slot) => slot.ReferenceID.IsNull ? ulong.MaxValue : slot.ReferenceID.RawValue;
+
+    // Where child belongs in the sorted list, after anything that sorts equal.
+    private int OrderedIndex(Slot child)
+    {
+        int low = 0;
+        int high = _children.Count;
+        while (low < high)
+        {
+            int middle = (low + high) >> 1;
+            if (CompareOrder(_children[middle], child) <= 0)
+                low = middle + 1;
+            else
+                high = middle;
+        }
+        return low;
+    }
+
+    // Puts a child whose order key changed back where it belongs.
+    private void Reposition(Slot child)
+    {
+        int at = _children.LastIndexOf(child);
+        if (at < 0)
+            return;
+        if ((at == 0 || CompareOrder(_children[at - 1], child) <= 0)
+            && (at == _children.Count - 1 || CompareOrder(child, _children[at + 1]) <= 0))
+            return;
+        _children.RemoveAt(at);
+        _children.Insert(OrderedIndex(child), child);
+        ChildOrderChanged?.Invoke(this);
     }
 
     private void DetachChildInternal(Slot child)
@@ -2656,14 +2846,129 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
+    // Moves a child to index among the others, clamped to the first or last place. Made by writing order
+    // offsets, so it reaches every machine.
     public void MoveChildToIndex(Slot child, int index)
     {
-        if (!_children.Contains(child))
+        var writes = new List<(Slot Slot, long Offset)>();
+        if (!PlanChildMove(child, index, writes))
             return;
+        foreach (var (slot, offset) in writes)
+            slot.OrderOffset.Value = offset;
+    }
 
-        _children.Remove(child);
-        index = System.Math.Clamp(index, 0, _children.Count);
-        _children.Insert(index, child);
+    // The offset writes that would put child at index. The child's own offset alone when its new neighbours
+    // leave room; otherwise the run from it out to one end of the list is renumbered too, whichever end
+    // takes fewer writes canWrite allows. False when child is not in the shared list here or no plan gets
+    // past canWrite; true with nothing to write when it is already there.
+    public bool PlanChildMove(Slot child, int index, List<(Slot Slot, long Offset)> writes, Func<Slot, bool>? canWrite = null)
+    {
+        writes.Clear();
+        int at = _children.IndexOf(child);
+        if (at < 0)
+            return false;
+        index = System.Math.Clamp(index, 0, _children.Count - 1);
+        if (index == at)
+            return true;
+
+        var order = new List<Slot>(_children);
+        order.RemoveAt(at);
+        order.Insert(index, child);
+        var before = index > 0 ? order[index - 1] : null;
+        var after = index < order.Count - 1 ? order[index + 1] : null;
+
+        if (TryOffsetBetween(before, after, child, out long between))
+        {
+            if (canWrite != null && !canWrite(child))
+                return false;
+            writes.Add((child, between));
+            return true;
+        }
+
+        // Up from the slot before it to the end, or down from the slot after it to the start. With no
+        // neighbour on that side the run is the whole list, numbered from 0.
+        var up = new List<(Slot Slot, long Offset)>();
+        bool upFits = before == null
+            ? PlanRun(order, 0, order.Count - 1, 0, up, canWrite)
+            : before.OrderOffset.Value <= long.MaxValue - OrderStep
+                && PlanRun(order, index, order.Count - 1, before.OrderOffset.Value + OrderStep, up, canWrite);
+        var down = new List<(Slot Slot, long Offset)>();
+        bool downFits = after == null
+            ? PlanRun(order, 0, order.Count - 1, 0, down, canWrite)
+            : after.OrderOffset.Value >= long.MinValue + OrderStep * (index + 1)
+                && PlanRun(order, 0, index, after.OrderOffset.Value - OrderStep * (index + 1), down, canWrite);
+
+        if (!upFits && !downFits)
+            return false;
+        writes.AddRange(upFits && (!downFits || up.Count <= down.Count) ? up : down);
+        return true;
+    }
+
+    // An offset strictly between the two neighbours, or equal to one of them where the RefID still puts
+    // the child on the right side of it.
+    private static bool TryOffsetBetween(Slot? before, Slot? after, Slot child, out long offset)
+    {
+        offset = 0;
+        if (before == null || after == null)
+        {
+            if (after != null && after.OrderOffset.Value >= long.MinValue + OrderStep)
+            {
+                offset = after.OrderOffset.Value - OrderStep;
+                return true;
+            }
+            if (before != null && before.OrderOffset.Value <= long.MaxValue - OrderStep)
+            {
+                offset = before.OrderOffset.Value + OrderStep;
+                return true;
+            }
+            return false;
+        }
+
+        long low = before.OrderOffset.Value;
+        long high = after.OrderOffset.Value;
+        ulong gap = unchecked((ulong)high - (ulong)low);
+        if (gap >= 2)
+        {
+            offset = unchecked(low + (long)(gap / 2));
+            return true;
+        }
+        ulong id = OrderId(child);
+        if (OrderId(before) < id && (gap == 1 || id < OrderId(after)))
+        {
+            offset = low;
+            return true;
+        }
+        if (gap == 1 && id < OrderId(after))
+        {
+            offset = high;
+            return true;
+        }
+        return false;
+    }
+
+    // Offsets rising by OrderStep across order[from..to] from first, leaving out the ones already right.
+    // False when they would run past a long or canWrite refuses one.
+    private static bool PlanRun(List<Slot> order, int from, int to, long first, List<(Slot Slot, long Offset)> writes,
+        Func<Slot, bool>? canWrite)
+    {
+        writes.Clear();
+        long offset = first;
+        for (int i = from; i <= to; i++)
+        {
+            if (i > from)
+            {
+                if (offset > long.MaxValue - OrderStep)
+                    return false;
+                offset += OrderStep;
+            }
+            var slot = order[i];
+            if (slot.OrderOffset.Value == offset)
+                continue;
+            if (canWrite != null && !canWrite(slot))
+                return false;
+            writes.Add((slot, offset));
+        }
+        return true;
     }
 
     public void InsertAtIndex(int index)
@@ -2700,16 +3005,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         var slot = AddSlot(name);
         MoveChildToIndex(slot, index);
         return slot;
-    }
-
-    public void SortChildren()
-    {
-        _children.Sort((a, b) => a.OrderOffset.Value.CompareTo(b.OrderOffset.Value));
-    }
-
-    public void SortChildrenByName()
-    {
-        _children.Sort((a, b) => string.Compare(a.Name.Value, b.Name.Value, StringComparison.Ordinal));
     }
 
     public IEnumerable<Slot> GetAncestors(bool includeSelf = false)
@@ -2785,10 +3080,12 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     public Slot Duplicate(Slot newParent = null!, bool preserveGlobalTransform = false)
     {
+        // Ahead of the parent resolution below: the root has no parent, so it would otherwise fall out of
+        // the next line with no word about why. -xlinka
+        if (RefuseOnRoot("duplicate", RootRefusalDuplicate))
+            return null!;
         newParent ??= _parent;
         if (newParent == null || World == null)
-            return null!;
-        if (IsRootSlot)
             return null!;
         if (newParent == this || newParent.IsDescendantOf(this))
             return null!;
@@ -3087,6 +3384,22 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             return;
         }
 
+        // A composite entry that does not copy itself (a LOD level, a gradient stop) is its members, walked like
+        // any other; passed over, every entry of a copy came out at its defaults. -xlinka
+        if (source is SyncElement { MemberType: SyncMemberType.Object })
+        {
+            var copied = new List<ISyncMember>();
+            foreach (var member in CompositeMembers(sourceType))
+            {
+                if (MemberValue(member, source) is not ISyncMember from || MemberValue(member, target) is not ISyncMember to
+                    || copied.Contains(from))
+                    continue;
+                copied.Add(from);
+                CopySyncMemberValue(from, to, elementMap, deferredRefs);
+            }
+            return;
+        }
+
         var sourceVal = source.GetValueAsObject();
         if (sourceVal != null)
         {
@@ -3101,6 +3414,51 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
                 {
                 }
             }
+        }
+    }
+
+    // The members a composite entry holds, found the way SyncMemberDiscovery finds them.
+    private static readonly Dictionary<Type, MemberInfo[]> _compositeMembers = new();
+
+    private static MemberInfo[] CompositeMembers(Type type)
+    {
+        lock (_compositeMembers)
+        {
+            if (_compositeMembers.TryGetValue(type, out var known))
+                return known;
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+            var members = new List<MemberInfo>();
+            foreach (var field in type.GetFields(flags))
+            {
+                if (typeof(ISyncMember).IsAssignableFrom(field.FieldType))
+                    members.Add(field);
+            }
+            foreach (var property in type.GetProperties(flags))
+            {
+                if (typeof(ISyncMember).IsAssignableFrom(property.PropertyType) && property.CanRead
+                    && property.GetIndexParameters().Length == 0)
+                    members.Add(property);
+            }
+            known = members.ToArray();
+            _compositeMembers[type] = known;
+            return known;
+        }
+    }
+
+    private static object? MemberValue(MemberInfo member, object owner)
+    {
+        try
+        {
+            return member switch
+            {
+                FieldInfo field => field.GetValue(owner),
+                PropertyInfo property => property.GetValue(owner),
+                _ => null,
+            };
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -3199,8 +3557,13 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     public void Destroy()
     {
         if (IsDestroyed) return;
-        if (IsProtected)
+        // Teardown is exempt: a world being disposed takes its root down with it, and by then the world
+        // has already said it is gone. Everything else asking is asking from inside a live world. -xlinka
+        bool teardown = World == null || World.IsDisposed || World.IsDestroyed;
+        if (IsProtected && !teardown)
         {
+            if (RefuseOnRoot("destroy", RootRefusalDestroy))
+                return;
             Logging.Logger.Warn($"Slot.Destroy: refusing to destroy protected slot '{Name.Value}' (RefID {ReferenceID})");
             return;
         }
@@ -3208,15 +3571,34 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         IsDestroyed = true;
         OnPrepareDestroy?.Invoke(this);
 
+        // What the actor may not destroy is not destroyed: a child someone else owns or is holding moves to
+        // the world root instead, and a component the actor may not remove leaves this peer only, the authority's
+        // copy of the destroy taking it away everywhere else. This used to throw part way through, on a
+        // slot already marked destroyed and still registered. -xlinka
+        var registry = World?.SlotRegistry;
+        var survivorParent = SurvivorParent();
         foreach (var child in _children.ToArray())
-            child.Destroy();
+        {
+            if (teardown || child.IsLocalElement || registry == null || registry.MayRemove(child.ReferenceID))
+                child.Destroy();
+            else
+                MoveSurvivorOut(child, survivorParent, fromReplication: false);
+        }
         foreach (var child in _localChildren.ToArray())
             child.Destroy();
 
-			foreach (var component in _components.ToArray())
-			{
-				RemoveComponent(component);
-			}
+        foreach (var component in _components.ToArray())
+        {
+            if (teardown || IsLocalElement || MayRemoveComponent(component))
+            {
+                RemoveComponent(component);
+            }
+            else
+            {
+                using (World?.DataModelPermissions?.EnterSystemBypass())
+                    RemoveComponentWithoutSync(component);
+            }
+        }
 
 		_children.Clear();
 		_localChildren.Clear();
@@ -3229,11 +3611,82 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         Hook?.Dispose();
     }
 
+    // A peer destroyed this slot, and the registry removal saying so has just been applied here. The
+    // destroying peer sent a removal for everything under it that it was allowed to destroy, children
+    // first, so whatever is still alive under this slot is what it could not: someone's held object,
+    // another user's things. Those survive at the world root. Components go with the slot. Nothing here
+    // sends a removal back out: every peer applies the same records, and an echo from a guest would read
+    // as that guest destroying other people's things. Runs as the system, on state the authority has
+    // already judged. -xlinka
+    internal void DestroyFromReplication()
+    {
+        var world = World;
+        if (IsDestroyed || IsProtected || world == null || world.IsDisposed)
+            return;
+
+        using var system = world.DataModelPermissions?.EnterSystemBypass();
+        IsDestroyed = true;
+        OnPrepareDestroy?.Invoke(this);
+
+        var survivorParent = SurvivorParent();
+        foreach (var child in _children.ToArray())
+        {
+            if (!child.IsDestroyed)
+                MoveSurvivorOut(child, survivorParent, fromReplication: true);
+        }
+        foreach (var child in _localChildren.ToArray())
+            child.Destroy();
+
+        foreach (var component in _components.ToArray())
+            RemoveComponentWithoutSync(component);
+
+        _children.Clear();
+        _localChildren.Clear();
+
+        _parent?.DetachChildInternal(this);
+
+        world.ReferenceController?.UnregisterObject(this);
+        world.UnregisterSlot(this);
+
+        Hook?.Dispose();
+    }
+
+    // The world root, where they stay in place. Never up a level: whatever the destroyer could not
+    // destroy is by definition not theirs, and the level above can be inside the destroyer's own
+    // hierarchy, where a world object would read as structurally theirs to edit. -xlinka
+    private Slot? SurvivorParent() => World?.RootSlot;
+
+    // The authority writes the move, as the system, so every peer ends up agreeing. Anyone else moves it
+    // with a real write when it may, which is how a holder lets go of what it holds, and otherwise only
+    // here, until the authority's write lands. A receiver never writes: the authority already has.
+    private static void MoveSurvivorOut(Slot child, Slot? newParent, bool fromReplication)
+    {
+        if (newParent == null || child.IsDestroyed)
+            return;
+
+        var world = child.World;
+        if (world?.IsAuthority == true)
+        {
+            using (world.DataModelPermissions?.EnterSystemBypass())
+                child.SetParent(newParent, preserveGlobalTransform: true);
+        }
+        else if (!fromReplication && child.ParentSlotRef.IsWriteAllowed())
+        {
+            child.SetParent(newParent, preserveGlobalTransform: true);
+        }
+        else
+        {
+            child.ReattachLocally(newParent);
+        }
+    }
+
     // Surviving providers keep their slots, which get reparented under relocateAssets (created under the world
     // root as "<name> - Assets" when null, the same shape the object loaders use); everything else is
     // destroyed.
     public void DestroyPreservingAssets(Slot? relocateAssets = null, ISlotStripRecorder? recorder = null)
     {
+        if (RefuseOnRoot("destroy keeping assets", RootRefusalStrip))
+            return;
         if (IsDestroyed || IsProtected || World == null)
             return;
         if (relocateAssets != null && (relocateAssets == this || relocateAssets.IsDescendantOf(this)))
@@ -3384,6 +3837,8 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     public void RemoveFromHierarchy()
     {
+        if (RefuseOnRoot("removal from the hierarchy", RootRefusalRemove))
+            return;
         if (IsProtected)
         {
             Logging.Logger.Warn($"Slot.RemoveFromHierarchy: refusing on protected slot '{Name.Value}' (RefID {ReferenceID})");

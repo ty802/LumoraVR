@@ -150,13 +150,20 @@ public class RectTransform : Component
         // propagation) when an ANCESTOR flips, so content shown by reactivating any ancestor (a
         // screen, a menu, the dashboard's render rig) re-renders.
         if (Slot != null)
+        {
             Slot.ActiveChanged += OnSlotActiveChanged;
+            // Children changing places moves them in a layout and in draw order, like one coming or going.
+            Slot.ChildOrderChanged += OnChildOrderChanged;
+        }
     }
 
     public override void OnDestroy()
     {
         if (Slot != null)
+        {
             Slot.ActiveChanged -= OnSlotActiveChanged;
+            Slot.ChildOrderChanged -= OnChildOrderChanged;
+        }
 
         // Tell the PARENT the tree under it changed. NotifyComponentsChanged only ever fired on the rect
         // whose own components moved, so destroying a subtree marked the chunk that was going away and
@@ -171,6 +178,8 @@ public class RectTransform : Component
 
         base.OnDestroy();
     }
+
+    private void OnChildOrderChanged(Slot slot) => NotifyComponentsChanged();
 
     private void OnSlotActiveChanged(Slot slot)
     {

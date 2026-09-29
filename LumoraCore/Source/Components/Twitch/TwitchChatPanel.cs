@@ -602,7 +602,8 @@ public sealed class TwitchChatPanel : Component
         textRect.OffsetMax.Value = new float2(-RowPadX, -RowPadY);
         text.RichText.Value = true;
         text.WordWrap.Value = true;
-        text.Sprites.Target = _spriteSet;
+        if (_spriteSet != null)
+            text.Sprites.Target = _spriteSet;
         text.HorizontalAlignment.Value = centered ? TextHorizontalAlignment.Center : TextHorizontalAlignment.Left;
         text.VerticalAlignment.Value = centered ? TextVerticalAlignment.Middle : TextVerticalAlignment.Top;
         _rowList.Add(new Row { Slot = row, Text = text, MessageId = messageId, UserId = userId, Height = height });
@@ -748,8 +749,8 @@ public sealed class TwitchChatPanel : Component
 
     // HELPERS
 
-    // Lines from characters and width, the way the reference dialog sizes its rows: tags are not
-    // glyphs, a newline always starts a line, and a word longer than a line still gets one.
+    // Lines from characters and width: tags are not glyphs, a newline always starts a line, and a word
+    // longer than a line still gets one.
     private float EstimateRowHeight(string content)
     {
         int visible = 0;

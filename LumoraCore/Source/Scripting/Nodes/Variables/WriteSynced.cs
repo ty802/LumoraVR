@@ -1,0 +1,23 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+using System;
+using Lumora.Script;
+
+namespace Lumora.Core.Scripting;
+
+// Keeps a value under a name on this script's object, for every machine to read with Read Synced. Only a
+// Shared script keeps them, on the host.
+[Node("Variables/Write Synced", Capability.Events)]
+public sealed class WriteSynced<T> : ActionNode where T : IEquatable<T>
+{
+    public static void Run(ScriptContext ctx, string? name, T value)
+    {
+        if (ctx.IsLocal)
+            throw new UnauthorizedAccessException("a Local script reads synced values; a Shared script keeps them");
+        if (!ScriptSynced.CheckName(name) || ctx.Host is not { IsDestroyed: false } host || !ctx.World.IsAuthority)
+            return;
+        if (host.WriteSynced(name!, ScriptSynced.TypeName<T>(), ScriptSynced.Format(value)) && host.Synced.Count == ScriptSynced.WarnValues + 1)
+            ctx.Warn(ScriptWarning.SyncedValues, $"more than {ScriptSynced.WarnValues} synced values on one object");
+    }
+}

@@ -279,11 +279,11 @@ public class PhosSphere : PhosShape
 
         float3 pos = normal * radius;
 
-        // Calculate tangent (derivative with respect to u/theta)
+        // Along increasing texture U, which runs against theta (see the UV below).
         float3 tangent = new float3(
-            -sinTheta,
+            sinTheta,
             0f,
-            cosTheta
+            -cosTheta
         );
 
         // Apply rotation
@@ -304,7 +304,11 @@ public class PhosSphere : PhosShape
         mesh.RawPositions[index] = pos;
         mesh.RawNormals[index] = normal;
         mesh.RawTangents[index] = new float4(tangent, 1f);
-        mesh.RawUV0s[index] = new float2(u * uvScale.x, (1f - v) * uvScale.y);
+        // V=0 at the top pole, the way every texture here stores row 0 at the top. U runs against theta so a
+        // picture reads left to right from outside, like a globe; theta itself turns +x toward +z, which is
+        // leftward to someone looking in. Both used to be the other way, so pictures landed upside down
+        // and mirrored. -xlinka
+        mesh.RawUV0s[index] = new float2((1f - u) * uvScale.x, v * uvScale.y);
 
         if (color.HasValue)
         {

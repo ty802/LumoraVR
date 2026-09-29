@@ -129,11 +129,13 @@ public sealed class SeededRandom
     // sqrt radius keeps the density even
     public float2 InsideUnitCircle => OnUnitCircle * MathF.Sqrt(Value);
 
-    // Y-up cone, apex at -height/2, base radius at +height/2. Radius scales with height so the
-    // sampling is even through the volume rather than bunched at the tip.
+    // Y-up cone with the apex down at -height/2 and the base up at +height/2, the way a jet flares from its
+    // nozzle (the cone mesh stands the other way up). A slice's area grows with the square of its distance
+    // from the apex, so the height is drawn by the cube root: the points spread evenly through the volume
+    // instead of bunching at the tip.
     public float3 InsideCone(float height, float baseRadius)
     {
-        float t = Value;
+        float t = MathF.Cbrt(Value);
         float2 disc = InsideUnitCircle * (baseRadius * t);
         return new float3(disc.x, (t - 0.5f) * height, disc.y);
     }

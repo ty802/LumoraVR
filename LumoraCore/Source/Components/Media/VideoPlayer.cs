@@ -809,7 +809,7 @@ public sealed class VideoPlayer : Component, IPlayable
     public static void ApplyStereoLayout(UnlitMaterial material, StereoLayoutMode layout)
         => ApplyStereoLayout(material, layout, float2.One, float2.Zero);
 
-    // The surface transform (a sphere's flip, a 180's doubling) goes in first and the eye window is
+    // The surface transform (a 180's doubling) goes in first and the eye window is
     // applied on top of it, so a stereo 360 is one composed transform rather than two that fight.
     public static void ApplyStereoLayout(UnlitMaterial material, StereoLayoutMode layout, in float2 baseScale, in float2 baseOffset)
     {
@@ -875,21 +875,16 @@ public sealed class VideoPlayer : Component, IPlayable
         }
     }
 
-    // The sphere's own UVs put V=1 at the north pole, which is upside down against a texture whose row
-    // 0 is V=0, so V is flipped here. U is left alone: the sphere winds so that increasing U runs to
-    // the RIGHT of somebody standing at the middle of it, which is already the way an equirect frame
-    // reads, and mirroring it would be the bug rather than the fix.
+    // The sphere mesh already lays a picture on the way a globe reads from outside, top row at the north
+    // pole, and the orb is looked at from outside, so a 360 frame needs nothing.
     //
     // 180 is an approximation and deliberately so: doubling U squeezes the whole picture into the front
     // half and lets it repeat behind you, which is right where you are looking and wrong where you are
     // not. A real half-dome mesh is the honest fix and is not this component's job.
-    //
-    // The orb is looked at from outside, where a sphere wound for an inside viewer reads mirrored, so U
-    // is mirrored back on top of the V flip.
     private static (float2 scale, float2 offset) SphereTransform(VideoProjectionMode projection)
         => projection == VideoProjectionMode.Sphere180
-            ? (new float2(-2f, -1f), new float2(1f, 1f))
-            : (new float2(-1f, -1f), new float2(1f, 1f));
+            ? (new float2(2f, 1f), new float2(-1f, 0f))
+            : (float2.One, float2.Zero);
 
     // The screen stays up in every mode; the orb joins it for 360 and 180 and stereo only changes
     // what both of them show.

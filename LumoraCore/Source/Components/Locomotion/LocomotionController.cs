@@ -10,8 +10,16 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Core.Components;
 
 [ComponentCategory("Users")]
+[DefaultUpdateOrder(-600000)]
 public class LocomotionController : Component
 {
+    public override void OnStart()
+    {
+        base.OnStart();
+        if (UpdateOrder == 0)
+            UpdateOrder = -600000;
+    }
+
     // PARAMETERS
 
     // DirectDelta is now normalized (1.0 = full screen height swipe).
@@ -22,6 +30,11 @@ public class LocomotionController : Component
     // Whether the user allows being scaled (grab-scale gestures, world zoom).
     // The context menu exposes it as a toggle while at default scale.
     public readonly Sync<bool> ScalingEnabled = new();
+
+    // The module the owner has active. The choice is only made on the owner's machine, so the owner
+    // writes it here for every other machine to read. -xlinka
+    [NonPersistent]
+    public readonly SyncRef<LocomotionModule> CurrentModule = new();
 
     public override void OnInit()
     {
@@ -34,6 +47,8 @@ public class LocomotionController : Component
     private CharacterController _characterController = null!;
     private UserRoot _userRoot = null!;
     private UserInputState _inputState = null!;
+    private DesktopHeadDrive _headDrive = null!;
+    private DesktopViewMode _viewMode = DesktopViewMode.FirstPerson;
     private Mouse _mouse = null!;
     private IKeyboardDriver _keyboardDriver = null!;
     private InputInterface _inputInterface = null!;
@@ -203,6 +218,7 @@ public class LocomotionController : Component
         }
 
         _inputState = Slot.GetComponent<UserInputState>() ?? Slot.AttachComponent<UserInputState>();
+        _headDrive = Slot.GetComponent<DesktopHeadDrive>() ?? Slot.AttachComponent<DesktopHeadDrive>();
 
         _inputInterface = Lumora.Core.Engine.Current?.InputInterface!;
         if (_inputInterface != null)
@@ -337,12 +353,6 @@ public class LocomotionController : Component
         bool lookSuppressed = _inputState?.MouseLookSuppressed ?? false;
         bool inputSuppressed = _inputState?.DesktopInputSuppressed ?? false;
 
-        // Third person still turns the body, just not with raw mouse look: the camera orbits and the
-        // avatar comes round to face where it is pointing once you start walking. Runs before the
-        // early-out below, which exists to keep the mouse OFF the head in that mode.
-        if (IsThirdPerson && !inputSuppressed)
-            UpdateThirdPersonFacing();
-
         if (_mouse == null || !_mouseCaptured || freeCam || lookSuppressed || inputSuppressed)
             return;
 
@@ -356,22 +366,6 @@ public class LocomotionController : Component
         _pitch = System.Math.Clamp(_pitch, -maxPitchRad, maxPitchRad);
     }
 
-    // THIRD-PERSON BODY ALIGNMENT
-    //
-    // In third person the mouse drives the orbit, not the head, so nothing was turning the avatar at
-    // all: you could spin the camera all the way round and the body stayed pointing wherever it was
-    // when you pressed F5, and WASD kept pushing you along that stale direction. The other platform
-    // aligns the body to the camera once you are MOVING, after a short dwell, rather than snapping the
-    // instant the camera moves - so you can look around a stationary character freely, and the moment
-    // you walk, the character comes round to where you are looking.
-    //
-    // The dwell is what stops a nudge of the mouse from yanking the body. Turn rate scales with how
-    // hard you are pushing the stick, so a slow walk turns gently and a sprint turns sharply. -xlinka
-    private const float AlignDwellSeconds = 0.15f;
-    private const float AlignRate = 8f;
-    // How far the head may turn away from the body before it stops following the camera.
-    private const float HeadYawLimit = 1.4f;   // radians, ~80 degrees
-
     // Genuinely in third person, which is NOT the same as "the mouse is not driving the head".
     // MouseLookSuppressed is overloaded: F5 sets it, and so does opening a context menu in FIRST
     // person, because the menu takes the mouse for its own pointer. Keying the third-person body and
@@ -380,59 +374,104 @@ public class LocomotionController : Component
     // me" report. Ask the camera state instead: external camera, and not the free-cam. -xlinka
     private bool IsThirdPerson =>
         _inputState?.ExternalCameraActive == true && _inputState?.FreeCamActive != true;
-    private float _alignDwell;
-    private float _thirdPersonHeadYaw;
 
-    private void UpdateThirdPersonFacing()
+    // THE HEAD
+    //
+    // The view and the head are two poses. First person: the head is the look. Third person: the mouse
+    // drives the ORBIT and the head only follows it under the drive's neck rules, and the body heading
+    // comes from the drive's face, which aligns to the orbit when you walk toward it and never while you
+    // stand and look round. Free cam: the head holds still. The raw camera used to be written onto the
+    // head here, which is how spinning the orbit snapped the avatar's neck through 180 degrees. -xlinka
+    private void StepHeadDrive(float dt)
     {
-        var input = _inputInterface;
-        if (input == null || !input.DesktopCameraPoseValid)
-            return;
-
-        float dt = World?.Time.Delta ?? (1f / 60f);
-        var axis = LocomotionInputHelper.ReadMovementAxis(input);
-        float push = axis.Length;
-
-        // The camera's own yaw and pitch, read in the SAME euler convention the head and body
-        // rotations are built from, so no sign guessing.
-        var camEuler = input.DesktopCameraRotation.ToEuler();
-        float camYaw = camEuler.y;
-        float camPitch = camEuler.x;
-
-        // HEAD: tracks the camera every frame, yaw and pitch both. This is the half that makes the
-        // avatar look like it answers the mouse, and the half we did not have - the head carries only
-        // pitch normally and third person suppressed even that, so looking up and down in F5 moved
-        // nothing at all. The yaw is stored relative to the body and CLAMPED, so the head turns to
-        // follow the camera round to the side and then stops rather than the neck spinning.
-        float maxPitchRad = MaxPitch * (float)System.Math.PI / 180f;
-        _pitch = System.Math.Clamp(camPitch, -maxPitchRad, maxPitchRad);
-        _thirdPersonHeadYaw = System.Math.Clamp(WrapAngle(camYaw - _yaw), -HeadYawLimit, HeadYawLimit);
-
-        // BODY: only once you are actually walking. Turning it while you stand made the avatar rotate
-        // to face the camera as you orbited it, which is not what the other platform does and is not
-        // what anyone wants to look at. The dwell keeps a nudge of the stick from yanking it round.
-        if (push <= 0.01f)
+        var drive = _headDrive;
+        if (drive == null || drive.IsDestroyed)
         {
-            _alignDwell = 0f;
-            return;
+            drive = Slot.GetComponent<DesktopHeadDrive>() ?? Slot.AttachComponent<DesktopHeadDrive>();
+            _headDrive = drive;
         }
 
-        _alignDwell += dt;
-        if (_alignDwell < AlignDwellSeconds)
-            return;
+        var mode = DesktopHeadDrive.ResolveMode(_inputState);
+        if (mode != _viewMode)
+        {
+            // Leaving an external view: the head is the look again, so the body comes round under it
+            // (the root rotate pins the head) and the mouse carries on from where the head was pointing
+            // rather than where the body was.
+            if (mode == DesktopViewMode.FirstPerson)
+            {
+                _yaw = drive.HeadYaw;
+                _pitch = drive.HeadPitch;
+            }
+            _viewMode = mode;
+        }
+        else if (mode == DesktopViewMode.ThirdPerson && _yaw != drive.FaceYaw)
+        {
+            // Somebody else re-based the heading (a seat, a placement): the face starts from there.
+            drive.Simulation.ResetFace(_yaw);
+        }
 
-        float delta = WrapAngle(camYaw - _yaw);
-        _yaw += delta * System.Math.Clamp(AlignRate * dt * System.Math.Clamp(push, 0f, 1f), 0f, 1f);
+        var frame = new DesktopHeadSimulation.Frame
+        {
+            Mode = mode,
+            Delta = dt,
+            LookYaw = _yaw,
+            LookPitch = _pitch,
+            BodyYaw = _yaw,
+        };
+        if (mode == DesktopViewMode.ThirdPerson)
+        {
+            var input = _inputInterface;
+            if (input != null && input.DesktopCameraPoseValid)
+                frame.ViewForward = input.DesktopCameraRotation * float3.Backward;
+            frame.Movement = ReadWorldMovement(dt);
+            frame.HandReady = TryGetHandAim(out frame.HandAimDirection);
+        }
+        drive.Step(frame);
+
+        if (mode == DesktopViewMode.ThirdPerson)
+        {
+            _yaw = drive.FaceYaw;
+            _pitch = drive.HeadPitch;
+        }
     }
 
-    // Shortest way round, so a turn across the +/-pi seam does not take the long way.
-    private static float WrapAngle(float radians)
+    // Metres the body is being pushed this frame, world space, from the same axis and basis the walk
+    // module uses, so "moving toward the orbit" means what the feet are actually doing.
+    private float3 ReadWorldMovement(float dt)
     {
-        const float twoPi = MathF.PI * 2f;
-        radians %= twoPi;
-        if (radians > MathF.PI) radians -= twoPi;
-        else if (radians < -MathF.PI) radians += twoPi;
-        return radians;
+        if (_inputInterface == null || _inputState == null)
+            return float3.Zero;
+        if (_inputState.FreeCamActive || _inputState.DesktopInputSuppressed || _inputState.MovementSuppressed)
+            return float3.Zero;
+
+        var axis = LocomotionInputHelper.ReadMovementAxis(_inputInterface);
+        float push = axis.Length;
+        if (push <= 0.001f)
+            return float3.Zero;
+        if (push > 1f)
+            axis /= push;
+
+        GetMovementBasis(out var forward, out var right);
+        float speed = _characterController?.GetCurrentSpeed() ?? 0f;
+        return (forward * axis.y + right * axis.x) * (speed * dt);
+    }
+
+    // The pointing hand's flat direction from the head, while its laser is over something it can act on.
+    private bool TryGetHandAim(out float3 direction)
+    {
+        direction = float3.Zero;
+        var controller = ResolveControllerSlot(ref _rightControllerSlot, Input.BodyNode.RightController);
+        var laser = ResolveRightLaser(controller);
+        var head = _userRoot?.HeadSlot;
+        if (laser == null || head == null || head.IsDestroyed || !laser.IsActive || !laser.HasAimPoint)
+            return false;
+
+        float3 toTarget = laser.AimPoint - head.GlobalPosition;
+        toTarget.y = 0f;
+        if (toTarget.LengthSquared <= 1e-6f)
+            return false;
+        direction = toTarget.Normalized;
+        return true;
     }
 
     private const float POS_THRESHOLD_SQ = 0.0001f * 0.0001f;
@@ -495,9 +534,9 @@ public class LocomotionController : Component
         float headHeight = (userHeight - InputInterface.EYE_HEAD_OFFSET) * _crouchBlend;
         var newHeadPos = new float3(0, headHeight, 0);
 
-        var currentHeadPos = _userRoot.HeadSlot.LocalPosition.Value;
-        if ((newHeadPos - currentHeadPos).LengthSquared > POS_THRESHOLD_SQ)
-            _userRoot.HeadSlot.LocalPosition.Value = newHeadPos;
+        // The drive runs between mouse look and the body turn: it needs this frame's look, and in third
+        // person the body turn below takes its heading from the drive's face.
+        StepHeadDrive(dt);
 
         var newBodyRot = floatQ.FromEuler(new float3(0, _yaw, 0));
         var currentBodyRot = Slot.GlobalRotation;
@@ -505,14 +544,8 @@ public class LocomotionController : Component
         if (1.0f - (bodyDot < 0 ? -bodyDot : bodyDot) > ROT_THRESHOLD)
             SetRootRotationAroundHead(newBodyRot);
 
-        // Yaw on the head is third person only: in first person the body IS the look direction, so a
-        // head yaw there would double it.
-        float headYaw = IsThirdPerson ? _thirdPersonHeadYaw : 0f;
-        var newHeadRot = floatQ.FromEuler(new float3(_pitch, headYaw, 0));
-        var currentHeadRot = _userRoot.HeadSlot.LocalRotation.Value;
-        float headDot = floatQ.Dot(newHeadRot, currentHeadRot);
-        if (1.0f - (headDot < 0 ? -headDot : headDot) > ROT_THRESHOLD)
-            _userRoot.HeadSlot.LocalRotation.Value = newHeadRot;
+        // After the root has turned, so the head lands in the parent frame the root now has.
+        _headDrive?.ApplyToHead(_userRoot.HeadSlot, newHeadPos);
 
         // Drive hand aim on the CONTROLLER slots (hands are grip-offset
         // children of controllers - writing the hand child would bypass the
@@ -589,9 +622,9 @@ public class LocomotionController : Component
     private const float HandAimSmoothing = 10f;
 
     // Point the pointing hand at whatever the view is aimed at while an external camera is up (F5/F6). The
-    // mouse drives the CAMERA in those modes and head look is frozen, so the mouse-pitch rest pose leaves the
-    // hand aimed at wherever the head last looked while the beam has to leave it toward the crosshair's
-    // target. Take the rotation that carries the laser's own forward onto the hand->target direction and apply
+    // mouse drives the CAMERA in those modes and the head only follows it under the drive's neck rules, so
+    // the mouse-pitch rest pose leaves the hand aimed where the head happens to be while the beam has to
+    // leave it toward the crosshair's target. Take the rotation that carries the laser's own forward onto the hand->target direction and apply
     // it to the controller: the laser rides the controller rigidly, so that is exact in one step rather than a
     // frame-by-frame chase. Work in the parent's frame so body turn and walking don't read as aim error, then
     // ease in. Left hand keeps its rest pose, and VR never reaches here (UpdateHead bails on a tracked head).
@@ -605,10 +638,7 @@ public class LocomotionController : Component
         if (parent == null)
             return false;
 
-        if (_rightLaserCache == null || _rightLaserCache.IsDestroyed)
-            _rightLaserCache = controller.GetComponentInChildren<Interaction.InteractionLaser>();
-
-        var laser = _rightLaserCache;
+        var laser = ResolveRightLaser(controller);
         var laserSlot = laser?.Slot;
         if (laser == null || laserSlot == null || !laser.HasAimPoint)
             return false;
@@ -627,6 +657,15 @@ public class LocomotionController : Component
         float t = System.Math.Clamp(1f - MathF.Exp(-HandAimSmoothing * MathF.Max(delta, 0f)), 0f, 1f);
         SetIfChanged(controller.LocalRotation, floatQ.Slerp(controller.LocalRotation.Value, aimed.Normalized, t));
         return true;
+    }
+
+    private Interaction.InteractionLaser? ResolveRightLaser(Slot? controller)
+    {
+        if (controller == null || controller.IsDestroyed)
+            return null;
+        if (_rightLaserCache == null || _rightLaserCache.IsDestroyed)
+            _rightLaserCache = controller.GetComponentInChildren<Interaction.InteractionLaser>();
+        return _rightLaserCache;
     }
 
     private Slot? ResolveControllerSlot(ref Slot? cache, Input.BodyNode node)
@@ -676,9 +715,10 @@ public class LocomotionController : Component
 
     public void GetMovementBasis(out float3 forward, out float3 right)
     {
-        // Third person walks relative to the CAMERA. The head does not turn in this mode, so taking the
-        // basis off it left movement bound to whichever way you happened to be facing when the mode was
-        // entered: you would orbit behind the character and W still walked the old way. -xlinka
+        // Third person walks relative to the VIEW: W goes where the camera looks, and the body heading
+        // (the drive's face) comes round to match on its own. The head follows the orbit only under neck
+        // rules, so a basis off the head would walk you somewhere between where you look and where you
+        // face. -xlinka
         if (IsThirdPerson && _inputInterface?.DesktopCameraPoseValid == true)
         {
             forward = _inputInterface.DesktopCameraRotation * float3.Backward;
@@ -725,6 +765,8 @@ public class LocomotionController : Component
         _activeModule?.DeactivateInternal();
         _activeModule = module;
         _activeModule.ActivateInternal(this);
+        using (World?.DataModelPermissions?.EnterSystemBypass())
+            CurrentModule.Target = module;
     }
 
     public CharacterController CharacterController => _characterController;
@@ -747,4 +789,3 @@ public class LocomotionController : Component
         base.OnDestroy();
     }
 }
-

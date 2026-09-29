@@ -340,6 +340,11 @@ public class SessionSyncManager : IDisposable
                         case RawFrameMessage: TotalReceivedRawFrames++; break;
                     }
 
+                    // The host's count of what each user sends it, for their link figures.
+                    if (World?.IsAuthority == true && rawMessage.Sender != null
+                        && Session?.Connections?.TryGetUser(rawMessage.Sender, out var from) == true)
+                        from.CountReceived(syncMessage);
+
                     EnqueueForProcessing(syncMessage);
                 }
                 catch (Exception ex)
@@ -507,6 +512,11 @@ public class SessionSyncManager : IDisposable
                 // ProcessPendingRecords early-returns when nothing is pending. Self-guards on state.
                 // -xlinka
                 TryEnterRunningWhenComplete();
+
+                // Everything this cycle decoded has applied, so the members of what it created stop
+                // loading, bar any still waiting on a pending record. Before the lock drops: the world
+                // thread must never see a member that is loading only because nobody let it go.
+                World.SyncController.ReleaseHeldLoading(IsPendingTarget);
 
                 if (World.IsAuthority)
                 {
@@ -814,24 +824,37 @@ public class SessionSyncManager : IDisposable
                     break;
 
                 case FullBatch fullBatch:
-                    if (!World.IsAuthority && World.InitState == World.InitializationState.InitializingDataModel)
+                    // Full state and confirmations only ever flow out of the authority. A peer's copy
+                    // would skip validation entirely, and a confirmation's full decode throws on the
+                    // authority before the message leaves the queue, which parks this loop on it for
+                    // good. -xlinka
+                    if (World.IsAuthority)
+                    {
+                        fullBatch.Dispose();
+                        break;
+                    }
+
+                    if (World.InitState == World.InitializationState.InitializingDataModel)
                     {
                         TrackFullBatchProgress(fullBatch);
                     }
 
                     ApplyDataRecords(fullBatch);
 
-                    if (!World.IsAuthority)
-                    {
-                        World.SetStateVersion(fullBatch.SenderStateVersion);
-                        NoteFullStateApplied(fullBatch);
-                        // Transition happens on JoinStartDelta to avoid starting before deltas are allowed.
-                    }
+                    World.SetStateVersion(fullBatch.SenderStateVersion);
+                    NoteFullStateApplied(fullBatch);
+                    // Transition happens on JoinStartDelta to avoid starting before deltas are allowed.
 
                     fullBatch.Dispose();
                     break;
 
                 case ConfirmationMessage confirmation:
+                    if (World.IsAuthority)
+                    {
+                        confirmation.Dispose();
+                        break;
+                    }
+
                     NoteLinkSequence(confirmation);
 
                     for (int i = 0; i < confirmation.DataRecordCount; i++)
@@ -855,10 +878,7 @@ public class SessionSyncManager : IDisposable
                         LumoraLogger.Debug($"[Sync] Confirmation received for unknown tick {confirmation.ConfirmTime}");
                     }
 
-                    if (!World.IsAuthority)
-                    {
-                        World.SetStateVersion(confirmation.SenderStateVersion);
-                    }
+                    World.SetStateVersion(confirmation.SenderStateVersion);
 
                     confirmation.Dispose();
                     break;
@@ -1503,11 +1523,25 @@ public class SessionSyncManager : IDisposable
     private void ApplyDeltaBatch(DeltaBatch deltaBatch)
     {
         // Always validate before applying deltas; host will retransmit if needed.
-        ValidateDeltaBatchAndRetransmit(deltaBatch);
+        World.SyncController.ValidateDeltaMessages(deltaBatch);
+
+        var conflicting = new List<RefID>();
+        deltaBatch.GetConflictingDataRecords(conflicting);
+        deltaBatch.RemoveInvalidRecords();
 
         ApplyDataRecords(deltaBatch);
 
-        if (!World.IsAuthority)
+        if (World.IsAuthority)
+        {
+            // The relay goes out after the apply, not before. A member of something this batch creates
+            // is only judged once it exists, which is during the apply, and a refusal there has to keep
+            // the record off every other peer too. Nothing else takes a link sequence number between
+            // here and the validation above, so the numbering is unchanged. -xlinka
+            deltaBatch.GetConflictingDataRecords(conflicting);
+            deltaBatch.RemoveInvalidRecords();
+            RetransmitDeltaBatch(deltaBatch, conflicting);
+        }
+        else
         {
             World.SetStateVersion(deltaBatch.SenderStateVersion);
         }
@@ -1524,65 +1558,56 @@ public class SessionSyncManager : IDisposable
         streamMessage.Dispose();
     }
 
-    private void ValidateDeltaBatchAndRetransmit(DeltaBatch batch)
+    private void RetransmitDeltaBatch(DeltaBatch batch, List<RefID> conflicting)
     {
-        World.SyncController.ValidateDeltaMessages(batch);
+        // ONE number covers this relay in both directions. Everyone else learns it from the
+        // forwarded copy; the peer that produced the delta - the one target deliberately left out -
+        // learns it from the confirmation it already gets back. That is what keeps every link's run
+        // unbroken even though no single message here reaches all of them, and it is why the
+        // forward goes out even when validation left it with zero records: it is the sequence
+        // carrier for every other peer, and a peer that never sees the number reads it as a hole
+        // and resyncs the whole world over nothing. -xlinka
+        ulong relaySequence = NextOutSequence();
 
-        var conflicting = new List<RefID>();
-        batch.GetConflictingDataRecords(conflicting);
-        batch.RemoveInvalidRecords();
+        var forward = CopyDeltaBatch(batch);
+        forward.LinkSequence = relaySequence;
 
-        if (World.IsAuthority)
+        // Relay this peer's delta to everyone else who's live, but never echo it back to the
+        // sender that produced it. -xlinka
+        AddAuthorityFanoutTargets(forward, batch.Sender);
+
+        if (forward.Targets.Count > 0)
         {
-            // ONE number covers this relay in both directions. Everyone else learns it from the
-            // forwarded copy; the peer that produced the delta - the one target deliberately left out -
-            // learns it from the confirmation it already gets back. That is what keeps every link's run
-            // unbroken even though no single message here reaches all of them, and it is why the
-            // forward goes out even when validation left it with zero records: it is the sequence
-            // carrier for every other peer, and a peer that never sees the number reads it as a hole
-            // and resyncs the whole world over nothing. -xlinka
-            ulong relaySequence = NextOutSequence();
+            EnqueueForTransmission(forward);
+        }
+        else
+        {
+            forward.Dispose();
+        }
 
-            var forward = CopyDeltaBatch(batch);
-            forward.LinkSequence = relaySequence;
-
-            // Relay this peer's delta to everyone else who's live, but never echo it back to the
-            // sender that produced it. -xlinka
-            AddAuthorityFanoutTargets(forward, batch.Sender);
-
-            if (forward.Targets.Count > 0)
+        if (batch.Sender != null)
+        {
+            // Always confirm an accepted delta back to the client that sent it - even with ZERO
+            // conflicts. The client keys its own outgoing changes by this tick and only advances
+            // their confirmed state (and clears its pending-confirm set) when it hears back. An empty
+            // confirmation is exactly how a clean, non-conflicting change gets acknowledged; without
+            // it the client's _changesToConfirm for clean ticks leaks forever and those changes never
+            // register as confirmed. When there ARE conflicts we also carry the authoritative current
+            // values so the client corrects. -xlinka
+            var confirmation = new ConfirmationMessage(batch.SenderSyncTick, World.StateVersion, World.SyncTick)
             {
-                EnqueueForTransmission(forward);
-            }
-            else
+                LinkSequence = relaySequence
+            };
+            if (conflicting.Count > 0)
             {
-                forward.Dispose();
-            }
-
-            if (batch.Sender != null)
-            {
-                // Always confirm an accepted delta back to the client that sent it - even with ZERO
-                // conflicts. The client keys its own outgoing changes by this tick and only advances
-                // their confirmed state (and clears its pending-confirm set) when it hears back. An empty
-                // confirmation is exactly how a clean, non-conflicting change gets acknowledged; without
-                // it the client's _changesToConfirm for clean ticks leaks forever and those changes never
-                // register as confirmed. When there ARE conflicts we also carry the authoritative current
-                // values so the client corrects. -xlinka
-                var confirmation = new ConfirmationMessage(batch.SenderSyncTick, World.StateVersion, World.SyncTick)
+                TotalCorrections += conflicting.Count;
+                foreach (var id in conflicting)
                 {
-                    LinkSequence = relaySequence
-                };
-                if (conflicting.Count > 0)
-                {
-                    TotalCorrections += conflicting.Count;
-                    foreach (var id in conflicting)
-                    {
-                        World.SyncController.EncodeFull(id, confirmation);
-                    }
+                    World.SyncController.EncodeFull(id, confirmation);
                 }
-                confirmation.Targets.Add(batch.Sender);
-                EnqueueForTransmission(confirmation);
             }
+            confirmation.Targets.Add(batch.Sender);
+            EnqueueForTransmission(confirmation);
         }
     }
 
@@ -1779,6 +1804,25 @@ public class SessionSyncManager : IDisposable
                     continue;
                 }
 
+                // The batch pass could not judge this one, its target did not exist yet. Judge it the
+                // moment the target does, before a byte of it decodes. -xlinka
+                if (batch is DeltaBatch lateBatch && World.IsAuthority && !lateBatch.GetDataRecord(i).Validated)
+                {
+                    if (!World.SyncController.TryGetElement(targetID, out _))
+                        continue;
+
+                    var validity = World.SyncController.ValidateLateRecord(lateBatch, i);
+                    if (validity != MessageValidity.Valid)
+                    {
+                        lateBatch.InvalidateDataRecord(i, validity == MessageValidity.Conflict);
+                        lateBatch.MarkDataRecordAsProcessed(i);
+                        remaining--;
+                        decodedThisPass++;
+                        continue;
+                    }
+                    lateBatch.MarkDataRecordValidated(i);
+                }
+
                 bool decoded = false;
                 try
                 {
@@ -1845,12 +1889,28 @@ public class SessionSyncManager : IDisposable
                     var record = batch.GetDataRecord(i);
                     var obj = World.ReferenceController?.GetObjectOrNull(record.TargetID);
                     LumoraLogger.Debug($"[Sync]   FAILED RefID={record.TargetID} Type={obj?.GetType().Name ?? "NOT_FOUND"}");
+
+                    // An unjudged record never waits on the authority. Its target was not created by
+                    // this batch, and the pending queue decodes with no sender to judge it as. Marked
+                    // invalid so the relay leaves it out as well. -xlinka
+                    if (batch is DeltaBatch && World.IsAuthority && !record.Validated)
+                    {
+                        batch.InvalidateDataRecord(i, conflict: false);
+                        continue;
+                    }
+
                     QueuePendingRecord(batch, i);
                 }
             }
         }
 
         return remaining;
+    }
+
+    private bool IsPendingTarget(RefID id)
+    {
+        lock (_pendingLock)
+            return _pendingFullRecords.ContainsKey(id) || _pendingDeltaRecords.ContainsKey(id);
     }
 
     private void QueuePendingRecord(BinaryMessageBatch batch, int recordIndex)
@@ -2328,6 +2388,8 @@ public class SessionSyncManager : IDisposable
                 var startPos = System.Math.Max(grantedStart.GetPosition(), 1UL) + RefIDConstants.USER_JOIN_HEADROOM;
                 World.ReferenceController.SetAllocationContext(userByte, startPos);
                 World.ReferenceController.SetOwnedStartPosition(userByte, startPos);
+                // Where the host mints for this user's scripts; nothing minted here goes that far.
+                World.ReferenceController.SetScriptFence(userByte, RefIDConstants.ScriptRangeStart(grantedStart.GetPosition()));
                 LumoraLogger.Log($"[Sync] Scoped allocation to user namespace: byte={userByte}, startPos={startPos}");
 
                 Session.World.OnJoinGrantReceived();

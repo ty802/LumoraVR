@@ -40,7 +40,7 @@ public enum SeatRestoreMode
 // back with somebody still sitting in it, and a restore pose captured in a previous session points at
 // slots that no longer exist. - xlinka
 [ComponentCategory("Users/Avatar")]
-public class Seat : Component, ICustomInspectorUI
+public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
 {
     // OCCUPANCY
 
@@ -186,6 +186,20 @@ public class Seat : Component, ICustomInspectorUI
 
     public bool IsOccupied => FindSeatedUser() != null;
 
+    // IAvatarAnchor. A chair is one kind of anchor; see IAvatarAnchor for why the others are not
+    // chairs. Everything here forwards to what the seat already did - the contract exists so that
+    // tools, menus and worlds can talk to a bed or a vehicle the same way. -xlinka
+    Component IAvatarAnchor.Component => this;
+
+    public User? AnchoredUser => FindSeatedUser() ?? Occupant.Target;
+
+    // Local and cosmetic: a highlight is about where one person is pointing.
+    public bool Highlight { get; set; }
+
+    bool IAvatarAnchor.CanAnchor(User user) => CanSit(user);
+
+    bool IAvatarAnchor.Anchor(User user) => TrySit(user);
+
     // derived from the parenting
     public User? OccupyingUser => FindSeatedUser();
 
@@ -197,6 +211,7 @@ public class Seat : Component, ICustomInspectorUI
     {
         base.OnAwake();
         World?.RegisterEventReceiver(this);
+        SeatIndex.Add(this);
     }
 
     public override void OnStart()
@@ -346,6 +361,7 @@ public class Seat : Component, ICustomInspectorUI
             RestoreLocalUser();
         DetachSpaceWatch();
         World?.UnregisterEventReceiver(this);
+        SeatIndex.Remove(World, this);
         base.OnDestroy();
     }
 
@@ -384,7 +400,10 @@ public class Seat : Component, ICustomInspectorUI
                 return false;
         }
 
-        return true;
+        // Anything else on this slot with a say. The two rules above are the chair's own and they
+        // stay; this is for the ones that are not a chair's business - a door being open, a group,
+        // a ticket. Filters can only refuse, never grant. -xlinka
+        return AnchorFilters.Allow(Slot, user);
     }
 
     // only the user's own peer can call this; moving somebody else's body is not a thing any other peer may do

@@ -37,6 +37,9 @@ public class InputInterface : IDisposable
 
     private ITrackedDevice[] _bodyNodes = null!;
 
+    // The inert stand-ins a node falls back to when nothing tracks it.
+    private ITrackedDevice[] _bodyNodePlaceholders = null!;
+
     private List<IInputUpdateReceiver> _inputReceivers = new List<IInputUpdateReceiver>();
 
     public TrackingSpace GlobalTrackingSpace { get; private set; } = new TrackingSpace();
@@ -58,6 +61,15 @@ public class InputInterface : IDisposable
     public HeadDevice HeadDevice { get; private set; } = null!;
     // Face/lip tracking. A hardware hook fills this; null-object semantics until then (untracked, all zero).
     public MouthDevice MouthDevice { get; private set; } = null!;
+
+    // The finger hands, registered by whichever driver has them (null until one does), and the one finger
+    // pose source over both, in the hand space IHandPoseSource specifies.
+    public HandDevice? LeftHand { get; private set; }
+    public HandDevice? RightHand { get; private set; }
+    public HandDevicePoseSource HandPoseSource { get; } = new HandDevicePoseSource();
+
+    public HandDevice? GetHand(Chirality side)
+        => side == Chirality.Left ? LeftHand : side == Chirality.Right ? RightHand : null;
 
     // VR state - synced from VR drivers automatically
     public bool VR_Active => IsVRActive;
@@ -122,13 +134,15 @@ public class InputInterface : IDisposable
         DesktopCursorRayDirection = direction;
     }
 
-    // Userspace-laser arbitration, per controller side. The userspace dash pointer lives in
-    // the overlay world and pushes its state here every frame. A game-world hand tool reads it
-    // and stands down on that side while the userspace laser is live, so you never get two
-    // cursors fighting over the dash and clicks never bleed through into the world behind it.
+    // Userspace-laser ownership, per controller side. The userspace dash pointer lives in the overlay
+    // world and pushes its state here every frame. Each side is decided on its own: the userspace
+    // pointer owns a hand while its laser is on something in userspace, and the world laser of that
+    // hand then goes quiet, drops its hover and stops its beam at the userspace hit. A hand whose beam
+    // misses the dash keeps its world laser.
     // Indexed by (int)Chirality (None=0, Left=1, Right=2). -xlinka
     private readonly bool[] _userspaceLaserActive = new bool[3];
     private readonly bool[] _userspaceLaserHasTarget = new bool[3];
+    private readonly float[] _userspaceLaserHitDistance = { float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity };
 
     public void SetUserspaceLaserActive(Chirality side, bool active, bool hasTarget)
     {
@@ -136,6 +150,21 @@ public class InputInterface : IDisposable
         if (i < 0 || i >= _userspaceLaserActive.Length) return;
         _userspaceLaserActive[i] = active;
         _userspaceLaserHasTarget[i] = hasTarget;
+    }
+
+    // Distance along the hand ray to what the userspace laser hit this frame, +inf for nothing.
+    public void SetUserspaceLaserHit(Chirality side, float distance)
+    {
+        int i = (int)side;
+        if (i < 0 || i >= _userspaceLaserHitDistance.Length) return;
+        _userspaceLaserHitDistance[i] = SaneDistance(distance);
+    }
+
+    private static float SaneDistance(float distance)
+    {
+        if (float.IsNaN(distance) || distance < 0f)
+            return float.PositiveInfinity;
+        return distance;
     }
 
     public bool IsUserspaceLaserActive(Chirality side)
@@ -150,9 +179,17 @@ public class InputInterface : IDisposable
         return i >= 0 && i < _userspaceLaserHasTarget.Length && _userspaceLaserHasTarget[i];
     }
 
-    // True when the dash owns the pointer on EITHER side. On desktop the single mouse cursor
-    // drives the dash, so any game-world hand tool should stand down regardless of side. -xlinka
-    public bool IsAnyUserspaceLaserActive => _userspaceLaserActive[1] || _userspaceLaserActive[2];
+    public float UserspaceLaserHitDistance(Chirality side)
+    {
+        int i = (int)side;
+        return i >= 0 && i < _userspaceLaserHitDistance.Length ? _userspaceLaserHitDistance[i] : float.PositiveInfinity;
+    }
+
+    // True when the dash owns the pointer outright, for every hand: the desktop case, where the one
+    // mouse cursor drives the dash and the in-world tools have nothing left to point with. In VR each
+    // hand is arbitrated on its own through IsUserspaceLaserActive(side) inside the lasers, so this
+    // stays false there and the hand tools keep running. -xlinka
+    public bool IsAnyUserspaceLaserActive => !IsVRActive && (_userspaceLaserActive[1] || _userspaceLaserActive[2]);
 
     // Desktop camera projection info (vertical FOV in degrees, viewport aspect,
     // world-space camera pose), pushed alongside the cursor ray. The dash uses
@@ -175,17 +212,18 @@ public class InputInterface : IDisposable
         DesktopCameraPoseValid = true;
     }
 
-    // True when the desktop camera is driven by an OVERRIDE (3rd-person / free-cam) instead of following the
-    // local user's head. The dashboard uses this to decide whether it may lock to the live head pose (no
-    // override -> exact, zero-lag screen lock) or must fall back to the sampled camera pose. -xlinka
+    // True when the desktop camera is off the local user's head: driven by an OVERRIDE (3rd-person / free-cam)
+    // or still fading back onto the head after one. The dashboard uses this to decide whether it may lock to
+    // the live head pose (no override -> exact, zero-lag screen lock) or must fall back to the sampled camera
+    // pose. -xlinka
     public bool DesktopCameraHasOverride { get; private set; }
 
     public void SetDesktopCameraOverride(bool hasOverride) => DesktopCameraHasOverride = hasOverride;
 
-    // True while the desktop view is flown by a camera of its own (third-person orbit, free-cam) instead of
-    // riding the local head. Anything that aims with the view has to come off the CAMERA in that state: the
-    // head is parked where mouse look last left it and never moves again until first person comes back.
-    // -xlinka
+    // True while the desktop view is flown by a camera of its own (third-person orbit, free-cam, or on its
+    // way back to the head after one) instead of riding the local head. Anything that aims with the view has
+    // to come off the CAMERA in that state: the head is the avatar's simulated head there, which follows the
+    // orbit only under neck rules and holds still in free cam. -xlinka
     public bool DesktopExternalCameraAim => !IsVRActive && DesktopCameraHasOverride && DesktopCameraPoseValid;
 
     // World-space aim ray through a point on the desktop view, built from the camera pose + projection the
@@ -217,6 +255,12 @@ public class InputInterface : IDisposable
     public float3 GlobalTrackingOffset { get; set; } = float3.Zero;
     public float3 CustomTrackingOffset { get; set; } = float3.Zero;
 
+    // The window and screen sizes, as the platform layer reports them.
+    public DisplayMetrics Display { get; } = new DisplayMetrics();
+
+    // The VR driver whose runtime is running, for what it says about the hardware; null without VR.
+    public IVRDriver? ActiveVRDriver => _vrDrivers.FirstOrDefault(d => d.IsVRActive);
+
     private IKeyboardDriver _keyboardDriver = null!;
     private IMouseDriver _mouseDriver = null!;
     private IGamepadDriver _gamepadDriver = null!;
@@ -226,6 +270,13 @@ public class InputInterface : IDisposable
     public int InputDeviceCount => _inputDevices.Count;
 
     public bool IsVRActive => _vrDrivers.Any(d => d.IsVRActive);
+
+    // Whether the headset has the XR session's focus, which a runtime takes away when the headset comes off
+    // or its own menu covers the view. Reported by whatever runs the XR session; a runtime that never says
+    // counts as on.
+    public bool IsHeadsetFocused { get; private set; } = true;
+
+    public void ReportHeadsetFocus(bool focused) => IsHeadsetFocused = focused;
 
     public HeadOutputDevice CurrentHeadOutputDevice
     {
@@ -237,8 +288,8 @@ public class InputInterface : IDisposable
         }
     }
 
-    // Points the tracking space at the focused local user's root. It BINDS the slot rather than copying its
-    // transform: the root moves during the frame (turn, walk, teleport) and every world-space device pose
+    // Bind devices to the focused user's tracking origin, including the equipped avatar's view offset.
+    // The root moves during the frame (turn, walk, teleport) and every world-space device pose
     // read after that has to come out of where the rig actually is, not where it was at the frame boundary.
     // Still called at the frame edges so a world switch re-points it. -xlinka
     public bool SyncTrackingSpaceToFocusedLocalUser()
@@ -247,8 +298,9 @@ public class InputInterface : IDisposable
         if (root == null || root.IsDestroyed || root.Slot == null)
             return false;
 
-        if (!ReferenceEquals(GlobalTrackingSpace.Space, root.Slot))
-            GlobalTrackingSpace.Space = root.Slot;
+        var space = root.TrackingSpaceSlot;
+        if (!ReferenceEquals(GlobalTrackingSpace.Space, space))
+            GlobalTrackingSpace.Space = space;
         return true;
     }
 
@@ -290,6 +342,7 @@ public class InputInterface : IDisposable
     private void InitializeBodyNodes()
     {
         _bodyNodes = new ITrackedDevice[(int)BodyNode.END];
+        _bodyNodePlaceholders = new ITrackedDevice[(int)BodyNode.END];
 
         foreach (BodyNode bodyNode in Enum.GetValues(typeof(BodyNode)))
         {
@@ -304,6 +357,7 @@ public class InputInterface : IDisposable
                 trackedObject.CorrespondingBodyNode = bodyNode;
                 trackedObject.IsDeviceActive = false;
                 _bodyNodes[index] = trackedObject;
+                _bodyNodePlaceholders[index] = trackedObject;
             }
         }
     }
@@ -318,22 +372,26 @@ public class InputInterface : IDisposable
         return _bodyNodes[index];
     }
 
+    // Only the placeholders get zeroed here. A driver's device says what its driver last wrote, and a
+    // node whose device stopped tracking falls back to its placeholder instead of holding a dead
+    // reference: zeroing whatever sat in the table used to switch every finger and palm device off one
+    // frame after it was assigned, so no finger ever read as tracking past its first frame. -xlinka
     private void UpdateBodyNodeAssignments()
     {
-        foreach (BodyNode bodyNode in Enum.GetValues(typeof(BodyNode)))
+        for (int index = 1; index < _bodyNodes.Length; index++)
         {
-            if (bodyNode == BodyNode.NONE || bodyNode == BodyNode.END)
-                continue;
-
-            int index = (int)bodyNode;
-            if (index >= 0 && index < _bodyNodes.Length)
+            var placeholder = _bodyNodePlaceholders[index];
+            if (placeholder is TrackedObject inert)
             {
-                var current = _bodyNodes[index];
-                if (current != null && current is TrackedObject defaultObj)
-                {
-                    defaultObj.IsDeviceActive = false;
-                    defaultObj.IsTracking = false;
-                }
+                inert.IsDeviceActive = false;
+                inert.IsTracking = false;
+            }
+
+            var current = _bodyNodes[index];
+            if (!ReferenceEquals(current, placeholder) &&
+                (current == null || !current.IsDeviceActive || !current.IsTracking))
+            {
+                _bodyNodes[index] = placeholder;
             }
         }
 
@@ -511,6 +569,15 @@ public class InputInterface : IDisposable
             }
         }
 
+        if (device is HandDevice hand)
+        {
+            if (hand.Side == Chirality.Left)
+                LeftHand = hand;
+            else if (hand.Side == Chirality.Right)
+                RightHand = hand;
+            HandPoseSource.Attach(hand);
+        }
+
         InputDeviceAdded?.Invoke(device);
     }
 
@@ -653,6 +720,12 @@ public class InputInterface : IDisposable
         {
             _gamepadDriver.UpdateGamepad(Gamepad, deltaTime);
         }
+
+        // Grip hysteresis and the menu charge step here, once, after every driver has written raw
+        // values for the frame. The VR driver is registered on two interfaces and writes twice a
+        // frame, so the edges cannot live in it. -xlinka
+        LeftController?.Advance(deltaTime, RightController);
+        RightController?.Advance(deltaTime, LeftController);
 
         UpdateBodyNodeAssignments();
 
@@ -887,6 +960,9 @@ public class InputInterface : IDisposable
         _inputDevices.Clear();
 
         _bodyNodes = null!;
+        _bodyNodePlaceholders = null!;
+        LeftHand = null;
+        RightHand = null;
 
         _keyboardDriver = null!;
         _mouseDriver = null!;

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -11,13 +11,14 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
-// owns an engine-side FABRIK solver, no platform IK dependency; proxies mirror tracked body nodes,
+// owns an engine-side FABRIK solver, no external IK dependency; proxies mirror tracked body nodes,
 // feed the solver each frame, apply authored reference offsets, and run procedural feet when tracking is absent
 [ComponentCategory("Users/Avatar")]
-[DefaultUpdateOrder(-5000)]
-public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
+[DefaultUpdateOrder(1000)]
+public class AvatarIK : Component, IAvatarEquipReceiver
 {
     private readonly FullBodyIKSolver _solver = new();
+    private readonly ProceduralGrounding _grounding = new();
     private struct ReferenceOffset
     {
         public bool Valid;
@@ -36,9 +37,9 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     public readonly Sync<float> UserResizeThreshold = null!;
     public readonly Sync<bool> UseProceduralFeet = null!;
     public readonly Sync<bool> IKEnabled = null!;
-    // When OFF (default) the solver captures the avatar's AUTHORED import pose as its rest - untracked limbs idle
-    // in that pose (usually a relaxed A-pose). Don't force T-pose: the authored pose is what the artist intended.
-    // Flip ON to normalize the rest to a hard T-pose (fallback for a badly-authored import).
+    // When OFF (default), preserve the authored bone offsets and axes as the solver's bind data.
+    // Untracked arms still use a procedural hang; an imported A/T pose is not a desktop idle.
+    // Flip ON to normalize the bind data to a T-pose as a fallback for a badly-authored import.
     // Safe to capture the authored pose now that FixTransforms re-bases every frame and the IK weight gate
     // stops untracked limbs collapsing. -xlinka
     public readonly Sync<bool> ForceTpose = null!;
@@ -46,7 +47,6 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     // IK tunables - exposed so feel can be dialed in live in-world (no rebuild).
     [Group("Solver")]
     public readonly Sync<float> SpineStiffness = null!;
-    public readonly Sync<float> PelvisDamping = null!;
     [Group("Shoulders")]
     public readonly Sync<float> ShoulderReach = null!;
     // Stronger shoulder/clavicle solve: yaw/pitch clamp half-ranges (degrees, asymmetric) + the overhead roll-up gain.
@@ -74,21 +74,53 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     public readonly Sync<float> IdleBreathing = null!;      // 0..2 chest breathing amount
     public readonly Sync<float> IdleSway = null!;           // 0..2 standing weight-shift sway amount
     public readonly Sync<float> WalkArmSwing = null!;       // 0..1 walking counter-swing on untracked arms
+
+    // LOCOMOTION ANIMATION. The arms are a simulated weight on a shoulder rather than a sine, and
+    // the head rises, falls and leans with the stride. See HandMotion and FullBodyIKSolver.
+    [Group("Locomotion Animation")]
+    public readonly Sync<float> HandMotion = null!;         // 0..1 the whole arm simulation, 0 = off
+    public readonly Sync<float> RunSpeed = null!;           // m/s at which the arms swing like a run
+    public readonly Sync<float> HeadBobAmount = null!;      // 0..2 scales the whole head bob
+    public readonly Sync<float> HeadBobVertical = null!;    // m of rise and fall at full stride
+    public readonly Sync<float> HeadBobHorizontal = null!;  // m of side to side at full stride
+    public readonly Sync<float> HeadBobRoll = null!;        // degrees of lean at full stride
+    public readonly Sync<float> FootAvoidance = null!;      // m two feet keep between them
     [Group("IK Weights")]
     public readonly Sync<float> HandIKWeight = null!;   // per-effector IK weight for both hands
     public readonly Sync<float> FootIKWeight = null!;   // per-effector IK weight for both feet
     [Group("Gait")]
-    public readonly Sync<float> FootStanceWidth = null!;
-    public readonly Sync<float> StepThreshold = null!;
-    public readonly Sync<float> StepDuration = null!;
-    public readonly Sync<float> StepHeight = null!;
-    public readonly Sync<float> StepPrediction = null!; // seconds of velocity lookahead per step
+    public readonly Sync<float> FootStanceWidth = null!;     // m of extra separation on top of the rig's own stance
+    public readonly Sync<float> StepThreshold = null!;       // m of rest error a standing foot tolerates before it settles
+    public readonly Sync<float> StepDuration = null!;        // s a swing may take at most; the walk itself paces it
+    public readonly Sync<float> StepHeight = null!;          // m of arc at lift
     public readonly Sync<float> BodyBob = null!;        // vertical hip dip while a foot is airborne
-    public readonly Sync<float> MaxRootAngle = null!;   // degrees the head can turn before the torso follows it
-    public readonly Sync<float> HipFollowHead = null!;  // 0..1 torso follow within MaxRootAngle
     public readonly Sync<float> CrouchBackShift = null!;// 0..1 lean the hips back as the head dips (anti knees-forward)
     public readonly Sync<float> StepAngleThreshold = null!; // degrees the body turns before a planted foot re-steps
-    public readonly Sync<float> MaxStepVelocity = null!;    // m/s cap on body velocity used for step prediction
+    public readonly Sync<float> MaxStepVelocity = null!;    // m/s cap on the speed the gait reads off the body
+    // Stride shape. StepLength is the distance one step covers at GaitReferenceSpeed; the live stride follows
+    // the square root of speed from there, which is the split between step length and cadence a walk takes.
+    [Group("Stride")]
+    public readonly Sync<float> GaitReferenceSpeed = null!;  // m/s at which StepLength is taken in full
+    public readonly Sync<float> StepLength = null!;          // m one step covers at that speed
+    public readonly Sync<float> StrafeStepRatio = null!;     // stride scale when moving sideways
+    public readonly Sync<float> BackStepRatio = null!;       // stride scale when moving backwards
+    public readonly Sync<float> TurnInfluence = null!;       // 0..1 of the expected turn taken out of the step vector
+    public readonly Sync<float> MinOpposingProgress = null!; // 0..1 of the other foot's swing before this one may lift
+    public readonly Sync<float> SpeedRiseTime = null!;       // s the gait takes to accept a speed increase
+    public readonly Sync<float> SpeedFallTime = null!;       // s it takes to accept a decrease
+    public readonly Sync<float> StepDownHeight = null!;      // m of arc at landing
+    public readonly Sync<float> StepUpCurve = null!;         // arc sharpness at lift (low = flat topped)
+    public readonly Sync<float> StepDownCurve = null!;       // arc sharpness at landing
+    public readonly Sync<float> StepLiftOff = null!;         // how hard the foot peels off the ground
+    public readonly Sync<float> StepLiftOffVertical = null!; // 0..1 of that peel that goes straight up
+    // Foot pitch through the stride: a planted foot rolls heel-to-toe as the body walks over it, keeps pitching
+    // after lift-off at a rate the body speed sets, and lands heel first. Degrees; positive is toe down.
+    public readonly Sync<float> FootGroundAngle = null!;      // deg a planted foot pitches at half a stride from its rest
+    public readonly Sync<float> FootGroundCurve = null!;      // shape of that pitch over the offset from rest
+    public readonly Sync<float> FootLiftAngularSpeed = null!; // deg/s per m/s of body speed the foot keeps pitching after lift-off
+    public readonly Sync<float> FootStepDownAngle = null!;    // deg of heel-first pitch the foot lands with
+    public readonly Sync<float> FootTiltMinAngle = null!;     // deg, toe-up limit of the lift pitch
+    public readonly Sync<float> FootTiltMaxAngle = null!;     // deg, toe-down limit of the lift pitch
     // Horizontal body settle: the torso eases toward the centroid of the planted feet (biased to the support foot)
     // so the hips don't hover dead-centre when the feet step out to a stance. The counterpart to the vertical BodyBob.
     [Group("Body Settle")]
@@ -123,7 +155,6 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     protected readonly SyncRef<AvatarPoseDriver> _rightKneeNode = null!;
 
     private bool _isInitialized;
-    private bool _isRegistered;
     private bool _suspendSolve;
     private ReferenceOffset _viewOffset;
     private ReferenceOffset _leftHandOffset;
@@ -131,77 +162,86 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     private ReferenceOffset _leftFootOffset;
     private ReferenceOffset _rightFootOffset;
 
-    // Procedural locomotion state for untracked feet: a foot plants, then steps with a constant-rate lifted arc to
-    // a new target when the body strays past a distance
-    // threshold OR turns past an angle threshold - one foot at a time, the landing tracking body motion mid-step. - xlinka
-    private struct FootGait
-    {
-        public bool Init;
-        public bool Stepping;
-        public float Progress;     // 0..1 step progress
-        public float Speed;        // progress/sec, randomized per step
-        public float3 Planted;     // planted foot world position
-        public float3 StepFrom;    // step start position
-        public float3 StepTo;      // step target (retargeted toward the live desired mid-step)
-        public float3 PlantedFwd;  // flattened body forward the foot is planted facing
-        public float3 StepFromFwd;
-        public float3 StepToFwd;
-        public floatQ PlantedRot;
-        public floatQ StepFromRot;
-        public floatQ StepToRot;
-    }
+    // Procedural locomotion for untracked feet. The model lives in BipedGait: each foot holds a resting
+    // place under the body and a target pushed along the travel line, and a swing advances with the ground
+    // the body covers rather than on a timer. Everything here is the plumbing around it - the body frame,
+    // the ground probes, and the proxy writes the solver reads. -xlinka
+    private readonly BipedGait _gait = new();
+    private bool _gaitHooked;
 
-    private readonly struct FootStepIntent
-    {
-        public readonly bool WantsStep;
-        public readonly float Priority;
-        public readonly float Distance;
-        public readonly float Angle;
-
-        public FootStepIntent(bool wantsStep, float priority, float distance, float angle)
-        {
-            WantsStep = wantsStep;
-            Priority = priority;
-            Distance = distance;
-            Angle = angle;
-        }
-    }
-    private FootGait _leftGait;
-    private FootGait _rightGait;
-    private float3 _leftFootFwd = float3.Backward;   // current world facing per foot, fed to the solver
-    private float3 _rightFootFwd = float3.Backward;
-    private floatQ _leftFootRot = floatQ.Identity;
+    // FOOTSTEPS. The gait knows the instant a swinging foot comes down, but not yet where the ground under
+    // it is, so the landing is noted there and told once the foot is resolved onto the ground this frame.
+    // A foot a tracker drives takes no gait steps, so it tells none. Every machine poses every avatar, so
+    // every machine hears everyone's feet, in whichever world is in front of it. -xlinka
+    public static event Action<AvatarIK, AvatarFootstep>? Footstep;
+    private bool _leftLanded;
+    private bool _rightLanded;
+    private float _landedSpeed;
+    private float _gaitLegLength = 0.9f;
+    private float _gaitHalfWidth = 0.1f;
+    private float _gaitBackOffset;
+    private float _gaitLeftSide = -1f;
+    private float _gaitCaptureScale = 1f;
+    // Sole extents from the rig at capture (world units): how far the sole reaches ahead of and behind the point
+    // under the ankle. A pitched foot lifts so its toe or heel stays on the ground instead of going through it.
+    private float _footFrontDistance = 0.24f;
+    private float _footBackDistance = 0.06f;
+    private const float DefaultBackOffset = 0.1f;    // feet rest this far behind the head line on a 1.62 m head height
+    private const float DefaultHeadHeight = 1.62f;
+    private const float ToeToTipRatio = 1.35f;       // sole front beyond the ball the toe bone marks
+    private const float FrontPerClearance = 2.3f;    // sole front per ankle height, rigs without toes
+    private const float BackPerClearance = 0.575f;   // sole back per ankle height
+    private floatQ _leftFootRot = floatQ.Identity;   // full gait foot rotation per foot, fed to the solver
     private floatQ _rightFootRot = floatQ.Identity;
-    private const float StepRetarget = 10f;          // how fast a mid-step landing tracks the live target
     private const float GroundProbeUp = 0.5f;      // foot ground ray starts this far above the plane
     private const float GroundProbeDown = 1.0f;    // ...and reaches this far below it
-    private const float GlideThreshold = 0.4f;     // below this groundedness the feet glide instead of step
-    private const float GlideFollow = 12f;         // 1/s follow rate of gliding feet toward their stance point
-    private const float GaitVelocitySmoothing = 10f;  // 1/s smoothing of the locomotion velocity fed to the gait
-    private const float SwingToeDip = 0.22f;           // rad the toe dangles down at peak swing
-    private const float FootRelaxMinAngleDeg = 12f;    // planted feet tolerate this much facing error before relaxing
-    private const float FootRelaxSpeedDeg = 160f;      // deg/s a planted (non-support) foot relaxes toward the facing
-    private float3 _smoothedGaitVel;
+    private const float TeleportDistance = 1.5f;   // root jump per frame, in leg lengths, that carries the feet
+    // THE FEET FOLLOW THE PERSON, NOT THE ROOT.
+    //
+    // The user root never moves when the wearer walks across their play space: the character hook
+    // rebases the collider under the head and writes back only the physics delta, by design. A gait
+    // centred on the root therefore left the feet planted at the origin while the head walked away,
+    // the hips band stayed with the feet, and the body became a plank between them. So the footsteps
+    // centre on a centre of mass on the root plane: the head's ground point, weighted double to stand in
+    // for pelvis and head, plus a fifth of each tracked hand. The hips are not read directly: they follow
+    // the feet, so weighting them in would only chase the head at half speed. Smoothed so a head bob is
+    // not a centre move, and the velocity the gait walks against comes off a trailing point with slack of
+    // most of a step threshold: a lean or a look-around stays inside the slack and reports no speed,
+    // so the standing allowance judges it and nothing steps; an actual walk pulls the point along
+    // and the gait strides to keep up. -xlinka
+    private const float GaitAnchorFollow = 8f;         // 1/s, smoothing of the centre-of-mass offset
+    private const float GaitAnchorHeadWeight = 2f;     // head stands in for pelvis + head
+    private const float GaitAnchorHandWeight = 0.2f;   // per tracked hand
+    private const float GaitAnchorSlackRatio = 0.75f;  // of the step threshold, before the trailing point moves
+    private float3 _gaitAnchorOffset;                  // smoothed centre-of-mass offset from the root, planar
+    private float3 _gaitAnchorRope;                    // trailing point the walking velocity is read from
+    private bool _gaitAnchorValid;
     // Idle-life state: stillness weight (fades in slow, out fast), walking arm-swing phase + weight.
     private float _idleWeight;
+    private float3 _bodyVelocityLocal;
+    private float3 _lastBodyPosition;
+    private bool _hasLastBodyPosition;
+    private float _runBlend;
+    private float _airBlend;
+    private bool _suppressLocomotionAnimation;
+    private bool _suppressProceduralFeet;
     private float _armSwingPhase;
     private float _armSwingWeight;
     private readonly List<Slot> _footRayExclude = new(1);
-    private float3 _leftFootGroundNormal = float3.Up;
-    private float3 _rightFootGroundNormal = float3.Up;
-    private float3 _prevHeadXZ;          // for step-prediction velocity
-    private bool _hasPrevHead;
     private float _leftStepLift;         // 0..1 current step arc height per foot
     private float _rightStepLift;
     private float3 _locomotionOffset;    // hips bob (Y) + horizontal settle (XZ) fed to the solver
     // Horizontal body-settle state. _bodySettleXZ is the current smoothed offset; _bodySettleVel is the SmoothDamp
-    // velocity carried between frames so the settle eases (no pop) across step transitions. -xlinka
+    // velocity carried between frames so the settle eases (no pop) across step transitions. The bob carries its
+    // own damper for the same reason: a foot planting changes its target, and a first-order lag on a target that
+    // steps still steps. -xlinka
     private float3 _bodySettleXZ;
     private float3 _bodySettleVel;
+    private float _bobVelocity;
     private bool _leftIsSupport = true;  // last-elected support foot (the more-planted one), for the settle bias
     // Last gait-planted foot world position + whether procedural locomotion currently owns that foot. The
     // foot proxy is ALSO driven by its AvatarPoseDriver, so rather than rely on update-order to land last, we
-    // re-assert the plant onto the proxy in SolveBody (AfterInputUpdate) right before the solver reads it. -xlinka
+    // re-assert the plant onto the proxy in SolveBody right before the solver reads it. -xlinka
     private float3 _leftFootPlant;
     private float3 _rightFootPlant;
     private bool _hasLeftPlant;
@@ -223,68 +263,28 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     public Slot? LeftHandProxy => _leftHandProxy?.Target;
     public Slot? RightHandProxy => _rightHandProxy?.Target;
 
-    public bool TryGetHeadView(out float3 position, out float3 forward)
-    {
-        var target = ResolveHeadTarget(UserRoot.Target?.Slot, Engine.Current?.InputInterface);
-        if (!target.Valid)
-        {
-            position = default;
-            forward = default;
-            return false;
-        }
-
-        position = target.Position;
-        forward = target.Rotation * float3.Backward;
-        forward = forward.LengthSquared > 1e-6f ? forward.Normalized : float3.Backward;
-        return true;
-    }
-
-    // Decide once per equip whether the rig's geometric forward (HumanoidRig.GuessForwardAxis, which trusts the
-    // left/right arm bone LABELS) points backward. A rig whose left/right arm bones sit on the swapped physical
-    // side reads forward as backward, so the torso renders backward and drags the arms with it. Compare the
-    // geometric forward against the LIVE head/view forward - a real tracker cue, NOT an authored bone rotation -
-    // and flip only when they clearly oppose. No-op for correctly-built rigs (forward already agrees with the
-    // view); only the local user (who has a view) ever decides, so remote avatars keep pure geometry. -xlinka
-    private void CalibrateForwardSign(HumanoidRig rig)
-    {
-        if (rig == _forwardCalibratedRig)
-            return;
-        if (!TryGetHeadView(out _, out float3 viewFwd))
-            return; // no calibrated view yet (remote user / before tracking) - retry next frame
-        var geom = rig.GuessForwardAxis();
-        if (!geom.HasValue)
-            return;
-        float3 f = geom.Value; f.y = 0f;
-        float3 v = viewFwd; v.y = 0f;
-        if (f.LengthSquared < 1e-6f || v.LengthSquared < 1e-6f)
-            return;
-        float dot = float3.Dot(f.Normalized, v.Normalized);
-        // Looking ~sideways at the avatar gives an ambiguous sign; wait for a decisive frame before committing.
-        if (dot > 0.25f)
-            _forwardSignFlip = false;
-        else if (dot < -0.25f)
-            _forwardSignFlip = true;
-        else
-            return;
-        _forwardCalibratedRig = rig;
-        LumoraLogger.Log($"[IK-FWD-CAL] forwardSignFlip={_forwardSignFlip} dot(geomFwd,view)={dot:F3} geomFwd={f.Normalized} viewFwd={v.Normalized}");
-    }
-
     public BodyNode Node => BodyNode.Root;
+    private int _equipRevision;
 
     public void OnPreEquip(AvatarSocket slot) { }
 
     public void OnEquip(AvatarSocket slot)
     {
+        _grounding.Reset();
+        _gait.Reset();
+        _hasLeftPlant = _hasRightPlant = false;
+        _bodySettleXZ = _bodySettleVel = _locomotionOffset = float3.Zero;
+        _bobVelocity = 0f;
         // Equip reparents and rescales the avatar, so the solver's captured
         // rest pose - world-space bone lengths and rest directions - is stale.
         // Arms solved against pre-equip lengths can't reach the real targets
         // (hands lag/never lift). Suspend solving, then re-capture once the
         // transforms have settled. -xlinka
         _suspendSolve = true;
+        int revision = ++_equipRevision;
         Slot.RunInUpdates(1, () =>
         {
-            if (IsDestroyed) return;
+            if (IsDestroyed || revision != _equipRevision || UserRoot.Target == null) return;
             EnsureSolver();
             RecomputeReferenceOffsets();
             _suspendSolve = false;
@@ -294,6 +294,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
 
     public void OnDequip(AvatarSocket slot)
     {
+        _equipRevision++;
+        _suspendSolve = true;
+        _solver.ResetToDefaultPose();
+        UserRoot.Target = null!;
         LumoraLogger.Log($"AvatarIK: Dequipped from {slot.Node.Value}");
     }
 
@@ -321,7 +325,6 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         ForceTpose.Value = false;
 
         SpineStiffness.Value = 0.2f;
-        PelvisDamping.Value = 0.65f;
         ShoulderReach.Value = 0.45f;
         ShoulderYawForward.Value = 40f;
         ShoulderYawBack.Value = 17f;
@@ -345,20 +348,43 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         // and the hand drift that went with it is gone entirely. Still here to turn back up per avatar.
         IdleSway.Value = 0f;
         WalkArmSwing.Value = 0.7f;
+        HandMotion.Value = 1f;
+        RunSpeed.Value = 3.2f;
+        HeadBobAmount.Value = 1f;
+        HeadBobVertical.Value = 0.022f;
+        HeadBobHorizontal.Value = 0.012f;
+        HeadBobRoll.Value = 1.6f;
+        FootAvoidance.Value = 0.085f;
         HandIKWeight.Value = 1f;
         FootIKWeight.Value = 1f;
-        FootStanceWidth.Value = 0.10f;
-        StepThreshold.Value = 0.16f;
-        StepDuration.Value = 0.28f;
+        FootStanceWidth.Value = 0f;
+        StepThreshold.Value = 0.14f;
+        StepDuration.Value = 0.75f;
         StepHeight.Value = 0.10f;
-        StepPrediction.Value = 0.14f;
-        BodyBob.Value = 0.035f;
-        MaxRootAngle.Value = 25f;
-        HipFollowHead.Value = 0f;   // OFF on desktop: the user root already yaws the body to the look. VR torso-follow > 0.
+        BodyBob.Value = 0f;
         CrouchBackShift.Value = 0.35f;
-        StepAngleThreshold.Value = 35f;
-        MaxStepVelocity.Value = 2.0f;
-        BodySettle.Value = 0.45f;
+        StepAngleThreshold.Value = 25f;
+        MaxStepVelocity.Value = 6.0f;
+        GaitReferenceSpeed.Value = 1.4f;
+        StepLength.Value = 0.62f;
+        StrafeStepRatio.Value = 0.5f;
+        BackStepRatio.Value = 0.75f;
+        TurnInfluence.Value = 0.2f;
+        MinOpposingProgress.Value = 0.72f;
+        SpeedRiseTime.Value = 0.22f;
+        SpeedFallTime.Value = 0.35f;
+        StepDownHeight.Value = 0.05f;
+        StepUpCurve.Value = 0.4f;
+        StepDownCurve.Value = 0.4f;
+        StepLiftOff.Value = 0.25f;
+        StepLiftOffVertical.Value = 0.75f;
+        FootGroundAngle.Value = 10f;
+        FootGroundCurve.Value = 1.2f;
+        FootLiftAngularSpeed.Value = 475f;
+        FootStepDownAngle.Value = 20f;
+        FootTiltMinAngle.Value = -30f;
+        FootTiltMaxAngle.Value = 160f;
+        BodySettle.Value = 0f;
         BodySettleSmoothTime.Value = 0.14f;
         SupportLegBias.Value = 0.55f;
     }
@@ -366,13 +392,25 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     public override void OnStart()
     {
         base.OnStart();
-
-        var input = Engine.Current?.InputInterface;
-        if (input != null)
-        {
-            input.RegisterInputEventReceiver(this);
-            _isRegistered = true;
-        }
+        if (UpdateOrder == -5000)
+            UpdateOrder = 1000;
+        if (MathF.Abs(BodyBob.Value - 0.035f) < 1e-6f)
+            BodyBob.Value = 0f;
+        if (MathF.Abs(BodySettle.Value - 0.45f) < 1e-6f)
+            BodySettle.Value = 0f;
+        // Saves written against the threshold-and-cooldown stepper carry its tunings, and those numbers mean
+        // something different now: a swing ceiling instead of a fixed step time, a stance allowance instead of
+        // a step trigger. Anything still sitting on an old default moves to the new one. -xlinka
+        if (MathF.Abs(StepDuration.Value - 0.28f) < 1e-6f)
+            StepDuration.Value = 0.75f;
+        if (MathF.Abs(StepThreshold.Value - 0.16f) < 1e-6f)
+            StepThreshold.Value = 0.14f;
+        if (MathF.Abs(StepAngleThreshold.Value - 35f) < 1e-6f)
+            StepAngleThreshold.Value = 25f;
+        if (MathF.Abs(MaxStepVelocity.Value - 2f) < 1e-6f)
+            MaxStepVelocity.Value = 6f;
+        if (MathF.Abs(FootStanceWidth.Value - 0.10f) < 1e-6f)
+            FootStanceWidth.Value = 0f;
 
         if (Skeleton.Target == null)
             Skeleton.Target = Slot.GetComponent<SkeletonBuilder>() ?? Slot.GetComponentInChildren<SkeletonBuilder>();
@@ -400,13 +438,12 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
 
     public override void OnDestroy()
     {
-        _userRootReg.Detach();
-
-        if (_isRegistered)
+        if (_gaitHooked)
         {
-            Engine.Current?.InputInterface?.UnregisterInputEventReceiver(this);
-            _isRegistered = false;
+            _gaitHooked = false;
+            _gait.Landed -= OnGaitLanded;
         }
+        _userRootReg.Detach();
 
         _isInitialized = false;
         base.OnDestroy();
@@ -429,13 +466,28 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
             MaybeRescaleAvatar();
             MaybeRefitColliders();
         }
-    }
 
-    // Decided once per equip: does the rig's geometric forward point backward (swapped left/right arm labels)?
-    // See CalibrateForwardSign. _forwardCalibratedRig tracks which rig the decision was made for so a re-equip
-    // recalibrates. -xlinka
-    private bool _forwardSignFlip;
-    private HumanoidRig? _forwardCalibratedRig;
+        if (!CanRun() || _suspendSolve)
+            return;
+
+        if (!_gaitHooked)
+        {
+            _gaitHooked = true;
+            _gait.Landed += OnGaitLanded;
+        }
+
+        // A seat, a vehicle or anything else that knows the body is not walking says so, and the
+        // animation stops rather than swinging the arms of somebody sitting down. Polled rather than
+        // event-driven because it is two component lookups a frame and the alternative is a
+        // subscription that has to survive every reparent an avatar goes through. -xlinka
+        _suppressLocomotionAnimation = LocomotionAnimationSuppressor.IsSuppressed(Slot, out bool suppressFeet);
+        _suppressProceduralFeet = suppressFeet;
+
+        using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
+        if (UseProceduralFeet.Value && !_suppressProceduralFeet)
+            UpdateProceduralFeet();
+        SolveBody();
+    }
 
     // Re-fit the body colliders whenever the bone scale actually changes. The FBX armature scale lands on the
     // bones a frame after import and changes again on equip-rescale; the colliders are bone children, so a stale
@@ -518,9 +570,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         // solver re-capture. Re-capturing here would be dangerous because this callback can run after a solved frame.
         // Only reference offsets are recomputed; height measurement reads setup references, not the solved pose. -xlinka
         _suspendSolve = true;
+        int revision = _equipRevision;
         Slot.RunInUpdates(1, () =>
         {
-            if (IsDestroyed) return;
+            if (IsDestroyed || revision != _equipRevision || UserRoot.Target == null) return;
             if (!_solver.IsReady)
                 EnsureSolver();
             RecomputeReferenceOffsets();
@@ -528,23 +581,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         });
     }
 
-    public void BeforeInputUpdate()
-    {
-        if (!IKEnabled.Value || !_isInitialized)
-            return;
-
-        // Run every frame so the gait clock stays continuous; per-foot tracked checks live inside.
-        if (UseProceduralFeet.Value)
-            UpdateProceduralFeet();
-    }
-
-    public void AfterInputUpdate()
-    {
-        if (!IKEnabled.Value || !_isInitialized || _suspendSolve)
-            return;
-
-        SolveBody();
-    }
+    private bool CanRun()
+        => IKEnabled.Value && Enabled.Value && _isInitialized && !IsDestroyed
+           && Slot.IsActive && World.IsFocused && UserRoot.Target != null
+           && Slot.ActiveUserRoot == UserRoot.Target && IsEquipped;
 
     private void EnsureSolver()
     {
@@ -552,11 +592,72 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         if (rig == null || rig.IsDestroyed)
             return;
 
-        // The solver captures the current bone pose as rest. ForceTpose is the opt-in fallback for imports whose
-        // authored pose is too cursed to use as an idle basis. - xlinka
+        // Capture the current bone pose as bind data. ForceTpose is an opt-in rig setup fallback;
+        // the untracked arm pose is chosen by the solver independently of a saved A/T pose.
         if (ForceTpose.Value)
             rig.MakeTPose();
         _solver.Initialize(rig);
+        CaptureGaitStance(rig);
+    }
+
+    // Stance metrics from the rig at its bind pose: the feet rest a hip width apart and behind the HEAD line (the
+    // body the gait walks is the head's ground point), the sole extents come from the ankle height and the toe
+    // bone. A rig that stands with its feet under its head gets DefaultBackOffset scaled to its own head
+    // height, so the legs slant back a little and the weight sits over the balls of the feet. -xlinka
+    private void CaptureGaitStance(HumanoidRig rig)
+    {
+        _gaitCaptureScale = MathF.Max(MathF.Abs(Slot.GlobalScale.x), 1e-5f);
+        var left = rig.TryGetBone(BodyNode.LeftUpperLeg);
+        var right = rig.TryGetBone(BodyNode.RightUpperLeg);
+        var knee = rig.TryGetBone(BodyNode.LeftLowerLeg);
+        var foot = rig.TryGetBone(BodyNode.LeftFoot);
+        var otherFoot = rig.TryGetBone(BodyNode.RightFoot);
+        if (left == null || right == null || knee == null || foot == null || otherFoot == null)
+            return;
+        float3 forward = FlattenDir(rig.GuessForwardAxis() ?? (Slot.GlobalRotation * float3.Backward));
+        float3 side = float3.Cross(forward, float3.Up);
+        _gaitHalfWidth = float3.Distance(left.GlobalPosition, right.GlobalPosition) * 0.5f;
+        _gaitLegLength = float3.Distance(left.GlobalPosition, knee.GlobalPosition)
+                         + float3.Distance(knee.GlobalPosition, foot.GlobalPosition);
+        _gaitLeftSide = float3.Dot(left.GlobalPosition - right.GlobalPosition, side) < 0f ? -1f : 1f;
+
+        var head = rig.TryGetBone(BodyNode.Head) ?? rig.TryGetBone(BodyNode.Hips);
+        float3 origin = head != null && !head.IsDestroyed
+            ? head.GlobalPosition
+            : (left.GlobalPosition + right.GlobalPosition) * 0.5f;
+        float3 feet = (foot.GlobalPosition + otherFoot.GlobalPosition) * 0.5f;
+        float measured = -float3.Dot(feet - origin, forward);
+        float headHeight = _solver.IsReady && _solver.RestHeadHeight > 1e-3f ? _solver.RestHeadHeight : DefaultHeadHeight;
+        float reference = DefaultBackOffset * headHeight / DefaultHeadHeight;
+        _gaitBackOffset = System.Math.Clamp(MathF.Max(measured, reference), 0f, _gaitLegLength * 0.25f);
+
+        float clearance = MathF.Max(_solver.IsReady
+            ? (_solver.LeftFootGroundClearance + _solver.RightFootGroundClearance) * 0.5f : 0f, 1e-3f);
+        float toeReach = 0f;
+        int toeCount = 0;
+        AccumulateToe(foot, rig.TryGetBone(BodyNode.LeftToes));
+        AccumulateToe(otherFoot, rig.TryGetBone(BodyNode.RightToes));
+        _footFrontDistance = toeCount > 0 && toeReach > 1e-3f
+            ? toeReach / toeCount * ToeToTipRatio
+            : clearance * FrontPerClearance;
+        _footBackDistance = clearance * BackPerClearance;
+        ApplyGaitStance();
+
+        void AccumulateToe(Slot footBone, Slot? toeBone)
+        {
+            if (toeBone == null || toeBone.IsDestroyed)
+                return;
+            float3 d = toeBone.GlobalPosition - footBone.GlobalPosition;
+            d.y = 0f;
+            toeReach += d.Length;
+            toeCount++;
+        }
+    }
+
+    private void ApplyGaitStance()
+    {
+        float separation = _gaitHalfWidth * 2f + MathF.Max(FootStanceWidth.Value, 0f);
+        _gait.SetRest(separation, _gaitBackOffset, _gaitLeftSide);
     }
 
     // Read final proxy poses and run the engine FABRIK solve onto the rig bones.
@@ -571,7 +672,6 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
 
         // Push live tunables into the solver.
         _solver.SpineStiffness = SpineStiffness.Value;
-        _solver.PelvisDamp = PelvisDamping.Value;
         _solver.ShoulderWeight = ShoulderReach.Value;
         const float deg2rad = MathF.PI / 180f;
         _solver.ShoulderYawForward = MathF.Max(ShoulderYawForward.Value, 0f) * deg2rad;
@@ -595,25 +695,38 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         _solver.BreathingWeight = System.Math.Clamp(IdleBreathing.Value, 0f, 2f);
         _solver.ArmSwingPhase = _armSwingPhase;
         _solver.ArmSwingWeight = _armSwingWeight * System.Math.Clamp(WalkArmSwing.Value, 0f, 1f);
-        _solver.LocomotionOffset = _locomotionOffset;
-        _solver.MaxRootAngle = MaxRootAngle.Value * (MathF.PI / 180f);
-        _solver.HipFollowFraction = System.Math.Clamp(HipFollowHead.Value, 0f, 1f);
-        _solver.MoveBodyBackWhenCrouching = System.Math.Clamp(CrouchBackShift.Value, 0f, 2f);
 
-        var calRig = Rig.Target;
-        if (calRig != null && !calRig.IsDestroyed)
-            CalibrateForwardSign(calRig);
-        _solver.ForwardSignFlip = _forwardSignFlip;
+        // The arm simulation needs the body's own motion, not just how fast the phase is turning: it
+        // is what makes a hand lag when you set off and carry on when you stop.
+        _solver.DeltaTime = System.Math.Clamp(World?.Time.Delta ?? (1f / 60f), 1f / 240f, 0.1f);
+        _solver.BodyVelocity = _bodyVelocityLocal;
+        _solver.RunBlend = _runBlend;
+        _solver.AirBlend = _airBlend;
+        _solver.SwayWeight = System.Math.Clamp(IdleSway.Value, 0f, 2f);
+        _solver.HandMotionWeight = _suppressLocomotionAnimation
+            ? 0f : System.Math.Clamp(HandMotion.Value, 0f, 1f);
+        _solver.FootAvoidanceRadius = MathF.Max(FootAvoidance.Value, 0f);
+
+        float headBob = _suppressLocomotionAnimation
+            ? 0f : System.Math.Clamp(HeadBobAmount.Value, 0f, 2f);
+        _solver.HeadBobWeight = _armSwingWeight * headBob;
+        _solver.HeadBobVertical = HeadBobVertical.Value;
+        _solver.HeadBobHorizontal = HeadBobHorizontal.Value;
+        _solver.HeadBobRoll = HeadBobRoll.Value * (MathF.PI / 180f);
+        _solver.LocomotionOffset = _locomotionOffset;
+        _solver.MoveBodyBackWhenCrouching = System.Math.Clamp(CrouchBackShift.Value, 0f, 2f);
 
         var input = Engine.Current?.InputInterface;
         var userSlot = UserRoot.Target?.Slot;
-        float3 locomotionBodyForward = ComputeBodyForward(userSlot, _headProxy.Target);
         var head = ResolveHeadTarget(userSlot, input);
-        float3 visualBodyForward = UpdateBodyForwardReference(in head, locomotionBodyForward);
+        // The body-forward reference the gait walks with. The solver derives its own facing from the foot
+        // targets, so this only has to reach the solver through a foot rotation when nothing else drives the feet.
+        float3 bodyForwardRef = UseProceduralFeet.Value && _bodyForwardValid
+            ? _bodyForwardRef : UpdateBodyForwardReference(in head, ComputeBodyForward(userSlot, _headProxy.Target));
 
         // Pelvis target only counts when a waist/hip tracker is actually equipped; otherwise the
         // solver estimates the hips from the head (no calibration offset on the pelvis).
-        var pelvis = (_pelvisNode.Target?.IsEquippedAndActive ?? false)
+        var pelvis = IsFootTracked(_pelvisNode.Target, BodyNode.Hips)
             ? ProxyTarget(_pelvisProxy.Target, default)
             : default;
 
@@ -634,13 +747,18 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         // everything else the same way. -xlinka
         var leftHandT = HandTargetFor(BodyNode.LeftHand, _leftHandProxy.Target, _leftHandNode.Target, _leftHandOffset);
         var rightHandT = HandTargetFor(BodyNode.RightHand, _rightHandProxy.Target, _rightHandNode.Target, _rightHandOffset);
-        bool leftHandTracked = IsNodeTracked(input, BodyNode.LeftHand);
-        bool rightHandTracked = IsNodeTracked(input, BodyNode.RightHand);
-        // A desktop hand holding a tool IS driven even though no hardware tracks it: HandTool moves the
-        // controller body node to a hold pose in front of the head, so the proxy hanging off it carries a
-        // real target and the arm has somewhere to go. Weighting by the hand tool's own 0..1 blend rather
-        // than a bool means the arm rises and falls WITH the hand instead of snapping to full IK the
-        // instant a tool is equipped. Zero in VR, where the tracker gate above already answers. -xlinka
+        // Same local-or-replicated rule the feet use: a remote wearer's hands read their own replicated
+        // tracking state, not this machine's controllers.
+        bool leftHandTracked = IsFootTracked(_leftHandNode.Target, BodyNode.LeftHand);
+        bool rightHandTracked = IsFootTracked(_rightHandNode.Target, BodyNode.RightHand);
+        // A desktop hand holding a tool IS driven even though no hardware tracks it: HandTool writes the
+        // controller body node from its simulated hand, which reaches from beside the hips toward the
+        // beam's target, so the proxy hanging off it carries a real target and the arm has somewhere to
+        // go. HoldWeight is that simulator's eased interaction lerp, the same number that blends the
+        // node between rest and reach, so the arm rises and falls WITH the hand instead of snapping to
+        // full IK the instant a tool is equipped, and sits at zero (the solver's own idle arm, swing and
+        // hang included) whenever no tool is out. Zero in VR, where the tracker gate above already
+        // answers. Each hand carries its own weight: a tool in one hand leaves the other at rest. -xlinka
         RefreshHandTools();
         float leftHoldW = HoldWeightOf(_leftHandTool);
         float rightHoldW = HoldWeightOf(_rightHandTool);
@@ -664,8 +782,19 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         // The hold no longer needs its own socket fallback: HandTargetFor above already sources from
         // the socket whenever our pose node does not own it, tracked or held alike.
 
-        leftHandT.PositionWeight = leftHandT.RotationWeight = leftHandTracked ? handW : handW * leftHoldW;
-        rightHandT.PositionWeight = rightHandT.RotationWeight = rightHandTracked ? handW : handW * rightHoldW;
+        // A CONTROLLER THAT DROPS TRACKING KEEPS ITS ARM.
+        //
+        // The driver clears the hand's tracking flag the frame a pose has no tracking data, and a Pico
+        // controller loses the cameras whenever it is at the wearer's side or behind them. Weighting
+        // that hand at zero handed the arm to the solver's procedural hang and swing (beside and behind
+        // the hip) and snapped it back on reacquire: "my arms snap behind me". The positioner already
+        // holds the last pose while untracked, so in VR a hand that has ever been tracked stays weighted
+        // on that held pose through a gap and its arm stays put. Desktop is unchanged: nothing tracks there.
+        // -xlinka
+        float leftKeepW = TrackingKeepWeight(ref _leftHandTrackedOnce, leftHandTracked, input);
+        float rightKeepW = TrackingKeepWeight(ref _rightHandTrackedOnce, rightHandTracked, input);
+        leftHandT.PositionWeight = leftHandT.RotationWeight = handW * MathF.Max(leftKeepW, leftHoldW);
+        rightHandT.PositionWeight = rightHandT.RotationWeight = handW * MathF.Max(rightKeepW, rightHoldW);
         // Hand the far end of the chain back to the tool that asked for it, so its TOOLHOLD trace can say
         // whether the arm was actually weighted or the request died somewhere in between. -xlinka
         _leftHandTool?.ReportIKHandWeight(leftHandT.PositionWeight);
@@ -702,13 +831,13 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         // computed in UpdateProceduralFeet then thrown away by a hardware-only gate). The hands' equivalent
         // driver is the desktop tool hold handled just above. -xlinka
         float footW = System.Math.Clamp(FootIKWeight.Value, 0f, 1f);
-        bool leftFootTrackedInput = IsNodeTracked(input, BodyNode.LeftFoot);
-        bool rightFootTrackedInput = IsNodeTracked(input, BodyNode.RightFoot);
+        bool leftFootTrackedInput = IsFootTracked(_leftFootNode.Target, BodyNode.LeftFoot);
+        bool rightFootTrackedInput = IsFootTracked(_rightFootNode.Target, BodyNode.RightFoot);
         bool leftFootDriven = leftFootTrackedInput || UseProceduralFeet.Value;
         bool rightFootDriven = rightFootTrackedInput || UseProceduralFeet.Value;
-        // Re-assert the gait plant onto the foot proxy HERE (AfterInputUpdate), immediately before reading
+        // Re-assert the gait plant onto the foot proxy immediately before solving, immediately before reading
         // it - so the procedural target wins over the foot's AvatarPoseDriver drive (which ran earlier in
-        // BeforeInputUpdate) without depending on receiver order. -xlinka
+        // the pose update) without depending on receiver order. -xlinka
         if (UseProceduralFeet.Value)
         {
             if (_hasLeftPlant && _leftFootProxy.Target != null && !_leftFootProxy.Target.IsDestroyed)
@@ -731,52 +860,41 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         ApplyBendGoal(ref leftFootT, _leftKneeProxy, _leftKneeNode);
         ApplyBendGoal(ref rightFootT, _rightKneeProxy, _rightKneeNode);
 
-        // Untracked feet are ground-aligned (rest pose tilted to the surface normal the gait probed)
-        // and carry the step lift so the solver can curl the toe; tracked feet keep tracker rotation.
-        if (UseProceduralFeet.Value)
+        // Untracked feet carry the gait's FULL foot rotation (facing, heel-to-toe pitch, slope tilt) as a
+        // foot-frame rotation the solver puts on the bone whole, plus the step lift for the toe curl. With
+        // no gait either, the foot still faces the body-forward reference so the solve frame trails the look
+        // the same way. Tracked feet keep the tracker rotation. -xlinka
+        if (!leftFootTrackedInput)
         {
-            if (!(_leftFootNode.Target?.IsEquippedAndActive ?? false))
-            {
-                leftFootT.GroundAlign = true;
-                leftFootT.GroundNormal = _leftFootGroundNormal;
-                leftFootT.GroundForward = _leftFootFwd;
-                leftFootT.HasGroundRotation = true;
-                leftFootT.GroundRotation = _leftFootRot;
-                leftFootT.StepLift = _leftStepLift;
-            }
-            if (!(_rightFootNode.Target?.IsEquippedAndActive ?? false))
-            {
-                rightFootT.GroundAlign = true;
-                rightFootT.GroundNormal = _rightFootGroundNormal;
-                rightFootT.GroundForward = _rightFootFwd;
-                rightFootT.HasGroundRotation = true;
-                rightFootT.GroundRotation = _rightFootRot;
-                rightFootT.StepLift = _rightStepLift;
-            }
+            leftFootT.FootFrameRotation = true;
+            leftFootT.Rotation = UseProceduralFeet.Value ? _leftFootRot : BuildFootRotation(bodyForwardRef);
+            leftFootT.StepLift = UseProceduralFeet.Value ? _leftStepLift : 0f;
+        }
+        if (!rightFootTrackedInput)
+        {
+            rightFootT.FootFrameRotation = true;
+            rightFootT.Rotation = UseProceduralFeet.Value ? _rightFootRot : BuildFootRotation(bodyForwardRef);
+            rightFootT.StepLift = UseProceduralFeet.Value ? _rightStepLift : 0f;
         }
 
-        // Floor-pin (ForceRootHeight equivalent): when neither foot is tracked, give the solver the
-        // user-root ground plane so it can keep the pelvis within leg reach of the floor - the body can't
-        // float above or sink below the ground as the head moves. Tracked feet rule their own height
-        // (crouch/jump), so the pin is off then. -xlinka
-        bool anyFootTracked = (_leftFootNode.Target?.IsEquippedAndActive ?? false)
-                           || (_rightFootNode.Target?.IsEquippedAndActive ?? false);
-        _solver.BodyForward = visualBodyForward;
-        _solver.RootAnchor = userSlot != null && !userSlot.IsDestroyed ? userSlot.GlobalPosition : (float3?)null;
+        // Floor-pin: when neither foot is tracked, give the solver the user-root ground plane so it can
+        // keep the pelvis within leg reach of the floor - the body can't float above or sink below the
+        // ground as the head moves. Tracked feet rule their own height (crouch/jump), so the pin is off
+        // then. -xlinka
+        bool anyFootTracked = leftFootTrackedInput || rightFootTrackedInput;
         _solver.GroundY = !anyFootTracked
             ? (_hasProceduralGroundY
                 ? _proceduralGroundY
                 : userSlot != null && !userSlot.IsDestroyed ? userSlot.GlobalPosition.y : (float?)null)
             : null;
 
-        LogPoseDiagnostics(head, leftHandT, rightHandT, leftFootT, rightFootT);
-
         _solver.Solve(head, pelvis, leftHandT, rightHandT, leftFootT, rightFootT);
+        LogPoseDiagnostics(head, leftHandT, rightHandT, leftFootT, rightFootT);
     }
 
     private bool _poseDiagLogged;
 
-    // One block, once, the first time this avatar is actually solved.
+    // One block, once, right after this avatar's first solve.
     //
     // A body that comes out crumpled is a body whose targets are closer to it than its own limbs are
     // long: the chain has nowhere to go but fold. That is invisible from a screenshot and obvious from
@@ -825,10 +943,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         // Which way this body thinks it faces, from every source that has an opinion.
         //
         // Four of them, and they must agree: the axis their own rig file authored, the one we derive
-        // from bone geometry, the avatar root's own forward, and what the solver is actually driving the
-        // gait with. A body that walks backwards wrong is a body where one of these is opposite the
-        // others, and the guess is the fragile one - it reads the LABELLED left-to-right arm line, so an
-        // arm frozen mid-gesture skews it.
+        // from bone geometry, the avatar root's own forward, and the frame the solver built from this
+        // frame's targets. The body always solves into the last one; the others tell you whether the gait
+        // and the root agree with it. The guess is the fragile one - it reads the LABELLED left-to-right
+        // arm line, so an arm frozen mid-gesture skews it.
         var rigAxis = rig.ForwardAxis.Value;
         var guess = rig.GuessForwardAxis();
         var rootFwd = Slot.GlobalRotation * float3.Backward;
@@ -847,10 +965,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         LumoraLogger.Log(
             $"AvatarIK[pose-diag]   fwd    rigAxis={(rigAxis.HasValue ? rigAxis.Value.ToString() : "<unset>")} "
             + $"guessLocal={(guess.HasValue ? Slot.GlobalDirectionToLocal(guess.Value).ToString() : "<null>")} "
-            + $"guessVsRoot={guessVsRoot:F1}deg signFlip={_solver.ForwardSignFlip}");
+            + $"guessVsRoot={guessVsRoot:F1}deg");
         LumoraLogger.Log(
-            $"AvatarIK[pose-diag]   fwd    solverRest={Slot.GlobalDirectionToLocal(_solver.RestBodyForward)} "
-            + $"solverNow={Slot.GlobalDirectionToLocal(_solver.CurrentBodyForward)}");
+            $"AvatarIK[pose-diag]   fwd    skeletonBind={Slot.GlobalDirectionToLocal(_solver.SkeletonForward)} "
+            + $"solveForward={Slot.GlobalDirectionToLocal(_solver.SolveForward)} solveUp={Slot.GlobalDirectionToLocal(_solver.SolveUp)}");
 
         LogEveryBone(rig);
 
@@ -882,7 +1000,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
 
             var fingerDriver = bone?.GetComponent<HandPoseDriver>();
             if (fingerDriver != null)
-                LumoraLogger.Log($"AvatarIK[pose-diag]   {label,-6} fingerDriver present, idlePose={fingerDriver.IdlePose.Target != null}");
+                LumoraLogger.Log($"AvatarIK[pose-diag]   {label,-6} fingerDriver present, poseSource={fingerDriver.PoseSource.Target != null}");
         }
 
         void LogChain(string label, BodyNode rootNode, in FullBodyIKSolver.Target target, BodyNode[] chain)
@@ -916,10 +1034,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     // BODY FORWARD REFERENCE
     //
     // The avatar's torso does not point where the head points, and pinning it there is the single
-    // biggest reason our IK read as stiff next to other platforms: turn the view and the whole body
-    // snapped round with it, so there was never any neck twist to see, and the shoulders swung on every
-    // flick of the mouse. A real body TRAILS the head, up to about a shoulder's worth of twist, and only
-    // gives up and turns once the head has gone far enough round that the neck runs out.
+    // biggest reason our IK read as stiff: turn the view and the whole body snapped round with it, so
+    // there was never any neck twist to see, and the shoulders swung on every flick of the mouse. A real
+    // body TRAILS the head, up to about a shoulder's worth of twist, and only gives up and turns once the
+    // head has gone far enough round that the neck runs out.
     //
     // Four parts, in order:
     //   1. A reference direction from the head. Straight up or straight down, the head's forward has no
@@ -936,6 +1054,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     private float3 _bodyForwardRef = float3.Backward;
     private bool _bodyForwardTurning;
     private bool _bodyForwardValid;
+    private float _bodyTurnSign = 1f;
 
     private const float MaxNeckTwist = 80f * (MathF.PI / 180f);
     private const float TurnStartStanding = 60f * (MathF.PI / 180f);
@@ -971,9 +1090,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
 
         // 4. Bias toward travel while actually travelling.
         // The gait's own smoothed body velocity, one frame old at worst. Reusing it keeps the torso, the
-        // step prediction and the arm swing all agreeing about how fast the avatar is actually moving.
-        float speed = _smoothedGaitVel.Length;
-        float3 travel = FlattenDir(_smoothedGaitVel);
+        // stride and the arm swing all agreeing about how fast the avatar is actually moving.
+        float3 gaitVelocity = _gait.SmoothVelocity;
+        float speed = gaitVelocity.Length;
+        float3 travel = FlattenDir(gaitVelocity);
         if (speed > 1e-3f && travel.LengthSquared > 1e-6f)
         {
             // Only bias toward travel that agrees with where the body already faces.
@@ -1007,7 +1127,14 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         {
             float dt = (float)(World?.Time.Delta ?? (1.0 / 60.0));
             float t = System.Math.Clamp(BodyForwardRate * dt, 0f, 1f);
-            float3 stepped = FlattenDir(float3.Lerp(_bodyForwardRef, reference, t));
+            // Turn by ANGLE about up, never by blending the two directions: a blend between opposite
+            // vectors passes through zero and only shortens, so a half turn on the spot left the torso
+            // facing the old way with the head round the back. Dead opposite has no shorter way round;
+            // it keeps turning the way it last turned. -xlinka
+            float3 axis = float3.Cross(_bodyForwardRef, reference);
+            if (MathF.Abs(axis.y) > 1e-6f)
+                _bodyTurnSign = axis.y > 0f ? 1f : -1f;
+            float3 stepped = FlattenDir(floatQ.AxisAngleRad(float3.Up, offBy * t * _bodyTurnSign) * _bodyForwardRef);
             if (stepped.LengthSquared > 1e-6f)
                 _bodyForwardRef = stepped.Normalized;
         }
@@ -1085,10 +1212,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
 
     // The avatar's View reference point can be authored ~180 from its head bone (a model authored facing +Z while
     // engine forward is -Z), baking a 180 yaw into _viewOffset. That sends the IK head target - and everything
-    // derived from it (BodyForward, the arm _curBodyRight frame, and the forward-sign calibration anchor) - out the
-    // BACK of the head, so the whole avatar solves backward. A real head turn never reaches 180 from the body, so
-    // when the resolved target opposes the user-root forward we strip the spurious 180 yaw. No-op for correctly
-    // authored avatars (the target already agrees with the body). -xlinka
+    // derived from it (the body-forward reference the gait walks with, the head facing the solver pins) - out the
+    // BACK of the head, so the head looks backward and the feet walk that way. A real head turn never reaches 180
+    // from the body, so when the resolved target opposes the user-root forward we strip the spurious 180 yaw.
+    // No-op for correctly authored avatars (the target already agrees with the body). -xlinka
     private static FullBodyIKSolver.Target CorrectInvertedView(FullBodyIKSolver.Target target, Slot userSlot)
     {
         float3 tFwd = target.Rotation * float3.Backward; tFwd.y = 0f;
@@ -1108,6 +1235,28 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     {
         var device = input?.GetBodyNode(node);
         return device != null && device.IsTracking;
+    }
+
+    // Full weight while tracked, and while the wearer is in VR full weight on the held pose once the hand
+    // has been tracked at all this session. Leaving VR clears the memory so the desktop rest arm returns.
+    // The wearer's VR state is this machine's for the local user and the replicated flag for anyone else.
+    private bool _leftHandTrackedOnce;
+    private bool _rightHandTrackedOnce;
+
+    private float TrackingKeepWeight(ref bool trackedOnce, bool tracked, Lumora.Core.Input.InputInterface? input)
+    {
+        var userRoot = UserRoot.Target;
+        bool vr = userRoot?.IsLocalUserRoot == true
+            ? input?.IsVRActive == true
+            : userRoot?.ActiveUser?.VRActive.Value == true;
+        if (!vr)
+        {
+            trackedOnce = false;
+            return tracked ? 1f : 0f;
+        }
+        if (tracked)
+            trackedOnce = true;
+        return trackedOnce ? 1f : 0f;
     }
 
     // The two hand tools on this avatar's user, so the solve can ask how far each hand is into a desktop
@@ -1415,7 +1564,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     }
 
     // an avatar is self-describing: its components ARE the metadata
-    public bool SetupFromAvatar(UserRoot userRoot)
+    public bool SetupFromAvatar(UserRoot userRoot, bool equipTracking = true)
     {
         var rig = Rig.Target ?? Slot.GetComponent<HumanoidRig>() ?? Slot.GetComponentInChildren<HumanoidRig>();
         var skeleton = Skeleton.Target
@@ -1429,7 +1578,8 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         }
 
         Setup(skeleton, rig, userRoot);
-        SetupTracking(userRoot);
+        if (equipTracking)
+            SetupTracking(userRoot);
         return true;
     }
 
@@ -1687,6 +1837,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
 
         try
         {
+            AvatarCalibration.UpgradeLegacyHandReferences(Slot, rig);
             Slot? view = null, leftHand = null, rightHand = null, leftFoot = null, rightFoot = null;
             foreach (var point in Slot.GetComponentsInChildren<AvatarReferencePoint>())
             {
@@ -1704,8 +1855,14 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
                 TryComputeReferenceOffset(rig.TryGetBone(BodyNode.Head), view, ref _viewOffset);
             else
                 TryComputeReferenceOffset(rig.TryGetBone(BodyNode.Head), AvatarCalibration.ComputeView(Slot, rig), ref _viewOffset);
-            TryComputeReferenceOffset(rig.TryGetBone(BodyNode.LeftHand), leftHand!, ref _leftHandOffset);
-            TryComputeReferenceOffset(rig.TryGetBone(BodyNode.RightHand), rightHand!, ref _rightHandOffset);
+            if (leftHand != null && !leftHand.IsDestroyed)
+                TryComputeReferenceOffset(rig.TryGetBone(BodyNode.LeftHand), leftHand, ref _leftHandOffset);
+            else
+                TryComputeReferenceOffset(rig.TryGetBone(BodyNode.LeftHand), AvatarCalibration.ComputeHandGrip(Slot, rig, false), ref _leftHandOffset);
+            if (rightHand != null && !rightHand.IsDestroyed)
+                TryComputeReferenceOffset(rig.TryGetBone(BodyNode.RightHand), rightHand, ref _rightHandOffset);
+            else
+                TryComputeReferenceOffset(rig.TryGetBone(BodyNode.RightHand), AvatarCalibration.ComputeHandGrip(Slot, rig, true), ref _rightHandOffset);
             TryComputeReferenceOffset(rig.TryGetBone(BodyNode.LeftFoot), leftFoot!, ref _leftFootOffset);
             TryComputeReferenceOffset(rig.TryGetBone(BodyNode.RightFoot), rightFoot!, ref _rightFootOffset);
 
@@ -2067,315 +2224,271 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         offset.Valid = true;
     }
 
-    // Procedural locomotion: an untracked foot stays PLANTED, then STEPS (lerp with a
-    // lift arc) to a new stance position when the body strays past a threshold - one foot at a time
-    // so it reads as alternating steps, not sliding or teleporting. Feet anchor to the user-root
-    // ground plane (crouch/head-bob must not lift them). Every peer derives this from the replicated
-    // head/root, so the writes are local - broadcasting would just be churn.
+    // Procedural locomotion for untracked feet. BipedGait owns WHEN and WHERE a foot moves; this owns the
+    // body frame it moves in, the ground under it, and the proxy the solver reads. Feet anchor to the probed
+    // ground rather than to the head, so a crouch or a head bob never lifts them. Every peer derives this
+    // from the replicated head and root, so the writes stay local - broadcasting would just be churn.
     private void UpdateProceduralFeet()
     {
+        var root = UserRoot.Target?.Slot;
         var headSlot = _headProxy.Target;
-        if (headSlot == null)
-        {
-            _hasProceduralGroundY = false;
+        if (root == null || headSlot == null)
             return;
-        }
+        float dt = World.Time.Delta;
+        if (dt <= 0f)
+            return;
+        _grounding.Update(UserRoot.Target, dt);
 
-        // World clock: already scaled + clamped, one timing source for everything.
-        float dt = World?.Time.Delta ?? (1f / 60f);
+        float scale = MathF.Max(MathF.Abs(Slot.GlobalScale.x), 1e-5f) / _gaitCaptureScale;
+        float legLength = MathF.Max(_gaitLegLength * scale, 0.05f);
+        float3 body = root.GlobalPosition;
+        float3 rootPlanar = new float3(body.x, 0f, body.z);
 
-        // Anchor the gait to the BODY ROOT (locomotion position + facing), NOT the head. On desktop the head is the
-        // free-look camera: anchoring to it made the stance CENTER drift and the stance BASIS spin as you just LOOKED
-        // AROUND, so the feet chased the moving target and stepped in place ("walking without moving"). The user root
-        // only moves on real locomotion and only turns on real turn input, so feet now step when you actually move or
-        // turn. Place feet relative to the slow-turning body root, not the twitchy head. Falls back to the head only
-        // when there's no user root. -xlinka
-        var rootSlot = UserRoot.Target?.Slot;
-        bool hasRoot = rootSlot != null && !rootSlot.IsDestroyed;
-        float3 headPos = headSlot.GlobalPosition;
-        float3 bodyPos = hasRoot ? rootSlot!.GlobalPosition : headPos;
+        var input = Engine.Current?.InputInterface;
+        var head = ResolveHeadTarget(root, input);
+        float3 forward = UpdateBodyForwardReference(in head, ComputeBodyForward(root, headSlot));
 
-        // Stance placement uses the same visible body frame that the solver receives. The raw user-root forward can
-        // be opposite after view calibration; using that here puts feet on the wrong side while the solver bends in
-        // the visual frame. Velocity prediction still comes from root motion below. - xlinka
-        float3 rawForward = (hasRoot ? rootSlot!.GlobalRotation : headSlot.GlobalRotation) * float3.Backward;
-        float3 rawLocomotionForward = FlattenDir(rawForward);
-        float3 proxyHeadForward = FlattenDir(headSlot.GlobalRotation * float3.Backward);
-        var visualHead = ViewProxyTarget(headSlot, _viewOffset);
-        float3 visualForward = visualHead.Valid
-            ? FlattenDir(visualHead.Rotation * float3.Backward)
-            : proxyHeadForward;
-        float3 forward = visualForward;
-        float visualDot = float3.Dot(rawLocomotionForward, visualForward);
-        bool flippedGaitForward = visualDot < -0.5f;
-        // The gait reads the head's visual forward straight through _viewOffset, which on a 180-authored View
-        // reference (the swapped-label fox) points BACKWARD - the same inversion ResolveHeadTarget already
-        // strips for the solver via CorrectInvertedView. The body/user-root forward (rawLocomotionForward) is
-        // the reliable anchor, so when the gait forward opposes it, flip the gait forward to match. Without
-        // this the feet/toes solve ~180 backward while the torso faces correctly. -xlinka
-        if (flippedGaitForward)
+        // The root jumped rather than walked (a teleport, a world move): carry the feet with it instead of
+        // leaving the gait to step across the gap. -xlinka
+        float3 rootDelta = _grounding.RootDelta;
+        rootDelta.y = 0f;
+        bool teleported = rootDelta.Length > legLength * TeleportDistance;
+        if (teleported)
+            _gait.Carry(rootDelta);
+
+        ApplyGaitStance();
+        PushGaitParameters(scale);
+
+        float3 anchorVelocity = UpdateGaitAnchor(rootPlanar, in head, teleported, dt, out float3 bodyPlanar);
+
+        bool leftTracked = IsFootTracked(_leftFootNode.Target, BodyNode.LeftFoot);
+        bool rightTracked = IsFootTracked(_rightFootNode.Target, BodyNode.RightFoot);
+
+        if (_grounding.Grounded && _grounding.WasGrounded)
+            _gait.Update(bodyPlanar, forward, teleported ? float3.Zero : rootDelta / dt + anchorVelocity, dt);
+        else
+            _gait.Glide(bodyPlanar, forward, dt);
+
+        float conformScale = MathF.Max(UserRoot.Target!.GlobalScale, 0.01f);
+        ResolveFootPose(_gait.Left, body.y, conformScale, _solver.LeftFootGroundClearance, scale,
+            out _leftFootPlant, out _leftFootRot, out float leftGroundY);
+        ResolveFootPose(_gait.Right, body.y, conformScale, _solver.RightFootGroundClearance, scale,
+            out _rightFootPlant, out _rightFootRot, out float rightGroundY);
+
+        _leftStepLift = leftTracked ? 0f : _gait.Left.StepLift;
+        _rightStepLift = rightTracked ? 0f : _gait.Right.StepLift;
+        _hasLeftPlant = !leftTracked;
+        _hasRightPlant = !rightTracked;
+        _hasProceduralGroundY = !leftTracked || !rightTracked;
+        _proceduralGroundY = leftTracked ? rightGroundY
+            : rightTracked ? leftGroundY
+            : (leftGroundY + rightGroundY) * 0.5f;
+
+        // Touching down after being off the ground lands both feet at the speed the body came in at.
+        bool touchedDown = _grounding.Grounded && !_grounding.WasGrounded;
+        float fallSpeed = touchedDown ? _grounding.RootDelta.Length / dt : 0f;
+        TellFootstep(Chirality.Left, _gait.Left, leftGroundY, _leftFootRot, leftTracked, _leftLanded, touchedDown, fallSpeed);
+        TellFootstep(Chirality.Right, _gait.Right, rightGroundY, _rightFootRot, rightTracked, _rightLanded, touchedDown, fallSpeed);
+        _leftLanded = _rightLanded = false;
+
+        if (_hasLeftPlant && _leftFootProxy.Target != null && !_leftFootProxy.Target.IsDestroyed)
+            WriteFoot(_leftFootProxy.Target, _leftFootPlant);
+        if (_hasRightPlant && _rightFootProxy.Target != null && !_rightFootProxy.Target.IsDestroyed)
+            WriteFoot(_rightFootProxy.Target, _rightFootPlant);
+
+        float speed = _gait.SmoothSpeed;
+
+        // BODY MOTION IN THE BODY FRAME, which is what the arm simulation is pushed by. Taken from
+        // where the body actually was rather than from the gait's own smoothed number, because the
+        // whole point is the difference between the two: the gait is what the feet agreed to do, this
+        // is what the body did.
+        float3 here = Slot.GlobalPosition;
+        if (_hasLastBodyPosition && dt > 1e-5f)
         {
-            visualForward = -visualForward;
-            forward = visualForward;
+            float3 worldVelocity = (here - _lastBodyPosition) / dt;
+            float3 right = float3.Cross(forward, float3.Up);
+            var local = new float3(
+                float3.Dot(worldVelocity, right.LengthSquared > 1e-8f ? right.Normalized : float3.Right),
+                worldVelocity.y,
+                float3.Dot(worldVelocity, forward));
+            // Smoothed, or a single stuttered frame throws the arms.
+            float k = 1f - MathF.Exp(-dt * 12f);
+            _bodyVelocityLocal += (local - _bodyVelocityLocal) * k;
         }
+        _lastBodyPosition = here;
+        _hasLastBodyPosition = true;
 
-        // Body RIGHT axis. GODOT is right-handed (forward = -Z, up = +Y), so the right vector is Cross(forward, up)
-        // = +X. The old Cross(up, forward) gave -X (LEFT) - wrong handedness - which sent the left foot's target to
-        // the right side and vice-versa, CROSSING the legs (the "scrungle"). Cross, not floatQ.LookRotation (which
-        // returns an inverse). Same as the solver's _curBodyRight = Cross(curFwd, Up). -xlinka
-        float3 right = float3.Cross(forward, float3.Up);
-        right = right.LengthSquared < 1e-6f ? float3.Right : right.Normalized;
+        // Walk against run, so the arms change shape rather than only amplitude as somebody speeds up.
+        float runTarget = System.Math.Clamp(speed / MathF.Max(RunSpeed.Value, 0.1f), 0f, 1f);
+        _runBlend += (runTarget - _runBlend) * (1f - MathF.Exp(-dt * 4f));
 
-        float groundY = hasRoot ? bodyPos.y : headPos.y - 1.6f;
-        float3 center = new float3(bodyPos.x, groundY, bodyPos.z);
+        // Off the ground the hands stop swinging and drift; eased so a hop is not a snap.
+        float airTarget = _grounding.Grounded ? 0f : 1f;
+        _airBlend += (airTarget - _airBlend) * (1f - MathF.Exp(-dt * (airTarget > _airBlend ? 7f : 4f)));
 
-        // Step prediction from the BODY's horizontal velocity (real locomotion), not head jitter, so feet land ahead
-        // of actual movement instead of twitching to camera noise. Velocity is CLAMPED so a fast teleport/dash can't
-        // fling the feet, and its magnitude shrinks the step threshold so the avatar steps sooner when moving fast.
-        // Standing => zero velocity => no prediction. (_prevHeadXZ holds the body XZ.) -xlinka
-        float3 bodyXZ = new float3(bodyPos.x, 0f, bodyPos.z);
-        float3 velocity = (_hasPrevHead && dt > 1e-4f) ? (bodyXZ - _prevHeadXZ) / dt : default;
-        _prevHeadXZ = bodyXZ;
-        _hasPrevHead = true;
-        float maxV = MathF.Max(MaxStepVelocity.Value, 1e-3f);
-        float rawSpeed = velocity.Length;
-        if (rawSpeed > maxV)
-            velocity = velocity / rawSpeed * maxV;
-        // Smooth the locomotion velocity before it feeds prediction and thresholds: raw per-frame deltas
-        // carry frame-time noise that wobbled mid-step landing targets and made step intents flap.
-        float velK = 1f - MathF.Exp(-GaitVelocitySmoothing * dt);
-        _smoothedGaitVel = float3.Lerp(_smoothedGaitVel, velocity, velK);
-        velocity = _smoothedGaitVel;
-        float speed = velocity.Length;
-        float speedFrac = System.Math.Clamp(speed / maxV, 0f, 1f);
-        float3 predict = velocity * MathF.Max(StepPrediction.Value, 0f);
-        float effThreshold = StepThreshold.Value * (1f - 0.9f * speedFrac); // T at rest .. 0.1*T at full speed
+        float idleTarget = _gait.IsStandingStill && _grounding.Grounded ? 1f : 0f;
+        _idleWeight += (idleTarget - _idleWeight) * (1f - MathF.Exp(-dt * (idleTarget > _idleWeight ? 1.2f : 8f)));
+        float swingTarget = _grounding.Grounded ? System.Math.Clamp(speed / legLength, 0f, 1f) : 0f;
+        _armSwingWeight += (swingTarget - _armSwingWeight) * (1f - MathF.Exp(-dt * 6f));
+        _armSwingPhase = (_armSwingPhase + speed * dt / legLength * 5f) % (MathF.PI * 2f);
 
-        // Idle-life state: stillness fades the idle motions in slowly (nothing should start moving the
-        // instant you stop) and out fast; the arm-swing phase advances with DISTANCE walked so the swing
-        // rate tracks the stride, and its weight follows the speed. -xlinka
-        float idleTarget = speed < 0.08f ? 1f : 0f;
-        _idleWeight += (idleTarget - _idleWeight) * (1f - MathF.Exp(-(idleTarget > _idleWeight ? 1.2f : 8f) * dt));
-        _armSwingPhase = (_armSwingPhase + speed * dt * 6f) % (MathF.PI * 2f);
-        float swingTarget = System.Math.Clamp(speed, 0f, 1f);
-        _armSwingWeight += (swingTarget - _armSwingWeight) * (1f - MathF.Exp(-6f * dt));
+        float3 centre = bodyPlanar - forward * (_gaitBackOffset * scale);
+        UpdateBodySettle(_leftFootPlant, !leftTracked && _grounding.Grounded,
+            _rightFootPlant, !rightTracked && _grounding.Grounded, centre, dt);
+        // The bob target steps whenever a foot plants, so it gets the same critically-damped follow the
+        // settle does. A first-order lag on a target that steps still steps. -xlinka
+        float bobTarget = -MathF.Min(BodyBob.Value * scale, legLength * 0.012f)
+            * MathF.Max(_leftStepLift, _rightStepLift);
+        float bob = SmoothDamp(_locomotionOffset.y, bobTarget, ref _bobVelocity,
+            MathF.Max(BodySettleSmoothTime.Value, 1e-3f), dt);
+        _locomotionOffset = new float3(_bodySettleXZ.x, bob, _bodySettleXZ.z);
+    }
 
-        // Stance half-width: drive it from the rig's ACTUAL hip-bone spacing (which already carries the avatar fit
-        // scale) so the feet land under the hips at the avatar's true width. A fixed world-meter constant splayed a
-        // narrow rig's legs - a fox whose upper-leg roots are only a few cm apart was forced to a 24 cm stance, so
-        // the legs bowed out to reach. Project the L->R upper-leg vector onto the stance right axis and take half;
-        // clamp to a small floor and a sane cap. FootStanceWidth is the fallback when the hips aren't mapped. -xlinka
-        //
-        // Per-foot lateral side from GEOMETRY, not the bone label. The 180 import flip that normalizes a
-        // back-authored model's facing can leave the bone NAMED "LeftFoot" sitting on the body's RIGHT (and
-        // vice-versa). Placing each labeled foot's stance purely by label (left = center - right*half) then drags
-        // that foot ACROSS the body to the wrong side - the crossed-legs bug. The arms already sign each side by
-        // which side of the body its own bone sits on; do the same here so every foot stands on the side its hip
-        // bone is really on, for a mirrored OR a correctly-built rig. leftSide/rightSide are +1 (body right) or
-        // -1 (body left). -xlinka
-        float half = FootStanceWidth.Value;
-        float leftSide = -1f, rightSide = 1f;
-        var rigForStance = Rig.Target;
-        if (rigForStance != null)
+    // The stance centre the gait keeps the feet under, and the walking velocity it strides against. See the
+    // note at the GaitAnchor constants.
+    private float3 UpdateGaitAnchor(float3 rootPlanar, in FullBodyIKSolver.Target head, bool teleported, float dt,
+        out float3 bodyPlanar)
+    {
+        float3 centre = float3.Zero;
+        float total = 0f;
+        if (head.Valid)
         {
-            var lHipBone = rigForStance.TryGetBone(BodyNode.LeftUpperLeg);
-            var rHipBone = rigForStance.TryGetBone(BodyNode.RightUpperLeg);
-            if (lHipBone != null && rHipBone != null)
-            {
-                float hipWidth = MathF.Abs(float3.Dot(rHipBone.GlobalPosition - lHipBone.GlobalPosition, right));
-                if (hipWidth > 1e-4f)
-                    half = System.Math.Clamp(hipWidth * 0.5f, 0.02f, FootStanceWidth.Value * 4f);
-
-                // Sign each foot by which side of the hip midpoint its own hip bone sits on along the body-right
-                // axis - so the labeled left foot stands wherever the left hip bone actually is.
-                float3 hipMid = (lHipBone.GlobalPosition + rHipBone.GlobalPosition) * 0.5f;
-                leftSide = float3.Dot(lHipBone.GlobalPosition - hipMid, right) >= 0f ? 1f : -1f;
-                rightSide = float3.Dot(rHipBone.GlobalPosition - hipMid, right) >= 0f ? 1f : -1f;
-            }
+            centre += new float3(head.Position.x, 0f, head.Position.z) * GaitAnchorHeadWeight;
+            total += GaitAnchorHeadWeight;
         }
+        AddHand(UserRoot.Target?.LeftHandSlot, IsFootTracked(_leftHandNode.Target, BodyNode.LeftHand));
+        AddHand(UserRoot.Target?.RightHandSlot, IsFootTracked(_rightHandNode.Target, BodyNode.RightHand));
+        float3 offset = total > 1e-4f ? centre / total - rootPlanar : float3.Zero;
 
-        // Terrain conformance is a CONTINUOUS blend, never a grounded/airborne mode switch: each foot
-        // follows the probed surface only while it sits near the ROOT PLANE, easing back to the plane as
-        // the body lifts away. The root plane rides jumps and falls rigidly, so there is no classifier
-        // to flap and no state to reset - takeoff, flight and landing are one code path. The old binary
-        // airborne flag flipped the ground anchor between the floor and the root every other frame at
-        // the transitions, snapping the hips band and both plants (the jump flicker). -xlinka
-        float footBackOffset = EstimateFootBackOffset(forward);
-        float3 backwardRest = -forward * footBackOffset;
-        float3 leftDesired = center + backwardRest + right * (leftSide * half) + predict;
-        float3 rightDesired = center + backwardRest + right * (rightSide * half) + predict;
-        bool leftGroundHit = TryGroundHeight(leftDesired.x, leftDesired.z, groundY, out float leftGroundY, out float3 leftHitNormal);
-        bool rightGroundHit = TryGroundHeight(rightDesired.x, rightDesired.z, groundY, out float rightGroundY, out float3 rightHitNormal);
-
-        float conformScale = hasRoot ? MathF.Max(rootSlot!.GlobalScale.y, 0.05f) : 1f;
-        float leftConform = leftGroundHit ? GroundConformance(leftGroundY - groundY, conformScale) : 0f;
-        float rightConform = rightGroundHit ? GroundConformance(rightGroundY - groundY, conformScale) : 0f;
-        leftDesired.y = groundY + (leftGroundY - groundY) * leftConform;
-        rightDesired.y = groundY + (rightGroundY - groundY) * rightConform;
-        _leftFootGroundNormal = BlendNormal(leftHitNormal, leftConform);
-        _rightFootGroundNormal = BlendNormal(rightHitNormal, rightConform);
-        floatQ leftDesiredRot = BuildFootRotation(visualForward);
-        floatQ rightDesiredRot = leftDesiredRot;
-
-        bool leftTracked = _leftFootNode.Target?.IsEquippedAndActive ?? false;
-        bool rightTracked = _rightFootNode.Target?.IsEquippedAndActive ?? false;
-
-        // The hips-band anchor uses the same blended heights, so it moves continuously between the
-        // terrain and the root plane instead of teleporting with a mode flag.
-        if (!leftTracked && !rightTracked)
+        if (!_gaitAnchorValid || teleported)
         {
-            _proceduralGroundY = (leftDesired.y + rightDesired.y) * 0.5f;
-            _hasProceduralGroundY = true;
-        }
-        else if (!leftTracked)
-        {
-            _proceduralGroundY = leftDesired.y;
-            _hasProceduralGroundY = true;
-        }
-        else if (!rightTracked)
-        {
-            _proceduralGroundY = rightDesired.y;
-            _hasProceduralGroundY = true;
+            _gaitAnchorOffset = offset;
+            _gaitAnchorRope = offset;
+            _gaitAnchorValid = true;
         }
         else
         {
-            _hasProceduralGroundY = false;
+            _gaitAnchorOffset += (offset - _gaitAnchorOffset) * (1f - MathF.Exp(-GaitAnchorFollow * dt));
         }
+        bodyPlanar = rootPlanar + _gaitAnchorOffset;
 
-        // Plant the foot BONE at its authored height above the sole plane (digitigrade hocks sit well
-        // above the ground). Applied AFTER the hips-band anchor is taken, which stays at the sole plane. -xlinka
-        leftDesired.y += _solver.LeftFootGroundClearance;
-        rightDesired.y += _solver.RightFootGroundClearance;
+        float slack = MathF.Max(StepThreshold.Value, 0.01f) * MathF.Max(_gait.Parameters.Scale, 1e-4f) * GaitAnchorSlackRatio;
+        float3 toAnchor = _gaitAnchorOffset - _gaitAnchorRope;
+        float distance = toAnchor.Length;
+        if (distance <= slack || dt <= 0f)
+            return float3.Zero;
+        float3 moved = toAnchor * ((distance - slack) / distance);
+        _gaitAnchorRope += moved;
+        return moved / dt;
 
-        // Lifted (jump/fall): feet stop stepping and GLIDE toward their stance point under the body,
-        // gait state tracking along so stepping resumes seamlessly on touch-down. Safe at the branch
-        // boundary: by the time conformance is this low the blended heights already sit on the root
-        // plane, so both branches produce the same positions.
-        float groundedness = MathF.Max(leftTracked ? 1f : leftConform, rightTracked ? 1f : rightConform);
-        if (groundedness < GlideThreshold && !leftTracked && !rightTracked)
+        void AddHand(Slot? hand, bool tracked)
         {
-            float glideK = 1f - MathF.Exp(-GlideFollow * dt);
-            GlideFoot(ref _leftGait, ref _leftFootPlant, leftDesired, leftDesiredRot, glideK, _leftFootProxy.Target);
-            GlideFoot(ref _rightGait, ref _rightFootPlant, rightDesired, rightDesiredRot, glideK, _rightFootProxy.Target);
-            // Airborne: no standing idle, arms stop pumping.
-            _idleWeight += (0f - _idleWeight) * glideK;
-            _armSwingWeight += (0f - _armSwingWeight) * glideK;
-            _leftStepLift = 0f;
-            _rightStepLift = 0f;
-            _leftFootRot = _leftGait.PlantedRot;
-            _rightFootRot = _rightGait.PlantedRot;
-            _leftFootFwd = FootForward(_leftFootRot);
-            _rightFootFwd = FootForward(_rightFootRot);
-            _hasLeftPlant = true;
-            _hasRightPlant = true;
+            if (!tracked || hand == null || hand.IsDestroyed)
+                return;
+            var p = hand.GlobalPosition;
+            centre += new float3(p.x, 0f, p.z) * GaitAnchorHandWeight;
+            total += GaitAnchorHandWeight;
+        }
+    }
 
-            UpdateBodySettle(default, false, default, false, center, dt);
-            _locomotionOffset = new float3(_bodySettleXZ.x, 0f, _bodySettleXZ.z);
+    private void PushGaitParameters(float scale)
+    {
+        var p = _gait.Parameters;
+        p.ReferenceSpeed = MathF.Max(GaitReferenceSpeed.Value, 0.1f);
+        p.AvoidanceRadius = MathF.Max(FootAvoidance.Value, 0f);
+        p.MinOpposingProgress = System.Math.Clamp(MinOpposingProgress.Value, 0f, 1f);
+        p.VelocityIncreaseSmoothTime = MathF.Max(SpeedRiseTime.Value, 1e-3f);
+        p.VelocityDecreaseSmoothTime = MathF.Max(SpeedFallTime.Value, 1e-3f);
+        p.FootTravelDistance = MathF.Max(StepLength.Value, 0.05f);
+        p.FootSidewaysDistanceRatio = System.Math.Clamp(StrafeStepRatio.Value, 0.1f, 1f);
+        p.FootBackwardsDistanceRatio = System.Math.Clamp(BackStepRatio.Value, 0.1f, 1f);
+        p.FootMaxAngle = MathF.Max(StepAngleThreshold.Value, 1f);
+        p.FootTurnInfluence = System.Math.Clamp(TurnInfluence.Value, 0f, 1f);
+        p.FootStepUpHeight = MathF.Max(StepHeight.Value, 0f);
+        p.FootStepDownHeight = MathF.Max(StepDownHeight.Value, 0f);
+        p.FootStepUpPow = MathF.Max(StepUpCurve.Value, 0.05f);
+        p.FootStepDownPow = MathF.Max(StepDownCurve.Value, 0.05f);
+        p.StepUpVelocityMultiplier = MathF.Max(StepLiftOff.Value, 0f);
+        p.StepUpVerticalRatio = System.Math.Clamp(StepLiftOffVertical.Value, 0f, 1f);
+        p.MaxSwingTime = MathF.Max(StepDuration.Value, 0.1f);
+        p.RestAllowance = MathF.Max(StepThreshold.Value, 0.01f);
+        p.MaxSpeed = MathF.Max(MaxStepVelocity.Value, 0.5f);
+        p.MaxStepHeight = _gaitLegLength * 0.5f;
+        p.FootGroundAngle = System.Math.Clamp(FootGroundAngle.Value, 0f, 90f);
+        p.FootGroundPow = System.Math.Clamp(FootGroundCurve.Value, 0.25f, 4f);
+        p.FootStepUpAngularVelocityMultiplier = System.Math.Clamp(FootLiftAngularSpeed.Value, 0f, 1000f);
+        p.FootStepDownAngle = System.Math.Clamp(FootStepDownAngle.Value, 0f, 60f);
+        p.FootTiltMinAngle = System.Math.Clamp(FootTiltMinAngle.Value, -90f, 0f);
+        p.FootTiltMaxAngle = System.Math.Clamp(FootTiltMaxAngle.Value, 0f, 180f);
+        p.Scale = scale;
+        _gait.Parameters = p;
+    }
+
+    // The gait works on a flat plane; the ground goes on afterwards. One probe per foot at the foot's own
+    // position, so a planted foot probes the same spot every frame and its height cannot wander. The foot
+    // rotation is the gait's facing, tilted onto the probed surface, then pitched heel-to-toe about the foot's own
+    // right axis; the sole point lifts so a pitched toe or heel stays on the ground, and the ankle sits its rest
+    // clearance above the sole ALONG the foot's up, so it swings back over the heel on a heel strike. -xlinka
+    private void OnGaitLanded(GaitFoot foot, bool left, float speed)
+    {
+        if (left)
+            _leftLanded = true;
+        else
+            _rightLanded = true;
+        _landedSpeed = speed;
+    }
+
+    private void TellFootstep(Chirality side, GaitFoot foot, float groundY, floatQ rotation, bool tracked, bool stepped, bool touchedDown,
+        float fallSpeed)
+    {
+        if (tracked || (!stepped && !touchedDown) || Footstep is not { } listeners)
             return;
-        }
-
-        // Gait scheduling: each planted foot computes how badly it wants to move, then the higher-priority
-        // foot starts if the other foot is planted or far enough through its travel. This avoids the old left-first
-        // bias and makes turn/stride correction behave like a paired-foot state machine rather than two independent
-        // distance checks.
-        FootStepIntent leftIntent = leftTracked
-            ? new FootStepIntent(false, 0f, 0f, 0f)
-            : ComputeFootIntent(in _leftGait, leftDesired, leftDesiredRot, effThreshold, 0.9f);
-        FootStepIntent rightIntent = rightTracked
-            ? new FootStepIntent(false, 0f, 0f, 0f)
-            : ComputeFootIntent(in _rightGait, rightDesired, rightDesiredRot, effThreshold, 1.0f);
-
-        // A leg stretched near full reach MUST step even when the stance metric hasn't tripped, or a
-        // fast strafe leaves one leg pinned behind at full extension. GATED on the step actually going
-        // somewhere: a rig authored with near-straight legs sits at ~1.0x leg length just STANDING, and
-        // ungated this marched both feet in place forever. -xlinka
-        bool leftForced = false, rightForced = false;
-        if (!leftTracked && !leftIntent.WantsStep
-            && float3.Distance(_leftGait.Planted, leftDesired) > effThreshold * 0.5f
-            && FootOverstretched(BodyNode.LeftUpperLeg, BodyNode.LeftLowerLeg, BodyNode.LeftFoot, in _leftGait))
+        var step = new AvatarFootstep(side, new float3(foot.Position.x, groundY, foot.Position.z), rotation,
+            touchedDown ? fallSpeed : _landedSpeed, touchedDown);
+        try
         {
-            leftIntent = new FootStepIntent(true, 2f, 0f, 0f);
-            leftForced = true;
+            listeners(this, step);
         }
-        if (!rightTracked && !rightIntent.WantsStep
-            && float3.Distance(_rightGait.Planted, rightDesired) > effThreshold * 0.5f
-            && FootOverstretched(BodyNode.RightUpperLeg, BodyNode.RightLowerLeg, BodyNode.RightFoot, in _rightGait))
+        catch (Exception ex)
         {
-            rightIntent = new FootStepIntent(true, 2f, 0f, 0f);
-            rightForced = true;
+            LumoraLogger.Error($"AvatarIK: a footstep listener threw: {ex.Message}");
         }
+    }
 
-        // Never start a step whose path passes through the other foot (legs scissoring on turns and
-        // strafes). Big-angle re-steps, overstretch-forced steps AND badly-lagging feet override: on a
-        // strafe the trailing foot's path passes the leading foot EVERY step, so an unconditional block
-        // starves it forever - the body walks away from the pinned foot and slams back on key release.
-        // The distance bypass uses the UNSCALED threshold (the effective one shrinks to ~10% at speed). -xlinka
-        float crossRadius = MathF.Max(0.08f, half * 0.9f);
-        float relaxAngleLimit = MathF.Max(StepAngleThreshold.Value, 1f);
-        float starveDistance = MathF.Max(StepThreshold.Value * 1.5f, 0.05f);
-        if (!leftForced && leftIntent.WantsStep && leftIntent.Angle <= relaxAngleLimit
-            && leftIntent.Distance <= starveDistance
-            && StepPathBlocked(_leftGait.Planted, leftDesired, _rightGait.Planted, crossRadius))
-            leftIntent = new FootStepIntent(false, 0f, 0f, 0f);
-        if (!rightForced && rightIntent.WantsStep && rightIntent.Angle <= relaxAngleLimit
-            && rightIntent.Distance <= starveDistance
-            && StepPathBlocked(_rightGait.Planted, rightDesired, _leftGait.Planted, crossRadius))
-            rightIntent = new FootStepIntent(false, 0f, 0f, 0f);
+    private void ResolveFootPose(GaitFoot foot, float bodyY, float conformScale, float clearance, float scale,
+        out float3 world, out floatQ rotation, out float groundY)
+    {
+        float3 planar = foot.Position;
+        bool hit = TryGroundHeight(planar.x, planar.z, bodyY, out float probed, out float3 probedNormal);
+        float conform = _grounding.Grounded && hit ? GroundConformance(probed - bodyY, conformScale) : 0f;
+        groundY = bodyY + (probed - bodyY) * conform;
+        float3 normal = BlendNormal(probedNormal, conform);
 
-        // Small turns rotate the PLANTED feet smoothly toward the new facing (the support foot barely,
-        // the free foot faster), so feet track look/strafe changes without waiting for a full re-step.
-        ElectSupportFoot();
-        if (!leftTracked && !_leftGait.Stepping)
-            RelaxPlantedFoot(ref _leftGait, leftDesiredRot, dt, _leftIsSupport);
-        if (!rightTracked && !_rightGait.Stepping)
-            RelaxPlantedFoot(ref _rightGait, rightDesiredRot, dt, !_leftIsSupport);
+        rotation = TiltOntoSurface(BuildFootRotation(foot.Facing), normal);
+        float3 right = rotation * float3.Right;
+        if (MathF.Abs(foot.Pitch) > 1e-4f && right.LengthSquared > 1e-8f)
+            rotation = (floatQ.AxisAngleRad(right.Normalized, -foot.Pitch * (MathF.PI / 180f)) * rotation).Normalized;
 
-        bool leftOpposingReady = !_rightGait.Stepping || _rightGait.Progress >= 0.55f;
-        bool rightOpposingReady = !_leftGait.Stepping || _leftGait.Progress >= 0.55f;
-        bool leftWins = leftIntent.Priority >= rightIntent.Priority;
-        bool leftCanStep = !leftTracked && leftIntent.WantsStep && leftOpposingReady && (leftWins || !rightIntent.WantsStep || !rightOpposingReady);
-        bool rightCanStep = !rightTracked && rightIntent.WantsStep && rightOpposingReady && (!leftCanStep && (!leftIntent.WantsStep || !leftWins || !leftOpposingReady));
-        floatQ leftGaitRot = leftDesiredRot;
-        _leftStepLift = leftTracked ? 0f
-            : StepFoot(ref _leftGait, leftDesired, leftDesiredRot, effThreshold, 0.9f, leftCanStep, dt, _leftFootProxy.Target, out _leftFootPlant, out _, out leftGaitRot);
-        floatQ rightGaitRot = rightDesiredRot;
-        _rightStepLift = rightTracked ? 0f
-            : StepFoot(ref _rightGait, rightDesired, rightDesiredRot, effThreshold, 1.0f, rightCanStep, dt, _rightFootProxy.Target, out _rightFootPlant, out _, out rightGaitRot);
-        _leftFootRot = leftGaitRot;
-        _rightFootRot = rightGaitRot;
-        _leftFootFwd = FootForward(_leftFootRot);
-        _rightFootFwd = FootForward(_rightFootRot);
-        // Procedural locomotion owns a foot only while it isn't tracked; SolveBody re-asserts these plants.
-        _hasLeftPlant = !leftTracked;
-        _hasRightPlant = !rightTracked;
+        float3 sole = new float3(planar.x, groundY + foot.ArcHeight, planar.z);
+        float3 front = rotation * float3.Backward * (_footFrontDistance * scale);
+        float3 back = rotation * float3.Forward * (_footBackDistance * scale);
+        if (front.y < 0f)
+            sole.y -= front.y;
+        else if (back.y < 0f)
+            sole.y -= back.y;
+        world = sole + rotation * new float3(0f, clearance, 0f);
+    }
 
-        // Weight-shift bob: dip the hips slightly while a foot is airborne.
-        float lift = MathF.Max(_leftStepLift, _rightStepLift);
-
-        // Horizontal body settle (the missing counterpart to the vertical bob): ease the torso toward the centroid
-        // of the planted feet, biased toward the SUPPORT foot, so the hips don't hover dead-centre over a wide
-        // stance. Pure cosmetic offset on the hips output - NOT added to the user root or the gait anchor, so it
-        // can't feed back into the step trigger (which reads the user root). Gated to procedural/untracked feet:
-        // when a foot is hardware-tracked the trackers rule, matching the GroundY/foot-driven gating. -xlinka
-        UpdateBodySettle(_hasLeftPlant ? _leftFootPlant : default, _hasLeftPlant,
-                         _hasRightPlant ? _rightFootPlant : default, _hasRightPlant,
-                         center, dt);
-
-        // Standing weight-shift: a slow lateral drift on top of the settle so an idle stance reads as a
-        // body holding its balance, not a statue. Output-only on the hips (like settle/bob), so it can
-        // never feed back into the step trigger. Amplitude is a fraction of the stance width (scale-safe). -xlinka
-        float sway = 0f;
-        if (_idleWeight > 1e-3f && IdleSway.Value > 1e-3f)
-        {
-            float ph = (float)(World?.Time.TotalTime ?? 0.0) * (MathF.PI * 2f / 7.3f);
-            float noise = MathF.Sin(ph) + 0.45f * MathF.Sin(ph * 1.9f + 1.1f);
-            sway = noise * half * 0.35f * System.Math.Clamp(IdleSway.Value, 0f, 2f) * _idleWeight;
-        }
-
-        _locomotionOffset = new float3(
-            _bodySettleXZ.x + right.x * sway,
-            -BodyBob.Value * lift,
-            _bodySettleXZ.z + right.z * sway);
+    // Swing a foot's up onto the surface normal, no further than 45 degrees so a bad probe cannot fold it.
+    private static floatQ TiltOntoSurface(floatQ rotation, float3 normal)
+    {
+        if (normal.LengthSquared < 1e-8f)
+            return rotation;
+        float3 up = rotation * float3.Up;
+        float3 limited = float3.LimitSwing(normal.Normalized, up, MathF.PI * 0.25f);
+        if (float3.Dot(up, limited.Normalized) > 0.99999f)
+            return rotation;
+        return (FabrikSolver.FromToRotation(up, limited) * rotation).Normalized;
     }
 
     // Smooth the horizontal hips settle toward the planted-foot centroid (support-foot biased). The raw target is the
@@ -2429,8 +2542,8 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     // flicker. -xlinka
     private void ElectSupportFoot()
     {
-        bool leftStepping = _leftGait.Stepping;
-        bool rightStepping = _rightGait.Stepping;
+        bool leftStepping = _gait.Left.IsTravelling;
+        bool rightStepping = _gait.Right.IsTravelling;
         if (!leftStepping && rightStepping)
             _leftIsSupport = true;
         else if (!rightStepping && leftStepping)
@@ -2440,6 +2553,19 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
 
     // Critically-damped follow toward target (standard SmoothDamp spring). velocity is carried between calls so the
     // result eases with continuous velocity - no pop when the target jumps on a step transition. -xlinka
+    private static float SmoothDamp(float current, float target, ref float velocity, float smoothTime, float dt)
+    {
+        if (dt <= 1e-5f)
+            return current;
+        float omega = 2f / smoothTime;
+        float x = omega * dt;
+        float exp = 1f / (1f + x + 0.48f * x * x + 0.235f * x * x * x);
+        float change = current - target;
+        float temp = (velocity + change * omega) * dt;
+        velocity = (velocity - temp * omega) * exp;
+        return target + (change + temp) * exp;
+    }
+
     private static float3 SmoothDamp(float3 current, float3 target, ref float3 velocity, float smoothTime, float dt)
     {
         if (dt <= 1e-5f)
@@ -2451,38 +2577,6 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         float3 temp = (velocity + change * omega) * dt;
         velocity = (velocity - temp * omega) * exp;
         return target + (change + temp) * exp;
-    }
-
-    private float EstimateFootBackOffset(float3 forward)
-    {
-        var rig = Rig.Target;
-        if (rig == null || forward.LengthSquared < 1e-8f)
-            return 0f;
-
-        var hips = rig.TryGetBone(BodyNode.Hips);
-        var lFoot = rig.TryGetBone(BodyNode.LeftFoot);
-        var rFoot = rig.TryGetBone(BodyNode.RightFoot);
-        if (hips == null || hips.IsDestroyed)
-            return 0f;
-
-        float3 footMid = float3.Zero;
-        int count = 0;
-        if (lFoot != null && !lFoot.IsDestroyed)
-        {
-            footMid += lFoot.GlobalPosition;
-            count++;
-        }
-        if (rFoot != null && !rFoot.IsDestroyed)
-        {
-            footMid += rFoot.GlobalPosition;
-            count++;
-        }
-        if (count == 0)
-            return 0f;
-
-        footMid /= count;
-        float offset = -float3.Dot(footMid - hips.GlobalPosition, FlattenDir(forward));
-        return System.Math.Clamp(offset, 0f, 0.25f);
     }
 
     // 1 = fully conform the foot to the probed surface, 0 = ignore it and stand on the root plane,
@@ -2513,35 +2607,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         return n.LengthSquared > 1e-8f ? n.Normalized : float3.Up;
     }
 
-    // Mid-air foot follow: no step arcs, the foot eases toward its stance point and the gait's planted
-    // state follows, so stepping resumes on touch-down from wherever the foot actually is - no snap.
-    private static void GlideFoot(ref FootGait gait, ref float3 plant, float3 desired, floatQ desiredRot, float k, Slot? proxy)
-    {
-        if (!gait.Init)
-        {
-            gait.Planted = desired;
-            gait.PlantedRot = desiredRot;
-            gait.PlantedFwd = FootForward(desiredRot);
-            gait.Init = true;
-        }
-        else
-        {
-            if (gait.Stepping)
-            {
-                // Hand off from wherever the interrupted step arc left the foot last frame.
-                gait.Planted = plant;
-                gait.Stepping = false;
-                gait.Progress = 0f;
-            }
-            gait.Planted = float3.Lerp(gait.Planted, desired, k);
-            gait.PlantedRot = floatQ.Slerp(gait.PlantedRot, desiredRot, k).Normalized;
-            gait.PlantedFwd = FootForward(gait.PlantedRot);
-        }
-
-        plant = gait.Planted;
-        if (proxy != null && !proxy.IsDestroyed)
-            WriteFoot(proxy, gait.Planted);
-    }
+    private bool IsFootTracked(AvatarPoseDriver? driver, BodyNode node)
+        => UserRoot.Target?.IsLocalUserRoot == true
+            ? IsNodeTracked(Engine.Current?.InputInterface, node)
+            : driver?.IsTrackingAndActive == true;
 
     // Downward physics probe for the floor under a foot, ignoring this avatar's own colliders so the ray doesn't
     // catch its capsule. The bool matters: a miss is not the same as "the floor is at fallbackY", especially while
@@ -2568,147 +2637,6 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         return true;
     }
 
-    // Advance one foot's gait; returns its step lift (0 planted .. 1 peak swing) and outputs the foot's world
-    // position + flattened facing. Begins a step (only when canStep) once the foot strays past the distance
-    // threshold OR the body turns past the angle threshold. Constant-rate randomized speed + InOut-sine arc; the
-    // landing retargets toward the live desired so a step started while moving lands where the body ends up. -xlinka
-    // Leg extended near its full reach: distance from the hip to the planted foot against the summed
-    // bone lengths (rigid: rotation-only writes keep them bind-true at the live scale).
-    private bool FootOverstretched(BodyNode hipNode, BodyNode kneeNode, BodyNode footNode, in FootGait gait)
-    {
-        if (!gait.Init || gait.Stepping)
-            return false;
-        var rig = Rig.Target;
-        var hip = rig?.TryGetBone(hipNode);
-        var knee = rig?.TryGetBone(kneeNode);
-        var foot = rig?.TryGetBone(footNode);
-        if (hip == null || knee == null || foot == null || hip.IsDestroyed || knee.IsDestroyed || foot.IsDestroyed)
-            return false;
-
-        float legLen = float3.Distance(hip.GlobalPosition, knee.GlobalPosition)
-                     + float3.Distance(knee.GlobalPosition, foot.GlobalPosition);
-        if (legLen < 1e-4f)
-            return false;
-        return float3.Distance(gait.Planted, hip.GlobalPosition) > legLen * 0.98f;
-    }
-
-    // Would the step path pass within radius of the other foot (horizontal segment-point distance)?
-    private static bool StepPathBlocked(float3 from, float3 to, float3 obstacle, float radius)
-    {
-        float3 seg = to - from;
-        seg.y = 0f;
-        float3 rel = obstacle - from;
-        rel.y = 0f;
-        float len2 = seg.LengthSquared;
-        float t = len2 > 1e-8f ? System.Math.Clamp(float3.Dot(rel, seg) / len2, 0f, 1f) : 0f;
-        float3 closest = rel - seg * t;
-        return closest.LengthSquared < radius * radius;
-    }
-
-    // Rotate a planted foot toward the desired facing once the error exceeds the relax band - the
-    // support foot barely moves (weight on it), the free foot follows the body. Keeps feet tracking
-    // small turns without the frozen-then-snap of waiting for the angle re-step.
-    private static void RelaxPlantedFoot(ref FootGait gait, floatQ desiredRot, float dt, bool isSupport)
-    {
-        if (!gait.Init)
-            return;
-        float angle = FlatAngleDeg(FootForward(gait.PlantedRot), FootForward(desiredRot));
-        if (angle <= FootRelaxMinAngleDeg)
-            return;
-        float stepDeg = MathF.Min(FootRelaxSpeedDeg * (isSupport ? 0.25f : 1f) * dt, angle - FootRelaxMinAngleDeg);
-        if (stepDeg <= 0f || angle < 1e-3f)
-            return;
-        gait.PlantedRot = floatQ.Slerp(gait.PlantedRot, desiredRot, stepDeg / angle).Normalized;
-        gait.PlantedFwd = FootForward(gait.PlantedRot);
-    }
-
-    private FootStepIntent ComputeFootIntent(in FootGait gait, float3 desired, floatQ desiredRot, float threshold, float sideFactor)
-    {
-        if (!gait.Init || gait.Stepping)
-            return new FootStepIntent(false, 0f, 0f, 0f);
-
-        float distance = float3.Distance(gait.Planted, desired);
-        float angle = FlatAngleDeg(FootForward(gait.PlantedRot), FootForward(desiredRot));
-        float distanceLimit = MathF.Max(threshold * sideFactor, 0.001f);
-        float angleLimit = MathF.Max(StepAngleThreshold.Value, 1f);
-        bool wants = distance > distanceLimit || angle > angleLimit;
-        float priority = distance / distanceLimit + angle / angleLimit;
-        return new FootStepIntent(wants, wants ? priority : 0f, distance, angle);
-    }
-
-    private float StepFoot(ref FootGait gait, float3 desired, floatQ desiredRot, float threshold, float sideFactor,
-        bool canStep, float dt, Slot proxy, out float3 worldPos, out float3 worldFwd, out floatQ worldRot)
-    {
-        worldPos = desired;
-        worldRot = desiredRot;
-        worldFwd = FootForward(desiredRot);
-        if (proxy == null)
-            return 0f;
-
-        if (!gait.Init)
-        {
-            gait.Planted = desired;
-            gait.PlantedRot = desiredRot;
-            gait.PlantedFwd = FootForward(desiredRot);
-            gait.Init = true;
-        }
-
-        if (gait.Stepping)
-        {
-            // Retarget the landing toward where the body is now, so a step started while moving lands under the
-            // body instead of behind it.
-            float k = MathF.Min(dt * StepRetarget, 1f);
-            gait.StepTo = float3.Lerp(gait.StepTo, desired, k);
-            gait.StepToRot = floatQ.Slerp(gait.StepToRot, desiredRot, k).Normalized;
-            gait.StepToFwd = FootForward(gait.StepToRot);
-
-            gait.Progress += dt * gait.Speed;
-            if (gait.Progress >= 1f)
-            {
-                gait.Progress = 1f;
-                gait.Planted = gait.StepTo;
-                gait.PlantedRot = gait.StepToRot;
-                gait.PlantedFwd = gait.StepToFwd;
-                gait.Stepping = false;
-            }
-            float t = gait.Progress;
-            float ease = InOutSine(t);
-            float3 pos = float3.Lerp(gait.StepFrom, gait.StepTo, ease);
-            float liftArc = MathF.Sin(t * MathF.PI);
-            pos.y += liftArc * StepHeight.Value;                  // vertical arc atop the ground-interpolated height
-            worldPos = pos;
-            worldRot = floatQ.Slerp(gait.StepFromRot, gait.StepToRot, ease).Normalized;
-            // Swing dangle: the toe dips through the arc (positive pitch about the lateral axis lifts the
-            // toe, so the dip is negative), reading as a lifted foot instead of a hovering slide.
-            float3 dipAxis = float3.Cross(FootForward(worldRot), float3.Up);
-            if (dipAxis.LengthSquared > 1e-8f)
-                worldRot = (floatQ.AxisAngleRad(dipAxis.Normalized, -SwingToeDip * liftArc) * worldRot).Normalized;
-            worldFwd = FootForward(worldRot);
-            WriteFoot(proxy, pos);
-            return liftArc;
-        }
-
-        if (canStep)
-        {
-            gait.Stepping = true;
-            gait.Progress = 0f;
-            gait.StepFrom = gait.Planted;
-            gait.StepTo = desired;
-            gait.StepFromRot = gait.PlantedRot;
-            gait.StepToRot = desiredRot;
-            gait.StepFromFwd = gait.PlantedFwd;
-            gait.StepToFwd = FootForward(desiredRot);
-            // Randomized constant step rate so steps don't lockstep.
-            gait.Speed = (1f / MathF.Max(StepDuration.Value, 0.05f)) * (1f + 0.5f * (float)System.Random.Shared.NextDouble());
-        }
-
-        worldPos = gait.Planted;
-        worldRot = gait.PlantedRot;
-        worldFwd = gait.PlantedFwd;
-        WriteFoot(proxy, gait.Planted);
-        return 0f;
-    }
-
     private static floatQ BuildFootRotation(float3 forward)
     {
         forward = FlattenDir(forward);
@@ -2720,16 +2648,6 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         floatQ q2 = FabrikSolver.FromToRotation(curUp, upProj.Normalized);
         return (q2 * q1).Normalized;
     }
-
-    private static float3 FootForward(floatQ rotation)
-        => FlattenDir(rotation * float3.Backward);
-
-    private static float InOutSine(float t)
-        => 0.5f * (1f - MathF.Cos(System.Math.Clamp(t, 0f, 1f) * MathF.PI));
-
-    // Angle (degrees) between two near-horizontal direction vectors.
-    private static float FlatAngleDeg(float3 a, float3 b)
-        => MathF.Acos(System.Math.Clamp(float3.Dot(FlattenDir(a), FlattenDir(b)), -1f, 1f)) * (180f / MathF.PI);
 
     // Flatten a direction onto the ground plane and normalize (Backward fallback when degenerate).
     private static float3 FlattenDir(float3 v)

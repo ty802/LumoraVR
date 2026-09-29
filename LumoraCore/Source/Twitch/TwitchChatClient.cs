@@ -467,6 +467,8 @@ public sealed class TwitchChatClient : IDisposable
             ReplyParentMessageId = Tag(tags, "reply-parent-msg-id"),
             ReplyParentDisplayName = Tag(tags, "reply-parent-display-name"),
             SentAt = SentAt(tags),
+            RewardId = Tag(tags, "custom-reward-id") ?? string.Empty,
+            IsHighlighted = Tag(tags, "msg-id") == "highlighted-message",
         };
     }
 
@@ -518,6 +520,8 @@ public sealed class TwitchChatClient : IDisposable
             AnnouncementColor = Tag(tags, "msg-param-color"),
             SentAt = SentAt(tags),
             Id = Tag(tags, "id") ?? string.Empty,
+            UserId = Tag(tags, "user-id") ?? string.Empty,
+            RecipientLogin = Tag(tags, "msg-param-recipient-user-name"),
         };
     }
 

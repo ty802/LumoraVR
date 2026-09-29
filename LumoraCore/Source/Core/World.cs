@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -146,6 +146,8 @@ public class World : IPermissionWorldFacts
 	// host-owned per-slot collection like a component list (denied - that would bolt components onto host
 	// geometry). See DataModelPermissions.Authorize. -xlinka
 	internal IWorldElement? SlotRegistryElement => _slotCollection;
+
+	internal Networking.Sync.ReplicatedSlotCollection? SlotRegistry => _slotCollection;
 	private readonly List<IWorldEventReceiver>[] _worldEventReceivers;
 	private WorldState _state = WorldState.Created;
 	private InitializationState _initState = InitializationState.Created;
@@ -426,6 +428,13 @@ public class World : IPermissionWorldFacts
 	// real current value to peers (authority only).
 	public LinkManager LinkManager { get; private set; } = null!;
 
+	// Running scripts, on the authority. Made on first use, so a world without scripts carries nothing.
+	public Scripting.ScriptScheduler Scripts => _scripts ??= new Scripting.ScriptScheduler(this);
+
+	internal Scripting.ScriptScheduler? ScriptsIfAny => _scripts;
+
+	private Scripting.ScriptScheduler? _scripts;
+
 	public ReferenceController ReferenceController { get; private set; } = null!;
 
 	public WorkerManager Workers { get; private set; } = null!;
@@ -445,6 +454,13 @@ public class World : IPermissionWorldFacts
 	public Audio.WorldAudioManager Audio { get; private set; } = null!;
 
 	public User LocalUser { get; private set; } = null!;
+
+	// The clip-plane source the local user's worn avatar registered, or null for the engine defaults.
+	// Read by the head output once a frame.
+	public Components.Avatar.IRenderSettingsSource? LocalUserRenderSettings
+		=> LocalUser is { IsDestroyed: false } user && user.Root is { IsDestroyed: false } root
+			? root.ActiveRenderSettings
+			: null;
 
 	public float TimeScale { get; set; } = 1.0f;
 
@@ -515,10 +531,44 @@ public class World : IPermissionWorldFacts
 
 	public WorldMetrics Metrics => _metrics;
 
+	// The Session dash's way into the world's config. Opens the config lock and, on the authority, lifts a
+	// Social or Event world's freeze for the length of the edit: the freeze stops people editing the authored
+	// world, and the host changing who can join or what a role may do is not that. Without the lift every
+	// Session tab went dead the moment a world was Social or Event, host included. The lift is the gate's
+	// authored-content scope with the root as its source, so it reaches authority-authored content only,
+	// only on the authority, and scripts refuse to start inside it. A guest gets the lock scope alone, and
+	// the host refuses a guest's config writes anyway. -xlinka
+	public IDisposable EnterConfigEdit()
+	{
+		var lockScope = WorldConfigEdit.Enter();
+		var root = RootSlot;
+		if (!IsAuthority || root == null || _dataModelPermissions == null)
+			return lockScope;
+		return new ConfigEditScope(lockScope, _dataModelPermissions.EnterAuthoredContentScope(root));
+	}
+
+	private sealed class ConfigEditScope : IDisposable
+	{
+		private IDisposable? _lock;
+		private IDisposable? _authored;
+
+		public ConfigEditScope(IDisposable lockScope, IDisposable authored)
+		{
+			_lock = lockScope;
+			_authored = authored;
+		}
+
+		public void Dispose()
+		{
+			_authored?.Dispose();
+			_authored = null;
+			_lock?.Dispose();
+			_lock = null;
+		}
+	}
+
 	// On the authority it's created on first access; on a client it's null until state-synced - callers that
 	// may run client-side should null-check.
-	public IDisposable EnterConfigEdit() => WorldConfigEdit.Enter();
-
 	public WorldSettings Configuration
 	{
 		get
@@ -738,6 +788,9 @@ public class World : IPermissionWorldFacts
 		// Names the two config components at the gate so a modified client's attach or remove aimed at
 		// them is refused by a rule that says so, not only by id arithmetic that happens to agree. -xlinka
 		_dataModelPermissions.AddRule(new WorldConfigProtectionRule(this));
+		// And the slot the pair sits on: a remote destroy or unparent of the world root is refused by a
+		// rule that names it, not only by whatever ownership happens to say. -xlinka
+		_dataModelPermissions.AddRule(new WorldRootProtectionRule(this));
 		Audio = new Audio.WorldAudioManager(this);
 
 		int length = Enum.GetValues(typeof(WorldEvent)).Length;
@@ -1048,6 +1101,9 @@ public class World : IPermissionWorldFacts
 		RootSlot = new Slot();
 		RootSlot.SlotName.Value = "Root";
 		RootSlot.Initialize(this);
+		// Before anything else can reach it, and on the guest as well as the host: a fresh world with no
+		// users in it is still a world whose root nobody gets to switch off, move or take down. -xlinka
+		RootSlot.MarkAsWorldRoot();
 		RegisterSlot(RootSlot);
 
 		// Note: Godot scene attachment handled by WorldDriver wrapper
@@ -1331,6 +1387,11 @@ public class World : IPermissionWorldFacts
 				// Hand this user's byte back to the allocator so a long session with join/leave churn
 				// doesn't run the 253 user-byte space dry. Authority owns allocation, so only it reclaims. -xlinka
 				_refIDAllocator?.ReleaseUserAllocation(userByte);
+
+				// Drives the leaver granted stop with them: nobody is behind their byte to vouch for them.
+				// Their scripts too.
+				LinkManager?.ScheduleGrantRecheck();
+				_scripts?.ScheduleRecheck();
 
 				TriggerUserLeftEvent(user);
 			}
@@ -1840,6 +1901,27 @@ public class World : IPermissionWorldFacts
 		if (!IsAuthority && LocalUser == null)
 			LumoraLogger.Error("StartRunning: client going Running with no LocalUser - see prior JOIN error.");
 
+		// A session's sync thread runs before the world does and takes the world every cycle, and once the
+		// state reads Running a write from here that lands inside one of its cycles is refused. So everything
+		// from the flip on happens holding the world, unless this thread holds it already: a client goes
+		// Running from its own sync cycle, and a start can be pumped from inside an update. -xlinka
+		var hooks = _hookManager;
+		bool hold = hooks != null && !hooks.HeldByCurrentThread;
+		if (hold)
+			hooks!.ImplementerLock(System.Threading.Thread.CurrentThread);
+		try
+		{
+			StartRunningHeld();
+		}
+		finally
+		{
+			if (hold)
+				hooks!.ImplementerUnlock();
+		}
+	}
+
+	private void StartRunningHeld()
+	{
 		var oldState = _state;
 		_initState = InitializationState.Finished;
 		lock (_stateLock)
@@ -2022,11 +2104,39 @@ public class World : IPermissionWorldFacts
 
 		foreach (var action in ready)
 		{
-			try { action(); }
+			try { RunTimed(action); }
 			catch (Exception ex) { LumoraLogger.Error($"World: next-update action error: {ex}"); }
 		}
 	}
 
+	// Sync-phase attribution: the actions are few per frame, so timing each is free, and the slowest
+	// one's method is what a "sync=45" line needs next to it. -xlinka
+	private Action? _worstAction;
+	private long _worstActionTicks;
+	private void RunTimed(Action? action)
+	{
+		if (action == null)
+			return;
+		long start = System.Diagnostics.Stopwatch.GetTimestamp();
+		action();
+		long ticks = System.Diagnostics.Stopwatch.GetTimestamp() - start;
+		if (ticks > _worstActionTicks)
+		{
+			_worstActionTicks = ticks;
+			_worstAction = action;
+		}
+	}
+	private string DescribeActionCost()
+	{
+		var action = _worstAction;
+		if (action == null)
+			return "";
+		double ms = _worstActionTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+		if (ms < 0.5)
+			return "";
+		var method = action.Method;
+		return $"action {method.DeclaringType?.Name}.{method.Name} {ms:F0}ms";
+	}
 	private void ProcessSynchronousActions()
 	{
 		bool budgeted;
@@ -2048,7 +2158,7 @@ public class World : IPermissionWorldFacts
 			{
 				try
 				{
-					_synchronousActions.Dequeue()?.Invoke();
+					RunTimed(_synchronousActions.Dequeue());
 				}
 				catch (Exception ex)
 				{
@@ -2252,7 +2362,7 @@ public class World : IPermissionWorldFacts
 	private double _slowWorstMs;
 	private string _slowWorstDetail = "";
 
-	private void NoteSlowFrame(double total, double sync, double pre, double comp, double change, double hooks, double end)
+	private void NoteSlowFrame(double total, double sync, double pre, double scripts, double comp, double change, double hooks, double end)
 	{
 		if (Time.TotalTime < SlowStartupGraceSeconds)
 			return;
@@ -2265,9 +2375,9 @@ public class World : IPermissionWorldFacts
 		if (total > _slowWorstMs)
 		{
 			_slowWorstMs = total;
-			string hookDetail = hooks >= comp && hooks >= change ? _updateManager?.DescribeHookCost() ?? "" : "";
-			_slowWorstDetail = $"sync={sync:F0} pre={pre:F0} comp={comp:F0} change={change:F0} hooks={hooks:F0} end={end:F0}"
-				+ (hookDetail.Length > 0 ? $" [{hookDetail}]" : "");
+			string who = DescribeWorstPhase(sync, comp, change, hooks);
+			_slowWorstDetail = $"sync={sync:F0} pre={pre:F0} scripts={scripts:F0} comp={comp:F0} change={change:F0} hooks={hooks:F0} end={end:F0}"
+				+ (who.Length > 0 ? $" [{who}]" : "");
 		}
 		if (_slowFrameCount == 1)
 			// Back at Log level. Demoting this left a SIXTY SECOND stall reporting "0 slow frames": the
@@ -2279,6 +2389,25 @@ public class World : IPermissionWorldFacts
 			FlushSlowFrameReport();
 	}
 
+	// Name the heaviest phase's heaviest item. Hooks are always timed by type; components, change
+	// applications and sync actions only while attribution is armed, which every slow frame does for
+	// the next SlowAttributionFrames frames. So the first stall of a burst shows phases and the rest
+	// show names. -xlinka
+	private const int SlowAttributionFrames = 600;
+	private string DescribeWorstPhase(double sync, double comp, double change, double hooks)
+	{
+		_updateManager?.ArmAttribution(SlowAttributionFrames);
+		double top = System.Math.Max(System.Math.Max(sync, comp), System.Math.Max(change, hooks));
+		if (top <= 0)
+			return "";
+		if (top == hooks)
+			return _updateManager?.DescribeHookCost() ?? "";
+		if (top == comp)
+			return _updateManager?.DescribeUpdateCost() ?? "";
+		if (top == change)
+			return _updateManager?.DescribeChangeCost() ?? "";
+		return DescribeActionCost();
+	}
 	private void FlushSlowFrameReport()
 	{
 		if (_slowFrameCount > 1)
@@ -2286,6 +2415,65 @@ public class World : IPermissionWorldFacts
 		_slowFrameCount = 0;
 		_slowWorstMs = 0;
 		_slowWorstDetail = "";
+	}
+
+	private long _userStateAt;
+	private ulong _trafficReceived, _trafficSent, _downloaded, _uploaded;
+
+	// What only this machine knows about its own user, written once a second when it changes: whether it is
+	// in VR and wearing the headset, what it shows on, its round trip to the host and its traffic in this
+	// session. Everyone else reads these; nobody else can know them. -xlinka
+	private void UpdateLocalUserState(User user)
+	{
+		long now = System.Diagnostics.Stopwatch.GetTimestamp();
+		bool first = _userStateAt == 0;
+		double elapsed = (now - _userStateAt) / (double)System.Diagnostics.Stopwatch.Frequency;
+		if (!first && elapsed < 1.0)
+			return;
+		_userStateAt = now;
+
+		var input = Engine.Current?.InputInterface;
+		bool vr = input?.IsVRActive ?? false;
+		if (user.VRActive.Value != vr)
+			user.VRActive.Value = vr;
+		bool wearing = vr && (input?.IsHeadsetFocused ?? false);
+		if (user.PresentInHeadset.Value != wearing)
+			user.PresentInHeadset.Value = wearing;
+		var device = input?.CurrentHeadOutputDevice ?? HeadOutputDevice.Screen;
+		if (user.HeadDevice.Value != device)
+			user.HeadDevice.Value = device;
+		LocalUserReport.Write(user, input);
+
+		var connections = _session?.Connections;
+		if (connections == null)
+			return;
+		int ping = connections.PingToHost;
+		if (user.Ping.Value != ping)
+			user.Ping.Value = ping;
+
+		// Totals only ever grow: a guest leaving the host takes its connection's bytes out of the sum, so
+		// only what was added since the last look counts.
+		var (received, sent) = connections.TrafficTotals();
+		ulong down = received >= _trafficReceived ? received - _trafficReceived : 0;
+		ulong up = sent >= _trafficSent ? sent - _trafficSent : 0;
+		_trafficReceived = received;
+		_trafficSent = sent;
+		_downloaded += down;
+		_uploaded += up;
+		if (user.DownloadedBytes.Value != _downloaded)
+			user.DownloadedBytes.Value = _downloaded;
+		if (user.UploadedBytes.Value != _uploaded)
+			user.UploadedBytes.Value = _uploaded;
+		float downRate = first || elapsed <= 0 ? 0f : (float)(down / elapsed);
+		float upRate = first || elapsed <= 0 ? 0f : (float)(up / elapsed);
+		if (user.DownloadSpeed.Value != downRate)
+			user.DownloadSpeed.Value = downRate;
+		if (user.UploadSpeed.Value != upRate)
+			user.UploadSpeed.Value = upRate;
+		if (downRate > user.DownloadSpeedMax.Value)
+			user.DownloadSpeedMax.Value = downRate;
+		if (upRate > user.UploadSpeedMax.Value)
+			user.UploadSpeedMax.Value = upRate;
 	}
 
 	public void Update(double delta)
@@ -2314,12 +2502,20 @@ public class World : IPermissionWorldFacts
 					localUser.FPS.Value = fps;
 			}
 
+			if (localUser != null)
+				UpdateLocalUserState(localUser);
+			if (IsAuthority)
+				UserLinkStats.Refresh(this);
+
 			// Per-stage timing so a frame can say WHICH stage ate it instead of leaving it to guesswork.
 			// GetTimestamp is allocation-free. These used to be discarded unless the frame broke 25 ms, and
 			// then only into a log line - so the ordinary "why is this world at 40 fps" case, where no single
 			// frame is slow enough to trip the threshold, had no numbers at all. They are now published every
 			// frame on LastFrameProfile whatever the cost, and the log threshold only governs the LOG. -xlinka
 			_updateManager?.BeginFrameProfiling();
+			_updateManager?.BeginFrameAttribution();
+			_worstAction = null;
+			_worstActionTicks = 0;
 			long _ts = System.Diagnostics.Stopwatch.GetTimestamp();
 			double _mspt = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 			double Lap() { long n = System.Diagnostics.Stopwatch.GetTimestamp(); double ms = (n - _ts) * _mspt; _ts = n; return ms; }
@@ -2361,6 +2557,11 @@ public class World : IPermissionWorldFacts
 			LinkManager?.GrantLinks();
 			double msPre = Lap();
 
+			// The script phase: after grants, so a script reads settled drives; before components, so its
+			// writes are in place before anything reads them this frame.
+			_scripts?.Update((float)scaledDelta);
+			double msScripts = Lap();
+
 			UpdateComponents((float)scaledDelta);
 			double msComp = Lap();
 
@@ -2379,13 +2580,13 @@ public class World : IPermissionWorldFacts
 			_trashBin?.Update();
 			double msEnd = Lap();
 
-			double msTotal = msSync + msPre + msComp + msChange + msHooks + msEnd;
+			double msTotal = msSync + msPre + msScripts + msComp + msChange + msHooks + msEnd;
 
 			// LateMs is the previous frame's late pass, because LateUpdate has not run yet this frame and a
 			// background world skips it entirely - waiting for it would mean never publishing at all. One
 			// frame stale on one field beats a hole in the data. -xlinka
 			LastFrameProfile = new FrameProfile(
-				Time.UpdateIndex, msTotal, msSync, msPre, msComp, msChange, msHooks, msEnd, _lastLateMs);
+				Time.UpdateIndex, msTotal, msSync, msPre, msComp, msChange, msHooks, msEnd, _lastLateMs, msScripts);
 
 			Metrics.UpdatesProcessed++;
 			Metrics.PeakUpdateTimeMs = System.Math.Max(Metrics.PeakUpdateTimeMs, msTotal);
@@ -2396,7 +2597,7 @@ public class World : IPermissionWorldFacts
 				: Metrics.AverageUpdateTimeMs * 0.95 + msTotal * 0.05;
 
 			if (msTotal > SlowFrameMs)
-				NoteSlowFrame(msTotal, msSync, msPre, msComp, msChange, msHooks, msEnd);
+				NoteSlowFrame(msTotal, msSync, msPre, msScripts, msComp, msChange, msHooks, msEnd);
 			else if (_slowFrameCount > 0 && Time.TotalTime - _slowWindowStart >= SlowReportWindowSeconds)
 				FlushSlowFrameReport();
 
@@ -2470,9 +2671,10 @@ public class World : IPermissionWorldFacts
 		public readonly double HooksMs;
 		public readonly double EndMs;
 		public readonly double LateMs;
+		public readonly double ScriptsMs;
 
 		public FrameProfile(ulong updateIndex, double total, double sync, double pre, double comp,
-			double change, double hooks, double end, double late)
+			double change, double hooks, double end, double late, double scripts)
 		{
 			UpdateIndex = updateIndex;
 			TotalMs = total;
@@ -2483,6 +2685,7 @@ public class World : IPermissionWorldFacts
 			HooksMs = hooks;
 			EndMs = end;
 			LateMs = late;
+			ScriptsMs = scripts;
 		}
 	}
 
@@ -2898,7 +3101,7 @@ public class World : IPermissionWorldFacts
 			{
 				try
 				{
-					_synchronousActions.Dequeue()?.Invoke();
+					RunTimed(_synchronousActions.Dequeue());
 				}
 				catch (Exception ex)
 				{

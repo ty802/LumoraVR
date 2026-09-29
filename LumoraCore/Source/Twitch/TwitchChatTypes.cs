@@ -102,6 +102,12 @@ public sealed class TwitchChatMessage
     public string? ReplyParentDisplayName { get; init; }
     public DateTimeOffset SentAt { get; init; } = DateTimeOffset.UtcNow;
 
+    // The channel reward this message redeemed, for a reward that asks the viewer for text; empty otherwise.
+    public string RewardId { get; init; } = string.Empty;
+
+    // Sent with the channel's highlight-my-message reward.
+    public bool IsHighlighted { get; init; }
+
     public string ToDisplayText() => Text;
 
     public override string ToString() => DisplayName + ": " + Text;
@@ -125,6 +131,8 @@ public sealed class TwitchChatEvent
     public string? AnnouncementColor { get; init; }
     public DateTimeOffset SentAt { get; init; } = DateTimeOffset.UtcNow;
     public string Id { get; init; } = string.Empty;
+    public string UserId { get; init; } = string.Empty;
+    public string? RecipientLogin { get; init; }
 
     public string ToDisplayText() => SystemMessage.Length > 0 ? SystemMessage : RawKind;
 

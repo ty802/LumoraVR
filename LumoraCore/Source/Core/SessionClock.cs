@@ -77,6 +77,23 @@ public sealed class SessionClock
         get { lock (_sampleLock) { return _lastRoundTrip; } }
     }
 
+    // How far this machine's session reading may be from the authority's, in seconds: half the quickest
+    // round trip, which is all an uneven pair of legs can hide, plus whatever the slew still has to catch
+    // up. Zero where the local reading is the session's (the authority, a solo world, a peer that has not
+    // asked yet), and -1 on a peer that asked and has no answer yet. -xlinka
+    public double EstimatedError
+    {
+        get
+        {
+            lock (_sampleLock)
+            {
+                if (!_hasSample)
+                    return _probesSent > 0 ? -1.0 : 0.0;
+                return _bestRoundTrip * 0.5 + System.Math.Abs(_targetOffset - _appliedOffset);
+            }
+        }
+    }
+
     internal void Advance(double delta)
     {
         double target;

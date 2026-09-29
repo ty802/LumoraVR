@@ -22,6 +22,10 @@ public class Mouse : InputDevice
     public readonly Analog2D DirectDelta = new Analog2D();           // Delta in pixels
     public readonly Analog ScrollWheelDelta = new Analog();          // Scroll wheel
 
+    // Sideways scrolling this frame, right positive: a tilting wheel or a touchpad. Stays 0 where the
+    // platform reports none.
+    public readonly Analog HorizontalScrollDelta = new Analog();
+
     public override void Initialize(InputInterface input, int deviceIndex, string name)
     {
         base.Initialize(input, deviceIndex, name);
@@ -36,5 +40,6 @@ public class Mouse : InputDevice
         RegisterProperty(Position);
         RegisterProperty(DirectDelta);
         RegisterProperty(ScrollWheelDelta);
+        RegisterProperty(HorizontalScrollDelta);
     }
 }

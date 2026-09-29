@@ -124,6 +124,7 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
     }
 
     public override string DisplayName => "Blink";
+    public override LocomotionKind Kind => LocomotionKind.Teleport;
 
     public override bool CanActivate() => true;
 

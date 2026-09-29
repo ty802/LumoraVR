@@ -184,11 +184,12 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
         if (current != null)
         {
             // Already held. You can only take it if the owner allowed stealing, you're not already
-            // the holder, and you're not trying to steal from your own other hand. - xlinka
+            // the holder, and you're not trying to steal from your own other hand. "Own" is the
+            // grabber's person, so the answer holds when a machine asks about someone else's hand. - xlinka
             if (!AllowSteal.Value) return false;
             if (ReferenceEquals(current, grabber)) return false;
             var holdingUser = current.OwningUser;
-            if (holdingUser != null && ReferenceEquals(holdingUser, World?.LocalUser)) return false;
+            if (holdingUser != null && ReferenceEquals(holdingUser, grabber.OwningUser ?? World?.LocalUser)) return false;
         }
         return true;
     }
@@ -217,7 +218,8 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
         // doesn't snap to the hand origin. - xlinka
         Slot?.SetParent(holdSlot, preserveGlobalTransform: true);
 
-        if (!suppressEvents) OnLocalGrabbed?.Invoke(this);
+        if (!suppressEvents)
+            OnLocalGrabbed?.Invoke(this);
         return this;
     }
 
@@ -253,8 +255,11 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
 
     private void OnHolderChanged(SyncRef<Grabber> reference)
     {
-        // Don't react while the ref is still resolving on world load - that's not a real grab. - xlinka
-        if (reference.IsInInitPhase || reference.IsLoading) return;
+        // Only skipped while the component is being set up. A change from another peer is applied while
+        // the ref reads as loading, so skipping loading skipped every remote grab, release and steal: a
+        // guest's throw never reached the body the host simulates, and a hand never heard it was robbed.
+        // Hands live under user roots, which are not saved, so a world load brings back no holder. - xlinka
+        if (reference.IsInInitPhase) return;
 
         var newHolder = reference.Target;
         var oldHolder = _lastKnownHolder;

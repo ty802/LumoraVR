@@ -41,6 +41,8 @@ public abstract class LocomotionModule : Component
 
     public virtual string DisplayName => GetType().Name;
 
+    public virtual LocomotionKind Kind => LocomotionKind.Other;
+
     public void ActivateInternal(LocomotionController owner)
     {
         Owner = owner;

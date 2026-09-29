@@ -23,7 +23,10 @@ public static class ProtocolCompatibility
     // 2: batch headers carry a per-link delta sequence and incremental collection deltas carry the
     //    sender's pre-op element count. Both sit before data an older build expects, so a v1 peer reads
     //    every batch off by a field; the handshake has to reject it instead of letting it try.
-    private const int ProtocolVersion = 2;
+    // 3: User lost a member. A user is not a component, so the schema hash never sees its layout and a
+    //    v2 peer would read every later user field one member off.
+    // 4: User gained its peak rates, versions, dash and view flags and the host's link figures.
+    private const int ProtocolVersion = 4;
 
     private static byte[]? _baseHash;
     private static readonly object _lock = new();

@@ -76,7 +76,6 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
     public readonly Sync<bool> VRActive = new();
     public readonly Sync<bool> PresentInWorld = new();
     public readonly Sync<bool> PresentInHeadset = new();
-    public readonly Sync<bool> EditMode = new();
     public readonly Sync<float> FPS = new();
     public readonly Sync<HeadOutputDevice> HeadDevice = new();
     public readonly Sync<Platform> UserPlatform = new();
@@ -84,6 +83,26 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
     public readonly Sync<float> UploadSpeed = new();
     public readonly Sync<ulong> DownloadedBytes = new();
     public readonly Sync<ulong> UploadedBytes = new();
+
+    // Written by the user's own machine with the fields above: the highest rates this session, what it
+    // runs, whether their dash is open and which camera a screen user looks through.
+    public readonly Sync<float> DownloadSpeedMax = new();
+    public readonly Sync<float> UploadSpeedMax = new();
+    public readonly Sync<string> EngineVersion = new();
+    public readonly Sync<string> RuntimeVersion = new();
+    public readonly Sync<bool> DashOpen = new();
+    public readonly Sync<Components.DesktopViewMode> ViewMode = new();
+
+    // The host's side of its link to this user, written by the host once a second: the share of packets
+    // it had to send again, reliable packets still waiting to go out, what arrived from them in the last
+    // second by kind, and lagging once nothing has arrived for LagSeconds while their world is in front.
+    // Zero for the host's own user. -xlinka
+    public readonly Sync<float> PacketLoss = new();
+    public readonly Sync<int> QueuedMessages = new();
+    public readonly Sync<int> DeltaMessages = new();
+    public readonly Sync<int> StreamMessages = new();
+    public readonly Sync<int> ControlMessages = new();
+    public readonly Sync<bool> IsLagging = new();
 
     // THE GROUP THIS USER IS WEARING
     //
@@ -109,12 +128,49 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
     public int ImmediateControlCount { get; set; }
     public int ImmediateStreamCount { get; set; }
 
+    // Seconds without a message from a user whose world is in front of them before the host calls them lagging.
+    public const double LagSeconds = 1.5;
+
+    // What the host has received from this user since it last looked, counted on the decode thread.
+    private int _receivedDeltas;
+    private int _receivedStreams;
+    private int _receivedControls;
+
+    internal void CountReceived(SyncMessage message)
+    {
+        switch (message)
+        {
+            case ControlMessage:
+                System.Threading.Interlocked.Increment(ref _receivedControls);
+                break;
+            case StreamMessage or RawFrameMessage:
+                System.Threading.Interlocked.Increment(ref _receivedStreams);
+                break;
+            default:
+                System.Threading.Interlocked.Increment(ref _receivedDeltas);
+                break;
+        }
+        LastSyncMessage = DateTime.UtcNow;
+    }
+
+    internal void TakeReceived(out int deltas, out int streams, out int controls)
+    {
+        deltas = System.Threading.Interlocked.Exchange(ref _receivedDeltas, 0);
+        streams = System.Threading.Interlocked.Exchange(ref _receivedStreams, 0);
+        controls = System.Threading.Interlocked.Exchange(ref _receivedControls, 0);
+    }
+
     public new List<ISyncMember> SyncMembers => _syncMembers;
     public bool IsAuthority => World?.IsAuthority ?? false;
 
     public override string ParentHierarchyToString() => $"User:{UserName.Value ?? UserID.Value}";
 
-    public bool IsHost => World?.IsAuthority == true && World.LocalUser == this;
+    // The session's host, on every machine. On the host it is its own user; elsewhere the user holding the
+    // authority's allocation byte. The byte reads 0 until the host's values arrive, so a user whose range
+    // end is still 0 is one not synced yet, never the host. -xlinka
+    public bool IsHost => World is { } world && (world.IsAuthority
+        ? world.LocalUser == this
+        : AllocationIDEnd.Value != 0 && AllocationID.Value == RefIDConstants.AUTHORITY_BYTE);
     public bool IsDisposed { get; private set; }
 
     // PERMISSION GATE VIEW
@@ -196,7 +252,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
     // A user does NOT receive replicated traffic (deltas, corrections, streams) until it has been told
     // its full world state is on the wire. Until then it would just be racing its own join, so the
     // authority's fan-out skips it. The flag flips true once we enqueue the JoinStartDelta for that user
-    // (see StartTransmittingStreamData call sites), which mirrors "full state first, then live updates".
+    // (see StartTransmittingStreamData call sites), so live updates only ever follow full state.
     // Read on the sync thread, written from the control/connection path - volatile is enough for the
     // visibility guarantee without a lock. -xlinka
     private volatile bool _receivingStreams = false;
@@ -406,8 +462,21 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
             AllocationIDStart.MarkHostOnly();
             AllocationIDEnd.MarkHostOnly();
             IsSilenced.MarkHostOnly(); // host/platform-imposed silence, a guest can't lift it off themselves. -xlinka
+            PacketLoss.MarkHostOnly();
+            QueuedMessages.MarkHostOnly();
+            DeltaMessages.MarkHostOnly();
+            StreamMessages.MarkHostOnly();
+            ControlMessages.MarkHostOnly();
+            IsLagging.MarkHostOnly();
 
             EndInitializationStageForMembers();
+
+            // The host fills in a new user's name, ids and byte before the user has a world, so none of
+            // those writes marked anything to send. Peers already in the session learn the user from its
+            // key alone and kept blank fields for them all session; only a later joiner saw the values,
+            // in its full state. -xlinka
+            if (world.IsAuthority)
+                SendPresetFields();
 
             _syncMembers = new List<ISyncMember>(SyncMemberCount);
             for (int i = 0; i < SyncMemberCount; i++)
@@ -434,6 +503,15 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
         finally
         {
             refController.AllocationBlockEnd();
+        }
+    }
+
+    private void SendPresetFields()
+    {
+        for (int i = 0; i < SyncMemberCount; i++)
+        {
+            if (GetSyncMember(i) is ConflictingSyncElement field and not ISyncRef)
+                field.InvalidateSyncElement();
         }
     }
 
@@ -590,9 +668,10 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
 
     private void OnStreamAdded(ReplicatedDictionary<RefID, Stream> collection, RefID key, Stream stream, bool isNew)
     {
-        World.ReferenceController.AllocationBlockBegin(key);
-        stream.Initialize(this);
-        World.ReferenceController.AllocationBlockEnd();
+        using (World.ReferenceController.AllocationScopeAt(key))
+        {
+            stream.Initialize(this);
+        }
 
         if (IsLocal)
         {

@@ -36,6 +36,12 @@ public abstract class VariableManager
     public abstract string ValueToString();
 
     internal abstract void DetachAll();
+
+    // The value as an object, for a watcher that compares values without knowing the type.
+    internal abstract object? BoxedValue { get; }
+
+    // The components that supply this variable's value: every participant but the drivers.
+    internal abstract void CollectHolders(List<Component> into);
 }
 
 // Every component registered under one (type, name) identity in one scope, plus the single value
@@ -86,6 +92,20 @@ public class VariableManager<T> : VariableManager
     // Reject values this identity cannot hold. Only the type-valued manager uses it.
     public virtual bool IsValidValue(T value) => true;
 
+    // Drivers included, for a caller that has to vet every holder before a write fans out to them.
+    internal IReadOnlyList<IVariableParticipant<T>> Participants => _participants;
+
+    internal override object? BoxedValue => Value;
+
+    internal override void CollectHolders(List<Component> into)
+    {
+        for (int i = 0; i < _participants.Count; i++)
+        {
+            if (!_participants[i].IsWriteOnly && _participants[i] is Component { IsDestroyed: false } holder)
+                into.Add(holder);
+        }
+    }
+
     public bool HasWritableParticipant()
     {
         for (int i = 0; i < _participants.Count; i++)
@@ -110,6 +130,7 @@ public class VariableManager<T> : VariableManager
     public void SetValue(T value)
     {
         _value = value;
+        Scope?.Touch();
 
         if (_broadcasting)
         {
@@ -173,12 +194,14 @@ public class VariableManager<T> : VariableManager
         }
 
         _participants.Add(participant);
+        Scope?.Touch();
     }
 
     internal void Unregister(IVariableParticipant<T> participant)
     {
         if (IsDisposed)
             return;
+        Scope?.Touch();
 
         bool lostLastValue = false;
         if (!participant.IsWriteOnly)

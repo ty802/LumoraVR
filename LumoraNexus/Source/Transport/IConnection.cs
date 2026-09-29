@@ -19,9 +19,19 @@ public interface IConnection : IDisposable
     string Identifier { get; }
 
     ulong ReceivedBytes { get; }
+    // What went out on the wire, the same measure ReceivedBytes takes of what came in.
+    ulong SentBytes { get; }
 
     // Milliseconds, -1 if unknown (e.g. not yet connected). Diagnostics only.
     int Ping { get; }
+
+    // Packets sent on this link since it opened, how many of those had to go again, and reliable packets
+    // still waiting to go out. Zero where the transport does not count them. Diagnostics only.
+    long PacketsSent => 0;
+
+    long PacketsLost => 0;
+
+    int QueuedPackets => 0;
 
     // Diagnostics/telemetry only.
     bool IsEncrypted { get; }

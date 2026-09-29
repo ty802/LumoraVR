@@ -5,6 +5,7 @@ using System;
 using System.Net;
 using LiteNetLib;
 using LumoraLogger = Lumora.Nexus.Diagnostics.NexusLog;
+using System.Threading;
 
 namespace Lumora.Nexus.Transport.LNL;
 
@@ -20,7 +21,12 @@ public class LNLPeer : IConnection
     public Uri Address { get; private set; }
     public string Identifier { get; private set; }
     public ulong ReceivedBytes { get; private set; }
+    private long _sentBytes;
+    public ulong SentBytes => (ulong)Interlocked.Read(ref _sentBytes);
     public int Ping => Peer?.Ping ?? -1;
+    public long PacketsSent => Peer?.Statistics.PacketsSent ?? 0;
+    public long PacketsLost => Peer?.Statistics.PacketLoss ?? 0;
+    public int QueuedPackets => LNLConnection.QueuedOn(Peer);
     public bool IsEncrypted => _crypto.IsEstablished;
     public string TransportName => "LNL";
 
@@ -112,6 +118,7 @@ public class LNLPeer : IConnection
             method = DeliveryMethod.ReliableUnordered;
         }
 
+        Interlocked.Add(ref _sentBytes, length);
         Peer.Send(data, 0, length, channel, method);
     }
 

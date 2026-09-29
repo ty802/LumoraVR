@@ -45,6 +45,12 @@ public class VariableScope : Component, ICustomInspectorUI
 
     public IEnumerable<VariableManager> LiveVariables => _managers.Values;
 
+    // Moves whenever a variable here changes value, comes, goes, or the scope's name or binding rule
+    // changes, so a watcher can skip a scope that has not moved since it last looked.
+    internal int Revision { get; private set; }
+
+    internal void Touch() => Revision++;
+
     public override void OnStart()
     {
         base.OnStart();
@@ -188,6 +194,7 @@ public class VariableScope : Component, ICustomInspectorUI
         _activeName = processed;
         _appliedDirectOnly = directOnly;
         _stateApplied = true;
+        Touch();
         MarkSubtreeDirty();
     }
 

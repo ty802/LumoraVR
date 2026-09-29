@@ -8,12 +8,12 @@ namespace Lumora.Core.Components;
 // Free flight that ignores gravity and collision: moves the user rig's global
 // position directly along the full view direction, so looking up/down flies
 // up/down. Space/C add explicit world-vertical, Shift sprints. No character
-// controller involvement - the rig is moved straight, same model as the
-// reference Noclip module. - xlinka
+// controller involvement: the rig is moved straight. - xlinka
 [ComponentCategory("Users/Locomotion")]
 public class NoclipLocomotion : SmoothLocomotionBase
 {
     public override string DisplayName => "Noclip";
+    public override LocomotionKind Kind => LocomotionKind.Noclip;
     public override bool CanActivate() => true;
 
     public float SprintMultiplier { get; set; } = 3f;

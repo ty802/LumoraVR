@@ -75,6 +75,22 @@ public partial class DesktopInput : Node3D
         UpdateCamera();
         UpdateCursorPosition();
         UpdateCursorRay();
+        ReportDisplay();
+    }
+
+    // The window, where it sits on the desktop, and the screen under it, in the pixels the mouse's desktop
+    // position uses, so a script can place the mouse inside the window.
+    private static void ReportDisplay()
+    {
+        var input = Lumora.Core.Engine.Current?.InputInterface;
+        if (input == null)
+            return;
+        var window = DisplayServer.WindowGetSize();
+        var position = DisplayServer.WindowGetPosition();
+        var screen = DisplayServer.ScreenGetSize();
+        input.Display.Report(new Lumora.Core.Math.int2(window.X, window.Y),
+            new Lumora.Core.Math.int2(position.X, position.Y),
+            new Lumora.Core.Math.int2(screen.X, screen.Y));
     }
 
     // Push the free-cursor ray and camera projection info to the engine while

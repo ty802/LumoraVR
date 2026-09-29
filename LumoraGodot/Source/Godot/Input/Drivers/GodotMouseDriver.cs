@@ -17,6 +17,7 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
 {
     public int UpdateOrder => 0;
     private float _pendingScrollDelta = 0f;
+    private float _pendingHorizontalScrollDelta = 0f;
     private double _lastFrameTime = 0;
     private const float LookReferenceHeight = 1080f;
 
@@ -127,6 +128,11 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
         float scrollDelta = _pendingScrollDelta;
         _pendingScrollDelta = 0f;
         mouse.ScrollWheelDelta.UpdateValue(scrollDelta, deltaTime);
+
+        // Tilting the wheel, or a sideways trackpad swipe: right is positive.
+        float horizontalDelta = _pendingHorizontalScrollDelta;
+        _pendingHorizontalScrollDelta = 0f;
+        mouse.HorizontalScrollDelta.UpdateValue(horizontalDelta, deltaTime);
     }
 
     /// <summary>
@@ -149,6 +155,14 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
             else if (mouseButton.ButtonIndex == MouseButton.WheelDown)
             {
                 _pendingScrollDelta -= 1f;
+            }
+            else if (mouseButton.ButtonIndex == MouseButton.WheelRight)
+            {
+                _pendingHorizontalScrollDelta += 1f;
+            }
+            else if (mouseButton.ButtonIndex == MouseButton.WheelLeft)
+            {
+                _pendingHorizontalScrollDelta -= 1f;
             }
         }
     }

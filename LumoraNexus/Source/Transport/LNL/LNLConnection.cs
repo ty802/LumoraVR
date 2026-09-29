@@ -6,6 +6,7 @@ using System.Net;
 using LiteNetLib;
 using LiteNetLib.Utils;
 using LumoraLogger = Lumora.Nexus.Diagnostics.NexusLog;
+using System.Threading;
 
 namespace Lumora.Nexus.Transport.LNL;
 
@@ -24,7 +25,12 @@ public class LNLConnection : IConnection, INetEventListener
     public Uri Address { get; private set; }
     public string Identifier { get; private set; }
     public ulong ReceivedBytes { get; private set; }
+    private long _sentBytes;
+    public ulong SentBytes => (ulong)Interlocked.Read(ref _sentBytes);
     public int Ping => _peer?.Ping ?? -1;
+    public long PacketsSent => _peer?.Statistics.PacketsSent ?? 0;
+    public long PacketsLost => _peer?.Statistics.PacketLoss ?? 0;
+    public int QueuedPackets => QueuedOn(_peer);
     public bool IsEncrypted => _crypto.IsEstablished;
     public string TransportName => "LNL";
 
@@ -32,6 +38,17 @@ public class LNLConnection : IConnection, INetEventListener
     public event Action<IConnection> Connected = null!;
     public event Action<IConnection> ConnectionFailed = null!;
     public event Action<byte[], int> DataReceived = null!;
+
+    // Reliable packets waiting on both channels, ordered and not.
+    internal static int QueuedOn(NetPeer? peer)
+    {
+        if (peer == null)
+            return 0;
+        int queued = 0;
+        for (byte channel = 0; channel < 2; channel++)
+            queued += peer.GetPacketsCountInReliableQueue(channel, true) + peer.GetPacketsCountInReliableQueue(channel, false);
+        return queued;
+    }
 
     public LNLConnection(string appId, Uri address, bool dontRoute, IPAddress bindIP)
     {
@@ -119,6 +136,7 @@ public class LNLConnection : IConnection, INetEventListener
 
     private void SendRaw(byte[] data, int length, bool reliable, bool background)
     {
+        Interlocked.Add(ref _sentBytes, length);
         DeliveryMethod method = reliable
             ? DeliveryMethod.ReliableOrdered
             : DeliveryMethod.Sequenced;

@@ -15,6 +15,7 @@ namespace Lumora.Core.Components;
 public class PhysicalLocomotion : SmoothLocomotionBase
 {
     public override string DisplayName => "Walk";
+    public override LocomotionKind Kind => LocomotionKind.Walk;
     public override bool CanActivate() => true;
 
     private CharacterController _characterController = null!;

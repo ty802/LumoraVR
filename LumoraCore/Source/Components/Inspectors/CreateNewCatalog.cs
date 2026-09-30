@@ -15,9 +15,8 @@ namespace Lumora.Core.Components;
 
 // What "Create New" can put in a world, and the recipe for each.
 //
-// Ported from the source platform's create dialog, which is a flat static registry of
-// (path, name, action) walked as a category tree. The registry shape is theirs; the CONTENTS are
-// deliberately smaller, because an entry that spawns nothing is worse than an absent entry - the same
+// A flat static registry of (path, name, action) walked as a category tree. The CONTENTS are kept
+// deliberately small, because an entry that spawns nothing is worse than an absent entry - the same
 // rule the import dialog's dead checkboxes broke.
 //
 // The rule every recipe here obeys: a bare component is almost never a usable object. A mesh with no
@@ -30,9 +29,8 @@ namespace Lumora.Core.Components;
 //   Camera        - attaching one steals the local view; the hook sets Current on the main viewport
 //   Mirror/Portal - no reflected-camera path exists, and both need the camera repair first
 //   FogVolume     - no fog volume component of any kind
-//   ReverbZone    - audio, and audio is not this codebase's to build
+//   ReverbZone    - a bare zone is an invisible slot, and nothing yet shows or grabs its radius
 //   Legacy UI     - no legacy widget family
-//   Editor wizards- none of the seven exist
 //   Spawn Area/Point - the user spawn resolves the FIRST area it finds, so a second one is a dead
 //                   button in every world that already has one, which is both shipping templates
 //   Torus, Grid   - the torus defaults to a 5 mm hairline (it is the rotation gizmo's ring) and the
@@ -105,9 +103,14 @@ public static class CreateNewCatalog
         Add("Object", "Seat", SpawnSeat);
         Add("Object", "Glow Marker", SpawnGlowMarker);
         Add("Object", "Reflection Probe", SpawnReflectionProbe);
+        Add("Object", "Mirror", slot => slot.AttachComponent<MirrorPanel>());
 
-        // Their catalog has an Editor branch of seven wizards and we have none of them. This is the
-        // first, and it is the one worth having.
+        // A blank material orb with its shader graph open above it, a Material Output ready to wire into.
+        // The orb wears whatever the graph makes, and the material tool takes it to anything else.
+        Add("Materials", "Shader Graph", slot => Lumora.Core.Scripting.ShaderGraphMaterials.BuildOrb(slot));
+
+        // Editor entries open a wizard panel rather than spawning an object, so the slot the browser
+        // made for the entry is dropped first.
         Add("Editor", "Lighting", slot =>
         {
             var world = slot.World;
@@ -124,6 +127,14 @@ public static class CreateNewCatalog
                 ReflectionProbeWizard.Spawn(world);
         });
 
+        Add("Editor", "Loom Diagnostic", slot =>
+        {
+            var world = slot.World;
+            slot.Destroy();
+            if (world != null)
+                LoomDiagnostic.Spawn(world);
+        });
+
         Add("3D Model", "Box", slot => SpawnPrimitive(slot, ToolShape.Box));
         Add("3D Model", "Sphere", slot => SpawnPrimitive(slot, ToolShape.Sphere));
         Add("3D Model", "Capsule", slot => SpawnPrimitive(slot, ToolShape.Capsule));
@@ -133,7 +144,7 @@ public static class CreateNewCatalog
         // flat shape spawned facing away from you renders nothing and reads as a broken button.
         Add("3D Model", "Quad", SpawnQuad);
         Add("3D Model", "Circle", slot => SpawnDisc(slot, segments: 32, name: "Circle"));
-        // Their catalog has a Triangle and we have no triangle mesh. A three-segment disc IS one.
+        // There is no triangle mesh. A three-segment disc IS one.
         Add("3D Model", "Triangle", slot => SpawnDisc(slot, segments: 3, name: "Triangle"));
         Add("3D Model", "Ring", SpawnRing);
 
@@ -157,6 +168,7 @@ public static class CreateNewCatalog
         Add("Tools", "Glue Tool", slot => SpawnTool<GlueTool>(slot));
         Add("Tools", "Duplicator", slot => SpawnTool<DuplicatorTool>(slot));
         Add("Tools", "Meter Tool", slot => SpawnTool<MeterTool>(slot));
+        Add("Tools", "Script Node Tool", slot => SpawnTool<ScriptNodeTool>(slot));
     }
 
     // RECIPES
@@ -444,7 +456,8 @@ public static class CreateNewCatalog
         text.Color.Value = new color(1f, 1f, 1f, 1f);
         // A text renderer with no font resolves to an empty mesh and renders literally nothing, so
         // the shared world font is not optional here.
-        text.Font.Target = SharedFont(slot.World);
+        if (SharedFont(slot.World) is { } font)
+            text.Font.Target = font;
 
         if (outline)
         {
@@ -492,7 +505,11 @@ public static class CreateNewCatalog
         emitter.Radius.Value = 0.05f;
         emitter.Angle.Value = 13f;
 
-        slot.AttachComponent<SphereCollider>().Radius.Value = 0.1f;
+        // Keep a handle for direct grabs, but let pointing rays pass through the effect.
+        var handle = slot.AttachComponent<SphereCollider>();
+        handle.Radius.Value = 0.1f;
+        handle.IgnoreRaycasts.Value = true;
+        handle.CharacterCollider.Value = false;
         slot.AttachComponent<Grabbable>();
     }
 
@@ -531,36 +548,13 @@ public static class CreateNewCatalog
 
     private static void SpawnReflectionProbe(Slot slot)
     {
-        slot.AttachComponent<ReflectionProbe>();
+        var probe = slot.AttachComponent<ReflectionProbe>();
+        probe.UpdateMode.Value = ProbeUpdateMode.Always;
+        probe.DebugVisual.Value = true;
 
-        // THE MARKER MUST NOT LIVE ON THE PROBE'S OWN SLOT.
-        //
-        // A probe captures from its slot origin. Put a 0.3 m translucent box on that same slot with
-        // culling off and the capture camera sits 0.15 m inside a double-sided tinted shell, so all six
-        // faces are shot through blue glass and every surface the probe lights comes back wrong. That
-        // is what the first version of this recipe did.
-        //
-        // So the hull goes on a CHILD, and that child renders on the temp layer, which the probe's cull
-        // mask excludes. The eye still sees the marker; no probe ever does. -xlinka
-        var marker = slot.AddSlot("Marker");
-        var material = marker.AttachComponent<PBS_Metallic>();
-        material.AlbedoColor.Value = new colorHDR(0.5f, 0.6f, 1f, 0.22f);
-        material.BlendMode.Value = BlendMode.Alpha;
-        material.Culling.Value = Culling.None;
-
-        var mesh = marker.AttachComponent<BoxMesh>();
-        mesh.Size.Value = float3.One * 0.3f;
-
-        var renderer = marker.AttachComponent<MeshRenderer>();
-        renderer.Material.Target = material;
-        renderer.Mesh.Target = mesh;
-        // Temp layer, which the probe cull mask excludes. This is the line that keeps the marker out
-        // of the capture; without it the hull is simply a child instead of a sibling and the probe
-        // still photographs it.
-        marker.AttachComponent<RenderLayerOverride>().Layer.Value = TempLayer;
-
-        // Grab and collide on the probe slot, so dragging the marker moves the probe itself.
-        slot.AttachComponent<BoxCollider>().Size.Value = float3.One * 0.3f;
+        // ReflectionProbe owns a local chrome preview, excluded from capture, and wire bounds.
+        // Grab the probe itself so its capture point follows the sphere.
+        slot.AttachComponent<SphereCollider>().Radius.Value = 0.15f;
         slot.AttachComponent<Grabbable>();
     }
 

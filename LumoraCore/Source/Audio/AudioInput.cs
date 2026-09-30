@@ -1,7 +1,8 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Threading;
 using Lumora.Audio;
 
 namespace Lumora.Core.Audio;
@@ -12,6 +13,7 @@ namespace Lumora.Core.Audio;
 public struct VoiceFilterSettings
 {
     public bool Normalization;
+    public bool NoiseSuppression;
     public float GateThreshold;
     public float GateAttack;
     public float GateHold;
@@ -21,6 +23,7 @@ public struct VoiceFilterSettings
     public static VoiceFilterSettings Default => new VoiceFilterSettings
     {
         Normalization = true,
+        NoiseSuppression = true,
         GateThreshold = 0.02f,
         GateAttack = 0.01f,
         GateHold = 0.2f,
@@ -32,16 +35,21 @@ public struct VoiceFilterSettings
 // A capture device as the engine sees it: samples come in at whatever the platform runs at and leave
 // as two 48 kHz stereo streams, one untouched and one filtered.
 //
-// Everything past SamplesCaptured runs on the capture thread. It allocates on the first frame and on
-// a frame larger than any before it, and never again: the scratch buffers are fields, the filter
-// state is fields, and the settings are plain values pushed in from the world thread. No datamodel,
-// no engine locks, nothing that can block behind a world update.
+// SamplesCaptured only copies the samples into a backlog and wakes the chain thread, because the
+// platform calls it from wherever it polls (Godot polls on the main thread) and the noise suppressor is
+// a neural network: a frame of it there is a frame of VR budget. Both events fire on the chain thread.
+// The chain allocates on the first frame and on a frame larger than any before it, and never again:
+// the scratch buffers are fields, the filter state is fields, and the settings are plain values pushed
+// in from the world thread. No datamodel, no engine locks, nothing that can block behind a world update.
 //
 // The device only runs while somebody is listening. The events count their own subscribers and start
 // or stop the platform device on the edges, so sitting in a menu with nothing subscribed leaves the
 // microphone closed rather than open and discarded. -xlinka
 public sealed class AudioInput : IDisposable
 {
+    // A chain that falls this far behind drops the oldest audio rather than growing the backlog.
+    private const int MaxBacklogSeconds = 1;
+
     private const float HighPassHz = 80f;
 
     // Below this a frame is silence as far as the normalizer is concerned; letting it chase a target
@@ -54,13 +62,20 @@ public sealed class AudioInput : IDisposable
     private const float MaxNormalizationGain = 4f;
     private const float MinNormalizationGain = 0.1f;
 
+    // RNNoise, and it runs BEFORE the gate for a reason: the gate decides whether the frame is voice,
+    // and it decides better when the fan has already been taken out from under it. A quiet talker in a
+    // loud room reads as noise to a gate measuring the raw peak, and reads as voice once the room is
+    // gone. Costs 20 to 30 ms of latency (the network's own 20 ms plus up to a frame of buffering) and
+    // well under a millisecond of this thread per 10 ms frame. -xlinka
+    private readonly VoiceDenoiser _noiseSuppressor = new();
+
     private readonly IAudioDeviceInput _device;
     private readonly object _sync = new object();
 
     private AudioSamplesHandler? _raw;
     private AudioSamplesHandler? _filtered;
     private int _subscribers;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     private StereoSample[] _resampled = Array.Empty<StereoSample>();
     private StereoSample[] _filterScratch = Array.Empty<StereoSample>();
@@ -79,6 +94,16 @@ public sealed class AudioInput : IDisposable
 
     private VoiceFilterSettings _settings = VoiceFilterSettings.Default;
 
+    private readonly object _handoff = new object();
+    private readonly AutoResetEvent _wake = new AutoResetEvent(false);
+    private StereoSample[] _backlog = Array.Empty<StereoSample>();
+    private int _backlogCount;
+    private StereoSample[] _batch = Array.Empty<StereoSample>();
+    private Thread? _chain;
+    // Set when the device starts; the chain clears its own state before the next batch, since it is the
+    // only thread that touches that state.
+    private volatile bool _resetPending;
+
     public AudioInput(IAudioDeviceInput device)
     {
         _device = device ?? throw new ArgumentNullException(nameof(device));
@@ -90,6 +115,13 @@ public sealed class AudioInput : IDisposable
     public string DeviceId => _device.DeviceId;
 
     public bool IsSystemDefault => _device.IsSystemDefault;
+
+    // Microphone, system audio or virtual cable, worked out from the name because that is all the
+    // platform gives us. See AudioInputTypes. Cached: the name does not change under a device.
+    public AudioInputType InputType => _inputType ??= AudioInputTypes.Classify(_device.Name);
+    private AudioInputType? _inputType;
+
+    public bool IsLoopback => AudioInputTypes.IsLoopback(InputType);
 
     // A device that stopped answering is still registered, so the list does not churn every time a
     // headset sleeps; it just stops being a candidate for the default.
@@ -103,6 +135,8 @@ public sealed class AudioInput : IDisposable
     // system at registration; 48 kHz until then because that is the simulator's own default.
     public int TargetSampleRate { get; internal set; } = AudioSimulator.DefaultSampleRate;
 
+    // A remove that finds no such handler changes nothing. Counting it anyway walked the count below
+    // zero, and the next subscriber then left the microphone closed. -xlinka
     public event AudioSamplesHandler NewRawSamples
     {
         add
@@ -120,7 +154,10 @@ public sealed class AudioInput : IDisposable
             if (value == null) return;
             lock (_sync)
             {
+                var before = _raw;
                 _raw -= value;
+                if (ReferenceEquals(before, _raw))
+                    return;
                 _subscribers--;
                 ApplyCaptureState();
             }
@@ -144,7 +181,10 @@ public sealed class AudioInput : IDisposable
             if (value == null) return;
             lock (_sync)
             {
+                var before = _filtered;
                 _filtered -= value;
+                if (ReferenceEquals(before, _filtered))
+                    return;
                 _subscribers--;
                 ApplyCaptureState();
             }
@@ -182,6 +222,7 @@ public sealed class AudioInput : IDisposable
     public void ApplySettings(in VoiceFilterSettings settings)
     {
         _settings.Normalization = settings.Normalization;
+        _settings.NoiseSuppression = settings.NoiseSuppression;
         _settings.GateThreshold = Sanitize(settings.GateThreshold, 0f, 1f, 0.02f);
         _settings.GateAttack = Sanitize(settings.GateAttack, 0.001f, 1f, 0.01f);
         _settings.GateHold = Sanitize(settings.GateHold, 0f, 5f, 0.2f);
@@ -189,13 +230,83 @@ public sealed class AudioInput : IDisposable
         _settings.NormalizationTarget = Sanitize(settings.NormalizationTarget, 0.01f, 1f, 0.1f);
     }
 
-    // CAPTURE THREAD
+    // PLATFORM THREAD
 
     private void OnSamplesCaptured(ReadOnlySpan<StereoSample> samples)
     {
         if (_disposed || samples.IsEmpty)
             return;
 
+        try
+        {
+            lock (_handoff)
+            {
+                int cap = MaxBacklogSeconds * System.Math.Max(_device.SampleRate, 8000);
+                if (samples.Length >= cap)
+                {
+                    samples = samples.Slice(samples.Length - cap);
+                    _backlogCount = 0;
+                }
+                else if (_backlogCount + samples.Length > cap)
+                {
+                    int drop = _backlogCount + samples.Length - cap;
+                    Array.Copy(_backlog, drop, _backlog, 0, _backlogCount - drop);
+                    _backlogCount -= drop;
+                }
+
+                if (_backlog.Length < _backlogCount + samples.Length)
+                    Array.Resize(ref _backlog, GrownSize(_backlog.Length, _backlogCount + samples.Length));
+                samples.CopyTo(_backlog.AsSpan(_backlogCount));
+                _backlogCount += samples.Length;
+
+                if (_chain == null)
+                {
+                    _chain = new Thread(RunChain) { IsBackground = true, Name = "Lumora Voice Chain" };
+                    _chain.Start();
+                }
+            }
+            _wake.Set();
+        }
+        catch
+        {
+            // A throw here goes up into the platform's capture callback and takes the device with it.
+        }
+    }
+
+    // CHAIN THREAD
+
+    private void RunChain()
+    {
+        while (!_disposed)
+        {
+            _wake.WaitOne(250);
+
+            int count;
+            lock (_handoff)
+            {
+                count = _backlogCount;
+                if (count > 0)
+                {
+                    if (_batch.Length < count)
+                        _batch = new StereoSample[GrownSize(_batch.Length, count)];
+                    Array.Copy(_backlog, _batch, count);
+                    _backlogCount = 0;
+                }
+            }
+
+            if (_resetPending)
+            {
+                _resetPending = false;
+                ResetFilterState();
+            }
+
+            if (count > 0 && !_disposed)
+                Process(_batch.AsSpan(0, count));
+        }
+    }
+
+    private void Process(ReadOnlySpan<StereoSample> samples)
+    {
         try
         {
             int deviceRate = _device.SampleRate;
@@ -233,13 +344,16 @@ public sealed class AudioInput : IDisposable
                 return;
             }
 
-            Filter(work, rate);
-            filtered.Invoke(work);
+            // The suppressor buffers, so what comes back is not the length that went in and the rest
+            // of the chain has to run on what it actually produced.
+            int filteredLength = Filter(work, rate);
+            if (filteredLength > 0)
+                filtered.Invoke(work.Slice(0, filteredLength));
         }
         catch
         {
-            // A throw here goes up into the platform's capture callback and takes the device with it.
-            // A bad frame is a dropped frame.
+            // A throw here would end the chain thread, and every frame after it with it. A bad frame is
+            // a dropped frame.
         }
     }
 
@@ -281,9 +395,23 @@ public sealed class AudioInput : IDisposable
     // thread, read anywhere; a torn read of one float is not a thing.
     public float LastPeak { get; private set; }
 
-    private void Filter(Span<StereoSample> buffer, int sampleRate)
+    // Returns how many samples of buffer are valid on the way out, which is not always how many went
+    // in: the suppressor works in whole 10 ms frames and runs behind.
+    private int Filter(Span<StereoSample> buffer, int sampleRate)
     {
         HighPass(buffer, sampleRate);
+
+        if (_settings.NoiseSuppression)
+        {
+            int produced = _noiseSuppressor.Process(buffer, sampleRate);
+            if (produced <= 0)
+            {
+                // Still filling the first window. The meter should not flatline while that happens.
+                LastPeak = 0f;
+                return 0;
+            }
+            buffer = buffer.Slice(0, produced);
+        }
 
         float peak = Peak(buffer);
         LastPeak = peak;
@@ -347,6 +475,7 @@ public sealed class AudioInput : IDisposable
         }
 
         _normalizationGain = normalizationTo;
+        return buffer.Length;
     }
 
     private static float Peak(ReadOnlySpan<StereoSample> buffer)
@@ -396,7 +525,9 @@ public sealed class AudioInput : IDisposable
             {
                 if (!_device.IsCapturing)
                 {
-                    ResetFilterState();
+                    lock (_handoff)
+                        _backlogCount = 0;
+                    _resetPending = true;
                     _device.Start();
                 }
             }
@@ -424,18 +555,26 @@ public sealed class AudioInput : IDisposable
         _gateGain = 0f;
         _gateHoldRemaining = 0f;
         _normalizationGain = 1f;
+        // A new device is a new room. The network's recurrent state carries the old one over and
+        // suppresses the wrong noise until it re-learns, which sounds like the new microphone is broken.
+        _noiseSuppressor.Reset();
     }
 
     private static void EnsureCapacity(ref StereoSample[] buffer, int length)
     {
         if (buffer.Length >= length)
             return;
-        // Grown in steps rather than to the exact size, so a frame that wobbles by a sample does not
-        // allocate every time it wobbles up.
-        int size = buffer.Length == 0 ? 1024 : buffer.Length;
+        buffer = new StereoSample[GrownSize(buffer.Length, length)];
+    }
+
+    // Grown in steps rather than to the exact size, so a frame that wobbles by a sample does not
+    // allocate every time it wobbles up.
+    private static int GrownSize(int current, int length)
+    {
+        int size = current == 0 ? 1024 : current;
         while (size < length)
             size *= 2;
-        buffer = new StereoSample[size];
+        return size;
     }
 
     private static float Sanitize(float value, float min, float max, float fallback)
@@ -468,5 +607,13 @@ public sealed class AudioInput : IDisposable
         {
             // Shutdown: a device that will not close cleanly is not worth a throw on the way out.
         }
+
+        _wake.Set();
+        Thread? chain;
+        lock (_handoff)
+            chain = _chain;
+        // The event goes only once the thread is out of its wait, or the wait throws on a dead handle.
+        if (chain == null || chain.Join(500))
+            _wake.Dispose();
     }
 }

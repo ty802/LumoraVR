@@ -44,10 +44,6 @@ public sealed class AudioSystem : IDisposable
     private float _voice = 1f;
     private float _ui = 1f;
 
-    private long _statsLoggedAtMs;
-    private int _loggedDeviceUnderruns;
-    private int _loggedDroppedFrames;
-
     // Seconds from a source being read by the mixer to that sound reaching the ear.
     public double OutputLatencySeconds
         => (Simulator.PrimaryOutput.Device?.LatencySeconds ?? 0.0) + (double)Simulator.FrameSize / Simulator.SampleRate;
@@ -237,6 +233,7 @@ public sealed class AudioSystem : IDisposable
         if (_inputs.Count > 0)
         {
             _voiceFilter.Normalization = EngineSettings.VoiceNormalization;
+            _voiceFilter.NoiseSuppression = EngineSettings.NoiseSuppression;
             _voiceFilter.GateThreshold = EngineSettings.NoiseGateThreshold;
             _voiceFilter.GateAttack = EngineSettings.NoiseGateAttack;
             _voiceFilter.GateHold = EngineSettings.NoiseGateHold;

@@ -123,8 +123,7 @@ public static class ShaderUniformParser
 
     private static void ParseHints(string hintText, Definition def)
     {
-        var hints = hintText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        foreach (var hint in hints)
+        foreach (var hint in SplitHints(hintText))
         {
             if (hint.StartsWith("hint_range", StringComparison.OrdinalIgnoreCase))
             {
@@ -141,6 +140,35 @@ public static class ShaderUniformParser
                 def.IsColor = true;
             }
         }
+    }
+
+    // The hints split at their own commas only. Splitting at every comma cut hint_range(0.0, 1.0) in two, so
+    // no shader's slider range was ever read. -xlinka
+    private static List<string> SplitHints(string hintText)
+    {
+        var hints = new List<string>();
+        int depth = 0;
+        int start = 0;
+        for (int i = 0; i <= hintText.Length; i++)
+        {
+            char c = i < hintText.Length ? hintText[i] : ',';
+            if (c == '(')
+            {
+                depth++;
+            }
+            else if (c == ')')
+            {
+                depth = System.Math.Max(0, depth - 1);
+            }
+            else if (c == ',' && (depth == 0 || i == hintText.Length))
+            {
+                var hint = hintText[start..i].Trim();
+                if (hint.Length > 0)
+                    hints.Add(hint);
+                start = i + 1;
+            }
+        }
+        return hints;
     }
 
     private static float2? ParseRange(string hint)

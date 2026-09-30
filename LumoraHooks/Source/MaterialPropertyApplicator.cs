@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
+using System;
 using Godot;
 using Lumora.Core.Assets;
 
@@ -253,8 +254,13 @@ internal static class MaterialPropertyApplicator
         // (RenderQueue above stays reserved as the material's render-priority control channel.) -xlinka
         if (materialType == MaterialType.Custom)
         {
+            // A cleared texture clears its uniform, handing it back to the shader's own default
+            // (hint_default_white and the like). Skipping the write kept the last texture bound. -xlinka
             if (value == null)
+            {
+                material.SetShaderParameter(property, default(Variant));
                 return;
+            }
             Variant customValue = ToVariant(value);
             if (customValue.VariantType != Variant.Type.Nil)
                 material.SetShaderParameter(property, customValue);
@@ -269,6 +275,10 @@ internal static class MaterialPropertyApplicator
             {
                 material.SetShaderParameter("use_albedo_texture", false);
             }
+            // A texture member that went null has to say so, or the shader keeps sampling the last one
+            // it was given.
+            if (IsTextureMember(property))
+                material.SetShaderParameter("use_" + mappedParam, false);
             return;
         }
 
@@ -283,7 +293,34 @@ internal static class MaterialPropertyApplicator
         {
             material.SetShaderParameter("use_albedo_texture", value is Texture2D);
         }
+
+        // EVERY TEXTURE UNIFORM GETS ITS COMPANION FLAG, not just albedo.
+        //
+        // Our shader materials gate each optional map on a `use_<name>` bool, and the only one anything
+        // set here was use_albedo_texture, and then only for the two albedo member names. So
+        // use_normal_map, use_metallic_map, use_occlusion_map and the detail pair sat at their `false`
+        // default forever: every one of those maps on every shader-based material in the engine was
+        // bound to its sampler and then never read.
+        //
+        // This logic did exist, in ApplyShaderMaterialProperty over in MaterialAssetHook - which nothing
+        // calls. Two large private methods there shadow this file and are dead, and reading them instead
+        // of this is how the gap survived. Setting a uniform a shader does not declare is harmless, so
+        // this needs no per-shader list.
+        //
+        // Driven off the VALUE being a texture rather than the member's name, because the names collide:
+        // ColorMask is the mask TEXTURE on the four-way tint material and a channel WRITE MASK enum on
+        // the channel-matrix filter. Only the null case above falls back to the name. -xlinka
+        if (value is Texture2D)
+            material.SetShaderParameter("use_" + mappedParam, true);
     }
+
+    // Named by what it is rather than by its type, because the value arrives as a bare object and is
+    // null exactly when we most need to know it was a texture.
+    private static bool IsTextureMember(string property)
+        => property.EndsWith("Texture", StringComparison.Ordinal)
+        || property.EndsWith("Map", StringComparison.Ordinal)
+        || property.EndsWith("TextureRight", StringComparison.Ordinal)
+        || property == "ColorMask";
 
     private static string MapShaderProperty(MaterialType materialType, string property)
     {

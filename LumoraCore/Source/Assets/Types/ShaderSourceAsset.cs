@@ -49,6 +49,17 @@ public sealed class ShaderSourceAsset : LoadableAsset
         Version++;
     }
 
+    // A source made on this machine rather than loaded from a URL: what a shader graph compiled to.
+    public void SetSource(string source)
+    {
+        if (_source == source)
+            return;
+        _rawBytes = null;
+        _bundle = null;
+        _source = source;
+        Version++;
+    }
+
     public override void Unload()
     {
         _rawBytes = null;

@@ -23,7 +23,15 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
     private bool _uiZWriteOn;
     private bool _uiZTestOff;
     private bool _usesShaderMaterial;
+
+    // The metallic family ships one shader per (blend, cull) pair because both are compile-time
+    // render_modes. The two arrive through separate setters, so whichever fires second has to know what
+    // the first one chose or it would swap back to the default for the other axis. -xlinka
+    private Culling _culling = Culling.Back;
+    private BlendMode _blendMode = BlendMode.Opaque;
     private string _customShaderPath = null!;
+    // The custom source the shader material wears now; null when it wears none, or a built-in one.
+    private string? _customSource;
     private int _renderQueue = -1;
 
     // Pending properties to apply
@@ -40,6 +48,7 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
     public void SetMaterialType(MaterialType type)
     {
         _materialType = type;
+        _customSource = null;
 
         _standardMaterial?.Dispose();
         _standardMaterial = null!;
@@ -50,9 +59,25 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
 
         switch (type)
         {
+            case MaterialType.Fresnel:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial(FresnelShaderPath(_culling, _blendMode), MaterialType.Fresnel);
+                break;
+
+            case MaterialType.Reflection:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial(ReflectionShaderPath(_culling, _blendMode), MaterialType.Reflection);
+                break;
+
             case MaterialType.PBS_Metallic:
-                _usesShaderMaterial = false;
-                _standardMaterial = new StandardMaterial3D();
+                // WAS the one PBS material on Godot's StandardMaterial3D while PBS_Specular, DualSided,
+                // Triplanar and VertexColor all ran real shaders. That built-in covers most of the
+                // metallic workflow, which is why it lasted, but it does not shade the way PBS_Metallic
+                // content expects, and the two drift wherever Godot made a different call - the detail
+                // albedo being a straight multiply rather than a 2x one, and the metallic map's
+                // smoothness being read out of a different channel. -xlinka
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial(MetallicShaderPath(_culling, _blendMode), MaterialType.PBS_Metallic);
                 break;
 
             case MaterialType.Unlit:
@@ -180,6 +205,16 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_PBS_VertexColor.gdshader", MaterialType.PBS_VertexColor);
                 break;
 
+            case MaterialType.PBS_ColorMask:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial(ColorMaskShaderPath(_blendMode), MaterialType.PBS_ColorMask);
+                break;
+
+            case MaterialType.ChannelMatrix:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_ChannelMatrix.gdshader", MaterialType.ChannelMatrix);
+                break;
+
             case MaterialType.FresnelLerp:
                 _usesShaderMaterial = true;
                 _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_FresnelLerp.gdshader", MaterialType.FresnelLerp);
@@ -247,6 +282,7 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             if (ResourceLoader.Exists(_customShaderPath))
             {
                 _shaderMaterial.Shader = GD.Load<Shader>(_customShaderPath);
+                _customSource = null;
             }
             else
             {
@@ -262,6 +298,7 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             // Empty is the caller's "clear" signal (e.g. a sandbox-rejected update), not "leave the
             // last compile alone" - a rejected shader must never keep rendering a stale previous
             // compile. Drop back to the un-shaded state a fresh Custom material starts in. -xlinka
+            _customSource = null;
             if (_shaderMaterial != null)
             {
                 _shaderMaterial.Shader = null;
@@ -275,9 +312,13 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             _shaderMaterial = new ShaderMaterial();
         }
 
-        var shader = new Shader();
-        shader.Code = shaderSource;
-        _shaderMaterial.Shader = shader;
+        // Every material update hands the source over again, a slider tweak included. The same text
+        // keeps the shader it already has; a new one comes from the cache, compiled once however many
+        // materials wear it. -xlinka
+        if (_customSource == shaderSource && _shaderMaterial.Shader != null)
+            return;
+        _customSource = shaderSource;
+        _shaderMaterial.Shader = CustomShaderCache.Get(shaderSource);
     }
 
     private static string NormalizeShaderPath(string shaderPath)
@@ -299,6 +340,8 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
 
     public void SetBlendMode(BlendMode mode)
     {
+        _blendMode = mode;
+
         if (_standardMaterial != null)
         {
             _standardMaterial.Transparency = mode switch
@@ -339,12 +382,42 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 if (shader != null && _shaderMaterial.Shader != shader)
                     _shaderMaterial.Shader = shader; // uniform values persist across the swap
             }
-            _shaderMaterial.SetShaderParameter("blend_mode", (int)mode);
+            // Moving PBS_Metallic off StandardMaterial3D took its additive and multiply blending with
+            // it: that material honoured BlendMode through properties, a shader honours it through a
+            // compile-time render_mode. Without this an additive surface renders as an ordinary mix
+            // layer, so a subtle sheen becomes a solid panel. -xlinka
+            if (_materialType == MaterialType.PBS_Metallic)
+            {
+                SwapShader(MetallicShaderPath(_culling, mode));
+            }
+
+            if (_materialType == MaterialType.Fresnel)
+            {
+                SwapShader(FresnelShaderPath(_culling, mode));
+            }
+
+            if (_materialType == MaterialType.Reflection)
+            {
+                SwapShader(ReflectionShaderPath(_culling, mode));
+            }
+
+            // The colour-mask material has no Culling member, so its only axis is the pass split.
+            if (_materialType == MaterialType.PBS_ColorMask)
+            {
+                SwapShader(ColorMaskShaderPath(mode));
+            }
+
+            // A custom material's blend reaches it as a render_mode written into its source before it gets
+            // here. A blend_mode uniform would do nothing there, or overwrite one the shader declared itself.
+            if (_materialType != MaterialType.Custom)
+                _shaderMaterial.SetShaderParameter("blend_mode", (int)mode);
         }
     }
 
     public void SetCulling(Culling culling)
     {
+        _culling = culling;
+
         if (_standardMaterial != null)
         {
             _standardMaterial.CullMode = culling switch
@@ -377,9 +450,63 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 return;
             }
 
-            _shaderMaterial.SetShaderParameter("cull_mode", (int)culling);
+            if (_materialType == MaterialType.PBS_Metallic)
+            {
+                SwapShader(MetallicShaderPath(culling, _blendMode));
+                return;
+            }
+
+            if (_materialType == MaterialType.Fresnel)
+            {
+                SwapShader(FresnelShaderPath(culling, _blendMode));
+                return;
+            }
+
+            if (_materialType == MaterialType.Reflection)
+            {
+                SwapShader(ReflectionShaderPath(culling, _blendMode));
+                return;
+            }
+
+            // Same as the blend: a custom material's culling is written into its source.
+            if (_materialType != MaterialType.Custom)
+                _shaderMaterial.SetShaderParameter("cull_mode", (int)culling);
         }
     }
+
+    private static string ColorMaskShaderPath(BlendMode blend)
+        => blend is BlendMode.Alpha or BlendMode.Transparent
+            ? "res://Shaders/Mat_PBS_ColorMaskAlpha.gdshader"
+            : "res://Shaders/Mat_PBS_ColorMask.gdshader";
+
+    private static string ReflectionShaderPath(Culling culling, BlendMode blend)
+        => $"res://Shaders/Mat_Reflection{BlendVariant(blend)}{CullVariant(culling)}.gdshader";
+
+    private static string FresnelShaderPath(Culling culling, BlendMode blend)
+        => $"res://Shaders/Mat_Fresnel{BlendVariant(blend)}{CullVariant(culling)}.gdshader";
+
+    // FOUR VARIANTS, NOT THREE. Opaque and Cutout share the empty one, which writes no ALPHA and so
+    // stays in Godot's OPAQUE pass - that is the whole point of splitting them off Alpha rather than
+    // letting the blend_mode uniform sort it out at runtime. A material that writes ALPHA is transparent
+    // no matter what it writes, gets no depth write, and is sorted per object, which reads as surfaces
+    // flickering in and out as the camera moves. -xlinka
+    private static string BlendVariant(BlendMode blend) => blend switch
+    {
+        BlendMode.Additive => "Add",
+        BlendMode.Multiply => "Mul",
+        BlendMode.Alpha or BlendMode.Transparent => "Alpha",
+        _ => string.Empty
+    };
+
+    private static string CullVariant(Culling culling) => culling switch
+    {
+        Culling.Front => "FrontCull",
+        Culling.None => "DoubleSided",
+        _ => string.Empty
+    };
+
+    private static string MetallicShaderPath(Culling culling, BlendMode blend)
+        => $"res://Shaders/Mat_PBS_Metallic{BlendVariant(blend)}{CullVariant(culling)}.gdshader";
 
     private static string SpecularShaderPath(Culling culling) => culling switch
     {
@@ -523,16 +650,44 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         _pendingProperties[property] = new Vector4(value.x, value.y, value.z, value.w);
     }
 
+    // A TEXTURE THAT IS ASSIGNED BUT NOT YET ON THE GPU IS NOT THE SAME AS NO TEXTURE.
+    //
+    // An asset reaching FullyLoaded is what re-drives the material, but the hook's upload to the GPU
+    // is deferred to the main thread and can land AFTER that. The material then applies, finds
+    // IsValid false, writes null, and no further notification is coming - so an imported prop kept
+    // its material and lost its albedo for the rest of the session. Textures already in the GPU cache
+    // from an earlier run are valid immediately, which is exactly why some things were textured and
+    // others were not.
+    //
+    // Remember that we wrote a null over a real assignment, so the material can come back for it.
+    // -xlinka
+    private readonly HashSet<string> _texturesNotReady = new();
+
+    public bool HasTexturesStillArriving => _texturesNotReady.Count > 0;
+
+    public string TexturesStillArriving => string.Join(",", _texturesNotReady);
+
     public void SetTexture(string property, TextureAsset texture)
     {
         if (texture?.Hook is IGodotTexture textureHook && textureHook.IsValid)
         {
             _pendingProperties[property] = textureHook.GodotTexture2D!;
+            _texturesNotReady.Remove(property);
         }
         else
         {
             _pendingProperties[property] = null!;
+            if (texture != null)
+                _texturesNotReady.Add(property);
+            else
+                _texturesNotReady.Remove(property);
         }
+
+        // A texture that carries a second picture for the right eye binds it beside the first, under
+        // <Property>Right, which the name mapping turns into <property>_right. Everything else in the
+        // engine only ever reads the left one and is none the wiser. -xlinka
+        var rightEye = texture?.Hook is IStereoGodotTexture stereo ? stereo.RightEyeTexture2D : null;
+        _pendingProperties[property + "Right"] = rightEye!;
 
         // A canvas material bound to a frame strip plays it; bound to anything else it shows a still.
         if (_materialType == MaterialType.UI_Unlit && property == "Texture")
@@ -648,6 +803,59 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 _standardMaterial.AOTexture = value as Texture2D;
                 break;
 
+            // Detail. StandardMaterial3D keeps one UV set for the detail pair and takes its tiling
+            // from UV2, so the detail scale/offset go on UV2Scale/UV2Offset rather than a second
+            // transform of their own.
+            case "DetailAlbedoTexture":
+                _standardMaterial.DetailEnabled = value != null || _standardMaterial.DetailNormal != null;
+                _standardMaterial.DetailAlbedo = value as Texture2D;
+                if (value != null)
+                {
+                    _standardMaterial.DetailUVLayer = BaseMaterial3D.DetailUV.UV2;
+                    // Multiply is what a detail albedo means: darken and tint the base, never replace it.
+                    _standardMaterial.DetailBlendMode = BaseMaterial3D.BlendModeEnum.Mul;
+                }
+                break;
+            case "DetailNormalMap":
+                _standardMaterial.DetailEnabled = value != null || _standardMaterial.DetailAlbedo != null;
+                _standardMaterial.DetailNormal = value as Texture2D;
+                if (value != null)
+                    _standardMaterial.DetailUVLayer = BaseMaterial3D.DetailUV.UV2;
+                break;
+            // UV2Scale, not Uv2Scale. The binding generator capitalised the UV1 pair and the UV2 pair
+            // differently in this build, so the obvious spelling does not compile.
+            case "DetailTextureScale":
+                if (value is Vector2 dts) _standardMaterial.UV2Scale = new Vector3(dts.X, dts.Y, 1);
+                break;
+            case "DetailTextureOffset":
+                if (value is Vector2 dto) _standardMaterial.UV2Offset = new Vector3(dto.X, dto.Y, 0);
+                break;
+            case "DetailNormalScale":
+                // No separate strength for the detail normal in StandardMaterial3D; the one normal
+                // scale covers both, so a detail-only material still gets its depth.
+                if (value is float dns && _standardMaterial.DetailNormal != null)
+                    _standardMaterial.NormalScale = dns;
+                break;
+
+            // Parallax
+            case "HeightMap":
+                _standardMaterial.HeightmapEnabled = value != null;
+                _standardMaterial.HeightmapTexture = value as Texture2D;
+                break;
+            case "HeightScale":
+                if (value is float hs) _standardMaterial.HeightmapScale = hs;
+                break;
+
+            // Depth bias. Godot exposes only a single depth-draw offset rather than the slope-scaled
+            // factor/units pair, so the two are folded: anything non-zero turns on the bias and the
+            // sign decides which way it goes.
+            case "OffsetFactor":
+            case "OffsetUnits":
+                if (value is float off && off != 0f)
+                    _standardMaterial.RenderPriority = System.Math.Clamp(
+                        _standardMaterial.RenderPriority + (off < 0f ? 1 : -1), -128, 127);
+                break;
+
             // Alpha
             case "AlphaCutoff":
                 if (value is float ac) _standardMaterial.AlphaScissorThreshold = ac;
@@ -725,8 +933,28 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             {
                 _shaderMaterial.SetShaderParameter("use_albedo_texture", false);
             }
+            // A texture member that went null has to say so, or the shader keeps sampling the last
+            // one it was given.
+            if (IsClearableTextureMember(property))
+                _shaderMaterial.SetShaderParameter("use_" + mappedParam, false);
             return;
         }
+
+        // EVERY TEXTURE UNIFORM GETS ITS COMPANION FLAG, not just albedo.
+        //
+        // Our shader materials gate each optional map on a `use_<name>` bool, and until now the only
+        // one anything ever set was use_albedo_texture, and then only for a member literally called
+        // "Texture". So use_normal_map and use_metallic_map sat at their `false` default forever:
+        // every normal map and every metallic map on every shader-based material in the engine was
+        // bound to the sampler and then never read. Setting a uniform a shader does not declare is
+        // harmless, so this needs no per-shader list.
+        //
+        // Driven off the VALUE being a texture rather than off the member's name, because the names
+        // collide: ColorMask is the mask TEXTURE on the four-way tint material and a channel WRITE
+        // MASK enum on the channel-matrix filter. Only the null case has to fall back to the name,
+        // and there the name test is narrow enough to keep them apart. -xlinka
+        if (value is Texture2D)
+            _shaderMaterial.SetShaderParameter("use_" + mappedParam, true);
 
         Variant variantValue = value switch
         {
@@ -760,6 +988,17 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             LumoraLogger.Debug($"MaterialAssetHook.ApplyShaderMaterialProperty: Skipping {mappedParam}, value is nil");
         }
     }
+
+    // Named by what it is rather than by its type, because the value arrives as a bare object and is
+    // null exactly when we most need to know it was a texture.
+    private static bool IsTextureMember(string property)
+        => property.EndsWith("Texture", StringComparison.Ordinal)
+        || property.EndsWith("Map", StringComparison.Ordinal)
+        || (property.EndsWith("Right", StringComparison.Ordinal) && IsTextureMember(property[..^5]))
+        || property == "ColorMask";
+
+    // Only reached when the value is null, so a name test is all there is to go on.
+    private static bool IsClearableTextureMember(string property) => IsTextureMember(property);
 
     private static string ToSnakeCase(string text)
     {
@@ -820,6 +1059,7 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         _nextPassMaterial?.Dispose();
         _nextPassMaterial = null!;
 
+        _customSource = null;
         _pendingProperties.Clear();
     }
 }

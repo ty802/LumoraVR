@@ -41,6 +41,11 @@ public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
 
     private string _lastShaderHash = null!;
     private readonly Dictionary<ShaderUniformParam, UniformObserver> _uniformObservers = new();
+    // What a property held when the source stopped declaring it, in case the source declares it again: a
+    // shader graph's texture node unwired and wired back keeps its texture. Kept where the list is rebuilt,
+    // on the authority, and never saved.
+    private readonly Dictionary<string, ShaderUniformParamSnapshot> _setAside = new(StringComparer.Ordinal);
+    private const int MaxSetAside = 64;
     private bool _isUpdatingMaterial;
     // Sandbox verdict for the current source, cached by content hash (validation is pure static
     // analysis, no need to re-run per material update). Local only, never synced. - xlinka
@@ -107,7 +112,8 @@ public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
                 {
                     if (string.IsNullOrWhiteSpace(shaderPath))
                     {
-                        asset.SetCustomShaderSource(shaderSource);
+                        // Blend and culling picked here are render modes, so they go into the source.
+                        asset.SetCustomShaderSource(ShaderRenderModes.Apply(shaderSource, BlendMode.Value, Culling.Value));
                     }
                     EnsureUniforms(shaderSource!);
                 }
@@ -155,26 +161,37 @@ public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
 
         Parameters.Clear();
 
+        // The source says what each property is (its type, its range, whether it is a color); what one held
+        // before carries over only while it is still the same type.
         var defs = ShaderUniformParser.Parse(shaderSource);
+        var declared = new HashSet<string>(StringComparer.Ordinal);
         foreach (var def in defs)
         {
+            declared.Add(def.Name);
             var param = Parameters.Add();
             param.Name.Value = def.Name;
             param.Type.Value = def.Type;
             param.IsColor.Value = def.IsColor;
             param.HasRange.Value = def.HasRange;
             param.Range.Value = def.Range;
-
-            if (existing.TryGetValue(def.Name, out var snapshot))
-            {
-                snapshot.Apply(param);
-                continue;
-            }
-
             if (def.HasDefault)
             {
                 param.Value.Value = def.DefaultValue;
             }
+
+            if (existing.TryGetValue(def.Name, out var snapshot) || _setAside.Remove(def.Name, out snapshot))
+            {
+                snapshot.ApplyValue(param);
+            }
+        }
+
+        foreach (var (name, snapshot) in existing)
+        {
+            if (declared.Contains(name))
+                continue;
+            if (_setAside.Count >= MaxSetAside)
+                _setAside.Clear();
+            _setAside[name] = snapshot;
         }
 
         LumoraLogger.Debug($"CustomShaderMaterial: Built {Parameters.Count} uniforms for shader");
@@ -325,28 +342,22 @@ public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
     {
         private readonly ShaderUniformType _type;
         private readonly float4 _value;
-        private readonly bool _isColor;
-        private readonly bool _hasRange;
-        private readonly float2 _range;
         private readonly IAssetProvider<TextureAsset>? _textureTarget;
 
         public ShaderUniformParamSnapshot(ShaderUniformParam param)
         {
             _type = param.Type.Value;
             _value = param.Value.Value;
-            _isColor = param.IsColor.Value;
-            _hasRange = param.HasRange.Value;
-            _range = param.Range.Value;
             _textureTarget = param.Texture.Target;
         }
 
-        public void Apply(ShaderUniformParam param)
+        // The value, or the texture, onto a property of the same type. Its type, range and color hint are the
+        // source's to say: carrying the old ones over kept an edited slider range from ever reaching it.
+        public void ApplyValue(ShaderUniformParam param)
         {
-            param.Type.Value = _type;
+            if (param.Type.Value != _type)
+                return;
             param.Value.Value = _value;
-            param.IsColor.Value = _isColor;
-            param.HasRange.Value = _hasRange;
-            param.Range.Value = _range;
             if (_textureTarget != null)
             {
                 param.Texture.Target = _textureTarget;

@@ -190,25 +190,45 @@ public static class AudioDecoders
     private const ushort WaveFormatFloat = 3;
     private const ushort WaveFormatExtensible = 0xFFFE;
 
-    private static bool TryDecodeWav(ReadOnlySpan<byte> data, out AudioClipData? clip, out string? error)
+    // The sample format a WAV stores, read from its format chunk without decoding a sample. False for
+    // anything that is not a PCM or float WAV this decoder can read, including every Ogg and MP3.
+    public static bool TryGetWavFormat(ReadOnlySpan<byte> data, out int bitsPerSample, out bool isFloat)
     {
-        clip = null;
-        error = null;
-
-        if (data.Length < 12 || !Is(data, 0, "RIFF") || !Is(data, 8, "WAVE"))
-        {
-            error = "this is not a WAV file.";
+        bitsPerSample = 0;
+        isFloat = false;
+        if (!TryReadWavLayout(data, out var formatTag, out int channels, out int sampleRate, out int bits, out _, out int dataLength))
             return false;
+        if (channels <= 0 || channels > 64 || sampleRate <= 0 || sampleRate > 768000 || dataLength <= 0)
+            return false;
+        if (formatTag == WaveFormatFloat && bits == 32)
+        {
+            bitsPerSample = 32;
+            isFloat = true;
+            return true;
         }
+        if (formatTag == WaveFormatPcm && bits is 8 or 16 or 24 or 32)
+        {
+            bitsPerSample = bits;
+            return true;
+        }
+        return false;
+    }
 
-        ushort formatTag = 0;
-        int channels = 0;
-        int sampleRate = 0;
-        int bits = 0;
+    // Walks the chunk list. False when this is not a RIFF WAVE or has no format chunk; a missing data
+    // chunk comes back as a negative offset.
+    private static bool TryReadWavLayout(ReadOnlySpan<byte> data, out ushort formatTag, out int channels, out int sampleRate,
+        out int bits, out int dataOffset, out int dataLength)
+    {
+        formatTag = 0;
+        channels = 0;
+        sampleRate = 0;
+        bits = 0;
+        dataOffset = -1;
+        dataLength = 0;
+        if (data.Length < 12 || !Is(data, 0, "RIFF") || !Is(data, 8, "WAVE"))
+            return false;
+
         bool haveFormat = false;
-        int dataOffset = -1;
-        int dataLength = 0;
-
         int position = 12;
         while (position + 8 <= data.Length)
         {
@@ -243,6 +263,22 @@ public static class AudioDecoders
                 break;
             position += (int)advance;
         }
+        return haveFormat;
+    }
+
+    private static bool TryDecodeWav(ReadOnlySpan<byte> data, out AudioClipData? clip, out string? error)
+    {
+        clip = null;
+        error = null;
+
+        if (data.Length < 12 || !Is(data, 0, "RIFF") || !Is(data, 8, "WAVE"))
+        {
+            error = "this is not a WAV file.";
+            return false;
+        }
+
+        bool haveFormat = TryReadWavLayout(data, out ushort formatTag, out int channels, out int sampleRate, out int bits,
+            out int dataOffset, out int dataLength);
 
         if (!haveFormat)
         {

@@ -30,7 +30,7 @@ public static class SyncMemberEditorBuilder
         float rowHeight = IsTextureRef(member) ? 96f : InspectorUI.RowHeight;
         var row = InspectorUI.FixedRow(container, name, rowHeight, out var ui, themeContext);
 
-        // Gripping the row pulls a card for the member itself, so drive/ref targets can consume it.
+        // The chip pulls a card for the member itself, so drive/ref targets can consume it.
         ReferenceProxySource? proxySource = null;
         if (member is IWorldElement memberElement)
         {
@@ -184,6 +184,7 @@ public static class SyncMemberEditorBuilder
             slider.Min.Value = range.Min;
             slider.Max.Value = range.Max;
             slider.WholeNumbers.Value = IsInteger(type);
+            slider.Format.Value = range.TextFormat ?? "";
             slider.Setup(field, path, ui);
             return;
         }
@@ -288,8 +289,10 @@ public static class WorkerInspectorBuilder
         }
     }
 
-    // every public parameterless void [SyncMethod] renders as one full-width clickable row.
-    // base plumbing stays hidden since it never carries the attribute on parameterless methods.
+    // every public void [SyncMethod] whose parameters are all simple values renders as a clickable row.
+    // a lone value sits on the button's own row; two or more get an indented row each under the button,
+    // labelled with the parameter's name, all seeded with the declared defaults.
+    // base plumbing stays hidden since its [SyncMethod]s take UI objects, which no row can carry.
     // a "Swap Type" row leads the set when the component has interchangeable siblings.
     public static void BuildMethodRows(Component component, Slot container, Slot themeContext)
     {
@@ -299,31 +302,97 @@ public static class WorkerInspectorBuilder
         {
             if (method.IsSpecialName || method.ReturnType != typeof(void))
                 continue;
-            if (method.GetParameters().Length != 0)
+            var parameters = method.GetParameters();
+            if (!InspectorMethodArgument.AreSupported(parameters))
                 continue;
             if (method.GetCustomAttribute<SyncMethodAttribute>() == null)
                 continue;
-
-            InspectorUI.FixedRow(container, method.Name, InspectorUI.RowHeight, out var ui, themeContext);
-            ui.PushStyle();
-            ui.FlexibleWidth(1f);
-            ui.TextColor(InspectorUI.AccentColor);
-            var button = ui.Button($"{method.Name}()", null!);
-            var relay = button.Slot.AttachComponent<InspectorMethodButton>();
-            relay.Target.Target = component;
-            relay.MethodName.Value = method.Name;
-            button.SetAction(relay.OnPressed);
-            var text = button.Slot.GetComponentInChildren<Text>();
-            if (text != null)
-            {
-                InspectorUI.FillParent(text.RectTransform!);
-                text.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
-                var rect = text.RectTransform;
-                if (rect != null)
-                    rect.OffsetMin.Value = new Lumora.Core.Math.float2(10f, 0f);
-            }
-            ui.PopStyle();
+            BuildMethodRow(component, method, parameters, container, themeContext);
         }
+    }
+
+    private const float ArgumentWidth = 170f;
+
+    private static void BuildMethodRow(Component component, MethodInfo method, ParameterInfo[] parameters, Slot container, Slot themeContext)
+    {
+        InspectorUI.FixedRow(container, method.Name, InspectorUI.RowHeight, out var ui, themeContext);
+        ui.PushStyle();
+        ui.FlexibleWidth(1f);
+        ui.TextColor(InspectorUI.AccentColor);
+        var names = new string[parameters.Length];
+        for (int i = 0; i < parameters.Length; i++)
+            names[i] = parameters[i].Name ?? $"arg{i}";
+        var button = ui.Button($"{method.Name}({string.Join(", ", names)})", null!);
+        var relay = button.Slot.AttachComponent<InspectorMethodButton>();
+        relay.Target.Target = component;
+        relay.MethodName.Value = method.Name;
+        button.SetAction(relay.OnPressed);
+        var text = button.Slot.GetComponentInChildren<Text>();
+        if (text != null)
+        {
+            InspectorUI.FillParent(text.RectTransform!);
+            text.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+            var rect = text.RectTransform;
+            if (rect != null)
+                rect.OffsetMin.Value = new Lumora.Core.Math.float2(10f, 0f);
+        }
+        ui.PopStyle();
+
+        if (parameters.Length == 1)
+        {
+            ui.PushStyle();
+            ui.MinWidth(ArgumentWidth);
+            ui.PreferredWidth(ArgumentWidth);
+            ui.FlexibleWidth(0f);
+            relay.Arguments.Add(BuildArgument(parameters[0], ui));
+            ui.PopStyle();
+            return;
+        }
+
+        foreach (var parameter in parameters)
+        {
+            InspectorUI.FixedRow(container, parameter.Name ?? "Argument", InspectorUI.RowHeight, out var argumentUi, themeContext);
+            argumentUi.PushStyle();
+            argumentUi.MinWidth(24f);
+            argumentUi.PreferredWidth(24f);
+            argumentUi.FlexibleWidth(0f);
+            argumentUi.Next("Indent");
+            argumentUi.PopStyle();
+
+            argumentUi.PushStyle();
+            argumentUi.MinWidth(150f);
+            argumentUi.PreferredWidth(166f);
+            argumentUi.FlexibleWidth(0f);
+            var label = argumentUi.Text($"{parameter.Name}:", InspectorUI.FontSize, InspectorUI.MutedColor);
+            InspectorUI.FillParent(label.RectTransform!);
+            label.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+            label.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            argumentUi.PopStyle();
+
+            argumentUi.PushStyle();
+            argumentUi.FlexibleWidth(1f);
+            relay.Arguments.Add(BuildArgument(parameter, argumentUi));
+            argumentUi.PopStyle();
+        }
+    }
+
+    // The value's editor gets a slot of its own with a layout, or its input sits as the default centred chunk.
+    // Inside it the widths start over, so the host's fixed width does not stretch every piece of the editor.
+    private static InspectorMethodArgument BuildArgument(ParameterInfo parameter, UIBuilder ui)
+    {
+        var host = ui.Next(parameter.Name ?? "Argument");
+        var layout = host.AttachComponent<Helio.UI.Layout.HorizontalLayout>();
+        layout.ForceExpandHeight.Value = true;
+        var argument = host.AttachComponent<InspectorMethodArgument>();
+        ui.NestInto(host);
+        ui.PushStyle();
+        ui.MinWidth(0f);
+        ui.PreferredWidth(0f);
+        ui.FlexibleWidth(1f);
+        argument.Setup(parameter, ui);
+        ui.PopStyle();
+        ui.NestOut();
+        return argument;
     }
 
     // Only rendered for a component that HAS siblings to swap to, so the row never appears as a dead

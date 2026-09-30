@@ -97,7 +97,7 @@ public sealed class AudioClip : LoadableAsset
 
     // Only a hint. A content-addressed address carries no extension at all, and the decoder sniffs
     // the bytes anyway, so a wrong or missing answer here costs nothing.
-    private static string? ExtensionOf(Uri? url)
+    internal static string? ExtensionOf(Uri? url)
     {
         if (url == null)
             return null;

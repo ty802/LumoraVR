@@ -29,6 +29,14 @@ public sealed class WorldAudioManager : IDisposable
     private readonly List<AudioListenerVoice> _excludedScratch = new();
     private readonly List<VoicePermission> _voicePermissions = new();
     private readonly List<User> _userScratch = new();
+    private readonly List<ReverbZone> _zones = new();
+    private readonly List<ZoneWeight> _zoneWeights = new();
+    private readonly List<IAudioDspFilter> _chain = new();
+    private readonly List<IAudioDspFilter> _dropped = new();
+    private readonly HashSet<IAudioDspFilter> _claimed = new(ReferenceEqualityComparer.Instance);
+
+    // Deeper than this a blend of a blend of a blend is refused rather than walked.
+    private const int MaxEffectNesting = 8;
 
     // The local microphone setting as of the last frame this world saw it. A CHANGE is what pushes into
     // User.IsMuted; the raw value is not, because IsMuted also carries the host's mute and pushing the
@@ -98,6 +106,23 @@ public sealed class WorldAudioManager : IDisposable
         output.InManager = false;
         _outputs.Remove(output);
         DropOutputVoice(output);
+    }
+
+    internal void RegisterZone(ReverbZone zone)
+    {
+        if (_disposed || zone == null || zone.InManager)
+            return;
+        zone.InManager = true;
+        _zones.Add(zone);
+    }
+
+    // The zone's reverbs are not dropped here: each listener carrying one keeps it until its tail is out.
+    internal void UnregisterZone(ReverbZone zone)
+    {
+        if (zone == null || !zone.InManager)
+            return;
+        zone.InManager = false;
+        _zones.Remove(zone);
     }
 
     internal void RegisterVoicePermission(VoicePermission permission)
@@ -172,13 +197,17 @@ public sealed class WorldAudioManager : IDisposable
 
         float step = (float)delta;
         UpdateListeners(space, step);
+        // After the listeners, because a zone's weight is measured from where each ear is this frame.
+        UpdateEffectChains(space);
         // After the listeners, because the distance every user is measured at is the ear position this
         // pass just wrote, and before the outputs, because the manager on each avatar reads the mode and
         // the distance while it drives its emitter.
         UpdateUsers();
         ProcessOutputQueues(space);
         RefreshExclusions();
+        // Builds each output's own chain after the ears have claimed theirs.
         UpdateOutputs(step);
+        ReleaseDroppedFilters();
     }
 
     // PER-USER VOICE STATE
@@ -214,8 +243,13 @@ public sealed class WorldAudioManager : IDisposable
 
             // Only the person speaking or the host may write the mode, so only they may clamp it. A guest
             // watching someone over the cap just reads the capped value through ActiveVoiceMode's caller.
+            // The host enforcing a voice cap on someone else's record is policy, not an edit, so it takes
+            // the system scope the social freeze would otherwise refuse it.
             if ((authority || isLocal) && user.VoiceMode > cap)
-                user.VoiceMode = cap;
+            {
+                using (authority && !isLocal ? _world.DataModelPermissions?.EnterSystemBypass() : null)
+                    user.VoiceMode = cap;
+            }
 
             user.SetDistanceToLocalUserHead(DistanceTo(user, localUser, ear, hasEar));
         }
@@ -392,6 +426,306 @@ public sealed class WorldAudioManager : IDisposable
         HasPrimaryEar = sawEar;
     }
 
+    // EFFECT CHAINS
+    //
+    // Rebuilt for every rendering ear and every sounding output every frame and handed to the voice only
+    // when it differs from what the voice already has. An ear's chain is the listener's own effects in list
+    // order, then the reverb of every zone the ear stands in, highest priority leading; an output's is its
+    // own effects in list order, run on its sound before any ear hears it. Rebuilding is a walk over a
+    // handful of references, and it is what makes an entry that was switched off, destroyed or retargeted
+    // drop out without any of them having to say so.
+    //
+    // A filter holds one room's state, so it can run in one place per frame, and the claims are shared by
+    // every chain in the world: the ear at the machine is served ahead of the other ears, and every ear
+    // ahead of the outputs. An effect already claimed is skipped everywhere after, and a blend whose nested
+    // effect is taken (or leads back to itself) runs dry. A filter that drops out of every chain is cleared
+    // once all of them are built, so switching an effect back on starts a fresh room instead of the tail it
+    // was cut off in. -xlinka
+    private void UpdateEffectChains(AudioSpace space)
+    {
+        PruneZones();
+        _claimed.Clear();
+        int sampleRate = space.Simulator.SampleRate;
+        for (int pass = 0; pass < 2; pass++)
+        {
+            bool bound = pass == 0;
+            for (int i = 0; i < _listeners.Count; i++)
+            {
+                var listener = _listeners[i];
+                var voice = listener.Voice;
+                if (voice == null || listener.BoundToDevice != bound)
+                    continue;
+                BuildChain(listener, voice, sampleRate);
+            }
+        }
+    }
+
+    private void ReleaseDroppedFilters()
+    {
+        for (int i = 0; i < _dropped.Count; i++)
+        {
+            if (!_claimed.Contains(_dropped[i]))
+                _dropped[i].Reset();
+        }
+        _dropped.Clear();
+    }
+
+    private void BuildChain(AudioListener listener, AudioListenerVoice voice, int sampleRate)
+    {
+        _chain.Clear();
+        var effects = listener.Effects;
+        for (int i = 0; i < effects.Count; i++)
+        {
+            var effect = effects[i];
+            if (effect != null && Claim(effect, 0))
+                _chain.Add(effect.Filter);
+        }
+
+        UpdateZoneVoices(listener, sampleRate);
+        var zones = listener.ZoneVoices;
+        for (int i = 0; i < zones.Count; i++)
+            _chain.Add(zones[i].Blend);
+
+        if (Swap(listener.PushedEffects))
+            voice.SetEffects(_chain);
+    }
+
+    private void BuildOutputChain(AudioOutput output, AudioOutputVoice voice)
+    {
+        _chain.Clear();
+        var effects = output.Effects;
+        for (int i = 0; i < effects.Count; i++)
+        {
+            var effect = effects[i];
+            if (effect != null && Claim(effect, 0))
+                _chain.Add(effect.Filter);
+        }
+
+        if (Swap(output.PushedEffects))
+            voice.SetEffects(_chain);
+    }
+
+    // False when _chain is what the voice already has. Otherwise records it as handed over and queues every
+    // filter it no longer holds.
+    private bool Swap(List<IAudioDspFilter> pushed)
+    {
+        bool same = pushed.Count == _chain.Count;
+        for (int i = 0; same && i < pushed.Count; i++)
+            same = ReferenceEquals(pushed[i], _chain[i]);
+        if (same)
+            return false;
+        for (int i = 0; i < pushed.Count; i++)
+        {
+            if (!_chain.Contains(pushed[i]))
+                _dropped.Add(pushed[i]);
+        }
+        pushed.Clear();
+        pushed.AddRange(_chain);
+        return true;
+    }
+
+    private bool Claim(AudioEffect effect, int depth)
+    {
+        if (!effect.IsEffectActive)
+            return false;
+        var filter = effect.Filter;
+        if (!_claimed.Add(filter))
+            return false;
+        if (effect is AudioEffectBlend blend)
+        {
+            var nested = blend.Effect.Target;
+            bool bound = nested != null && depth < MaxEffectNesting && Claim(nested, depth + 1);
+            blend.BindNested(bound ? nested!.Filter : null);
+        }
+        return true;
+    }
+
+    // ZONES
+    //
+    // Each ear weighs every zone from where it stands (ReverbZone.WeightAt), then the weights are shared
+    // out by priority so they never add up to more than 1: the highest priority takes what it asks for,
+    // each lower one gets at most what is left, and zones of one priority that ask for more than is left
+    // are scaled down together in proportion. So a booth inside a hall is the booth alone once you are in
+    // it, the two crossfade across the booth's blend band, and two equal rooms overlapping share the
+    // overlap instead of doubling it. A reverb whose weight has gone to 0 stays in the chain until its
+    // blend reports the tail has died, so leaving a room never cuts one off. -xlinka
+    private void UpdateZoneVoices(AudioListener listener, int sampleRate)
+    {
+        var voices = listener.ZoneVoices;
+        var weights = _zoneWeights;
+        weights.Clear();
+        if (_zones.Count > 0)
+        {
+            float3 ear = listener.LastPosition;
+            for (int z = 0; z < _zones.Count; z++)
+            {
+                var zone = _zones[z];
+                if (!zone.IsZoneActive)
+                    continue;
+                float weight = zone.WeightAt(ear);
+                if (weight > 0f)
+                    weights.Add(new ZoneWeight(zone, weight, zone.Priority.Value, zone.ReferenceID.RawValue));
+            }
+            ShareWeights(weights);
+        }
+
+        for (int v = 0; v < voices.Count; v++)
+            voices[v].Weight = 0f;
+        for (int w = 0; w < weights.Count; w++)
+        {
+            var entry = weights[w];
+            if (!(entry.Weight > 0f))
+                continue;
+            ZoneVoice? voice = null;
+            for (int v = 0; v < voices.Count; v++)
+            {
+                if (ReferenceEquals(voices[v].Zone, entry.Zone))
+                {
+                    voice = voices[v];
+                    break;
+                }
+            }
+            if (voice == null)
+            {
+                voice = new ZoneVoice(entry.Zone, sampleRate);
+                voices.Add(voice);
+            }
+            voice.Weight = entry.Weight;
+        }
+
+        for (int v = voices.Count - 1; v >= 0; v--)
+        {
+            var voice = voices[v];
+            // Idle speaks for the weight last written, so a voice is only dropped once it has sat at 0
+            // for a whole render with nothing left ringing.
+            if (voice.Weight == 0f && voice.Blend.Weight == 0f && voice.Blend.IsIdle)
+            {
+                voices.RemoveAt(v);
+                continue;
+            }
+            var zone = voice.Zone;
+            if (!zone.IsDestroyed)
+            {
+                voice.Priority = zone.Priority.Value;
+                if (voice.SettingsVersion != zone.SettingsVersion)
+                {
+                    voice.SettingsVersion = zone.SettingsVersion;
+                    voice.Reverb.Settings = zone.Settings;
+                }
+            }
+            voice.Blend.Weight = voice.Weight;
+        }
+
+        // Highest priority leading, then by id, so one zone always sits in the same place in the chain.
+        for (int i = 1; i < voices.Count; i++)
+        {
+            var moving = voices[i];
+            int j = i - 1;
+            while (j >= 0 && Before(moving, voices[j]))
+            {
+                voices[j + 1] = voices[j];
+                j--;
+            }
+            voices[j + 1] = moving;
+        }
+    }
+
+    private static bool Before(ZoneVoice a, ZoneVoice b)
+        => a.Priority != b.Priority ? a.Priority > b.Priority : a.Order < b.Order;
+
+    private static void ShareWeights(List<ZoneWeight> weights)
+    {
+        for (int i = 1; i < weights.Count; i++)
+        {
+            var moving = weights[i];
+            int j = i - 1;
+            while (j >= 0 && (moving.Priority > weights[j].Priority
+                              || (moving.Priority == weights[j].Priority && moving.Order < weights[j].Order)))
+            {
+                weights[j + 1] = weights[j];
+                j--;
+            }
+            weights[j + 1] = moving;
+        }
+
+        float left = 1f;
+        int start = 0;
+        while (start < weights.Count)
+        {
+            int priority = weights[start].Priority;
+            int end = start;
+            float asked = 0f;
+            while (end < weights.Count && weights[end].Priority == priority)
+            {
+                asked += weights[end].Weight;
+                end++;
+            }
+            float scale = asked > left ? (asked > 0f ? left / asked : 0f) : 1f;
+            for (int k = start; k < end; k++)
+            {
+                var entry = weights[k];
+                entry.Weight *= scale;
+                weights[k] = entry;
+            }
+            left = MathF.Max(0f, left - MathF.Min(asked, left));
+            start = end;
+        }
+    }
+
+    private void PruneZones()
+    {
+        for (int i = _zones.Count - 1; i >= 0; i--)
+        {
+            var zone = _zones[i];
+            if (zone == null || zone.IsDestroyed)
+            {
+                if (zone != null)
+                    zone.InManager = false;
+                _zones.RemoveAt(i);
+            }
+        }
+    }
+
+    // How strongly one zone applies to one ear this frame.
+    private struct ZoneWeight
+    {
+        public readonly ReverbZone Zone;
+        public float Weight;
+        public readonly int Priority;
+        public readonly ulong Order;
+
+        public ZoneWeight(ReverbZone zone, float weight, int priority, ulong order)
+        {
+            Zone = zone;
+            Weight = weight;
+            Priority = priority;
+            Order = order;
+        }
+    }
+
+    // One zone's reverb as one ear hears it: that ear's own copy of the room, behind a blend at the
+    // weight the ear is at. A zone destroyed while its tail rings keeps the priority and place it had.
+    internal sealed class ZoneVoice
+    {
+        public readonly ReverbZone Zone;
+        public readonly ReverbFilter Reverb;
+        public readonly BlendFilter Blend;
+        public readonly ulong Order;
+        public int SettingsVersion;
+        public int Priority;
+        public float Weight;
+
+        public ZoneVoice(ReverbZone zone, int sampleRate)
+        {
+            Zone = zone;
+            Reverb = new ReverbFilter(sampleRate, zone.Settings);
+            Blend = new BlendFilter(Reverb);
+            Order = zone.ReferenceID.RawValue;
+            SettingsVersion = zone.SettingsVersion;
+            Priority = zone.Priority.Value;
+        }
+    }
+
     private void ProcessOutputQueues(AudioSpace space)
     {
         for (int i = 0; i < _outputsToAddOrRemove.Count; i++)
@@ -476,7 +810,13 @@ public sealed class WorldAudioManager : IDisposable
             }
 
             if (output.Voice == null)
+            {
+                // The way back is the same: a slot coming active again or a user unblocked raises no change
+                // pass either, so an output without a voice is asked every frame whether it should have one.
+                if (output.ShouldBeEnabled)
+                    QueueAddOrRemove(output);
                 continue;
+            }
 
             // A slot deactivating (or a source dropping) does not raise a change pass on this component,
             // so the enabled test is re-read here rather than only when something is queued.
@@ -487,6 +827,7 @@ public sealed class WorldAudioManager : IDisposable
             }
 
             output.Voice.Update(output.BuildParams(delta));
+            BuildOutputChain(output, output.Voice);
         }
     }
 
@@ -496,6 +837,10 @@ public sealed class WorldAudioManager : IDisposable
         listener.Voice = null;
         listener.BoundToDevice = false;
         listener.HasLastPosition = false;
+        for (int i = 0; i < listener.PushedEffects.Count; i++)
+            listener.PushedEffects[i].Reset();
+        listener.PushedEffects.Clear();
+        listener.ZoneVoices.Clear();
         if (voice == null || _space == null)
             return;
         voice.BindToDevice(null);
@@ -508,8 +853,12 @@ public sealed class WorldAudioManager : IDisposable
         output.Voice = null;
         output.ClearPushedSource();
         output.HasLastPosition = false;
+        for (int i = 0; i < output.PushedEffects.Count; i++)
+            output.PushedEffects[i].Reset();
+        output.PushedEffects.Clear();
         if (voice == null || _space == null)
             return;
+        voice.SetEffects(null);
         voice.SetSource(null);
         _space.RemoveOutput(voice);
     }
@@ -558,6 +907,16 @@ public sealed class WorldAudioManager : IDisposable
         _excludedScratch.Clear();
         _voicePermissions.Clear();
         _userScratch.Clear();
+        for (int i = 0; i < _zones.Count; i++)
+        {
+            if (_zones[i] != null)
+                _zones[i].InManager = false;
+        }
+        _zones.Clear();
+        _zoneWeights.Clear();
+        _chain.Clear();
+        _claimed.Clear();
+        _dropped.Clear();
 
         var space = _space;
         _space = null;

@@ -58,9 +58,16 @@ public class AudioOutput : Component
     public readonly Sync<float> MinScale;
     public readonly Sync<float> MaxScale;
 
-    // Bypasses the listener's effect chain. UI and the user's own voice monitor want this: a reverb
-    // applied to the sound of your own menu is a room you are not standing in.
+    // Bypasses the listeners' effect chains. UI and the user's own voice monitor want this: a reverb
+    // applied to the sound of your own menu is a room you are not standing in. The output's own Effects
+    // still run.
     public readonly Sync<bool> IgnoreAudioEffects;
+
+    // Run in order on this output's own sound, once, before it is placed in the room: every ear hears the
+    // result, each from where it stands, so a radio filter or an echo belongs to this one speaker. An entry
+    // that is off, gone, or already running in another chain (a listener's or another output's) is skipped
+    // until it is free.
+    public readonly SyncRefList<AudioEffect> Effects;
 
     public readonly SyncRefList<AudioListener> ExcludedListeners;
 
@@ -71,6 +78,9 @@ public class AudioOutput : Component
     internal bool QueuedForUpdate;
     internal bool QueuedForAddRemove;
     internal bool ExclusionsDirty = true;
+
+    // What the voice was last handed as its own chain. This machine's own.
+    internal readonly List<IAudioDspFilter> PushedEffects = new();
 
     private IAudioDataSource? _pushedSource;
 
@@ -94,6 +104,7 @@ public class AudioOutput : Component
         MinScale = new Sync<float>(this, 0f);
         MaxScale = new Sync<float>(this, float.PositiveInfinity);
         IgnoreAudioEffects = new Sync<bool>(this, false);
+        Effects = new SyncRefList<AudioEffect>(this);
         ExcludedListeners = new SyncRefList<AudioListener>(this);
     }
 
@@ -110,6 +121,15 @@ public class AudioOutput : Component
            && ActiveUser?.IsAudioLocallyBlocked != true;
 
     public bool IsRegistered => Voice != null;
+
+    // How many filters this machine's mixer runs on this output's own sound. None while it has no voice here.
+    public int ActiveEffectCount => PushedEffects.Count;
+
+    // The last block this output actually produced, copied rather than consumed. This is what a
+    // visualiser reads: reading the SOURCE would advance a stream's cursor and take the audio out of
+    // the mixer's mouth. Returns how many samples were written. -xlinka
+    public int CopyMonitor(System.Span<Lumora.Audio.StereoSample> destination)
+        => Voice?.CopyMonitor(destination) ?? 0;
 
     public float ActualVolume
     {

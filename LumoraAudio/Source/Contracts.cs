@@ -22,8 +22,9 @@ public interface IAudioDataSource
     void Read(Span<StereoSample> buffer, AudioSimulator simulator);
 }
 
-// One stage of a listener's effect chain. Process runs on the audio thread, in place, on the
-// listener's mixed buffer, after every output for that listener has been summed. -xlinka
+// One stage of an effect chain. Process runs on the audio thread, in place: in a listener's chain on
+// its mixed buffer, after every output for that listener has been summed; in an output's chain on that
+// output's own sound, once per render, before it is positioned for anyone. -xlinka
 public interface IAudioDspFilter
 {
     bool Enabled { get; }
@@ -124,7 +125,7 @@ public struct AudioOutputParams
     public float3 Velocity;
     // 0..1, group and user volumes already folded in by the caller.
     public float Volume;
-    // Higher wins when the voice limit is hit. 128 is the reference default.
+    // Higher wins when the voice limit is hit. 128 is the default.
     public int Priority;
     public bool Spatialize;
     // 0 = plain stereo everywhere, 1 = fully positioned; in between blends the two mixes.

@@ -20,10 +20,11 @@ namespace Lumora.Audio;
 //     frame is impossible and no world-thread call ever waits on the mixer.
 //   - The audio thread renders one FrameSize block whenever PrimaryOutput.Device has room for it,
 //     otherwise it sleeps a millisecond. A render: run pre-render tasks, raise RenderStarted, for
-//     every active space, for every device-bound listener: sum every registered output (culled to
-//     MaxActiveOutputs by Priority then loudness) with its shape/spatialisation applied, run the
-//     listener's effect chain on the sum, add to the device mix; scale by PrimaryOutput.Volume,
-//     soft-clip, Write to the device. Outputs whose source IsActive is false cost nothing.
+//     every active space: pull every registered output (culled to MaxActiveOutputs by Priority then
+//     loudness) once and run its own effect chain on it, then for every listener: sum those outputs
+//     with their shape/spatialisation applied, run the listener's effect chain on the sum, add to the
+//     device mix; scale by PrimaryOutput.Volume, soft-clip, Write to the device. Outputs whose source
+//     IsActive is false cost nothing once their own chain has rung out.
 //   - Time: AudioFrameIndex advances by one per rendered frame, DspTime by FrameSize / SampleRate.
 // -xlinka
 public sealed class AudioSimulator : IDisposable
@@ -543,7 +544,7 @@ public sealed class AudioSpace
 }
 
 // An ear. Only listeners bound to a device produce sound; an unbound listener still mixes so its
-// CurrentBuffer can be read back as a source (the reference's "listener as data source"). -xlinka
+// CurrentBuffer can be read back as a source. -xlinka
 public sealed class AudioListenerVoice
 {
     internal AudioListenerVoice(AudioSpace space)
@@ -696,8 +697,17 @@ public sealed class AudioListenerVoice
     }
 }
 
-// A sound in the world. Source is pulled once per render (not once per listener), then the frame is
-// positioned per listener: shape gain, spatial blend, panning, doppler/pitch resampling. -xlinka
+// A sound in the world. Source is pulled once per render (not once per listener) and resampled for
+// doppler and pitch, the output's own effect chain runs on it, and then the frame is positioned per
+// listener: shape gain, spatial blend, panning.
+//
+// THE OUTPUT'S OWN CHAIN runs on the sound as it leaves the source, before it is placed anywhere, so a
+// radio filter on one speaker is heard through that speaker by every ear in the room, each from where it
+// stands, and costs one pass however many ears there are. The chain arrives as an array swapped in by
+// reference and never touched again by the world thread, so the audio thread takes it without a lock. A
+// chain that is still ringing when the source stops (an echo, a flanger's feedback) keeps the voice
+// running on silence until its tail is out: a filter that reports one is asked, and anything else is given
+// a quarter of a second after the chain's output has gone quiet. -xlinka
 public sealed class AudioOutputVoice
 {
     internal AudioOutputVoice(AudioSpace space)
@@ -711,6 +721,8 @@ public sealed class AudioOutputVoice
 
     private const int FifoFrames = 4;
     private const int MaxFeedBlocks = 96;
+    private const float SilenceFloor = 1e-6f;
+    private const double QuietSeconds = 0.25;
     private const double MinRate = 1.0 / 64.0;
     private const double MaxRate = 64.0;
     // A rate step of more than a few percent per frame is audible as a zip on a moving source.
@@ -744,7 +756,24 @@ public sealed class AudioOutputVoice
     private double _rate = 1.0;
     private bool _rateStarted;
     private bool _hasActiveSource;
+    private bool _sourceActive;
     private float _peak;
+
+    private IAudioDspFilter[] _stagedEffects = Array.Empty<IAudioDspFilter>();
+    private IAudioDspFilter[] _effects = Array.Empty<IAudioDspFilter>();
+    private bool _ringing;
+    private int _quietSamples;
+
+    // A MONITOR TAP, so a picture of a sound can be drawn without taking the sound.
+    //
+    // The obvious way to visualise a voice is to read its source, and it is wrong: a stream's Read
+    // advances a cursor, so a meter reading it is not watching the audio, it is eating it. The mixer
+    // is already holding the finished block, so it keeps a copy of the last one and anybody who wants
+    // to draw it copies that instead. Costs one memcpy per voice per frame and cannot disturb
+    // playback by construction. -xlinka
+    private readonly StereoSample[] _monitor = new StereoSample[1024];
+    private int _monitorCount;
+    private readonly object _monitorLock = new();
 
     public AudioSpace Space { get; }
 
@@ -766,8 +795,31 @@ public sealed class AudioOutputVoice
         }
     }
 
-    // Listeners that must not hear this output (the reference's ExcludedListeners: a user's own
-    // voice, a camera). Null = nobody excluded.
+    // Chain applied in order to this output's own sound before it is positioned; null or empty = none.
+    // A filter must not be in two chains at once. Lock-free: the list is copied into a fresh array here,
+    // on the caller's thread, and the audio thread picks the array up at the top of its next render.
+    public void SetEffects(IReadOnlyList<IAudioDspFilter>? effects)
+    {
+        int count = 0;
+        if (effects != null)
+        {
+            for (int i = 0; i < effects.Count; i++)
+            {
+                if (effects[i] != null) count++;
+            }
+        }
+        IAudioDspFilter[] chain = count == 0 ? Array.Empty<IAudioDspFilter>() : new IAudioDspFilter[count];
+        int at = 0;
+        for (int i = 0; at < count; i++)
+        {
+            IAudioDspFilter filter = effects![i];
+            if (filter != null) chain[at++] = filter;
+        }
+        Volatile.Write(ref _stagedEffects, chain);
+    }
+
+    // Listeners that must not hear this output (a user's own voice, a camera). Null = nobody
+    // excluded.
     public void SetExcludedListeners(IReadOnlyCollection<AudioListenerVoice>? excluded)
     {
         lock (_paramLock)
@@ -789,6 +841,18 @@ public sealed class AudioOutputVoice
     // Loudness the mixer measured on the last frame this output was rendered, for culling and meters.
     public float LastPeakAmplitude => _peak;
 
+    // Copies the most recent block this voice produced. Returns how many samples were written; zero
+    // means the voice has not produced anything yet.
+    public int CopyMonitor(Span<StereoSample> destination)
+    {
+        lock (_monitorLock)
+        {
+            int n = System.Math.Min(destination.Length, _monitorCount);
+            _monitor.AsSpan(0, n).CopyTo(destination);
+            return n;
+        }
+    }
+
     // What the last render applied for the device-bound listener, for reading a silent output off the log.
 
     internal int Priority => _current.Priority;
@@ -797,6 +861,7 @@ public sealed class AudioOutputVoice
 
     internal void ApplyStaged()
     {
+        _effects = Volatile.Read(ref _stagedEffects);
         lock (_paramLock)
         {
             if (_paramsDirty)
@@ -840,13 +905,14 @@ public sealed class AudioOutputVoice
     {
         _peak = 0f;
         IAudioDataSource? source = _source;
-        if (source == null)
+        bool active = false;
+        if (source != null)
         {
-            _hasActiveSource = false;
-            return;
+            try { active = source.IsActive; }
+            catch { active = false; }
         }
-        try { _hasActiveSource = source.IsActive; }
-        catch { _hasActiveSource = false; }
+        _sourceActive = active;
+        _hasActiveSource = active || (_ringing && _effects.Length > 0);
     }
 
     internal float Audibility(List<AudioListenerVoice> listeners)
@@ -874,30 +940,34 @@ public sealed class AudioOutputVoice
     {
         IAudioDataSource? source = _source;
         Span<StereoSample> scratch = _scratch.AsSpan(0, frame);
-        if (source == null)
+        if (source == null || !_sourceActive)
         {
+            // Only reached while the output's own chain rings out: it is fed silence.
             scratch.Clear();
-            return;
         }
-
-        AdvanceRate(dopplerListener);
-
-        int produced = 0;
-        int blocks = 0;
-        while (produced < frame && blocks < MaxFeedBlocks)
+        else
         {
-            produced += _fifo.Read(scratch.Slice(produced), ref _fifoPosition, _rate, ref _fifoFraction, ref _fifoLast);
-            if (produced >= frame) break;
+            AdvanceRate(dopplerListener);
 
-            Span<StereoSample> block = _block.AsSpan(0, frame);
-            try { source.Read(block, simulator); }
-            catch { block.Clear(); }
-            _fifo.Put(block);
-            blocks++;
+            int produced = 0;
+            int blocks = 0;
+            while (produced < frame && blocks < MaxFeedBlocks)
+            {
+                produced += _fifo.Read(scratch.Slice(produced), ref _fifoPosition, _rate, ref _fifoFraction, ref _fifoLast);
+                if (produced >= frame) break;
+
+                Span<StereoSample> block = _block.AsSpan(0, frame);
+                try { source.Read(block, simulator); }
+                catch { block.Clear(); }
+                _fifo.Put(block);
+                blocks++;
+            }
+
+            if (produced < frame) scratch.Slice(produced).Clear();
+            SampleBuffers.Sanitize(scratch.Slice(0, frame));
         }
 
-        if (produced < frame) scratch.Slice(produced).Clear();
-        SampleBuffers.Sanitize(scratch.Slice(0, frame));
+        bool tail = RunEffects(scratch, simulator.SampleRate);
 
         float peak = 0f;
         for (int i = 0; i < frame; i++)
@@ -906,6 +976,54 @@ public sealed class AudioOutputVoice
             if (amplitude > peak) peak = amplitude;
         }
         _peak = float.IsFinite(peak) ? peak : 0f;
+
+        if (_effects.Length == 0)
+        {
+            _ringing = false;
+        }
+        else
+        {
+            _quietSamples = _peak > SilenceFloor ? 0 : System.Math.Min(int.MaxValue / 2, _quietSamples + frame);
+            _ringing = tail || _quietSamples < QuietSeconds * simulator.SampleRate;
+        }
+
+        lock (_monitorLock)
+        {
+            int n = System.Math.Min(frame, _monitor.Length);
+            scratch.Slice(0, n).CopyTo(_monitor);
+            _monitorCount = n;
+        }
+    }
+
+    // Once per render, in place on the pulled frame. True when a filter in it reported sound still to come.
+    private bool RunEffects(Span<StereoSample> buffer, int sampleRate)
+    {
+        IAudioDspFilter[] effects = _effects;
+        if (effects.Length == 0) return false;
+
+        bool tail = false;
+        for (int i = 0; i < effects.Length; i++)
+        {
+            IAudioDspFilter filter = effects[i];
+            bool enabled;
+            try { enabled = filter.Enabled; }
+            catch { enabled = false; }
+            if (!enabled) continue;
+            try
+            {
+                filter.Process(buffer, sampleRate);
+                if (filter is IAudioTailFilter ringing && ringing.HasTail) tail = true;
+            }
+            catch
+            {
+                // A filter that threw has left the buffer in an unknown state; silence beats noise.
+                buffer.Clear();
+                tail = false;
+                break;
+            }
+        }
+        SampleBuffers.Sanitize(buffer);
+        return tail;
     }
 
     internal void MixInto(AudioListenerVoice listener, int frame)

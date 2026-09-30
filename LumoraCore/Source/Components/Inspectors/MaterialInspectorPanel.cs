@@ -12,6 +12,7 @@ using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.UI;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Math;
+using Lumora.Core.Scripting;
 
 namespace Lumora.Core.Components;
 
@@ -35,6 +36,7 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
 
     private bool _rowsDirty;
     private bool _hadShaderSource;
+    private bool _graphWasOpen;
     private CustomShaderMaterial? _hookedMaterial;
 
     public MaterialInspectorPanel()
@@ -57,6 +59,11 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
             SourceExpanded.Value = !SourceExpanded.Value;
             _rowsDirty = true;
             MarkChangeDirty();
+            return;
+        }
+        if (argument == "togglegraph" && Target.Target is CustomShaderMaterial { Shader.Target: ShaderGraphSource graph })
+        {
+            ShaderGraphMaterials.SetOpen(graph, !graph.IsGraphOpen);
             return;
         }
         if (argument == "destroymat" && Target.Target is { IsDestroyed: false } material)
@@ -180,6 +187,12 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
                 _rowsDirty = true;
                 MarkChangeDirty();
             }
+            // The node tool opens and closes the graph too, so the button follows it from here.
+            if (custom.Shader.Target is ShaderGraphSource graph && graph.IsGraphOpen != _graphWasOpen)
+            {
+                _rowsDirty = true;
+                MarkChangeDirty();
+            }
         }
 
         NudgeUnregisteredEditor();
@@ -282,13 +295,14 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
         if (material == null || material.IsDestroyed)
             return;
 
-        // Gripping the header pulls the material's card (wired here, not BuildLayout: Target is only
-        // set after the shell builds).
+        // Gripping the title pulls the material's card (wired here, not BuildLayout: Target is only
+        // set after the shell builds). The title is plain text, so no press ever lands there by accident.
         if (title != null && !title.IsDestroyed)
         {
             var headerSource = title.Slot.GetComponent<ReferenceProxySource>()
                 ?? title.Slot.AttachComponent<ReferenceProxySource>();
             headerSource.Target.Target = material;
+            headerSource.GrabArea.Target = title.Slot;
         }
 
         var custom = material as CustomShaderMaterial;
@@ -349,9 +363,21 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
             catch { /* a broken body must not take the panel down; leave the host empty */ }
         }
 
+        // A graph writes this material's code, so the code is changed there. An edit applied from the source
+        // box would repoint the material at a hand-written copy and leave the graph wired to nothing. -xlinka
+        if (custom?.Shader.Target is ShaderGraphSource graph)
+        {
+            _graphWasOpen = graph.IsGraphOpen;
+            InspectorUI.SectionHeader(content, "SHADER GRAPH", Slot);
+            InspectorUI.FixedRow(content, "GraphToggle", InspectorUI.RowHeight, out var graphUi, Slot);
+            graphUi.PushStyle();
+            graphUi.TextColor(InspectorUI.AccentColor);
+            InspectorUI.RelayButton(graphUi, this, "togglegraph", _graphWasOpen ? "Close graph" : "Open graph", 0f);
+            graphUi.PopStyle();
+        }
         // Shader source LAST and FOLDED by default: the material reads as fields first, the code box is
         // an opt-in expansion so it stops dominating the panel. -xlinka
-        if (custom != null)
+        else if (custom != null)
         {
             InspectorUI.SectionHeader(content, "SHADER SOURCE", Slot);
             InspectorUI.FixedRow(content, "SourceToggle", InspectorUI.RowHeight, out var toggleUi, Slot);

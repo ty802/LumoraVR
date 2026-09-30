@@ -245,7 +245,10 @@ public sealed class GraphicsChunk
         public static readonly MaterialMapper ImageTexture =
             (rd, baseMaterial, key, usingDefault) =>
             {
-                if (key is not IAssetProvider<TextureAsset> texture)
+                // A texture destroyed between emit and submit (a rebuilt row taking its preview with it) is keyed
+                // on a submesh the next rebuild drops. Binding it to a material throws and aborts the whole submit
+                // cycle, so it goes out bare for this one submit. -xlinka
+                if (key is not IAssetProvider<TextureAsset> texture || texture.IsDestroyed)
                 {
                     return new MaterialMap(baseMaterial);
                 }

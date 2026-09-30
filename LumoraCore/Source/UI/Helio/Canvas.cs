@@ -10,6 +10,7 @@ using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Assets;
 using Lumora.Core.Components.Interaction;
+using Lumora.Core.Components.Touch;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 
@@ -17,7 +18,7 @@ namespace Helio.UI;
 
 // root of a UI tree. attach to a slot to make it (and descendants) a UI subtree. - xlinka
 [ComponentCategory("UI/Helio")]
-public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSecondaryTarget
+public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSecondaryTarget, ITouchSurface
 {
     private sealed class PointerState
     {
@@ -29,6 +30,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         // press off to a scrolling ancestor this gesture.
         public float2 PressPoint;
         public bool Transferred;
+        // A laser press a finger took over: held down until the trigger comes up, so the same squeeze
+        // cannot re-press once the finger leaves.
+        public bool PressSuppressed;
     }
 
     private readonly Dictionary<int, PointerState> _pointers = new();
@@ -64,6 +68,11 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // Opt-in: size a BoxCollider on the canvas slot to the aggregated UI bounds, for physical/grab
     // interaction against the surface. Off by default - leaves hit-testing on the existing raycast path. -xlinka
     public readonly Sync<bool> SizeCollider = new();
+
+    // A fingertip pushed through the face presses whatever it lands on (CanvasTouchSource). Off for a
+    // panel that only wants the laser: one standing where hands pass through it, or one whose buttons are
+    // too small to poke. -xlinka
+    public readonly Sync<bool> AcceptPhysicalTouch = new(true);
 
     // Metres past which this canvas stops drawing. 0 = draws at any distance, which is the default and what
     // a dashboard held in front of your face wants. A panel standing in a world is a different thing: nobody
@@ -194,6 +203,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     {
         if (!_sharedImageBlocks.TryGetValue(texture, out var block) || block.IsDestroyed)
         {
+            ForgetDestroyedTextures(_sharedImageBlocks);
             block = Slot.AddLocalSlot("ImageBlock").AttachComponent<MainTexturePropertyBlock>();
             block.Texture.Target = texture;
             _sharedImageBlocks[texture] = block;
@@ -209,6 +219,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     {
         if (!_sharedImageMaterials.TryGetValue(texture, out var material) || material.IsDestroyed)
         {
+            ForgetDestroyedTextures(_sharedImageMaterials);
             material = Slot.AddLocalSlot("ImageMaterial").AttachComponent<UIUnlitMaterial>();
             material.Texture.Target = texture;
             material.Culling.Value = Culling.None;
@@ -220,6 +231,29 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             _sharedImageMaterials[texture] = material;
         }
         return material;
+    }
+
+    // A rebuilt row with a picture brings a texture provider of its own, and the old one's shared material
+    // outlived it: a material panel rebuilt six times held nine. Swept whenever a new texture comes in, so
+    // these stay the size of the textures still shown. Surfaces draw from the chunks' own clones, and a
+    // destroyed texture never reaches these lookups again, so nothing reads a swept one. -xlinka
+    private static void ForgetDestroyedTextures<T>(Dictionary<IAssetProvider<TextureAsset>, T> shared) where T : Component
+    {
+        List<IAssetProvider<TextureAsset>>? gone = null;
+        foreach (var pair in shared)
+        {
+            if (pair.Key.IsDestroyed)
+                (gone ??= new List<IAssetProvider<TextureAsset>>()).Add(pair.Key);
+        }
+        if (gone == null)
+            return;
+        foreach (var texture in gone)
+        {
+            var holder = shared[texture];
+            if (!holder.IsDestroyed)
+                holder.Slot.Destroy();
+            shared.Remove(texture);
+        }
     }
     // Nested chunks tessellated this rebuild, submitted after the compute pass. Split
     // so the compute (mesh build) can move to a worker while submit/upload stays on
@@ -667,6 +701,28 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         }
         state.LastContext = context;
 
+        // A finger on this panel owns that hand's press: the laser from the same hand keeps hovering but
+        // cannot press, and a press it already had is dropped without a submit, or the trigger squeezed
+        // while poking would fire whatever the beam happens to be resting on. The drop happens the frame
+        // the poke lands, not on the laser's next update: an element carries one pressed flag, and a
+        // late laser release would clear the press the finger is still holding. -xlinka
+        if (state.PressSuppressed)
+        {
+            if (isPressed)
+                isPressed = false;
+            else
+                state.PressSuppressed = false;
+        }
+        if (isPressed && TouchPressSuppressesLaser(source))
+        {
+            isPressed = false;
+            CancelPress(state, in context);
+        }
+        else if (source == UIInteractionSource.Touch && isPressed && !state.IsPressed)
+        {
+            CancelLaserPress(CanvasTouchSource.SideOf(pointerId), in context);
+        }
+
         if (!ReferenceEquals(state.Hovered, hovered))
         {
             state.Hovered?.NotifyHoverExit(in context);
@@ -822,6 +878,111 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         state.Hovered?.NotifyHoverExit(in context);
         state.Pressed?.NotifyRelease(in context);
         _pointers.Remove(key);
+    }
+
+    // Drop every pointer at once, cancelling any press without a submit. For a canvas that has just been
+    // picked up: the trigger that was down on a key when the hand closed must not fire that key on the
+    // way out. The pointers re-register themselves on their next update. -xlinka
+    public void ReleaseAllPointers()
+    {
+        if (_pointers.Count == 0)
+            return;
+        foreach (var pointer in _pointers)
+        {
+            var context = new UIInteractionContext(this, UIInteractionSource.Unknown, pointer.Key, float2.Zero, float3.Zero, float3.Zero, float3.Zero, 0f);
+            pointer.Value.Hovered?.NotifyHoverExit(in context);
+            pointer.Value.Pressed?.NotifyRelease(in context);
+        }
+        _pointers.Clear();
+    }
+
+    private static void CancelPress(PointerState state, in UIInteractionContext context)
+    {
+        state.PressSuppressed = true;
+        if (!state.IsPressed)
+            return;
+        state.Pressed?.NotifyRelease(in context);
+        state.Pressed = null;
+        state.IsPressed = false;
+    }
+
+    // Lasers hover under VRLeft/1 and VRRight/2 (InteractionLaser.GetPointerId) whichever surface routed
+    // them here, the dash included.
+    private void CancelLaserPress(Chirality side, in UIInteractionContext context)
+    {
+        if (side == Chirality.None)
+            return;
+        var laserSource = side == Chirality.Left ? UIInteractionSource.VRLeft : UIInteractionSource.VRRight;
+        int laserId = side == Chirality.Left ? 1 : 2;
+        if (_pointers.TryGetValue(PointerKey(laserSource, laserId), out var laser))
+            CancelPress(laser, in context);
+    }
+
+    private bool TouchPressSuppressesLaser(UIInteractionSource source)
+    {
+        var side = source switch
+        {
+            UIInteractionSource.VRLeft => Chirality.Left,
+            UIInteractionSource.VRRight => Chirality.Right,
+            _ => Chirality.None,
+        };
+        if (side == Chirality.None)
+            return false;
+        return _pointers.TryGetValue(PointerKey(UIInteractionSource.Touch, CanvasTouchSource.PointerIdFor(side)), out var touch)
+            && touch.IsPressed;
+    }
+
+    // Whether a fingertip is pressing this canvas right now, by hand.
+    public bool IsTouchPressed(Chirality side)
+        => _pointers.TryGetValue(PointerKey(UIInteractionSource.Touch, CanvasTouchSource.PointerIdFor(side)), out var touch) && touch.IsPressed;
+
+    bool ITouchSurface.AcceptsPhysicalTouch => AcceptPhysicalTouch.Value;
+
+    // The finger line against the z=0 plane, into the readable face (+Z side), inside the root rect. The
+    // distance is the ray's own parameter, so the source reads depth off it in metres whatever the panel
+    // scale. -xlinka
+    public bool TryTouchProject(in float3 rayOrigin, in float3 rayDirection, float rayLength, out TouchSurfaceHit hit)
+    {
+        hit = default;
+        EnsureRoot();
+        if (_rootRect == null || Slot == null || !Slot.IsActive)
+            return false;
+
+        var localOrigin = Slot.GlobalPointToLocal(rayOrigin);
+        var localDirection = Slot.GlobalDirectionToLocal(rayDirection);
+        if (localDirection.z >= -0.000001f)
+            return false;
+
+        float t = -localOrigin.z / localDirection.z;
+        if (t < 0f || t > rayLength)
+            return false;
+
+        var localPoint3 = localOrigin + localDirection * t;
+        var localPoint = new float2(localPoint3.x, localPoint3.y);
+        var face = _rootRect.LocalComputeRect;
+        if (face.IsEmpty)
+        {
+            _rootRect.UpdateBounds();
+            face = _rootRect.BoundingRect;
+        }
+        if (face.IsEmpty || !face.Contains(localPoint))
+            return false;
+
+        float3 normal = Slot.Forward;
+        float normalLength = normal.Length;
+        normal = normalLength > 0.000001f ? normal / normalLength : float3.Forward;
+        hit = new TouchSurfaceHit(t, Slot.LocalPointToGlobal(localPoint3), normal, localPoint);
+        return true;
+    }
+
+    public void UpdateTouchPointer(int pointerId, in TouchSurfaceHit hit, bool pressed, User? actor)
+    {
+        UpdatePointer(UIInteractionSource.Touch, pointerId, hit.Point + hit.Normal * CanvasTouchSource.PointerLift, -hit.Normal, pressed, actor);
+    }
+
+    public void ClearTouchPointer(int pointerId, User? actor)
+    {
+        ClearPointer(UIInteractionSource.Touch, pointerId, actor);
     }
 
     // Nearest scrolling ancestor of a pressed element, for drag pass-through. ScrollRect is an
@@ -1352,6 +1513,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     {
         if (!_chunkMap.TryGetValue(root, out var chunk))
             return false;
+        // The level is a plain property that can be set after the chunk was first registered (a replicated
+        // panel whose owner sets it on start), so pick it up on every re-mesh rather than only at creation.
+        chunk.OverlayLevel = root.OverlayLevel;
 
         // This chunk's mesh rides a scroll offset - it IS scroll content, or it's a row/box chunk nested under
         // some (those scroll too). Drives all three clip decisions below: no clip elision (an item fully in

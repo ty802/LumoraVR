@@ -31,6 +31,8 @@
     <ProjectReference Include="..\LumoraNexus\LumoraNexus.csproj" />
     <ProjectReference Include="..\LumoraSimulation\LumoraSimulation.csproj" />
     <ProjectReference Include="..\LumoraWarden\LumoraWarden.csproj" />
+    <ProjectReference Include="..\LumoraScript\LumoraScript.csproj" />
+    <ProjectReference Include="..\LumoraShading\LumoraShading.csproj" />
   </ItemGroup>
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''"> 
     <DefineConstants Condition="$(RuntimeIdentifier.Contains('linux'))">$(DefineConstants);LINUX</DefineConstants>

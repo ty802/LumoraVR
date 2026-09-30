@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>13</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Lumora.Shading</RootNamespace>
+    <AssemblyName>LumoraShading</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Description>LumoraShading - shader graphs: the shader nodes and the graph to Godot shader source compiler. Reads Loom graph documents, knows nothing about the datamodel or the renderer.</Description>
+    <Company>Lumora Project</Company>
+    <Product>LumoraShading</Product>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <!-- Loom for the graph document, the registry and the port types; the math types for constants.
+       The texture port type is a stand-in LumoraCore maps onto its own texture handle. -xlinka -->
+  <ItemGroup>
+    <ProjectReference Include="..\LumoraScript\LumoraScript.csproj" />
+    <ProjectReference Include="..\LumoraMath\LumoraMath.csproj" />
+  </ItemGroup>
+</Project>

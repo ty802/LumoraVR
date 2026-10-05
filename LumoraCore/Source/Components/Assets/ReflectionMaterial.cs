@@ -5,20 +5,15 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Assets;
 
-// The surface of a mirror or a portal. It draws a texture, but not by UV: the texture is a render of
-// the world from the viewer's eye reflected across this surface's plane, so every fragment reads it at
-// its own SCREEN position and the reflection lands exactly where the eye expects it. Put any other
-// texture in it and you get that texture stuck to the screen, which is the quickest way to tell a
-// screen-projected material from a UV one.
+// The surface of a mirror or a portal. Rectangular mirrors sample UVs from a capture whose frustum
+// follows the glass. Other portals sample the viewer's screen projection. Each eye has its own texture.
 //
 // Pair it with a CameraPortal on the same slot, which is what fills ReflectionTexture every frame.
 // The normal map does not shade anything - the reflected world is already lit - it nudges the sample
 // position, which is what makes water ripple and old glass wobble.
 //
-// MirrorSampling exists because a Godot camera is always right-handed: a mirror renders with a proper
-// camera, the image is the mirror image of what a mirror should show, and this un-mirrors it on
-// sampling. A portal keeps its handedness and must not be un-mirrored, so CameraPortal writes this from
-// its mode. -xlinka
+// MirrorSampling reverses screen-projected mirror captures horizontally. Glass-aligned UV captures
+// and portals need no extra reversal. CameraPortal keeps both sampling flags in step with its mode.
 [ComponentCategory("Assets/Materials/Special")]
 public class ReflectionMaterial : MaterialProvider
 {
@@ -45,7 +40,7 @@ public class ReflectionMaterial : MaterialProvider
 
     public readonly Sync<int> RenderQueue;
 
-    // See the header. True for a mirror, false for a portal; CameraPortal keeps it right.
+    // See the header. CameraPortal maintains the appropriate sampling convention.
     public readonly Sync<bool> MirrorSampling;
     public readonly Sync<bool> SurfaceUVSampling;
 

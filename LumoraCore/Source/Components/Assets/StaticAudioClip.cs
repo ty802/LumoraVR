@@ -289,7 +289,7 @@ public sealed class StaticAudioClip : StaticAssetProvider<AudioClip>
         if (!SameUrl(URL.Value, edited))
             return AudioClipEdit.Reasons.Denied;
         InspectorUndo.Record(this, new FieldEditUndoBatch(URL, source, edited, edit.Name));
-        LumoraLogger.Log($"StaticAudioClip: {edit.Name.Resolve()} done, {saved} ({result.Channels} ch, {result.SampleRate} Hz, {result.Duration:0.###} s, {format})");
+        LumoraLogger.Debug($"StaticAudioClip: {edit.Name.Resolve()} done, {saved} ({result.Channels} ch, {result.SampleRate} Hz, {result.Duration:0.###} s, {format})");
         return null;
     }
 

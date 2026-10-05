@@ -51,6 +51,31 @@ public class FresnelMaterial : MaterialProvider
     public readonly Sync<BlendMode> BlendMode;
     public readonly Sync<Culling> Culling;
 
+    // How vertex colours blend across a triangle: Linear as always, or sRGB for gradients that step
+    // evenly to the eye.
+    public readonly Sync<ColorProfile> VertexColorInterpolationSpace;
+
+    // Auto keeps what the blend mode implies. ZTest picks when the surface draws against what is already
+    // there: Greater and GreaterOrEqual draw it only where it is hidden, Always through everything, Never
+    // not at all. Equal and NotEqual have no counterpart here and test normally.
+    public readonly Sync<ZWrite> ZWrite;
+    public readonly Sync<ZTest> ZTest;
+
+    // DEPTH BIAS: toward the camera (negative) or away from it, in depth only.
+    public readonly Sync<float> OffsetFactor;
+    public readonly Sync<float> OffsetUnits;
+
+    // -1 = default
+    public readonly Sync<int> RenderQueue;
+
+    // Wraps both colour textures around the centre of the UV square, angle across U and radius along V.
+    // The power bends the radius.
+    public readonly Sync<bool> PolarUVmapping;
+    public readonly Sync<float> PolarPower;
+
+    // Whether the last update put a generated shader on in place of the shipped file.
+    private bool _generatedVariant;
+
     protected override MaterialType MaterialType => MaterialType.Fresnel;
 
     public FresnelMaterial()
@@ -81,12 +106,27 @@ public class FresnelMaterial : MaterialProvider
         AlphaCutoff = new Sync<float>(this, 0.5f);
         BlendMode = new Sync<BlendMode>(this, Assets.BlendMode.Opaque);
         Culling = new Sync<Culling>(this, Assets.Culling.Back);
+
+        // Every addition below starts off or neutral, which leaves existing fresnel content as it was.
+        VertexColorInterpolationSpace = new Sync<ColorProfile>(this, ColorProfile.Linear);
+        ZWrite = new Sync<ZWrite>(this, Assets.ZWrite.Auto);
+        ZTest = new Sync<ZTest>(this, Assets.ZTest.LessOrEqual);
+        OffsetFactor = new Sync<float>(this, 0f);
+        OffsetUnits = new Sync<float>(this, 0f);
+        RenderQueue = new Sync<int>(this, -1);
+        PolarUVmapping = new Sync<bool>(this, false);
+        PolarPower = new Sync<float>(this, 1f);
     }
 
     protected override void UpdateMaterial(MaterialAsset asset)
     {
         asset.SetBlendMode(BlendMode.Value);
         asset.SetCulling(Culling.Value);
+        bool depthOffset = OffsetFactor.Value != 0f || OffsetUnits.Value != 0f;
+        _generatedVariant = MaterialVariantSource.Apply(asset,
+            MaterialVariantSource.Fresnel(BlendMode.Value, Culling.Value, ZWrite.Value, ZTest.Value, depthOffset),
+            MaterialVariantSource.FresnelFile(BlendMode.Value, Culling.Value), _generatedVariant);
+        asset.SetFloat("RenderQueue", RenderQueue.Value);
 
         asset.SetFloat("Exponent", Exponent.Value);
         asset.SetFloat("GammaCurve", GammaCurve.Value);
@@ -112,6 +152,12 @@ public class FresnelMaterial : MaterialProvider
         asset.SetInt("MaskMode", (int)MaskMode.Value);
 
         asset.SetFloat("AlphaCutoff", AlphaCutoff.Value);
+
+        asset.SetInt("VertexColorInterpolationSpace", (int)VertexColorInterpolationSpace.Value);
+        asset.SetBool("PolarMapping", PolarUVmapping.Value);
+        asset.SetFloat("PolarPower", PolarPower.Value);
+        asset.SetFloat("OffsetFactor", OffsetFactor.Value);
+        asset.SetFloat("OffsetUnits", OffsetUnits.Value);
     }
 
     // NearColor is what the surface reads as head on, so it is the one it looks like.

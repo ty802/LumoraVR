@@ -3,9 +3,6 @@
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Supported shader uniform types for custom shader materials.
-/// </summary>
 public enum ShaderUniformType
 {
     Float,
@@ -14,5 +11,6 @@ public enum ShaderUniformType
     Vec4,
     Int,
     Bool,
-    Texture2D
+    Texture2D,
+    TextureCube
 }

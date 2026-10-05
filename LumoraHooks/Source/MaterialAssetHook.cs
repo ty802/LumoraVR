@@ -29,26 +29,54 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
     // the first one chose or it would swap back to the default for the other axis. -xlinka
     private Culling _culling = Culling.Back;
     private BlendMode _blendMode = BlendMode.Opaque;
+    // Projection360's depth write, the second axis of its variants. Arrives through SetBool.
+    private bool _depthWrite = true;
     private string _customShaderPath = null!;
     // The custom source the shader material wears now; null when it wears none, or a built-in one.
     private string? _customSource;
+    private string? _nextPassSource;
     private int _renderQueue = -1;
 
     // Pending properties to apply
     private readonly Dictionary<string, object> _pendingProperties = new();
 
+    // What was last pushed to the Godot material, and which material and shaders it went to. A material
+    // update stages every property again, and pushing them all again made one animated value (a scrolled
+    // offset, a fading tint) cost a write per property per frame, plus a shader lookup by path for the
+    // blend mode. Only what moved is pushed now; a new material or a swapped shader starts over. -xlinka
+    private readonly Dictionary<string, object> _applied = new();
+    private ulong _appliedMaterial, _appliedShader, _appliedNextShader;
+    private BlendMode? _blendApplied;
+    private Culling? _cullingApplied;
+
     public object GodotMaterial => _usesShaderMaterial
         ? (object)_shaderMaterial
         : (object)_standardMaterial;
+
+    // What a plain renderer draws with. Materials whose content is identical hand out one copy, because
+    // the platform only batches renderers that wear the very same material: ten thousand spawned cubes,
+    // each with a material component of its own, were ten thousand materials and so ten thousand draws
+    // in every pass, shadow cascades included. The component's own material still takes every write;
+    // the shared copy is never written, and a material that changes simply moves to another one.
+    public object SharedGodotMaterial => _shared?.Material ?? GodotMaterial;
 
     public int RenderQueue => _renderQueue;
 
     public bool IsValid => _shaderMaterial != null || _standardMaterial != null;
 
+    // A card's node preview builds behind every shader a material wears (CustomShaderCache).
+    private bool BuildsLate => asset is Lumora.Core.Assets.Asset { Owner: Lumora.Core.Components.Assets.ShaderPreviewMaterial };
+
     public void SetMaterialType(MaterialType type)
     {
+        LeaveShared();
+        _keyStale = true;
         _materialType = type;
         _customSource = null;
+        _nextPassSource = null;
+        _applied.Clear();
+        _blendApplied = null;
+        _cullingApplied = null;
 
         _standardMaterial?.Dispose();
         _standardMaterial = null!;
@@ -87,7 +115,7 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
 
             case MaterialType.OverlayUnlit:
                 _usesShaderMaterial = true;
-                _shaderMaterial = CreateShaderMaterial("res://Shaders/Overlay_Unlit.gdshader", MaterialType.OverlayUnlit);
+                _shaderMaterial = CreateShaderMaterial(OverlayUnlitShaderPath(_culling, _blendMode), MaterialType.OverlayUnlit);
                 break;
 
             case MaterialType.UI_Unlit:
@@ -215,6 +243,38 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_ChannelMatrix.gdshader", MaterialType.ChannelMatrix);
                 break;
 
+            // Screen filters are one file each: blend and culling reach them as the blend_mode and
+            // cull_mode uniforms (ScreenFilter_Core).
+            case MaterialType.Refract:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_Refract.gdshader", MaterialType.Refract);
+                break;
+
+            case MaterialType.HSV:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_HSV.gdshader", MaterialType.HSV);
+                break;
+
+            case MaterialType.LUT:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_LUT.gdshader", MaterialType.LUT);
+                break;
+
+            case MaterialType.Threshold:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_Threshold.gdshader", MaterialType.Threshold);
+                break;
+
+            case MaterialType.Projection360:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial(Projection360ShaderPath(_blendMode, _depthWrite), MaterialType.Projection360);
+                break;
+
+            case MaterialType.FogBoxVolume:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial(FogBoxShaderPath(_blendMode), MaterialType.FogBoxVolume);
+                break;
+
             case MaterialType.FresnelLerp:
                 _usesShaderMaterial = true;
                 _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_FresnelLerp.gdshader", MaterialType.FresnelLerp);
@@ -242,11 +302,46 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 _shaderMaterial = CreateShaderMaterial(SpecularShaderPath(Culling.Back), MaterialType.PBS_Specular);
                 break;
 
+            case MaterialType.Poiyomi:
+                // Both passes come as source from the material (SetCustomShaderSource, SetNextPassShaderSource).
+                _usesShaderMaterial = true;
+                _shaderMaterial = new ShaderMaterial();
+                _nextPassMaterial = new ShaderMaterial();
+                break;
+
+            // The material names its shader: slice, displace and distance lerp pick a variant file by
+            // workflow, blend and culling (SetCustomShader), stencil generates its source per stencil state
+            // (SetCustomShaderSource). -xlinka
+            case MaterialType.PBS_Slice:
+            case MaterialType.PBS_Displace:
+            case MaterialType.PBS_DistanceLerp:
+            case MaterialType.PBS_Stencil:
+                _usesShaderMaterial = true;
+                _shaderMaterial = new ShaderMaterial();
+                break;
+
+            // The skin, then the twenty shells chained behind it (FurShells).
+            case MaterialType.Fur:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_Fur.gdshader", MaterialType.Fur);
+                _nextPassMaterial = FurShells.Chain(_shaderMaterial);
+                break;
+
             case MaterialType.XiexeToon:
                 _usesShaderMaterial = true;
                 _shaderMaterial = CreateShaderMaterial(XiexeShaderPath(Culling.Back), MaterialType.XiexeToon);
                 _nextPassMaterial = CreateShaderMaterial("res://Shaders/Mat_XiexeOutline.gdshader", MaterialType.XiexeToon);
                 _shaderMaterial.NextPass = _nextPassMaterial;
+                break;
+
+            case MaterialType.GradientSky:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_GradientSky.gdshader", MaterialType.GradientSky);
+                break;
+
+            case MaterialType.AvatarArrival:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/AvatarArrival.gdshader", MaterialType.AvatarArrival);
                 break;
 
             default:
@@ -277,6 +372,11 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
     {
         _customShaderPath = NormalizeShaderPath(shaderPath);
 
+        // Materials that name their variant on every update keep the shader they already wear, without a
+        // lookup by path each time.
+        if (_customSource == null && _shaderMaterial?.Shader is { } worn && worn.ResourcePath == _customShaderPath)
+            return;
+
         if (_shaderMaterial != null && !string.IsNullOrEmpty(_customShaderPath))
         {
             if (ResourceLoader.Exists(_customShaderPath))
@@ -293,6 +393,9 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
 
     public void SetCustomShaderSource(string shaderSource)
     {
+        // A source compiles late and lands on the component's own material, which a shared copy would miss.
+        LeaveShared();
+        _keyStale = true;
         if (string.IsNullOrWhiteSpace(shaderSource))
         {
             // Empty is the caller's "clear" signal (e.g. a sandbox-rejected update), not "leave the
@@ -318,7 +421,64 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         if (_customSource == shaderSource && _shaderMaterial.Shader != null)
             return;
         _customSource = shaderSource;
-        _shaderMaterial.Shader = CustomShaderCache.Get(shaderSource);
+        var material = _shaderMaterial;
+        // A source still waiting for its turn to compile arrives on a later frame, if this material still
+        // wants it by then.
+        var shader = CustomShaderCache.Get(shaderSource, ready =>
+        {
+            if (_customSource == shaderSource && ReferenceEquals(_shaderMaterial, material) && GodotObject.IsInstanceValid(material))
+                material.Shader = ready;
+        }, BuildsLate);
+        if (shader != null)
+            _shaderMaterial.Shader = shader;
+    }
+
+    // The chained pass from its own source, through the same cache as the main one. It is chained only once
+    // its shader exists, so a pass still compiling never draws as a shaderless hull; empty unchains it. -xlinka
+    public void SetNextPassShaderSource(string shaderSource)
+    {
+        if (_shaderMaterial == null)
+            return;
+        if (string.IsNullOrWhiteSpace(shaderSource))
+        {
+            _nextPassSource = null;
+            if (_shaderMaterial.NextPass != null)
+                _shaderMaterial.NextPass = null;
+            return;
+        }
+
+        _nextPassMaterial ??= new ShaderMaterial();
+        if (_nextPassSource == shaderSource && _nextPassMaterial.Shader != null)
+        {
+            if (!ReferenceEquals(_shaderMaterial.NextPass, _nextPassMaterial))
+                _shaderMaterial.NextPass = _nextPassMaterial;
+            return;
+        }
+        _nextPassSource = shaderSource;
+        var owner = _shaderMaterial;
+        var pass = _nextPassMaterial;
+        var shader = CustomShaderCache.Get(shaderSource, ready =>
+        {
+            if (_nextPassSource != shaderSource || !ReferenceEquals(_nextPassMaterial, pass) || !GodotObject.IsInstanceValid(pass)
+                || !ReferenceEquals(_shaderMaterial, owner) || !GodotObject.IsInstanceValid(owner))
+                return;
+            pass.Shader = ready;
+            owner.NextPass = pass;
+        }, BuildsLate);
+        if (shader != null)
+        {
+            _nextPassMaterial.Shader = shader;
+            _shaderMaterial.NextPass = _nextPassMaterial;
+        }
+        else if (_shaderMaterial.NextPass != null)
+        {
+            _shaderMaterial.NextPass = null;
+        }
+    }
+
+    public void SetCubemap(string property, CubemapAsset cubemap)
+    {
+        _pendingProperties[property] = cubemap?.Hook is CubemapAssetHook hook && hook.IsValid ? hook.GodotCubemap : null!;
     }
 
     private static string NormalizeShaderPath(string shaderPath)
@@ -340,7 +500,11 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
 
     public void SetBlendMode(BlendMode mode)
     {
+        if (_blendApplied == mode && IsValid)
+            return;
+        _blendApplied = mode;
         _blendMode = mode;
+        _keyStale = true;
 
         if (_standardMaterial != null)
         {
@@ -407,16 +571,35 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 SwapShader(ColorMaskShaderPath(mode));
             }
 
+            if (_materialType == MaterialType.Projection360)
+            {
+                SwapShader(Projection360ShaderPath(mode, _depthWrite));
+            }
+
+            if (_materialType == MaterialType.FogBoxVolume)
+            {
+                SwapShader(FogBoxShaderPath(mode));
+            }
+
+            if (_materialType == MaterialType.OverlayUnlit)
+            {
+                SwapShader(OverlayUnlitShaderPath(_culling, mode));
+            }
+
             // A custom material's blend reaches it as a render_mode written into its source before it gets
             // here. A blend_mode uniform would do nothing there, or overwrite one the shader declared itself.
-            if (_materialType != MaterialType.Custom)
+            if (_materialType is not (MaterialType.Custom or MaterialType.Poiyomi))
                 _shaderMaterial.SetShaderParameter("blend_mode", (int)mode);
         }
     }
 
     public void SetCulling(Culling culling)
     {
+        if (_cullingApplied == culling && IsValid)
+            return;
+        _cullingApplied = culling;
         _culling = culling;
+        _keyStale = true;
 
         if (_standardMaterial != null)
         {
@@ -432,6 +615,12 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             // Culling is a compile-time render_mode in gdshader, not a uniform. The toon family ships one
             // variant per cull mode over a shared include, so it swaps shaders the way the UI unlit family
             // does for ZTest; everything else keeps setting the parameter it has always set.
+            if (_materialType == MaterialType.OverlayUnlit)
+            {
+                SwapShader(OverlayUnlitShaderPath(culling, _blendMode));
+                return;
+            }
+
             if (_materialType == MaterialType.Toon)
             {
                 SwapShader(ToonShaderPath(culling));
@@ -469,7 +658,7 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             }
 
             // Same as the blend: a custom material's culling is written into its source.
-            if (_materialType != MaterialType.Custom)
+            if (_materialType is not (MaterialType.Custom or MaterialType.Poiyomi))
                 _shaderMaterial.SetShaderParameter("cull_mode", (int)culling);
         }
     }
@@ -479,11 +668,39 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             ? "res://Shaders/Mat_PBS_ColorMaskAlpha.gdshader"
             : "res://Shaders/Mat_PBS_ColorMask.gdshader";
 
+    // Projection360 and the fog box tell Transparent (premultiplied) apart from Alpha, which
+    // BlendVariant folds together. Both cull, where they cull at all, with a uniform.
+    private static string Projection360ShaderPath(BlendMode blend, bool depthWrite)
+        => $"res://Shaders/Mat_Projection360{BlendFamily(blend)}{(depthWrite ? string.Empty : "NoZWrite")}.gdshader";
+
+    // Opaque, cutout and alpha share the mixed file, which holds alpha at one for the first two.
+    private static string FogBoxShaderPath(BlendMode blend)
+        => $"res://Shaders/Mat_FogBoxVolume{(blend == BlendMode.Alpha ? string.Empty : BlendFamily(blend))}.gdshader";
+
+    private static string BlendFamily(BlendMode blend) => blend switch
+    {
+        BlendMode.Additive => "Add",
+        BlendMode.Multiply => "Mul",
+        BlendMode.Alpha => "Alpha",
+        BlendMode.Transparent => "Transparent",
+        _ => string.Empty
+    };
+
     private static string ReflectionShaderPath(Culling culling, BlendMode blend)
         => $"res://Shaders/Mat_Reflection{BlendVariant(blend)}{CullVariant(culling)}.gdshader";
 
     private static string FresnelShaderPath(Culling culling, BlendMode blend)
         => $"res://Shaders/Mat_Fresnel{BlendVariant(blend)}{CullVariant(culling)}.gdshader";
+
+    // The overlay band was one additive, double-sided file whatever the material asked for, so every overlay
+    // set to Alpha still added itself onto the scene: gizmo handles stacked their front and back faces onto
+    // whatever sat behind them, ran past white on anything lit, and the glow pass and the probes took them
+    // for light. Blended overlays now get a file per cull mode; additive keeps the one it always had, which
+    // is the laser's and the blink arc's look. -xlinka
+    private static string OverlayUnlitShaderPath(Culling culling, BlendMode blend)
+        => blend is BlendMode.Alpha or BlendMode.Transparent
+            ? $"res://Shaders/Overlay_UnlitAlpha{CullVariant(culling)}.gdshader"
+            : "res://Shaders/Overlay_Unlit.gdshader";
 
     // FOUR VARIANTS, NOT THREE. Opaque and Cutout share the empty one, which writes no ALPHA and so
     // stays in Godot's OPAQUE pass - that is the whole point of splitting them off Alpha rather than
@@ -555,14 +772,16 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 _uiZWriteOn = value == 2; // ZWrite.On
             else if (property == "ZTest")
                 _uiZTestOff = value == 0 || value == 8; // Disabled / Always
-            if (property is "ZWrite" or "ZTest")
+            // A material wearing source it wrote for a state the three files do not cover (another culling,
+            // a depth bias) names the file itself when it comes back to one (UIUnlitMaterial).
+            if (property is "ZWrite" or "ZTest" && _customSource == null)
             {
                 string shaderPath = _uiZTestOff
                     ? "res://Shaders/UI_UnlitOverlay.gdshader"
                     : _uiZWriteOn
                         ? "res://Shaders/UI_UnlitZWrite.gdshader"
                         : "res://Shaders/UI_Unlit.gdshader";
-                var shader = ResourceLoader.Load<Shader>(shaderPath);
+                var shader = UiShader(shaderPath);
                 if (shader != null && _shaderMaterial.Shader != shader)
                     _shaderMaterial.Shader = shader;
             }
@@ -576,7 +795,7 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             string shaderPath = _uiZTestOff
                 ? "res://Shaders/UI_TextOverlay.gdshader"
                 : "res://Shaders/UI_Text.gdshader";
-            var shader = ResourceLoader.Load<Shader>(shaderPath);
+            var shader = UiShader(shaderPath);
             if (shader != null && _shaderMaterial.Shader != shader)
                 _shaderMaterial.Shader = shader;
         }
@@ -599,6 +818,13 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 return;
             }
 
+            if (_materialType == MaterialType.Projection360 && property == "DepthWrite")
+            {
+                _depthWrite = value;
+                SwapShader(Projection360ShaderPath(_blendMode, value));
+                return;
+            }
+
             if (_materialType == MaterialType.PBS_VertexColor && property == "UseVertexAlpha")
             {
                 SwapShader(value
@@ -609,6 +835,21 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         }
 
         _pendingProperties[property] = value;
+    }
+
+    // The UI shader files stay loaded for the whole run. Godot frees a shader nothing wears any more, and
+    // the next canvas to want it loads and compiles it again: the hand menu's overlay pair, worn by nothing
+    // else, went every time the menu closed, and the startup warm-up (OverlayShaderWarmUp) went with them.
+    private static readonly Dictionary<string, Shader?> UiShaders = new(StringComparer.Ordinal);
+
+    private static Shader? UiShader(string path)
+    {
+        if (!UiShaders.TryGetValue(path, out var shader) || shader == null || !GodotObject.IsInstanceValid(shader))
+        {
+            shader = ResourceLoader.Load<Shader>(path);
+            UiShaders[path] = shader;
+        }
+        return shader;
     }
 
     private void SwapShader(string shaderPath)
@@ -635,9 +876,18 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
     // ApplyChanges, which re-pushes ALL properties. This flushes one, for per-frame scroll clip_offset. -xlinka
     public void ApplyFloat2Now(string property, float2 value)
     {
+        // Written past the update, so only the component's own material sees it.
+        if (_shared != null)
+        {
+            _noShare = true;
+            LeaveShared();
+            _updated?.Invoke();
+        }
         var v = new Vector2(value.x, value.y);
         _pendingProperties[property] = v;
         ApplyProperty(property, v);
+        if (SameTargetAsApplied())
+            _applied[property] = v;
     }
 
     public void SetFloat3(string property, float3 value)
@@ -698,25 +948,241 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         }
     }
 
+    // Every material sets its RenderQueue on every update, so the priority comes through the property
+    // path. Resetting it here wrote 0 on each update, and since the queue property itself is skipped
+    // while unchanged, a material with its own queue kept 0 from its second update on. -xlinka
     public void Clear()
     {
         _pendingProperties.Clear();
-        ApplyRenderPriority(-1);
     }
 
     public void ApplyChanges(Action callback)
     {
         LumoraLogger.Debug($"MaterialAssetHook.ApplyChanges: Applying {_pendingProperties.Count} properties, usesShader={_usesShaderMaterial}");
+        bool moved = _keyStale;
+        if (!SameTargetAsApplied())
+        {
+            _applied.Clear();
+            _appliedMaterial = IdOf(GodotMaterial as GodotObject);
+            _appliedShader = IdOf(_shaderMaterial?.Shader);
+            _appliedNextShader = IdOf(_nextPassMaterial?.Shader);
+            moved = true;
+        }
         foreach (var (property, value) in _pendingProperties)
         {
+            if (_applied.TryGetValue(property, out var was) && Equals(was, value))
+                continue;
             ApplyProperty(property, value);
+            _applied[property] = value;
+            moved = true;
         }
+
+        if (callback != null)
+            _updated = callback;
+        if (moved)
+            Reshare();
 
         callback?.Invoke();
     }
 
+    // SHARING
+
+    private static readonly object SharedLock = new();
+    private static readonly Dictionary<string, object> NoProperties = new();
+    private static readonly Dictionary<int, SharedMaterial> Shared = new();
+    private SharedMaterial? _shared;
+    private Action? _updated;
+    private bool _keyStale = true;
+    private bool _noShare;
+
+    // Draws the same whatever it is drawn with or beside: a surface material nothing writes outside an update,
+    // opaque, with no second pass. A batch of moving objects can wear it (MoverBatches).
+    internal bool Batchable => !_noShare && _usesShaderMaterial && _customSource == null && _nextPassMaterial == null
+        && SharesSurfaces(_materialType) && _blendMode is BlendMode.Opaque or BlendMode.Cutout;
+
+    // Surface materials only: nothing outside an update writes to them, and none chains a second pass.
+    private static bool SharesSurfaces(MaterialType type) => type is MaterialType.PBS_Metallic
+        or MaterialType.PBS_Specular or MaterialType.PBS_DualSided or MaterialType.PBS_Triplanar
+        or MaterialType.PBS_VertexColor or MaterialType.PBS_ColorMask or MaterialType.Unlit
+        or MaterialType.Fresnel or MaterialType.FresnelLerp or MaterialType.Reflection
+        or MaterialType.Matcap or MaterialType.Wireframe;
+
+    private void Reshare()
+    {
+        _keyStale = false;
+        var material = _shaderMaterial;
+        if (_noShare || !_usesShaderMaterial || material == null || _nextPassMaterial != null || _customSource != null
+            || !SharesSurfaces(_materialType) || material.NextPass != null)
+        {
+            LeaveShared();
+            return;
+        }
+
+        ulong shader = IdOf(material.Shader);
+        if (shader == 0)
+        {
+            LeaveShared();
+            return;
+        }
+
+        int priority = material.RenderPriority;
+        var hash = new HashCode();
+        hash.Add(_materialType);
+        hash.Add(shader);
+        hash.Add(priority);
+        hash.Add(_blendMode);
+        hash.Add(_culling);
+        foreach (var (property, value) in _applied)
+        {
+            hash.Add(property);
+            hash.Add(value);
+        }
+        int key = hash.ToHashCode();
+
+        if (_shared != null && _shared.Hash == key && _shared.Matches(this, shader, priority))
+            return;
+        LeaveShared();
+
+        Action? founderUpdated = null;
+        lock (SharedLock)
+        {
+            Shared.TryGetValue(key, out var head);
+            for (var entry = head; entry != null; entry = entry.Next)
+            {
+                if (!entry.Matches(this, shader, priority))
+                    continue;
+                entry.Users++;
+                _shared = entry;
+                if (entry.Material == null)
+                {
+                    // The second wearer is the first moment there is anything to batch. The first one has
+                    // been drawing its own material until now and is sent back to its renderers.
+                    entry.Material = MaterialPropertyApplicator.CloneWithBlock(material, _materialType, NoProperties);
+                    founderUpdated = entry.Founder?._updated;
+                    entry.Founder = null;
+                }
+                break;
+            }
+            if (_shared == null)
+            {
+                _shared = new SharedMaterial(this, key, shader, priority) { Next = head };
+                Shared[key] = _shared;
+            }
+        }
+        founderUpdated?.Invoke();
+    }
+
+    private void LeaveShared()
+    {
+        var entry = _shared;
+        if (entry == null)
+            return;
+        _shared = null;
+        lock (SharedLock)
+        {
+            if (ReferenceEquals(entry.Founder, this))
+                entry.Founder = null;
+            if (--entry.Users > 0)
+                return;
+            if (!Shared.TryGetValue(entry.Hash, out var head))
+                return;
+            if (ReferenceEquals(head, entry))
+            {
+                if (entry.Next != null)
+                    Shared[entry.Hash] = entry.Next;
+                else
+                    Shared.Remove(entry.Hash);
+                return;
+            }
+            for (var at = head; at.Next != null; at = at.Next)
+            {
+                if (ReferenceEquals(at.Next, entry))
+                {
+                    at.Next = entry.Next;
+                    return;
+                }
+            }
+        }
+    }
+
+    // One content: the shader and every value pushed to it, in the order they were pushed. The order is the
+    // material's own and the same for every component of a kind, so a different one only means no match.
+    private sealed class SharedMaterial
+    {
+        public readonly int Hash;
+        public SharedMaterial? Next;
+        public Material? Material;
+        public MaterialAssetHook? Founder;
+        public int Users = 1;
+        private readonly MaterialType _type;
+        private readonly ulong _shader;
+        private readonly int _priority;
+        private readonly BlendMode _blend;
+        private readonly Culling _culling;
+        private readonly string[] _names;
+        private readonly object[] _values;
+
+        public SharedMaterial(MaterialAssetHook founder, int hash, ulong shader, int priority)
+        {
+            Hash = hash;
+            Founder = founder;
+            _type = founder._materialType;
+            _shader = shader;
+            _priority = priority;
+            _blend = founder._blendMode;
+            _culling = founder._culling;
+            _names = new string[founder._applied.Count];
+            _values = new object[founder._applied.Count];
+            int i = 0;
+            foreach (var (property, value) in founder._applied)
+            {
+                _names[i] = property;
+                _values[i++] = value;
+            }
+        }
+
+        public bool Matches(MaterialAssetHook hook, ulong shader, int priority)
+        {
+            if (_type != hook._materialType || _shader != shader || _priority != priority || _blend != hook._blendMode
+                || _culling != hook._culling || _names.Length != hook._applied.Count)
+                return false;
+            int i = 0;
+            foreach (var (property, value) in hook._applied)
+            {
+                if (!string.Equals(_names[i], property, StringComparison.Ordinal) || !Equals(_values[i], value))
+                    return false;
+                i++;
+            }
+            return true;
+        }
+    }
+
+    private bool SameTargetAsApplied()
+        => _appliedMaterial != 0 && _appliedMaterial == IdOf(GodotMaterial as GodotObject)
+           && _appliedShader == IdOf(_shaderMaterial?.Shader) && _appliedNextShader == IdOf(_nextPassMaterial?.Shader);
+
+    private static ulong IdOf(GodotObject? value)
+        => value != null && GodotObject.IsInstanceValid(value) ? value.GetInstanceId() : 0UL;
+
     private void ApplyProperty(string property, object value)
     {
+        if (_materialType == MaterialType.Poiyomi)
+        {
+            // The outline pass compiles the same includes as the surface, so it reads every property it does.
+            MaterialPropertyApplicator.Apply(_shaderMaterial, _materialType, property, value);
+            if (_nextPassMaterial != null)
+                MaterialPropertyApplicator.Apply(_nextPassMaterial, _materialType, property, value);
+            return;
+        }
+
+        // Every fur shell reads every property the skin does.
+        if (_materialType == MaterialType.Fur)
+        {
+            for (var pass = _shaderMaterial as Material; pass != null; pass = pass.NextPass)
+                MaterialPropertyApplicator.Apply(pass, _materialType, property, value);
+            return;
+        }
+
         // Outline controls belong to the chained hull material, not the lit surface - the base shader
         // has no such uniforms and would swallow the write.
         if (_nextPassMaterial != null
@@ -1050,6 +1516,8 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
 
     public override void Unload()
     {
+        LeaveShared();
+        _keyStale = true;
         _standardMaterial?.Dispose();
         _standardMaterial = null!;
 
@@ -1060,6 +1528,7 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         _nextPassMaterial = null!;
 
         _customSource = null;
+        _nextPassSource = null;
         _pendingProperties.Clear();
     }
 }

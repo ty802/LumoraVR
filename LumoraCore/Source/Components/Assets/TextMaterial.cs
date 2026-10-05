@@ -1,13 +1,15 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
+using System.Text;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Assets;
 
 // World-space text material (nameplates, labels). Same glyph-coverage path as
-// UITextMaterial but depth-tested via the Text_Unlit shader so text occludes
-// correctly behind world geometry. - xlinka
+// UITextMaterial but depth-tested and depth-writing via the Text_Unlit shader so foreground letters
+// occlude later world UI as well as being hidden by nearer geometry. - xlinka
 [ComponentCategory("Assets/Materials")]
 public class TextMaterial : MaterialProvider, ICommonMaterial
 {
@@ -23,8 +25,16 @@ public class TextMaterial : MaterialProvider, ICommonMaterial
 
     // Optional glyph outline (readability for floating text). Thickness is in atlas texels;
     // 0 = no outline (unchanged glyph). Maps to outline_color / outline_thickness in the shader.
+    // The face lies over the ring, so a face with almost no alpha leaves the glyph hollow.
     public readonly Sync<colorHDR> OutlineColor;
     public readonly Sync<float> OutlineThickness;
+    // Atlas texels the face edge moves out (bolder, negative thinner) and texels of extra edge softening.
+    // Distance-field atlases only.
+    public readonly Sync<float> FaceDilate;
+    public readonly Sync<float> FaceSoftness;
+    // Strength of the light that sweeps across the letters, 0 for none, and its colour.
+    public readonly Sync<float> Shimmer;
+    public readonly Sync<colorHDR> ShimmerColor;
     public readonly Sync<bool> AlphaClip;
     public readonly Sync<float> AlphaCutoff;
     public readonly Sync<BlendMode> BlendMode;
@@ -32,6 +42,20 @@ public class TextMaterial : MaterialProvider, ICommonMaterial
     public readonly Sync<ZWrite> ZWrite;
     public readonly Sync<ZTest> ZTest;
     public readonly Sync<int> RenderQueue;
+    // Culling counts from the side the text reads from: Back hides the side behind it, None (the default)
+    // draws both. A colour mask without red, green and blue draws nothing while the stencil still goes, which
+    // is how text cuts its letters out of something drawn after it.
+    public readonly Sync<ColorMask> ColorMask;
+    public readonly Sync<StencilComparison> StencilComparison;
+    public readonly Sync<StencilOperation> StencilOperation;
+    public readonly Sync<byte> StencilID;
+    public readonly Sync<byte> StencilWriteMask;
+    public readonly Sync<byte> StencilReadMask;
+
+    private bool _variantOn;
+
+    // Anything about this material changed. Text wearing it as its style (TextRenderer.Style) copies it again.
+    public event Action<TextMaterial>? LookChanged;
 
     // Same DirectTexture override as UITextMaterial - binds a transient atlas
     // TextureAsset (no owning provider component) without an AssetRef. - xlinka
@@ -64,13 +88,29 @@ public class TextMaterial : MaterialProvider, ICommonMaterial
         UseMSDF = new Sync<bool>(this, false);
         OutlineColor = new Sync<colorHDR>(this, new colorHDR(0f, 0f, 0f, 0f));
         OutlineThickness = new Sync<float>(this, 0f);
+        FaceDilate = new Sync<float>(this, 0f);
+        FaceSoftness = new Sync<float>(this, 0f);
+        Shimmer = new Sync<float>(this, 0f);
+        ShimmerColor = new Sync<colorHDR>(this, colorHDR.White);
         AlphaClip = new Sync<bool>(this, true);
         AlphaCutoff = new Sync<float>(this, 0.5f);
         BlendMode = new Sync<BlendMode>(this, Assets.BlendMode.Alpha);
         Culling = new Sync<Culling>(this, Assets.Culling.None);
-        ZWrite = new Sync<ZWrite>(this, Assets.ZWrite.Off);
+        ZWrite = new Sync<ZWrite>(this, Assets.ZWrite.Auto);
         ZTest = new Sync<ZTest>(this, Assets.ZTest.LessOrEqual);
         RenderQueue = new Sync<int>(this, 0);
+        ColorMask = new Sync<ColorMask>(this, Assets.ColorMask.RGBA);
+        StencilComparison = new Sync<StencilComparison>(this, Assets.StencilComparison.Always);
+        StencilOperation = new Sync<StencilOperation>(this, Assets.StencilOperation.Keep);
+        StencilID = new Sync<byte>(this, 0);
+        StencilWriteMask = new Sync<byte>(this, byte.MaxValue);
+        StencilReadMask = new Sync<byte>(this, byte.MaxValue);
+    }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        LookChanged?.Invoke(this);
     }
 
     protected override void UpdateMaterial(MaterialAsset asset)
@@ -86,10 +126,83 @@ public class TextMaterial : MaterialProvider, ICommonMaterial
         asset.SetBool("UseMSDF", UseMSDF.Value);
         asset.SetColor("OutlineColor", OutlineColor.Value);
         asset.SetFloat("OutlineThickness", OutlineThickness.Value);
+        asset.SetFloat("FaceDilate", FaceDilate.Value);
+        asset.SetFloat("FaceSoftness", FaceSoftness.Value);
+        asset.SetFloat("Shimmer", Shimmer.Value);
+        asset.SetColor("ShimmerColor", ShimmerColor.Value);
         asset.SetBool("AlphaClip", AlphaClip.Value);
         asset.SetFloat("AlphaCutoff", AlphaCutoff.Value);
         asset.SetInt("ZWrite", (int)ZWrite.Value);
         asset.SetInt("ZTest", (int)ZTest.Value);
         asset.SetInt("RenderQueue", RenderQueue.Value);
+        asset.SetInt("ColorMask", (int)ColorMask.Value);
+        _variantOn = MaterialVariantSource.Apply(asset,
+            VariantSource(Culling.Value, ColorMask.Value, StencilComparison.Value, StencilOperation.Value,
+                StencilID.Value, StencilWriteMask.Value, StencilReadMask.Value, ZWrite.Value),
+            "res://Shaders/Text_Unlit.gdshader", _variantOn);
     }
+
+    // Depth writing, culling and the stencil are compile-time render state. Text_Unlit.gdshader draws both faces with no
+    // stencil, which is nearly all text; any other state gets a few lines of source over the same body,
+    // compiled once per distinct text. Godot's stencil keeps one reference value for the test and the write
+    // and stores only that value, so the masks fold into it, and an operation other than Replace stores what
+    // it would leave in a cleared buffer: exact for one stamp on a cleared buffer, the usual use. A write marks
+    // the letters only (TEXT_STAMP), not the quads they sit on. -xlinka
+    internal static string? VariantSource(Culling culling, ColorMask colorMask, StencilComparison comparison,
+        StencilOperation operation, byte id, byte writeMask, byte readMask, ZWrite zWrite = Assets.ZWrite.Auto)
+    {
+        bool never = comparison == Assets.StencilComparison.Never;
+        bool enabled = !never && comparison != Assets.StencilComparison.Disabled;
+        bool read = enabled && comparison != Assets.StencilComparison.Always;
+        bool write = enabled && operation != Assets.StencilOperation.Keep;
+        bool hidden = never || (colorMask & Assets.ColorMask.RGB) == Assets.ColorMask.None;
+        bool depth = zWrite == Assets.ZWrite.On || (zWrite == Assets.ZWrite.Auto && !hidden);
+        if (culling == Assets.Culling.None && !read && !write && !hidden && depth)
+            return null;
+
+        var sb = new StringBuilder("shader_type spatial;\nrender_mode unshaded, blend_mix, ", 200);
+        sb.Append(depth ? "depth_draw_always, " : "depth_draw_never, ");
+        sb.Append(culling switch
+        {
+            Assets.Culling.Back => "cull_front",
+            Assets.Culling.Front => "cull_back",
+            _ => "cull_disabled",
+        }).Append(";\n");
+        if (read || write)
+        {
+            int reference = read ? id & readMask : StoredValue(operation, id) & writeMask;
+            sb.Append("stencil_mode ");
+            if (read)
+                sb.Append("read, ");
+            if (write)
+                sb.Append("write, ");
+            sb.Append(CompareMode(comparison)).Append(", ").Append(reference).Append(";\n");
+        }
+        if (write)
+            sb.Append("#define TEXT_STAMP\n");
+        if (hidden)
+            sb.Append("#define TEXT_HIDDEN\n");
+        sb.Append("#include \"res://Shaders/Text_Unlit_Core.gdshaderinc\"\n");
+        return sb.ToString();
+    }
+
+    private static int StoredValue(StencilOperation operation, byte id) => operation switch
+    {
+        Assets.StencilOperation.Zero => 0,
+        Assets.StencilOperation.IncrementSaturate or Assets.StencilOperation.IncrementWrap => 1,
+        Assets.StencilOperation.DecrementSaturate => 0,
+        Assets.StencilOperation.DecrementWrap or Assets.StencilOperation.Invert => 255,
+        _ => id
+    };
+
+    private static string CompareMode(StencilComparison comparison) => comparison switch
+    {
+        Assets.StencilComparison.Less => "compare_less",
+        Assets.StencilComparison.Equal => "compare_equal",
+        Assets.StencilComparison.LessOrEqual => "compare_less_or_equal",
+        Assets.StencilComparison.Greater => "compare_greater",
+        Assets.StencilComparison.NotEqual => "compare_not_equal",
+        Assets.StencilComparison.GreaterOrEqual => "compare_greater_or_equal",
+        _ => "compare_always"
+    };
 }

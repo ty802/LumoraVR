@@ -25,6 +25,9 @@ public class XiexeToonMaterial : MaterialProvider, ICommonMaterial
     public readonly Sync<float2> MainTextureScale;
     public readonly Sync<float2> MainTextureOffset;
     public readonly Sync<bool> UseVertexColors;
+    // Turns the albedo's hue round the colour wheel, in whole turns (0.5 is the opposite colour), before
+    // saturation and lighting.
+    public readonly Sync<float> HueShift;
     // Pulls the albedo toward or away from its own luminance before any lighting runs.
     public readonly Sync<float> Saturation;
 
@@ -120,6 +123,7 @@ public class XiexeToonMaterial : MaterialProvider, ICommonMaterial
         MainTextureScale = new Sync<float2>(this, float2.One);
         MainTextureOffset = new Sync<float2>(this, float2.Zero);
         UseVertexColors = new Sync<bool>(this, false);
+        HueShift = new Sync<float>(this, 0f);
         Saturation = new Sync<float>(this, 0f);
 
         NormalMap = new AssetRef<TextureAsset>(this);
@@ -187,6 +191,7 @@ public class XiexeToonMaterial : MaterialProvider, ICommonMaterial
         asset.SetFloat2("MainTextureScale", MainTextureScale.Value);
         asset.SetFloat2("MainTextureOffset", MainTextureOffset.Value);
         asset.SetBool("UseVertexColors", UseVertexColors.Value);
+        asset.SetFloat("HueShift", HueShift.Value);
         asset.SetFloat("Saturation", Saturation.Value);
 
         asset.SetTexture("NormalMap", NormalMap.Asset);

@@ -499,20 +499,26 @@ public sealed class VideoTextureProvider : DynamicAssetProvider<VideoTexture>, I
             return;
         }
 
-        CancelResolve();
-        _serviceKey = null;
-
+        // A local:// video the store holds plays from its file. One it does not hold is somebody else's
+        // import, and is fetched from the session into the store first: this branch used to stop at "this
+        // machine does not hold" it, so a dropped video only ever played for the person who dropped it.
+        // -xlinka
         if (url.IsAbsoluteUri && string.Equals(url.Scheme, "local", StringComparison.OrdinalIgnoreCase))
         {
             var stored = Engine.Current?.LocalDB?.GetFilePath(url.OriginalString);
-            if (string.IsNullOrEmpty(stored) || !File.Exists(stored))
+            if (!string.IsNullOrEmpty(stored) && File.Exists(stored))
             {
-                SetError($"this machine does not hold {url}");
+                CancelResolve();
+                _serviceKey = null;
+                IssueLoad(asset, stored!, engine, MimeFor(stored!), Stream.Value);
                 return;
             }
-            IssueLoad(asset, stored!, engine, MimeFor(stored!), Stream.Value);
+            GatherLocal(url, engine);
             return;
         }
+
+        CancelResolve();
+        _serviceKey = null;
 
         if (url.IsAbsoluteUri
             && (string.Equals(url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
@@ -590,6 +596,41 @@ public sealed class VideoTextureProvider : DynamicAssetProvider<VideoTexture>, I
             int setting = EngineSettings.VideoMaxHeight;
             return setting > 0 ? setting : null;
         }
+    }
+
+    // Fetch a local:// video from the session, then play the file it lands in. Keyed like a service
+    // resolve, so the many updates a provider sees while the fetch runs neither restart it nor ask again.
+    private void GatherLocal(Uri url, string? engine)
+    {
+        string key = $"local|{url.OriginalString}|{engine}";
+        if (key == _serviceKey)
+            return;
+        _serviceKey = key;
+
+        CancelResolve();
+        var cancellation = new CancellationTokenSource();
+        _resolve = cancellation;
+
+        StartTask(async () =>
+        {
+            string? path = await Lumora.Core.Networking.AssetFetcher.FetchLocalFileAsync(url.OriginalString);
+
+            await WorldContext.ToWorld();
+
+            if (cancellation.IsCancellationRequested || !ReferenceEquals(_resolve, cancellation))
+                return;
+
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            {
+                SetError($"could not fetch {url.OriginalString} from the session");
+                return;
+            }
+
+            var asset = Asset;
+            if (asset == null)
+                return;
+            IssueLoad(asset, path!, engine, MimeFor(path!), Stream.Value);
+        });
     }
 
     private void ResolveService(Uri url, string? engine)
@@ -732,7 +773,7 @@ public sealed class VideoTextureProvider : DynamicAssetProvider<VideoTexture>, I
 
             _isLive = asset.IsLive;
             Playback.Length = asset.IsLive ? -1f : (float)asset.Length;
-            LumoraLogger.Log($"VideoTextureProvider: ready {asset.VideoWidth}x{asset.VideoHeight} live={asset.IsLive}, notifying {AssetReferenceCount} references");
+            LumoraLogger.Debug($"VideoTextureProvider: ready {asset.VideoWidth}x{asset.VideoHeight} live={asset.IsLive}, notifying {AssetReferenceCount} references");
             CurrentPlaybackEngine.SetValueSilently(asset.PlaybackEngine ?? string.Empty);
             ClearError();
             asset.SetAudioSink(this);

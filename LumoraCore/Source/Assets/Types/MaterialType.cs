@@ -104,6 +104,39 @@ public enum MaterialType
     // viewer's eye reflected across the surface's plane, so a fragment reads it at its own screen
     // position rather than by UV. Unlit: the reflected world is already lit. -xlinka
     Reflection,
+
+    // Native Poiyomi port. Append only: material kinds are serialized by ordinal.
+    Poiyomi,
+
+    // Panorama or cubemap projected around the viewer or onto the surface (360 photos, skies on a sphere).
+    Projection360,
+
+    // Screen-reading filters: what is behind the surface, bent by a normal map, hue/saturation/value
+    // shifted, colour-graded through a lookup texture, or cut to two colours at a threshold.
+    Refract,
+    HSV,
+    LUT,
+    Threshold,
+
+    // Fog filling a box volume, thickest where the view ray crosses the most of it.
+    FogBoxVolume,
+
+    // PBS families with an effect on top: cut away beyond slicing planes, stencil masked, displaced by
+    // maps, and blended between two looks by distance to a point.
+    PBS_Slice,
+    PBS_Stencil,
+    PBS_Displace,
+    PBS_DistanceLerp,
+
+    // Shell fur.
+    Fur,
+
+    // A sky that can also be worn by a surface: on a Skybox it is the world's background, on a mesh the
+    // same sky seen through it.
+    GradientSky,
+
+    // The glowing stand-in a viewer sees while somebody's avatar is still on its way (AvatarArrival).
+    AvatarArrival,
 }
 
 // What the alpha channel of a toon surface means. Opaque throws it away, cutout tests it against the

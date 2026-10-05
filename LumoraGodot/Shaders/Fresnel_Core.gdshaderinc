@@ -13,6 +13,17 @@
 //
 // UNLIT. The two colours ARE the answer; shading them would tint a rim effect by whatever light
 // happens to be in the room. -xlinka
+//
+// Defines a variant can set before including, for the render states the shipped files do not cover:
+//   DEPTH_OFFSET  writes a biased depth, see DepthOffset.gdshaderinc
+//   ZTEST_NEVER   the depth test that never passes, so nothing draws
+// -xlinka
+
+#include "res://Shaders/PolarUV.gdshaderinc"
+#include "res://Shaders/VertexColorSpace.gdshaderinc"
+#ifdef DEPTH_OFFSET
+#include "res://Shaders/DepthOffset.gdshaderinc"
+#endif
 
 uniform float exponent = 1.0;
 uniform float gamma_curve = 1.0;
@@ -33,6 +44,11 @@ uniform bool use_far_texture = false;
 uniform vec2 far_texture_scale = vec2(1.0);
 uniform vec2 far_texture_offset = vec2(0.0);
 
+// Wraps both colour textures around the centre of the UV square, each under its own tiling. The mask and
+// the normal map keep reading the plain UV.
+uniform bool polar_mapping = false;
+uniform float polar_power = 1.0;
+
 uniform sampler2D normal_map : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool use_normal_map = false;
 uniform float normal_scale : hint_range(0.0, 4.0) = 1.0;
@@ -51,7 +67,14 @@ uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.5;
 // cutout discard and whether alpha is carried through at all.
 uniform int blend_mode = 0;
 
+void vertex() {
+	COLOR = vertex_color_encode(COLOR);
+}
+
 void fragment() {
+#ifdef ZTEST_NEVER
+	discard;
+#endif
 	vec3 n = normalize(NORMAL);
 
 	if (use_normal_map) {
@@ -66,18 +89,31 @@ void fragment() {
 	f = pow(f, gamma_curve);
 
 	vec4 near = near_color;
-	if (use_near_texture) {
-		near *= texture(near_texture, UV * near_texture_scale + near_texture_offset);
-	}
-
 	vec4 far = far_color;
-	if (use_far_texture) {
-		far *= texture(far_texture, UV * far_texture_scale + far_texture_offset);
+	if (polar_mapping) {
+		vec2 polar = polar_uv(UV, polar_power);
+		vec2 grad_x;
+		vec2 grad_y;
+		if (use_near_texture) {
+			vec2 p = polar_transform(polar, near_texture_scale, near_texture_offset, grad_x, grad_y);
+			near *= polar_sample(near_texture, p, grad_x, grad_y);
+		}
+		if (use_far_texture) {
+			vec2 p = polar_transform(polar, far_texture_scale, far_texture_offset, grad_x, grad_y);
+			far *= polar_sample(far_texture, p, grad_x, grad_y);
+		}
+	} else {
+		if (use_near_texture) {
+			near *= texture(near_texture, UV * near_texture_scale + near_texture_offset);
+		}
+		if (use_far_texture) {
+			far *= texture(far_texture, UV * far_texture_scale + far_texture_offset);
+		}
 	}
 
 	vec4 col = mix(near, far, f);
 	if (use_vertex_color) {
-		col *= COLOR;
+		col *= vertex_color_decode(COLOR);
 	}
 
 	if (use_mask_texture) {
@@ -108,5 +144,9 @@ void fragment() {
 	// pair has always used. -xlinka
 #ifdef TRANSPARENT_PASS
 	ALPHA = col.a;
+#endif
+
+#ifdef DEPTH_OFFSET
+	DEPTH = offset_depth(FRAGCOORD.z);
 #endif
 }

@@ -107,6 +107,18 @@ public class MaterialAsset : DynamicImplementableAsset<IMaterialAssetHook>
         Version++;
     }
 
+    public void SetNextPassShaderSource(string shaderSource)
+    {
+        Hook?.SetNextPassShaderSource(shaderSource);
+        Version++;
+    }
+
+    public void SetCubemap(string property, CubemapAsset cubemap)
+    {
+        Hook?.SetCubemap(property, cubemap);
+        Version++;
+    }
+
     public void Clear()
     {
         Hook?.Clear();
@@ -118,6 +130,8 @@ public class MaterialAsset : DynamicImplementableAsset<IMaterialAssetHook>
     }
 
     public object GodotMaterial => (Hook?.GodotMaterial) ?? null!;
+
+    public object SharedGodotMaterial => (Hook?.SharedGodotMaterial) ?? null!;
 
     // -1 = default queue.
     public int RenderQueue => Hook?.RenderQueue ?? -1;

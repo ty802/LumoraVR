@@ -20,6 +20,9 @@ public sealed class FontProvider : AssetProvider<FontSet>, IAssetRequester
     private readonly object _lock = new();
     private readonly List<Uri> _requested = new();           // resolved file URLs, in render order
     private readonly Dictionary<Uri, FontAsset> _loaded = new();
+    // local:// fonts asked of the session, each once: a font loads from a file, so one this machine does
+    // not hold is fetched into the store first and the set rebuilt when it lands.
+    private readonly HashSet<string> _fetched = new();
     private bool _setInitialized;
 
     public FontProvider()
@@ -98,13 +101,45 @@ public sealed class FontProvider : AssetProvider<FontSet>, IAssetRequester
 
     void IAssetRequester.AssetLoadStateUpdated(Asset asset) => RebuildFontSet();
 
+    // A font is opened from a file, so only a resolved file goes in the set. A local:// address with no file
+    // here is somebody else's import, and it used to be passed over for good: every font in a package one
+    // person brought in stayed missing for everyone else, and text set in it drew nothing. -xlinka
     private void AddResolved(List<Uri> into, Uri raw)
     {
         if (raw == null)
             return;
         var resolved = ProcessURL(raw);
-        if (resolved != null && resolved.IsFile && !into.Contains(resolved))
-            into.Add(resolved);
+        if (resolved == null)
+            return;
+        if (resolved.IsFile)
+        {
+            if (!into.Contains(resolved))
+                into.Add(resolved);
+            return;
+        }
+        if (string.Equals(resolved.Scheme, "local", StringComparison.OrdinalIgnoreCase))
+            FetchFromSession(resolved.OriginalString);
+    }
+
+    private void FetchFromSession(string uri)
+    {
+        lock (_lock)
+        {
+            if (!_fetched.Add(uri))
+                return;
+        }
+
+        var world = World;
+        _ = Lumora.Core.Networking.AssetFetcher.FetchLocalFileAsync(uri).ContinueWith(task =>
+        {
+            if (task.Result == null || world == null || world.IsDisposed)
+                return;
+            world.RunSynchronously(() =>
+            {
+                if (!IsDestroyed && AssetReferenceCount > 0)
+                    UpdateAsset();
+            });
+        }, System.Threading.Tasks.TaskScheduler.Default);
     }
 
     private void RebuildFontSet()

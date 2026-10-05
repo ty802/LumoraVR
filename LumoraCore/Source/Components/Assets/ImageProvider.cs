@@ -27,7 +27,8 @@ public class ImageProvider : StaticAssetProvider<TextureAsset>, ICustomInspector
 
     public readonly Sync<bool> GenerateMipmaps;
 
-    // pixels; 0 = follow the quality setting, -1 = pin to source resolution
+    // pixels; 0 = follow the quality setting, -1 = pin to source resolution. Neither goes past this
+    // machine's Max Texture Size: that setting is a memory ceiling, not a preference.
     public readonly Sync<int> MaxSizeOverride;
 
     public readonly Sync<bool> AllowCompression;
@@ -72,10 +73,14 @@ public class ImageProvider : StaticAssetProvider<TextureAsset>, ICustomInspector
     {
         get
         {
+            int ceiling = EngineSettings.MaxTextureSize;
             int over = MaxSizeOverride.Value;
             if (over < 0)
-                return 0;                                   // pinned to source resolution
-            return over > 0 ? EngineSettings.SnapTextureSize(over) : EngineSettings.MaxTextureSize;
+                return ceiling;                             // pinned to source resolution, up to the ceiling
+            if (over == 0)
+                return ceiling;
+            int asked = EngineSettings.SnapTextureSize(over);
+            return ceiling > 0 && (asked <= 0 || asked > ceiling) ? ceiling : asked;
         }
     }
 
@@ -87,6 +92,25 @@ public class ImageProvider : StaticAssetProvider<TextureAsset>, ICustomInspector
             IsNormalMap.Value,
             EffectiveMaxSize,
             AllowCompression.Value ? TextureCompressionKind.Block : TextureCompressionKind.None);
+
+    // A cloud texture keeps its lumora address as the key it is loaded under, not the file or download
+    // it would resolve to: that is how the texture knows to read the variants its uploader registered,
+    // and the key stays the same once the original lands on this machine. A hash the build ships is
+    // still served from the build.
+    //
+    // A local address stays one for the same reason. It names the record the sidecar and the ladder are
+    // filed under; resolved to its file first, every texture this machine held loaded at source size
+    // whatever the cap said, and never had a ladder made. The gather reads the same file either way.
+    // -xlinka
+    protected override System.Uri ProcessURL(System.Uri assetURL)
+    {
+        if (assetURL?.Scheme == Persistence.CloudAssetPacker.CloudScheme && CloudVariants.HashOf(assetURL) is { } hash
+            && BuiltinAssetRegistry.ResUriFor(hash) == null)
+            return new System.Uri($"{Persistence.CloudAssetPacker.CloudScheme}:///{hash}");
+        if (assetURL?.Scheme == "local")
+            return assetURL;
+        return base.ProcessURL(assetURL!);
+    }
 
     // DIAGNOSTICS
     //

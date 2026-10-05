@@ -53,6 +53,9 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
     /// </summary>
     public readonly AssetRef<TextureAsset> MetallicMap;
 
+    // On: the map's metallic and smoothness are scaled by the two sliders. Off: the map replaces them.
+    public readonly Sync<bool> SlidersScaleMap;
+
     // NORMAL MAP
 
     /// <summary>
@@ -162,6 +165,7 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
         Metallic = new Sync<float>(this, 0.0f);
         Smoothness = new Sync<float>(this, 0.25f);
         MetallicMap = new AssetRef<TextureAsset>(this);
+        SlidersScaleMap = new Sync<bool>(this, false);
 
         // Normal
         NormalMap = new AssetRef<TextureAsset>(this);
@@ -194,7 +198,13 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
         // Depth bias. Zero is no bias.
         OffsetFactor = new Sync<float>(this, 0f);
         OffsetUnits = new Sync<float>(this, 0f);
+
+        AlbedoUV = new Sync<TextureUVChannel>(this, TextureUVChannel.UV1);
+        EmissiveUV = new Sync<TextureUVChannel>(this, TextureUVChannel.UV1);
     }
+
+    public readonly Sync<TextureUVChannel> AlbedoUV;
+    public readonly Sync<TextureUVChannel> EmissiveUV;
 
     protected override void UpdateMaterial(MaterialAsset asset)
     {
@@ -207,6 +217,8 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
         // Texture transform
         asset.SetFloat2("TextureScale", TextureScale.Value);
         asset.SetFloat2("TextureOffset", TextureOffset.Value);
+        asset.SetInt("albedo_uv", (int)AlbedoUV.Value);
+        asset.SetInt("emissive_uv", (int)EmissiveUV.Value);
 
         // Albedo
         asset.SetColor("AlbedoColor", AlbedoColor.Value);
@@ -216,6 +228,7 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
         asset.SetFloat("Metallic", Metallic.Value);
         asset.SetFloat("Smoothness", Smoothness.Value);
         asset.SetTexture("MetallicMap", MetallicMap.Asset);
+        asset.SetBool("SlidersScaleMap", SlidersScaleMap.Value);
 
         // Normal
         asset.SetTexture("NormalMap", NormalMap.Asset);

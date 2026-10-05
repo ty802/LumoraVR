@@ -91,7 +91,7 @@ public class StaticCubemap : StaticAssetProvider<CubemapAsset>, ICustomInspector
             ? $"{size.Width}x{size.Height} equirect"
             : "not a panorama");
         InspectorStats.AddRow(ui, "Mips", asset.HasMipmaps ? "generated" : "none");
-        InspectorStats.AddRow(ui, "Faces", InspectorStats.Bytes(asset.MemorySize));
+        InspectorStats.AddRow(ui, "Faces", asset.MemorySize > 0 ? InspectorStats.Bytes(asset.MemorySize) : "on the graphics card only");
         InspectorStats.AddRow(ui, "VRAM", asset.GpuBytes is { } vram
             ? InspectorStats.Bytes(vram)
             : "renderer has not reported yet");

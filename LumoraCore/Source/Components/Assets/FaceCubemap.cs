@@ -1,6 +1,8 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
+using System.Threading.Tasks;
 using Helio.UI;
 using Lumora.Core.Components;
 
@@ -29,6 +31,12 @@ public class FaceCubemap : DynamicAssetProvider<CubemapAsset>, ICustomInspectorU
 
     // empty when the last assembly succeeded
     private string _status = "no faces assigned";
+
+    // A loaded face keeps no pixels once the renderer has it, so they come back from its file first.
+    // What came back is kept here until the cube is built from it: six large faces can be more than
+    // the pixel read cache holds on to.
+    private TexturePixels?[]? _read;
+    private Task? _reading;
 
     public FaceCubemap()
     {
@@ -60,7 +68,7 @@ public class FaceCubemap : DynamicAssetProvider<CubemapAsset>, ICustomInspectorU
         for (int i = 0; i < 6; i++)
         {
             var texture = refs[i].Asset;
-            if (texture == null || texture.PixelData == null || texture.Width <= 0)
+            if (texture == null || !texture.CanReadPixels || texture.Width <= 0)
             {
                 _status = $"waiting for {(CubemapFace)i}";
                 return;
@@ -91,11 +99,46 @@ public class FaceCubemap : DynamicAssetProvider<CubemapAsset>, ICustomInspectorU
 
         // Decoded rows are top-down, which is the order cube faces upload in, so they go in as they are.
         var faces = new byte[6][];
+        bool missing = false;
         for (int i = 0; i < 6; i++)
-            faces[i] = sources[i].PixelData;
+        {
+            var pixels = sources[i].TryGetPixels();
+            if (pixels == null && _read?[i] is { } kept && kept.Version == sources[i].Version)
+                pixels = kept;
+            if (pixels == null || pixels.Levels.Length == 0)
+                missing = true;
+            else
+                faces[i] = pixels.Levels[0];
+        }
+        if (missing)
+        {
+            _status = "reading the faces' pixels";
+            ReadFaces(sources);
+            return;
+        }
 
+        _read = null;
         _status = string.Empty;
         asset.SetFaces(faces, size, GenerateMipmaps.Value);
+    }
+
+    private void ReadFaces(TextureAsset[] sources)
+    {
+        if (_reading is { IsCompleted: false })
+            return;
+        var reads = new Task<TexturePixels?>[6];
+        for (int i = 0; i < 6; i++)
+            reads[i] = sources[i].GetPixelsAsync();
+        _reading = Task.WhenAll(reads).ContinueWith(done =>
+        {
+            if (done.Status != TaskStatus.RanToCompletion || IsDestroyed)
+                return;
+            _read = done.Result;
+            if (Array.TrueForAll(done.Result, pixels => pixels != null))
+                MarkChangeDirty();
+            else
+                _status = "a face's pixels could not be read back from its file";
+        }, TaskScheduler.Default);
     }
 
     protected override void OnAssetCleared() { }
@@ -107,7 +150,7 @@ public class FaceCubemap : DynamicAssetProvider<CubemapAsset>, ICustomInspectorU
         InspectorStats.AddRow(ui, "Status", string.IsNullOrEmpty(_status) ? "assembled" : _status);
         if (asset != null && asset.FaceSize > 0)
         {
-            InspectorStats.AddRow(ui, "Faces", InspectorStats.Bytes(asset.MemorySize));
+            InspectorStats.AddRow(ui, "Faces", asset.MemorySize > 0 ? InspectorStats.Bytes(asset.MemorySize) : "on the graphics card only");
             InspectorStats.AddRow(ui, "VRAM", asset.GpuBytes is { } vram
                 ? InspectorStats.Bytes(vram)
                 : "renderer has not reported yet");

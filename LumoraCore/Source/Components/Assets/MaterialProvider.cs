@@ -24,6 +24,12 @@ public abstract class MaterialProvider : DynamicAssetProvider<MaterialAsset>, IP
     // dashboard, on every open, is a bug report. -xlinka
     public virtual bool UseLoadingPlaceholder => true;
 
+    // The first usable albedo is enough to show a textured surface. Normal/detail/emission maps
+    // can finish in the background; waiting for all of them hides an already usable main texture.
+    public bool DisplayReady => this is ICommonMaterial common && common.MainTexture != null
+        ? !AssetReadiness.IsPending(common.MainTexture, inspectDependencies: false)
+        : DependenciesReady;
+
     // False while any texture / cubemap / shader source this material paints with is still arriving.
     // The material ASSET exists long before that - it is created the moment something references it -
     // which is why a renderer cannot just ask IsAssetAvailable and call it ready.
@@ -40,8 +46,20 @@ public abstract class MaterialProvider : DynamicAssetProvider<MaterialAsset>, IP
                     return false;
                 }
             }
+            foreach (var reference in NestedAssetRefs())
+            {
+                if (AssetReadiness.IsPending(reference.Target, inspectDependencies: false))
+                    return false;
+            }
             return true;
         }
+    }
+
+    // Asset references a material keeps below its own members, inside list elements (the textures of a
+    // shader-uniform list). The member scan above only sees the material's direct fields. -xlinka
+    protected virtual System.Collections.Generic.IEnumerable<IAssetRef> NestedAssetRefs()
+    {
+        yield break;
     }
 
     // What is holding this material back. Read only by the one-shot log a renderer emits when a surface has
@@ -61,6 +79,15 @@ public abstract class MaterialProvider : DynamicAssetProvider<MaterialAsset>, IP
             string url = (target as IUrlAssetProvider)?.SourceUrl?.ToString() ?? "<no url>";
             string state = (target?.GenericAsset as Asset)?.LoadState.ToString() ?? "no asset yet";
             return $"{GetSyncMemberName(members[i])} -> {target?.GetType().Name ?? "null"} [{state}] {url}";
+        }
+        foreach (var reference in NestedAssetRefs())
+        {
+            var target = reference.Target;
+            if (!AssetReadiness.IsPending(target, inspectDependencies: false))
+                continue;
+            string url = (target as IUrlAssetProvider)?.SourceUrl?.ToString() ?? "<no url>";
+            string state = (target?.GenericAsset as Asset)?.LoadState.ToString() ?? "no asset yet";
+            return $"list texture -> {target?.GetType().Name ?? "null"} [{state}] {url}";
         }
         return "nothing pending - the material asset itself has not been built";
     }
@@ -129,41 +156,63 @@ public abstract class MaterialProvider : DynamicAssetProvider<MaterialAsset>, IP
         Lumora.Core.Logging.Logger.Debug($"MaterialProvider.UpdateAsset: [{GetType().Name}] Calling ApplyChanges");
         asset.ApplyChanges(_assetUpdatedCallback);
 
-        // COME BACK FOR A TEXTURE THAT IS ASSIGNED BUT NOT YET ON THE GPU.
-        //
-        // The asset reaching FullyLoaded is what re-drove us; the hook's upload can land a frame or
-        // more AFTER that, so the pass above wrote a null over a texture that really is there and no
-        // further notification was coming. Bounded, because a texture that never uploads must not
-        // keep a material re-applying forever. -xlinka
-        if (asset.HasTexturesStillArriving && _textureWaits < MaxTextureWaits)
+        // A texture can be assigned before its hook has it on the GPU, and this pass then bound a null.
+        // Re-queueing straight into the synchronous drain that runs us spun the old 900-wait bound out
+        // inside one frame, before any main-thread upload could land, and gave up for good. Hooks that
+        // announce arrival re-drive the material at once; this only backs them up, spaced out over
+        // real updates, and never gives up. -xlinka
+        if (asset.HasTexturesStillArriving)
         {
-            _textureWaits++;
-            MarkChangeDirty();
+            ArmTextureRetry(asset);
         }
-        else if (!asset.HasTexturesStillArriving)
+        else
         {
-            _textureWaits = 0;
-        }
-        else if (!_gaveUpLogged)
-        {
-            // GIVING UP QUIETLY IS WHY THIS COST A DAY. The wait is bounded so a texture that never
-            // uploads cannot re-apply a material forever, which is right, but running the bound out
-            // left a prop rendering its flat albedo tint with nothing anywhere saying so. On a white
-            // tint that is pixel-identical to a texture that was never assigned, so every look at it
-            // starts by re-litigating whether the texture loaded at all. It did. Say so. -xlinka
-            _gaveUpLogged = true;
-            Lumora.Core.Logging.Logger.Warn(
-                $"MaterialProvider: [{GetType().Name}] on '{Slot?.SlotName.Value}' gave up after "
-              + $"{MaxTextureWaits} waits with {asset.TexturesStillArriving} still not on the GPU; "
-              + "those surfaces are drawing the flat albedo tint instead of their texture.");
+            _textureRetryGap = MinTextureRetryGap;
+            _texturesPendingSince = double.NaN;
+            _slowTextureLogged = false;
         }
     }
 
-    // Generous: a big texture decoding behind a queue of others can take a while, and the cost of one
-    // extra material apply is nothing next to a prop that stays untextured for the session.
-    private const int MaxTextureWaits = 900;
-    private int _textureWaits;
-    private bool _gaveUpLogged;
+    private const int MinTextureRetryGap = 2;
+    private const int MaxTextureRetryGap = 64;
+    private const double SlowTextureSeconds = 30.0;
+    private int _textureRetryGap = MinTextureRetryGap;
+    private bool _textureRetryArmed;
+    private double _texturesPendingSince = double.NaN;
+    private bool _slowTextureLogged;
+    private Action? _retryTextures;
+
+    private void ArmTextureRetry(MaterialAsset asset)
+    {
+        var world = World;
+        if (world == null)
+            return;
+
+        double now = world.Time.TotalTime;
+        if (double.IsNaN(_texturesPendingSince))
+            _texturesPendingSince = now;
+        else if (!_slowTextureLogged && now - _texturesPendingSince >= SlowTextureSeconds)
+        {
+            _slowTextureLogged = true;
+            Lumora.Core.Logging.Logger.Warn(
+                $"MaterialProvider: [{GetType().Name}] at '{Slot?.GetPath()}' has waited {SlowTextureSeconds:0} s "
+              + $"for {asset.TexturesStillArriving} to reach the GPU; it draws the flat tint until then and keeps waiting.");
+        }
+
+        if (_textureRetryArmed)
+            return;
+        _textureRetryArmed = true;
+        world.RunInUpdates(_textureRetryGap, _retryTextures ??= RetryTextures);
+        _textureRetryGap = System.Math.Min(_textureRetryGap * 2, MaxTextureRetryGap);
+    }
+
+    private void RetryTextures()
+    {
+        _textureRetryArmed = false;
+        if (IsDestroyed || Asset is not { HasTexturesStillArriving: true })
+            return;
+        MarkChangeDirty();
+    }
 
     protected abstract void UpdateMaterial(MaterialAsset asset);
 

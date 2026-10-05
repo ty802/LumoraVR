@@ -1,7 +1,9 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System;
 using Godot;
 using Lumora.Core.Assets;
@@ -10,6 +12,23 @@ namespace Lumora.Godot.Hooks;
 
 internal static class MaterialPropertyApplicator
 {
+    // Parameter names made once. A material update handed Godot a C# string for every write, and each
+    // became a fresh StringName: a global lock and a hash on the way in, and a handle the finalizer freed
+    // on that same lock later, while the frame waited on it. Built-in names were snake_cased into a new
+    // string per write on top of that. -xlinka
+    private static readonly ConcurrentDictionary<string, StringName> _names = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<(MaterialType Type, string Property), (StringName Param, StringName Use)> _mapped = new();
+    private static readonly StringName UseAlbedoTexture = Name("use_albedo_texture");
+    private static readonly ConditionalWeakTable<Shader, StringName[]> _uniformNames = new();
+
+    private static StringName Name(string name) => _names.GetOrAdd(name, static n => new StringName(n));
+
+    private static (StringName Param, StringName Use) Mapped(MaterialType materialType, string property)
+        => _mapped.GetOrAdd((materialType, property), static key =>
+        {
+            string param = MapShaderProperty(key.Type, key.Property);
+            return (Name(param), Name("use_" + param));
+        });
     public static void Apply(Material? material, MaterialType materialType, string property, object value)
     {
         if (material is StandardMaterial3D standardMaterial)
@@ -87,19 +106,31 @@ internal static class MaterialPropertyApplicator
         var shader = source.Shader;
         if (shader == null) return;
 
-        var uniforms = shader.GetShaderUniformList();
-        foreach (var entry in uniforms)
+        foreach (var name in UniformNames(shader))
         {
-            if (entry.VariantType != Variant.Type.Dictionary) continue;
-            var dict = entry.AsGodotDictionary();
-            if (!dict.TryGetValue("name", out var nameVar)) continue;
-            string name = nameVar.AsString();
-            if (string.IsNullOrEmpty(name)) continue;
             var value = source.GetShaderParameter(name);
             if (value.VariantType == Variant.Type.Nil) continue;
             dest.SetShaderParameter(name, value);
         }
     }
+
+    // A shader's uniform names, read once per shader rather than once per clone.
+    private static StringName[] UniformNames(Shader shader)
+        => _uniformNames.GetValue(shader, static s =>
+        {
+            var names = new List<StringName>();
+            using var uniforms = s.GetShaderUniformList();
+            foreach (var entry in uniforms)
+            {
+                if (entry.VariantType != Variant.Type.Dictionary) continue;
+                using var dict = entry.AsGodotDictionary();
+                if (!dict.TryGetValue("name", out var nameVar)) continue;
+                string name = nameVar.AsString();
+                if (!string.IsNullOrEmpty(name))
+                    names.Add(Name(name));
+            }
+            return names.ToArray();
+        });
 
     public static void ApplyRenderPriority(Material material, int renderQueue)
     {
@@ -114,6 +145,11 @@ internal static class MaterialPropertyApplicator
         ApplyGodotRenderPriority(material, priority);
     }
 
+    // ONLY WHEN IT CHANGES. The platform treats every render-priority write as a change to the material,
+    // same value or not, and re-files every instance drawn with it; each of those then tells every point
+    // and spot light it sits in to render its shadow again. The material hook writes the priority on
+    // every update of the material, so one animated material kept every lamp around everything wearing
+    // it re-rendering all six shadow faces every frame. -xlinka
     public static void ApplyGodotRenderPriority(Material material, int priority)
     {
         if (material == null)
@@ -121,7 +157,9 @@ internal static class MaterialPropertyApplicator
             return;
         }
 
-        material.RenderPriority = System.Math.Clamp(priority, -128, 127);
+        int clamped = System.Math.Clamp(priority, -128, 127);
+        if (material.RenderPriority != clamped)
+            material.RenderPriority = clamped;
     }
 
     public static Variant ToVariant(object value)
@@ -139,6 +177,7 @@ internal static class MaterialPropertyApplicator
             Vector4 v4 => Variant.From(v4),
             Color c => Variant.From(c),
             Texture2D tex => Variant.From(tex),
+            Texture layered => Variant.From(layered),
             Lumora.Core.Math.float2 f2 => Variant.From(new Vector2(f2.x, f2.y)),
             Lumora.Core.Math.float3 f3 => Variant.From(new Vector3(f3.x, f3.y, f3.z)),
             Lumora.Core.Math.float4 f4 => Variant.From(new Vector4(f4.x, f4.y, f4.z, f4.w)),
@@ -252,33 +291,34 @@ internal static class MaterialPropertyApplicator
         // letter (MyColor -> my_color) into a uniform the shader doesn't have, and the write silently
         // vanished. No mapping, no use_albedo_texture sidecar; apply exactly what the shader declared.
         // (RenderQueue above stays reserved as the material's render-priority control channel.) -xlinka
-        if (materialType == MaterialType.Custom)
+        // Poiyomi's properties go by Poiyomi's own names, the shader's uniform names, the same way.
+        if (materialType is MaterialType.Custom or MaterialType.Poiyomi)
         {
             // A cleared texture clears its uniform, handing it back to the shader's own default
             // (hint_default_white and the like). Skipping the write kept the last texture bound. -xlinka
             if (value == null)
             {
-                material.SetShaderParameter(property, default(Variant));
+                material.SetShaderParameter(Name(property), default(Variant));
                 return;
             }
             Variant customValue = ToVariant(value);
             if (customValue.VariantType != Variant.Type.Nil)
-                material.SetShaderParameter(property, customValue);
+                material.SetShaderParameter(Name(property), customValue);
             return;
         }
 
-        string mappedParam = MapShaderProperty(materialType, property);
+        var mapped = Mapped(materialType, property);
 
         if (value == null)
         {
             if (property is "Texture" or "AlbedoTexture")
             {
-                material.SetShaderParameter("use_albedo_texture", false);
+                material.SetShaderParameter(UseAlbedoTexture, false);
             }
             // A texture member that went null has to say so, or the shader keeps sampling the last one
             // it was given.
             if (IsTextureMember(property))
-                material.SetShaderParameter("use_" + mappedParam, false);
+                material.SetShaderParameter(mapped.Use, false);
             return;
         }
 
@@ -288,10 +328,10 @@ internal static class MaterialPropertyApplicator
             return;
         }
 
-        material.SetShaderParameter(mappedParam, variantValue);
+        material.SetShaderParameter(mapped.Param, variantValue);
         if (property is "Texture" or "AlbedoTexture")
         {
-            material.SetShaderParameter("use_albedo_texture", value is Texture2D);
+            material.SetShaderParameter(UseAlbedoTexture, value is Texture2D);
         }
 
         // EVERY TEXTURE UNIFORM GETS ITS COMPANION FLAG, not just albedo.
@@ -311,7 +351,7 @@ internal static class MaterialPropertyApplicator
         // ColorMask is the mask TEXTURE on the four-way tint material and a channel WRITE MASK enum on
         // the channel-matrix filter. Only the null case above falls back to the name. -xlinka
         if (value is Texture2D)
-            material.SetShaderParameter("use_" + mappedParam, true);
+            material.SetShaderParameter(mapped.Use, true);
     }
 
     // Named by what it is rather than by its type, because the value arrives as a bare object and is

@@ -51,7 +51,7 @@ internal static class PackageHandedness
         "Force", "Gravity", "Anchor", "Pivot", "Origin", "Translation", "Delta",
     };
 
-    private static readonly string[] NeverNames = { "Scale", "Size", "Extent", "Range", "Color", "Colour" };
+    private static readonly string[] NeverNames = { "Scale", "Size", "Extent", "Range", "Color", "Colour", "HSV" };
 
     public static float3 Member(string memberName, in float3 v)
     {

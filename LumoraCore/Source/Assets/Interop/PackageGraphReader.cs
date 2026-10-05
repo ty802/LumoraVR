@@ -3,6 +3,8 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
@@ -70,7 +72,7 @@ public static class PackageGraphReader
 
         byte[] document = Decompress(stream, header.Codec);
         int offset = 0;
-        var node = ReadDocument(document, ref offset, document.Length);
+        var node = ReadDocument(document, ref offset, document.Length, new Decoder());
         return node as DataTreeDictionary
             ?? throw new InvalidDataException("Package object graph root is not a dictionary.");
     }
@@ -124,7 +126,54 @@ public static class PackageGraphReader
     private const byte TypeUInt64 = 0x11;
     private const byte TypeInt64 = 0x12;
 
-    private static DataTreeNode ReadDocument(byte[] b, ref int offset, int limit)
+    // What one decode shares across every document in it. A package graph repeats the same few keys
+    // millions of times and most of its documents are arrays, so each distinct key becomes a string once,
+    // array positions are checked straight from the bytes without one, and the lists a document collects
+    // its elements in are reused: a graph of 196612 slots took 10 s to decode and left the collector
+    // pausing the world for seconds afterwards. -xlinka
+    private sealed class Decoder
+    {
+        private readonly Dictionary<ulong, string> _keys = new();
+        private readonly Stack<List<(string? Key, DataTreeNode Node)>> _lists = new();
+
+        public List<(string? Key, DataTreeNode Node)> RentList() => _lists.Count > 0 ? _lists.Pop() : new();
+
+        public void ReturnList(List<(string? Key, DataTreeNode Node)> list)
+        {
+            list.Clear();
+            _lists.Push(list);
+        }
+
+        public string Key(byte[] b, int start, int length)
+        {
+            if (length > 64)
+                return Encoding.UTF8.GetString(b, start, length);
+            ulong hash = 14695981039346656037UL;
+            for (int i = 0; i < length; i++)
+                hash = (hash ^ b[start + i]) * 1099511628211UL;
+            hash ^= (ulong)length << 56;
+            if (_keys.TryGetValue(hash, out var known) && Spells(known, b, start, length))
+                return known;
+            var made = Encoding.UTF8.GetString(b, start, length);
+            _keys[hash] = made;
+            return made;
+        }
+
+        // Byte for char, so only an ASCII key can match; anything else is simply made again.
+        private static bool Spells(string key, byte[] b, int start, int length)
+        {
+            if (key.Length != length)
+                return false;
+            for (int i = 0; i < length; i++)
+            {
+                if (key[i] != b[start + i])
+                    return false;
+            }
+            return true;
+        }
+    }
+
+    private static DataTreeNode ReadDocument(byte[] b, ref int offset, int limit, Decoder decoder)
     {
         int start = offset;
         RequireBytes(offset, 4, limit);
@@ -135,19 +184,28 @@ public static class PackageGraphReader
         offset += 4;
 
         // A BSON array is a document whose keys are "0", "1", "2"... Decide which node we are building
-        // from the first key rather than from the parent's element type, so a nested array read through
-        // the document path still comes out as a list.
-        var pairs = new System.Collections.Generic.List<(string Key, DataTreeNode Node)>();
+        // from the keys rather than from the parent's element type, so a nested array read through the
+        // document path still comes out as a list. Keys that are just positions are left unmade; a
+        // document that turns out not to be an array gets them back from their position.
+        var pairs = decoder.RentList();
         bool looksLikeArray = true;
         int index = 0;
 
         while (offset < end - 1)
         {
             byte type = b[offset++];
-            string key = ReadCString(b, ref offset, end - 1);
-            DataTreeNode value = ReadElement(b, ref offset, type, end - 1);
-            if (looksLikeArray && key != index.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            int keyStart = offset;
+            int keyEnd = keyStart;
+            while (keyEnd < end - 1 && b[keyEnd] != 0x00)
+                keyEnd++;
+            if (keyEnd >= end - 1)
+                throw new InvalidDataException($"Unterminated BSON key at {keyStart}.");
+            offset = keyEnd + 1;
+
+            if (looksLikeArray && !IsPosition(b, keyStart, keyEnd - keyStart, index))
                 looksLikeArray = false;
+            string? key = looksLikeArray ? null : decoder.Key(b, keyStart, keyEnd - keyStart);
+            DataTreeNode value = ReadElement(b, ref offset, type, end - 1, decoder);
             index++;
             pairs.Add((key, value));
         }
@@ -156,21 +214,38 @@ public static class PackageGraphReader
             throw new InvalidDataException($"BSON document at {start} is missing its terminator.");
         offset = end;
 
+        DataTreeNode result;
         if (looksLikeArray && pairs.Count > 0)
         {
             var list = new DataTreeList();
+            list.Children.Capacity = pairs.Count;
             foreach (var (_, node) in pairs)
                 list.Add(node);
-            return list;
+            result = list;
         }
-
-        var dict = new DataTreeDictionary();
-        foreach (var (key, node) in pairs)
-            dict.AddOrUpdate(key, node);
-        return dict;
+        else
+        {
+            var dict = new DataTreeDictionary();
+            dict.Children.EnsureCapacity(pairs.Count);
+            for (int i = 0; i < pairs.Count; i++)
+            {
+                var (key, node) = pairs[i];
+                dict.Children[key ?? i.ToString(CultureInfo.InvariantCulture)] = node;
+            }
+            result = dict;
+        }
+        decoder.ReturnList(pairs);
+        return result;
     }
 
-    private static DataTreeNode ReadElement(byte[] b, ref int offset, byte type, int limit)
+    private static bool IsPosition(byte[] b, int start, int length, int index)
+    {
+        Span<byte> digits = stackalloc byte[11];
+        return index.TryFormat(digits, out int written, default, CultureInfo.InvariantCulture)
+            && written == length && digits[..written].SequenceEqual(b.AsSpan(start, length));
+    }
+
+    private static DataTreeNode ReadElement(byte[] b, ref int offset, byte type, int limit, Decoder decoder)
     {
         switch (type)
         {
@@ -198,7 +273,7 @@ public static class PackageGraphReader
             }
             case TypeDocument:
             case TypeArray:
-                return ReadDocument(b, ref offset, limit);
+                return ReadDocument(b, ref offset, limit, decoder);
             case TypeBool:
             {
                 RequireBytes(offset, 1, limit);
@@ -254,17 +329,5 @@ public static class PackageGraphReader
     {
         if (offset < 0 || count > limit - offset)
             throw new InvalidDataException($"Truncated BSON value at offset {offset}: expected {count} bytes before {limit}.");
-    }
-
-    private static string ReadCString(byte[] b, ref int offset, int limit)
-    {
-        int start = offset;
-        while (offset < limit && b[offset] != 0x00)
-            offset++;
-        if (offset >= limit)
-            throw new InvalidDataException($"Unterminated BSON key at {start}.");
-        string s = Encoding.UTF8.GetString(b, start, offset - start);
-        offset++;
-        return s;
     }
 }

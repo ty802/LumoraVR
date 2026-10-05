@@ -3,6 +3,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using Lumora.Core.Math;
@@ -197,8 +198,14 @@ public static class PackageMeshReader
             for (int s = 0; s < submeshCount; s++)
             {
                 string topology = r.String();
+                // A null submesh is written as an empty name and holds no indices. It still keeps its place:
+                // materials are matched to submeshes by position, and dropping it put every submesh after it
+                // in the material meant for the one before. -xlinka
                 if (topology.Length == 0)
-                    continue;   // a null submesh is written as an empty name and holds no indices
+                {
+                    mesh.Submeshes.Add(new PhosTriangleSubmesh(mesh));
+                    continue;
+                }
                 ReadSubmesh(mesh, topology, ref r);
             }
         }
@@ -222,25 +229,73 @@ public static class PackageMeshReader
         for (int i = 0; i < blendShapeCount; i++)
             ReadBlendShape(mesh, vertexCount, ref r);
 
+        KeepPointData(mesh);
         return mesh;
+    }
+
+    // A point drawn as a billboard keeps no direction in its normal: it holds width, height and roll, and its
+    // second UV channel holds the atlas cell size. Neither is a place or a texture row, so the mirror and the V
+    // flip applied to every vertex above are taken back off the vertices points use. UV0 stays flipped.
+    private static void KeepPointData(PhosMesh mesh)
+    {
+        HashSet<int>? used = null;
+        foreach (var submesh in mesh.Submeshes)
+        {
+            if (submesh is not PhosPointSubmesh points)
+                continue;
+            used ??= new HashSet<int>();
+            var indices = points.RawIndices;
+            for (int i = 0; i < points.Count * points.IndicesPerElement && i < indices.Length; i++)
+                used.Add(indices[i]);
+        }
+        if (used == null)
+            return;
+        var normals = mesh.HasNormals ? mesh.RawNormals : null;
+        var cells = mesh.HasUV1s ? mesh.RawUV1s : null;
+        foreach (int v in used)
+        {
+            if (normals != null && v >= 0 && v < normals.Length)
+                normals[v] = PackageHandedness.Point(normals[v]);
+            if (cells != null && v >= 0 && v < cells.Length)
+                cells[v] = new float2(cells[v].x, 1f - cells[v].y);
+        }
     }
 
     private static void ReadSubmesh(PhosMesh mesh, string topology, ref Reader r)
     {
         int count = (int)r.VarInt();
 
-        // Lines and quads have no counterpart here. They must still be CONSUMED at their real stride or
-        // the bone table after them decodes into noise, so read them out and drop them.
-        int strideOverride = topology switch
+        // Lines have no counterpart here. They must still be CONSUMED at their real stride or the bone
+        // table after them decodes into noise, and an empty submesh keeps their place so the materials
+        // after them stay on the submeshes they belong to. -xlinka
+        if (topology == "Lines")
         {
-            "Lines" => 2,
-            "Quads" => 4,
-            _ => 0,
-        };
-        if (strideOverride > 0)
-        {
-            for (int i = 0; i < count * strideOverride; i++)
+            for (int i = 0; i < count * 2; i++)
                 r.Int32();
+            mesh.Submeshes.Add(new PhosTriangleSubmesh(mesh));
+            return;
+        }
+
+        // A quad is two triangles wound the way the quad is. They used to be thrown away with the lines,
+        // which left holes in anything modelled in quads. -xlinka
+        if (topology == "Quads")
+        {
+            var quads = new PhosTriangleSubmesh(mesh);
+            if (count > 0)
+                quads.IncreaseCount(count * 2);
+            var corners = quads.RawIndices;
+            for (int q = 0; q < count; q++)
+            {
+                int a = r.Int32(), b = r.Int32(), c = r.Int32(), d = r.Int32();
+                int o = q * 6;
+                corners[o] = a;
+                corners[o + 1] = b;
+                corners[o + 2] = c;
+                corners[o + 3] = a;
+                corners[o + 4] = c;
+                corners[o + 5] = d;
+            }
+            mesh.Submeshes.Add(quads);
             return;
         }
 

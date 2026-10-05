@@ -12,11 +12,9 @@ public enum PackageTypeFate
 {
     // We have a component that does the same job; the instance can be rebuilt.
     Mapped,
-    // Stripped on the way in, by design. A package's visual scripting runtime is a whole language and
-    // execution model rather than a set of components, and we do not carry it. These are NOT counted
-    // as conversion losses: an object arrives without its scripted behaviour but otherwise intact,
-    // and reporting hundreds of node types as "missing" buries the gaps that can actually be acted
-    // on. Dropped silently at import. -xlinka
+    // Not attached as components. A package's visual scripting nodes become scripts instead
+    // (PackageNodeGraphs), and the rest here is plumbing whose data is read elsewhere or carries nothing.
+    // Not counted as conversion losses; what a graph could not carry is reported with the scripts. -xlinka
     Stripped,
     // A licensed third-party IK package. We never port that; our own solver stands in at the rig level.
     ForeignIK,
@@ -32,8 +30,39 @@ public enum PackageTypeFate
 // appended after a '+'. The mapping is deliberately name-driven rather than a giant hand-maintained
 // table: most of what a package contains has an obvious counterpart here under the same name, and the
 // alias table below only has to carry the cases where we deliberately diverged. -xlinka
-public static class PackageTypeMap
+public static partial class PackageTypeMap
 {
+    static PackageTypeMap()
+    {
+        AliasesK1(Aliases);
+        AliasesK2(Aliases);
+        AliasesK3(Aliases);
+        AliasesK4(Aliases);
+        AliasesK5(Aliases);
+        AliasesK6(Aliases);
+        AliasesK7(Aliases);
+        AliasesK8(Aliases);
+    }
+
+    static partial void AliasesK1(Dictionary<string, string> aliases);
+    static partial void AliasesK2(Dictionary<string, string> aliases);
+    static partial void AliasesK3(Dictionary<string, string> aliases);
+    static partial void AliasesK4(Dictionary<string, string> aliases);
+    static partial void AliasesK5(Dictionary<string, string> aliases);
+    static partial void AliasesK6(Dictionary<string, string> aliases);
+    static partial void AliasesK7(Dictionary<string, string> aliases);
+    static partial void AliasesK8(Dictionary<string, string> aliases);
+
+    // Package components that are not attached: another part of ours carries what they did, or they do nothing
+    // in a world here; and the ones that send to node graphs, joined into those graphs instead (PackageNodeGraphs).
+    // Filled by the family partials, each with its reason.
+    private static readonly HashSet<string> Carried = new(StringComparer.Ordinal);
+    private static readonly HashSet<string> JoinsGraphs = new(StringComparer.Ordinal);
+
+    // One generic variant that becomes a different component of ours than the rest of its family, keyed by the
+    // simple name with the package's arguments ("ButtonValueSet<int2>"): a value of a type we keep in parts.
+    private static readonly Dictionary<string, Type> ClosedAliases = new(StringComparer.Ordinal);
+
     // Where we chose a different name for the same job. Left side is the package's simple name.
     private static readonly Dictionary<string, string> Aliases = new(StringComparer.Ordinal)
     {
@@ -49,6 +78,9 @@ public static class PackageTypeMap
         // single texture the package sent, so the whole garment came in WHITE - and silently, because a
         // member that does not match is skipped rather than reported. The package sends Culling=Off, so
         // PBS_Metallic comes out double-sided on its own. -xlinka
+        // The package's user follower; ours of the same name is the nameplate's, which only follows the user
+        // whose root it sits under and so stood still on a world slot.
+        ["PositionAtUser"] = "PlaceAtUser",
         ["PBS_DualSidedMetallic"] = "PBS_Metallic",
         ["PBS_DualSidedSpecular"] = "PBS_Specular",
         ["PBS_TriplanarMetallic"] = "PBS_Triplanar",
@@ -63,6 +95,9 @@ public static class PackageTypeMap
         // run, but the albedo, normal and specular underneath are the same members, so this keeps the
         // surface and loses the effect.
         ["PBS_IntersectSpecular"] = "PBS_Specular",
+        // APPROXIMATION of the same kind: the triplanar surface comes through, its specular colour does not.
+        // Left unmapped, every renderer wearing it had no material at all and did not draw.
+        ["PBS_TriplanarSpecular"] = "PBS_Triplanar",
         // XiexeToonMaterial resolves to our own component of the same name now - it used to fall
         // back to the plain ToonMaterial, which is a different and simpler shading model.
         // PARTICLES. The package's particle modules and ours cover the same features under different
@@ -109,9 +144,24 @@ public static class PackageTypeMap
         ["StaticTexture2D"] = "ImageProvider",
         ["StaticMesh"] = "MeshProvider",
         ["StaticFont"] = "FontProvider",
+        // Levels by screen height there, by distance here; the importer converts them (FinishLodGroups).
+        ["LODGroup"] = "LodGroup",
+        // Screen filters under our naming.
+        ["HSV_Material"] = "HSVMaterial",
+        ["LUT_Material"] = "LUTMaterial",
+        // A main font plus fallbacks, which is what ours is; the files are read off the fonts it names.
+        ["FontChain"] = "FontProvider",
         ["StaticSprite"] = "SpriteProvider",
 
         // Variables. Ours drop the package's "Dynamic" prefix and name the container a scope.
+        // A bare synced value and reference, the touchable button, and two value drivers: the same things here
+        // under the names ours were given.
+        ["ValueField"] = "ValueHolder",
+        ["ReferenceField"] = "ReferenceHolder",
+        ["TouchButton"] = "TouchPad",
+        ["BooleanValueDriver"] = "BoolToValue",
+        ["ValueGradientDriver"] = "ValueGradient",
+
         ["DynamicVariableSpace"] = "VariableScope",
         ["DynamicValueVariable"] = "ValueVariable",
         ["DynamicReferenceVariable"] = "ReferenceVariable",
@@ -123,6 +173,37 @@ public static class PackageTypeMap
         // Drivers with the words the other way round.
         ["ValueCopy"] = "CopyValue",
         ["ReferenceCopy"] = "CopyReference",
+
+        // What a button press does, from whatever button is on the slot. Ours carry a Press prefix.
+        ["ButtonToggle"] = "PressToggle",
+        ["ButtonValueSet"] = "PressSetValue",
+        ["ButtonReferenceSet"] = "PressSetReference",
+        ["ButtonValueCycle"] = "PressCycleValue",
+        ["ButtonReferenceCycle"] = "PressCycleReference",
+
+        // Drivers under the names ours were given. The asset one names the asset, ours the provider of it.
+        ["ValueEqualityDriver"] = "ValueEquals",
+        ["MultiBoolConditionDriver"] = "AnyAllBools",
+        ["BooleanReferenceDriver"] = "BoolToReference",
+        ["BooleanAssetDriver"] = "BoolToReference",
+        ["ValueOptionDescriptionDriver"] = "ValueCaption",
+        ["ReferenceOptionDescriptionDriver"] = "ReferenceCaption",
+
+        // The scale an avatar is worn at.
+        ["DefaultUserScale"] = "AvatarScale",
+
+        // A teleporting locomotion is our blink.
+        ["TeleportLocomotion"] = "BlinkLocomotion",
+
+        // An anchor someone is put on is a seat here, and letting go of it on input is the seat's own release.
+        ["AvatarAnchor"] = "Seat",
+        ["AvatarAnchorLocomotionRelease"] = "SeatReleaseOnMove",
+
+        // Menu entries made in the world, and the pin that puts one on its owner's root ring. Which ring an
+        // entry leads to sits on a component of its own in a package; ours keeps it on the entry, filled in
+        // once the build is done.
+        ["ContextMenuItemSource"] = "ContextMenuEntry",
+        ["RootContextMenuItem"] = "ContextMenuPin",
 
         // PARTICLES. We have the whole family; ours simply carries a Particle prefix. Every target here
         // was checked to exist before being written down - an alias pointing at a name we do not have
@@ -226,8 +307,7 @@ public static class PackageTypeMap
     // Different reason from the set above. Those are scaffolding a component built for itself and
     // left behind when the component did not come across. These are author-built subtrees that work
     // perfectly well - and that is the problem: we draw a nameplate over every user ourselves, so
-    // importing the author's gets you two, one of them a slab of stripped visual-scripting that no longer
-    // follows anybody.
+    // importing the author's gets you two, one of them scripted to follow a body this one never had.
     //
     // Matched on a CONTAINS, case-insensitive, because unlike the set above there is no hardcoded
     // contract to match exactly - the author named it. That is a blunter instrument and it can catch
@@ -271,6 +351,10 @@ public static class PackageTypeMap
         }
     }
 
+    // A node of the package's visual scripting, which PackageNodeGraphs converts instead of attaching.
+    public static bool IsVisualScripting(string encodedName) => encodedName.Contains(VisualScriptingMarker, StringComparison.Ordinal)
+        || (JoinsGraphs.Count > 0 && JoinsGraphs.Contains(SimpleName(encodedName)));
+
     public static Resolution Resolve(string encodedName)
     {
         if (string.IsNullOrWhiteSpace(encodedName))
@@ -283,7 +367,13 @@ public static class PackageTypeMap
             return new Resolution(PackageTypeFate.ForeignIK, SimpleName(encodedName), null);
 
         string simple = SimpleName(encodedName);
-        if (simple.StartsWith("ContextMenu", StringComparison.Ordinal) || simple == "RootContextMenuItem")
+        if (Carried.Contains(simple) || JoinsGraphs.Contains(simple))
+            return new Resolution(PackageTypeFate.Stripped, simple, null);
+        if (simple == "ContextMenuSubmenu")
+            return new Resolution(PackageTypeFate.Stripped, simple, null);
+        // A package's character settings ride a walking locomotion's slot; ours are the user's own body, so the
+        // walk takes the pace from them instead (read once the build is done).
+        if (simple == "CharacterController")
             return new Resolution(PackageTypeFate.Stripped, simple, null);
         // The package's head-bone helper is a relay for the desktop pose controller: it drives the view
         // override it sits beside with the unprocessed head pose when the wearer is not in VR. The
@@ -309,9 +399,12 @@ public static class PackageTypeMap
             return new Resolution(PackageTypeFate.Stripped, simple, null);
         if (simple.Length == 0)
             return new Resolution(PackageTypeFate.Unsupported, simple, null);
+        if (ClosedAliases.Count > 0 && encodedName.Contains('<')
+            && ClosedAliases.TryGetValue(simple + "<" + string.Join(",", GenericArguments(encodedName)) + ">", out var closedAlias))
+            return new Resolution(PackageTypeFate.Mapped, simple, closedAlias);
 
         string candidate = Aliases.TryGetValue(simple, out var alias) ? alias : simple;
-        var target = FindType(candidate);
+        var target = FindType(SimpleName(candidate));
         if (target != null)
         {
             // A generic component resolves to its OPEN definition, which cannot be instantiated. Close
@@ -320,7 +413,10 @@ public static class PackageTypeMap
             // was skipped, which on a real avatar is hundreds of drivers and variables. -xlinka
             if (target.ContainsGenericParameters)
             {
-                target = Close(target, GenericArguments(encodedName));
+                var arguments = GenericArguments(encodedName, raw: true);
+                if (arguments.Count == 0)
+                    arguments = GenericArguments(candidate, raw: true);
+                target = Close(target, arguments, TakesProviders.Contains(simple));
                 if (target == null)
                     return new Resolution(PackageTypeFate.Unsupported, simple, null);
             }
@@ -359,9 +455,15 @@ public static class PackageTypeMap
         // The package's high-dynamic-range colour is our colorHDR.
         ["colorX"] = typeof(Math.colorHDR),
         ["colorHDR"] = typeof(Math.colorHDR),
+        ["ColorProfile"] = typeof(Math.ColorProfile),
+        ["Uri"] = typeof(Uri),
+        ["float3x3"] = typeof(Math.float3x3),
     };
 
-    private static Type? Close(Type openType, IReadOnlyList<string> arguments)
+    // Package types whose argument is an asset where ours takes the provider of one.
+    private static readonly HashSet<string> TakesProviders = new(StringComparer.Ordinal) { "BooleanAssetDriver", "AssetMultiplexer" };
+
+    private static Type? Close(Type openType, IReadOnlyList<string> arguments, bool providers)
     {
         var parameters = openType.GetGenericArguments();
         if (arguments.Count != parameters.Length)
@@ -370,16 +472,10 @@ public static class PackageTypeMap
         var resolved = new Type[parameters.Length];
         for (int i = 0; i < parameters.Length; i++)
         {
-            if (ValueTypes.TryGetValue(arguments[i], out var valueType))
-            {
-                resolved[i] = valueType;
-                continue;
-            }
-            // A component or asset type as the argument: look it up the same way as any other.
-            var asComponent = FindType(arguments[i]);
-            if (asComponent == null)
+            var argument = Argument(arguments[i], providers);
+            if (argument == null)
                 return null;
-            resolved[i] = asComponent;
+            resolved[i] = argument;
         }
 
         try
@@ -393,6 +489,33 @@ public static class PackageTypeMap
             return null;
         }
     }
+
+    // One type argument as written in the package: a value, a component, a slot or user, or the provider of an
+    // asset, which ours names by our asset type.
+    private static Type? Argument(string raw, bool provider)
+    {
+        string simple = SimpleName(raw);
+        if (provider)
+            return AssetType(simple) is { } asset ? typeof(IAssetProvider<>).MakeGenericType(asset) : null;
+        if (ValueTypes.TryGetValue(simple, out var valueType))
+            return valueType;
+        if (simple == "IAssetProvider")
+            return GenericArguments(raw, raw: true) is { Count: 1 } inner && AssetType(SimpleName(inner[0])) is { } held
+                ? typeof(IAssetProvider<>).MakeGenericType(held) : ArgumentK3(raw, simple);
+        if (simple == "Slot")
+            return typeof(Slot);
+        if (simple == "User")
+            return typeof(User);
+        return FindType(simple) ?? ArgumentK3(raw, simple);
+    }
+
+    private static Type? AssetType(string name) => name switch
+    {
+        "Material" => typeof(MaterialAsset),
+        "ITexture2D" or "Texture2D" or "ITexture" => typeof(TextureAsset),
+        "AudioClip" => typeof(AudioClip),
+        _ => null,
+    };
 
     private static bool LooksLikeShader(string simple) =>
         simple.EndsWith("Material", StringComparison.Ordinal)
@@ -479,7 +602,10 @@ public static class PackageTypeMap
     }
 
     // The generic arguments, in source order, for reporting. "Foo<bar, [X]Y.Z>" -> ["bar", "Z"].
-    public static IReadOnlyList<string> GenericArguments(string encodedName)
+    public static IReadOnlyList<string> GenericArguments(string encodedName) => GenericArguments(encodedName, raw: false);
+
+    // With raw, each argument as written, its own arguments included.
+    private static IReadOnlyList<string> GenericArguments(string encodedName, bool raw)
     {
         int open = encodedName.IndexOf('<');
         if (open < 0)
@@ -501,25 +627,25 @@ public static class PackageTypeMap
                 depth--;
                 if (depth == 0)
                 {
-                    Flush(args, current);
+                    Flush(args, current, raw);
                     break;
                 }
             }
             else if (c == ',' && depth == 1)
             {
-                Flush(args, current);
+                Flush(args, current, raw);
                 continue;
             }
             current.Append(c);
         }
         return args;
 
-        static void Flush(List<string> into, StringBuilder sb)
+        static void Flush(List<string> into, StringBuilder sb, bool raw)
         {
             var text = sb.ToString().Trim();
             sb.Clear();
             if (text.Length > 0)
-                into.Add(SimpleName(text));
+                into.Add(raw ? text : SimpleName(text));
         }
     }
 }

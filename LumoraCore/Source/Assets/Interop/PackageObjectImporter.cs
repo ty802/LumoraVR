@@ -56,6 +56,17 @@ public sealed class PackageImportResult
     public int TexturesImported { get; set; }
     public int AssetsFailed { get; set; }
 
+    // The package's node graphs: scripts made from them, how many of those run, and the nodes carried or not,
+    // by the package's class name.
+    public int ScriptsMade { get; set; }
+    public int ScriptsRunning { get; set; }
+    public int ScriptNodesConverted { get; set; }
+    public int ScriptNodesUnconverted { get; set; }
+    public Dictionary<string, int> UnconvertedNodes { get; } = new(StringComparer.Ordinal);
+
+    // Why parts of the graphs did not come across, one line per reason, with how often it came up.
+    public Dictionary<string, int> ScriptProblems { get; } = new(StringComparer.Ordinal);
+
     public bool Succeeded => Root != null && FailureReason == null;
 }
 
@@ -71,7 +82,8 @@ public sealed class PackageImportResult
 // reported rather than attached half-configured, because an empty component that looks right in the
 // inspector but does nothing is worse than a visible gap.
 //
-// Scripted behaviour is stripped and the slots that existed only to hold it are pruned. -xlinka
+// Scripted behaviour becomes scripts (PackageNodeGraphs), and the slots that existed only to hold its nodes
+// are pruned. -xlinka
 public static class PackageObjectImporter
 {
     public static async Task<PackageImportResult> ImportAsync(string file, Slot parent)
@@ -84,6 +96,9 @@ public static class PackageObjectImporter
         }
 
         var world = parent.World;
+        // Reading and decoding the archive is the import's longest single step, ten seconds on a package
+        // of a few hundred thousand slots, and it never touches the world. -xlinka
+        await WorldContext.ToBackground();
         using var archive = PackageArchive.Open(file);
 
         var record = archive.MainRecord;
@@ -114,12 +129,15 @@ public static class PackageObjectImporter
         }
 
         var typeTable = ReadTypeTable(graph);
+        // Read off the thread like the rest of the graph: it walks every component once.
+        var plainColours = PackageMemberMapper.PlainColourComponents(graph, ReadTypeNames(graph));
 
         // Assets first: everything the tree points at must already exist in the local database before a
         // component can be pointed at it.
         var bindPoses = new Dictionary<string, Dictionary<string, float4x4>>(StringComparer.OrdinalIgnoreCase);
         var bindOrder = new Dictionary<string, float4x4[]>(StringComparer.OrdinalIgnoreCase);
-        var assetUrls = await ConvertAssetsAsync(archive, graph, result, bindPoses, bindOrder).ConfigureAwait(false);
+        var meshBounds = new Dictionary<string, BoundingBox>(StringComparer.OrdinalIgnoreCase);
+        var assetUrls = await ConvertAssetsAsync(archive, graph, result, bindPoses, bindOrder, meshBounds).ConfigureAwait(false);
 
         await WorldContext.ToWorld();
         if (parent.IsDestroyed)
@@ -135,10 +153,24 @@ public static class PackageObjectImporter
         }
 
         var context = new BuildContext(world, typeTable, assetUrls, result);
+        context.PlainColours = plainColours;
+        context.TypeNames.AddRange(ReadTypeNames(graph));
+        if (graph.TryGetNode("TypeVersions") is DataTreeDictionary versions)
+        {
+            foreach (var (encoded, node) in versions.Children)
+            {
+                if (node is DataTreeValue { Value: IConvertible version } && version is not string)
+                    context.TypeVersions[PackageTypeMap.SimpleName(encoded)] = Convert.ToInt32(version, System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+        context.Graphs.Wanted = context.TypeNames.Exists(PackageNodeGraphs.IsNodeType);
+        context.Graphs.TypeNames = context.TypeNames;
         foreach (var pair in bindPoses)
             context.MeshBindPoses[pair.Key] = pair.Value;
         foreach (var pair in bindOrder)
             context.MeshBindOrder[pair.Key] = pair.Value;
+        foreach (var pair in meshBounds)
+            context.MeshBounds[pair.Key] = pair.Value;
         var root = parent.AddSlot(CleanName(record.Name));
         if (!await BuildSlotAsync(objectNode, root, context))
         {
@@ -149,10 +181,29 @@ public static class PackageObjectImporter
         }
 
         await AttachLooseAssetsAsync(graph, root, context);
-        ResolveLinks(context);
+        WorldK7.LinkTemplateLists(context.TemplateLists, context.ById, context.Graphs);
+        await ResolveLinksAsync(context);
+        FinishFontChains(context);
+        FinishCanvases(context);
+        FinishLodGroups(context);
+        FinishLights(context);
+        FinishMenus(context);
+        FinishLocomotion(context);
+        WorldK2.FinishBenches(context.Benches);
+        await PaceAsync(context);
         BuildSkeletons(root, context);
         WireParticleLook(context);
+        await PaceAsync(context);
         FinishAvatar(root, objectNode, context);
+        FinishWorldScope(root);
+        await PaceAsync(context);
+        if (context.Graphs.Wanted)
+        {
+            await PackageNodeGraphs.ConvertAsync(root, context.Graphs, context.ById, result);
+            await WorldContext.ToWorld();
+            await PaceAsync(context);
+        }
+        WorldK7.FinishTemplateLists(context.TemplateLists, context.ById);
 
         // The root's saved Position is wherever the object happened to be standing in the world it was
         // packaged from, and it is meaningless here. The dova dog package carries (-4.27, 12.60,
@@ -166,7 +217,7 @@ public static class PackageObjectImporter
         if (packagedPosition != float3.Zero)
         {
             root.LocalPosition.Value = float3.Zero;
-            Logger.Log($"Package import: dropped the packaged root position {packagedPosition} so it lands on the import anchor (the dialog panel) instead.");
+            Logger.Debug($"Package import: dropped the packaged root position {packagedPosition} so it lands on the import anchor (the dialog panel) instead.");
         }
 
         result.Root = root;
@@ -175,11 +226,13 @@ public static class PackageObjectImporter
                  + $"({result.SlotsPruned} slots pruned, {result.SlotsConflicting} orphan/userspace trees dropped, "
                  + $"{result.ComponentsStripped} stripped, {result.ComponentsSkipped} skipped); "
                  + $"references {result.ReferencesResolved} wired, {result.ReferencesDangling} dangling");
-        Logger.Log($"Package import: {result.SkeletonsBuilt} skeleton(s) built for skinned meshes");
+        Logger.Debug($"Package import: {result.SkeletonsBuilt} skeleton(s) built for skinned meshes");
         if (result.ParticlesTextured > 0 || result.ParticlesMeshed > 0 || result.ParticleModulesWired > 0)
-            Logger.Log($"Package import: particles - {result.ParticleModulesWired} modules wired, "
+            Logger.Debug($"Package import: particles - {result.ParticleModulesWired} modules wired, "
                      + $"{result.ParticlesMeshed} got their mesh, {result.ParticlesTextured} got their texture");
+        await PaceAsync(context);
         LogRendererWiring(result.Root);
+        await PaceAsync(context);
         LogMaterialReferences(result.Root, context);
         return result;
     }
@@ -199,28 +252,15 @@ public static class PackageObjectImporter
         if (list == null || list.Count == 0)
             return;
 
-        // Tagged so the mesh hook knows this slot is a LIBRARY, not something anyone is looking at.
-        //
-        // Every mesh in the package lands here as a bare component with no renderer beside it, and the
-        // mesh hook's convenience preview draws exactly that case: a lit grey copy of the mesh at the
-        // object's full scale, parked at the import root. On this avatar it was a waist-high white
-        // sphere standing next to the fox with nothing referencing it. A mesh in an asset list is
-        // storage; drawing it was never the intent. -xlinka
         var holder = root.AddSlot("Assets");
-        holder.Tag.Value = AssetLibraryTag;
 
         foreach (var entry in list.Children)
         {
             // Every provider built here starts loading its asset, so this is the burst that actually
             // costs frames - a couple of hundred meshes and textures asking for decode at once. Yield
             // on the same budget as the tree build.
-            if (++context.SlotsThisFrame >= SlotsPerFrame)
-            {
-                context.SlotsThisFrame = 0;
-                await WorldContext.NextUpdate();
-                if (holder.IsDestroyed)
-                    return;
-            }
+            if (await PaceAsync(context) && holder.IsDestroyed)
+                return;
 
             if (entry is not DataTreeDictionary worker)
                 continue;
@@ -427,10 +467,6 @@ public static class PackageObjectImporter
                 else
                 {
                     system.ParticleMesh.Target = meshComponent;
-                    // ParticleSystem re-drives this itself on the reference change, but only once it has
-                    // started; a system attached in the same frame this runs has not. Belt and braces on
-                    // the path that actually produced the floating grey disc.
-                    (meshComponent as ImplementableComponent)?.RunApplyChanges();
                 }
 
                 context.Result.ParticlesMeshed++;
@@ -474,7 +510,7 @@ public static class PackageObjectImporter
                 }
             }
 
-            Logger.Log($"Package import: particle '{name}' - {modulesWired} module(s) wired"
+            Logger.Debug($"Package import: particle '{name}' - {modulesWired} module(s) wired"
                      + (adopted > 0 ? $" ({adopted} off its own slot)" : string.Empty) + ", "
                      + $"mesh={meshResult} texture={textureResult}"
                      + (renderer == null ? " (no particle renderer; ribbons/trails carry the look)" : string.Empty)
@@ -521,6 +557,28 @@ public static class PackageObjectImporter
                 return any;
         }
         return null;
+    }
+
+    // A package world keeps its world-wide variables in a "World" scope every world has at its root; ours
+    // have none, so "World/LightIntensity" and the rest bound nothing. The import root takes that scope,
+    // which keeps the world's variables to the world. An avatar (a humanoid at or just under the root)
+    // gets none: its "World/" reads are meant for whatever world it is worn in. -xlinka
+    private static void FinishWorldScope(Slot root)
+    {
+        foreach (var rig in root.GetComponentsInChildren<HumanoidRig>())
+        {
+            if (rig.IsHumanoid && (rig.Slot == root || rig.Slot?.Parent == root))
+                return;
+        }
+        foreach (var scope in root.GetComponents<Components.Variables.VariableScope>())
+        {
+            if (scope.ScopeName.Value == "World")
+                return;
+        }
+        // Named lookups only: a variable with no scope in its path binds to the nearest unnamed scope, never here.
+        var world = root.AttachComponent<Components.Variables.VariableScope>();
+        world.ScopeName.Value = "World";
+        world.DirectBindingOnly.Value = true;
     }
 
     // Leave an imported avatar in the state the creator would have left it in.
@@ -618,7 +676,7 @@ public static class PackageObjectImporter
             // head one.
             int proxies = ReseatPoseProxies(avatar, rig);
             if (proxies > 0)
-                Logger.Log($"Package import: {proxies} pose prox{(proxies == 1 ? "y" : "ies")} re-seated on the stance bones");
+                Logger.Debug($"Package import: {proxies} pose prox{(proxies == 1 ? "y" : "ies")} re-seated on the stance bones");
 
             // Facing first, then references: equip resets the root to identity, so a reference baked against
             // a stale frame wears the avatar yawed off the user's forward.
@@ -729,7 +787,7 @@ public static class PackageObjectImporter
             written++;
         }
 
-        Logger.Log($"Package import: stance restored from the stored default pose, {written} bones");
+        Logger.Debug($"Package import: stance restored from the stored default pose, {written} bones");
         return written;
     }
 
@@ -915,7 +973,7 @@ public static class PackageObjectImporter
             renderer.Skeleton.Target = builder;
 
             context.Result.SkeletonsBuilt++;
-            Logger.Log($"Package import: skeleton for '{renderer.Slot.SlotName.Value}' - {bones.Count} bones, "
+            Logger.Debug($"Package import: skeleton for '{renderer.Slot.SlotName.Value}' - {bones.Count} bones, "
                      + $"root '{rigRoot.SlotName.Value}' under '{skeletonParent.SlotName.Value}'"
                      + $", {bindByBone.Count}/{bones.Count} rests from bind poses by position"
                      + (binds != null ? string.Empty : ", no bind table"));
@@ -993,20 +1051,38 @@ public static class PackageObjectImporter
         int renderers = 0, withMesh = 0, withMaterial = 0;
         int skinned = 0, skinnedWithMesh = 0, skinnedWithBones = 0;
 
-        foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
+        // One walk for the whole report, sorted by kind: it was six, each over everything imported.
+        var everything = new List<Component>();
+        root.GetComponentsInChildren(everything);
+        var meshRenderers = new List<MeshRenderer>();
+        var skinnedRenderers = new List<SkinnedMeshRenderer>();
+        var materials = new List<MaterialProvider>();
+        var lights = new List<Light>();
+        foreach (var component in everything)
+        {
+            switch (component)
+            {
+                case MeshRenderer mesh: meshRenderers.Add(mesh); break;
+                case SkinnedMeshRenderer skin: skinnedRenderers.Add(skin); break;
+                case MaterialProvider material: materials.Add(material); break;
+                case Light light: lights.Add(light); break;
+            }
+        }
+
+        foreach (var renderer in meshRenderers)
         {
             renderers++;
             if (renderer.Mesh.Target != null) withMesh++;
             if (renderer.Materials.Count > 0) withMaterial++;
         }
-        foreach (var renderer in root.GetComponentsInChildren<SkinnedMeshRenderer>())
+        foreach (var renderer in skinnedRenderers)
         {
             skinned++;
             if (renderer.MeshAsset.Target != null) skinnedWithMesh++;
             if (renderer.Bones.Count > 0) skinnedWithBones++;
         }
 
-        Logger.Log($"Package import: {withMesh}/{renderers} mesh renderers have a mesh, {withMaterial} have a material; "
+        Logger.Debug($"Package import: {withMesh}/{renderers} mesh renderers have a mesh, {withMaterial} have a material; "
                  + $"{skinnedWithMesh}/{skinned} skinned renderers have a mesh, {skinnedWithBones} have bones");
 
         // Name every renderer that got geometry but no material.
@@ -1018,7 +1094,7 @@ public static class PackageObjectImporter
         // And every renderer that got NO GEOMETRY, which is the other way to be invisible and the one
         // the hook's own report cannot cover: with no mesh there is nothing to build, so the line that
         // would have named it never runs and the object leaves no trace anywhere. -xlinka
-        foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
+        foreach (var renderer in meshRenderers)
         {
             if (renderer.Mesh.Target != null)
                 continue;
@@ -1026,7 +1102,7 @@ public static class PackageObjectImporter
                       + $"it has {renderer.Materials.Count} material(s) and will draw nothing");
         }
 
-        foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
+        foreach (var renderer in meshRenderers)
         {
             if (renderer.Mesh.Target == null || renderer.Materials.Count > 0)
                 continue;
@@ -1042,7 +1118,7 @@ public static class PackageObjectImporter
         // block hugging the body, which reads as a fat black outline rather than as fur. Guessing at
         // which of the material properties failed to carry cost more time than printing them ever will.
         // -xlinka
-        foreach (var material in root.GetComponentsInChildren<MaterialProvider>())
+        foreach (var material in materials)
         {
             if (material == null || material.IsDestroyed)
                 continue;
@@ -1055,12 +1131,12 @@ public static class PackageObjectImporter
                 alpha = bm.Value.ToString();
             if (type.GetField("Culling")?.GetValue(material) is Sync<Culling> cu)
                 cull = cu.Value.ToString();
-            Logger.Log($"Package import: material '{material.Slot?.SlotName.Value}' {type.Name} "
+            Logger.Debug($"Package import: material '{material.Slot?.SlotName.Value}' {type.Name} "
                      + $"alpha={alpha} culling={cull}");
         }
 
-        AuditRenderers(root);
-        AuditLights(root);
+        AuditRenderers(meshRenderers, materials);
+        AuditLights(lights);
     }
 
     // Every light the package brought, grep "LIGHT:".
@@ -1068,9 +1144,11 @@ public static class PackageObjectImporter
     // A light has no geometry to look at, so a wrong one is only ever diagnosed by its effect on
     // everything else - and "the import is too bright" has at least four causes that look identical
     // from across the room. Print what was actually authored. -xlinka
-    private static void AuditLights(Slot root)
+    private static void AuditLights(List<Light> lights)
     {
-        foreach (var light in root.GetComponentsInChildren<Light>())
+        if (!Logger.EnableDebug)
+            return;
+        foreach (var light in lights)
         {
             if (light == null || light.IsDestroyed)
                 continue;
@@ -1080,7 +1158,7 @@ public static class PackageObjectImporter
             // scale has an effective range nothing in its own numbers reveals.
             var scale = light.Slot?.GlobalScale ?? Lumora.Core.Math.float3.One;
 
-            Logger.Log($"LIGHT: '{PathOf(light.Slot)}' type={light.Type.Value}"
+            Logger.Debug($"LIGHT: '{PathOf(light.Slot)}' type={light.Type.Value}"
                      + $" colour={c.r:0.##},{c.g:0.##},{c.b:0.##}"
                      + $" intensity={light.Intensity.Value:0.###}"
                      + $" range={light.Range.Value:0.##}"
@@ -1103,10 +1181,12 @@ public static class PackageObjectImporter
     // determinant flips triangle winding, so back faces survive culling and the mesh is seen from the
     // inside: lettering reads backwards and the shading comes off normals that now point away. Any time
     // a texture looks right but reversed, check this line before touching the texture pipeline. -xlinka
-    private static void AuditRenderers(Slot root)
+    private static void AuditRenderers(List<MeshRenderer> renderers, List<MaterialProvider> materials)
     {
+        if (!Logger.EnableDebug)
+            return;
         var owners = new Dictionary<MaterialAsset, MaterialProvider>();
-        foreach (var provider in root.GetComponentsInChildren<MaterialProvider>())
+        foreach (var provider in materials)
         {
             if (provider == null || provider.IsDestroyed)
                 continue;
@@ -1115,10 +1195,19 @@ public static class PackageObjectImporter
                 owners[asset] = provider;
         }
 
-        foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
+        // An avatar has dozens of renderers and every line is wanted; a scene of tens of thousands spent most
+        // of a second, and the log, on lines nobody reads past the first few hundred. -xlinka
+        int listed = 0, unlisted = 0;
+        foreach (var renderer in renderers)
         {
             if (renderer == null || renderer.IsDestroyed || renderer.Slot == null)
                 continue;
+            if (listed >= AuditLineLimit)
+            {
+                unlisted++;
+                continue;
+            }
+            listed++;
 
             var scale = renderer.Slot.GlobalScale;
             bool mirrored = scale.x * scale.y * scale.z < 0f;
@@ -1148,9 +1237,13 @@ public static class PackageObjectImporter
                 line.Append(DescribeMaterial(provider));
             }
 
-            Logger.Log(line.ToString());
+            Logger.Debug(line.ToString());
         }
+        if (unlisted > 0)
+            Logger.Debug($"RENDER: {unlisted} more renderers not listed");
     }
+
+    private const int AuditLineLimit = 256;
 
     // Type, blend, and the two things that decide whether a surface comes out white: the albedo TINT and
     // whether an albedo texture is bound at all. A bound texture under a blown tint and no texture under
@@ -1249,18 +1342,15 @@ public static class PackageObjectImporter
 
                 var targetComponent = target as Component;
                 string home = targetComponent?.Slot != null ? $" on '{PathOf(targetComponent.Slot)}'" : "";
-                Logger.Log($"MATREF: {owner}.{member} -> {target.GetType().Name} [{state}]{url}{home}");
+                Logger.Debug($"MATREF: {owner}.{member} -> {target.GetType().Name} [{state}]{url}{home}");
             }
         }
 
-        Logger.Log($"MATREF: summary - {materials} materials, {wired} asset refs wired ({pending} still loading at import end), "
+        Logger.Debug($"MATREF: summary - {materials} materials, {wired} asset refs wired ({pending} still loading at import end), "
                  + $"{dangling} dangling, {empty} authored empty");
     }
 
     private static string ShortId(string id) => id.Length > 12 ? id[..12] : id;
-
-    // Read by MeshHook to suppress its default preview instance. Kept here beside the code that sets it.
-    public const string AssetLibraryTag = "lumora.assetlibrary";
 
     private static string PathOf(Slot? slot)
     {
@@ -1285,6 +1375,10 @@ public static class PackageObjectImporter
         // are slot references, and with only components recorded they resolved to nothing and the mesh
         // stayed in its bind pose. -xlinka
         public readonly Dictionary<string, IWorldElement> ById = new(StringComparer.OrdinalIgnoreCase);
+
+        // The package's own type names, and what its node graphs need kept: the nodes, the slots, the members.
+        public readonly List<string> TypeNames = new();
+        public readonly PackageNodeInput Graphs = new();
         public readonly List<PendingLink> Links = new();
         public readonly List<PendingRef> RefLinks = new();
 
@@ -1303,6 +1397,42 @@ public static class PackageObjectImporter
         // nothing from one whose material simply failed to resolve, and those mean opposite things.
         public readonly Dictionary<string, string> PassThroughTypes = new(StringComparer.OrdinalIgnoreCase);
 
+        // A sprite's id -> its texture's. Ours take the texture where a package takes a sprite of it.
+        public readonly Dictionary<string, string> SpriteTextures = new(StringComparer.OrdinalIgnoreCase);
+
+        // The package's component naming the ring a menu entry leads to, and the slot it sat on.
+        public readonly List<(Slot Slot, DataTreeDictionary Data)> Submenus = new();
+
+        // Walking locomotions and the character settings beside them, by slot.
+        public readonly List<(Slot Slot, string Type, DataTreeDictionary Data)> Locomotion = new();
+
+        // Bench touch surfaces and the planes they press seats onto, by slot.
+        public readonly List<(Slot Slot, string Type, DataTreeDictionary Data)> Benches = new();
+
+        // Template lists and the parts the package kept beside them (WorldK7).
+        public readonly List<(Slot Slot, string Type, DataTreeDictionary Data)> TemplateLists = new();
+
+        // Canvases with the size the package gave them, which ours keeps on the root rect instead.
+        public readonly List<(Helio.UI.Canvas Canvas, DataTreeDictionary Data)> Canvases = new();
+
+        // Each converted mesh's bounds, by the local asset URL, for sizing LOD groups.
+        public readonly Dictionary<string, BoundingBox> MeshBounds = new(StringComparer.OrdinalIgnoreCase);
+
+        // LOD groups with the package's levels, converted once their renderers exist.
+        public readonly List<(LodGroup Group, DataTreeDictionary Data)> LodGroups = new();
+
+        // The version each package type was saved at, by simple name; a type missing from the table is version 0.
+        public readonly Dictionary<string, int> TypeVersions = new(StringComparer.Ordinal);
+
+        // Components whose package colour closes over our plain color, with the type; see PlainColourComponents.
+        public Dictionary<string, Type> PlainColours = new(StringComparer.OrdinalIgnoreCase);
+
+        // Lights, whose range the package scales by the slot's world scale.
+        public readonly List<Light> Lights = new();
+
+        // Font chains built as font providers, with the fonts they name.
+        public readonly List<(Components.Assets.FontProvider Provider, DataTreeDictionary Data)> FontChains = new();
+
         public readonly List<(Components.ParticleSystem System, DataTreeDictionary Data)> ParticleSystems = new();
 
         // Bone name -> bind pose, per converted mesh, keyed by the local asset URL we wrote it to.
@@ -1314,8 +1444,8 @@ public static class PackageObjectImporter
         public readonly Dictionary<string, Dictionary<string, float4x4>> MeshBindPoses =
             new(StringComparer.OrdinalIgnoreCase);
 
-        // Slots built since the last yield back to the update loop.
-        public int SlotsThisFrame;
+        // When this frame's share of the world thread runs out.
+        public long FrameEnd;
 
         public BuildContext(World world, List<PackageTypeMap.Resolution> types,
             Dictionary<string, Uri> assetUrls, PackageImportResult result)
@@ -1397,14 +1527,28 @@ public static class PackageObjectImporter
     // once every component exists. This is the pass that makes an imported object VISIBLE rather than
     // merely present: a renderer with no mesh and no material renders nothing at all, and both of those
     // are references. -xlinka
-    private static void ResolveLinks(BuildContext context)
+    private static async Task ResolveLinksAsync(BuildContext context)
     {
         // Single references first: meshes on renderers, textures on materials. TrySet refuses a target
         // of the wrong type on its own, so a mismatch costs one silent skip rather than an exception.
+        var toMembers = new List<PendingRef>();
         foreach (var pending in context.RefLinks)
         {
-            if (!context.ById.TryGetValue(pending.TargetId, out var target))
+            await PaceAsync(context);
+            // The component holding the reference was pruned after it was read.
+            if (pending.Reference is Lumora.Core.Networking.Sync.SyncElement { IsDisposed: true })
+                continue;
+            // A reference that takes our own sprite keeps it; one that wants a picture gets the sprite's texture.
+            var target = context.SpriteTextures.TryGetValue(pending.TargetId, out var texture)
+                && !pending.Reference.TargetType.IsAssignableFrom(typeof(Helio.UI.Sprite))
+                && context.ById.TryGetValue(texture, out var drawn) ? drawn : null;
+            if (target == null && !context.ById.TryGetValue(pending.TargetId, out target))
             {
+                if (context.Graphs.Members.ContainsKey(pending.TargetId))
+                {
+                    toMembers.Add(pending);
+                    continue;
+                }
                 context.Result.ReferencesDangling++;
                 context.RefFailures[pending.Reference] = $"target {ShortId(pending.TargetId)} was never built (stripped, skipped or on a dropped slot)";
                 continue;
@@ -1437,10 +1581,19 @@ public static class PackageObjectImporter
         // Then reference LISTS, appended in order. Resolved by reflection rather than by naming each
         // component: bone lists, material lists and anything else list-shaped all work the same way,
         // and hardcoding the one case we happened to need first is how bones got missed.
+        //
+        // The package's list REPLACES whatever the list holds: anything already in it is a stray entry made
+        // between attach and now, and positions matter (materials pair with submeshes by index). -xlinka
+        var cleared = new HashSet<object>(ReferenceEqualityComparer.Instance);
         foreach (var link in context.Links)
         {
+            await PaceAsync(context);
             if (link.Owner.IsDestroyed)
                 continue;
+            if (cleared.Add(link.List))
+            {
+                try { link.List.GetType().GetMethod("Clear", Type.EmptyTypes)?.Invoke(link.List, null); } catch { }
+            }
             if (!context.ById.TryGetValue(link.TargetId, out var target) || target.IsDestroyed)
             {
                 context.Result.ReferencesDangling++;
@@ -1469,7 +1622,279 @@ public static class PackageObjectImporter
             }
             catch { context.Result.ReferencesDangling++; }
         }
+
+        // Then references to a field: what a driver drives, what a button flips, which material slot a press
+        // swaps. A package names the field by its own id, kept with its owner and its name when the owner was
+        // built, and ours is the member of that name, or the entry of that list. -xlinka
+        foreach (var pending in toMembers)
+        {
+            await PaceAsync(context);
+            if (pending.Reference is Lumora.Core.Networking.Sync.SyncElement { IsDisposed: true })
+                continue;
+            var record = context.Graphs.Members[pending.TargetId];
+            var member = record.Owner.IsDestroyed ? null : PackageNodeIndex.MemberOf(record.Owner, record.Member, record.Index)
+                ?? (pending.Reference is PackageMemberMapper.IMemberOwnerReference ? record.Owner : null);
+            if (member == null)
+            {
+                context.Result.ReferencesDangling++;
+                context.RefFailures[pending.Reference] = record.Owner.IsDestroyed
+                    ? $"field {record.Member} sat on a {record.Owner.GetType().Name} that was pruned"
+                    : $"field {record.Member} of {record.Owner.GetType().Name} has no counterpart here";
+                continue;
+            }
+            try
+            {
+                if (pending.Reference.TrySet(member))
+                    context.Result.ReferencesResolved++;
+                else
+                {
+                    context.Result.ReferencesDangling++;
+                    context.RefFailures[pending.Reference] = $"field {record.Member} of {record.Owner.GetType().Name} is a {member.GetType().Name}, which this reference does not accept";
+                }
+            }
+            catch (Exception ex)
+            {
+                context.Result.ReferencesDangling++;
+                context.RefFailures[pending.Reference] = $"field {record.Member} threw on assignment: {ex.Message}";
+            }
+        }
     }
+
+    // A package keeps the ring an entry leads to on a component beside the entry; ours keeps it on the entry.
+    // Text names a font chain, not a font. The chain's own fonts are providers by now, so the chain takes their
+    // files: the main one first, the fallbacks after it in order.
+    private static void FinishFontChains(BuildContext context)
+    {
+        foreach (var (provider, data) in context.FontChains)
+        {
+            if (provider.IsDestroyed)
+                continue;
+            if (ReadId(data, "MainFont") is { } mainId && FontUrl(mainId, context) is { } main)
+                provider.URL.Value = main;
+            if ((data.TryGetNode("FallbackFonts") as DataTreeDictionary)?.TryGetNode("Data") is DataTreeList fallbacks)
+            {
+                foreach (var node in fallbacks)
+                {
+                    if (node is DataTreeDictionary entry && entry.TryGetNode("Data") is DataTreeValue { Value: string id } && FontUrl(id, context) is { } url
+                        && url != provider.URL.Value)
+                        provider.FallbackURLs.Add(url);
+                }
+            }
+            if (provider.URL.Value == null && provider.FallbackURLs.Count > 0)
+            {
+                provider.URL.Value = provider.FallbackURLs[0];
+                provider.FallbackURLs.RemoveAt(0);
+            }
+        }
+    }
+
+    // A package canvas holds its size itself and stretches its root rect over it, centred on the slot. Ours has
+    // no size of its own: the root rect is the canvas. Left stretched over nothing, every imported canvas
+    // measured 0 x 0, laid nothing out and took no presses. A unit scale (1000 = a metre of slot is a thousand
+    // canvas pixels, with the size in metres) has no setting here either, so it moves into the slot's scale and
+    // the canvas's own colliders are scaled back to keep their size in the world.
+    private static void FinishCanvases(BuildContext context)
+    {
+        foreach (var (canvas, data) in context.Canvases)
+        {
+            if (canvas.IsDestroyed || canvas.Slot == null)
+                continue;
+            if ((data.TryGetNode("Size") as DataTreeDictionary)?.TryGetNode("Data") is not DataTreeList size)
+                continue;
+            var values = new List<float>(2);
+            foreach (var node in size)
+            {
+                if (node is DataTreeValue { Value: IConvertible number })
+                    values.Add(Convert.ToSingle(number, System.Globalization.CultureInfo.InvariantCulture));
+            }
+            if (values.Count < 2 || (values[0] <= 0f && values[1] <= 0f))
+                continue;
+            float unitScale = ReadNumber(data, "UnitScale") ?? 1f;
+            if (unitScale <= 0f || float.IsNaN(unitScale))
+                unitScale = 1f;
+            // An axis sized zero or less (a list that is as tall as its rows) starts with no extent at the slot
+            // and takes its size from the canvas's own fitter, which grows it from its pivot.
+            var half = new float2(System.Math.Max(values[0], 0f), System.Math.Max(values[1], 0f)) * (0.5f * unitScale);
+            if (unitScale != 1f)
+            {
+                canvas.Slot.LocalScale.Value = canvas.Slot.LocalScale.Value / unitScale;
+                foreach (var collider in canvas.Slot.GetComponents<Collider>())
+                {
+                    collider.Offset.Value = collider.Offset.Value * unitScale;
+                    if (collider is BoxCollider box)
+                        box.Size.Value = box.Size.Value * unitScale;
+                }
+            }
+            var rect = canvas.Slot.GetComponent<Helio.UI.RectTransform>() ?? canvas.Slot.AttachComponent<Helio.UI.RectTransform>();
+            rect.AnchorMin.Value = new float2(0.5f, 0.5f);
+            rect.AnchorMax.Value = new float2(0.5f, 0.5f);
+            rect.OffsetMin.Value = -half;
+            rect.OffsetMax.Value = half;
+        }
+    }
+
+    // The package switches a level when the object's height falls below a fraction of the screen; ours
+    // switches at a distance. Same thing for a given field of view: distance = size / (2 * fraction *
+    // tan(fov / 2)), with size the largest side of every level's meshes in the group's own space and the
+    // usual 60 degree vertical field of view. A level that holds the group's own slot cannot be told apart
+    // from the others here, so that group keeps everything showing. -xlinka
+    private static void FinishLodGroups(BuildContext context)
+    {
+        const float HalfFovTan = 0.57735026f;
+        foreach (var (group, data) in context.LodGroups)
+        {
+            if (group.IsDestroyed || group.Slot == null)
+                continue;
+            if ((data.TryGetNode("LODs") as DataTreeDictionary)?.TryGetNode("Data") is not DataTreeList lods)
+                continue;
+            var levels = new List<(float Height, List<Slot> Roots)>();
+            var bounds = BoundingBox.Empty;
+            bool usable = true;
+            foreach (var node in lods)
+            {
+                if (node is not DataTreeDictionary lod)
+                    continue;
+                float height = ReadNumber(lod, "ScreenRelativeTransitionHeight") ?? 0f;
+                var roots = new List<Slot>();
+                if ((lod.TryGetNode("Renderers") as DataTreeDictionary)?.TryGetNode("Data") is DataTreeList renderers)
+                {
+                    foreach (var entry in renderers)
+                    {
+                        if (entry is not DataTreeDictionary holder || holder.TryGetNode("Data") is not DataTreeValue { Value: string id }
+                            || !context.ById.TryGetValue(id, out var target) || target is not Component { IsDestroyed: false } renderer
+                            || renderer.Slot == null)
+                            continue;
+                        if (renderer.Slot == group.Slot)
+                            usable = false;
+                        if (!roots.Contains(renderer.Slot))
+                            roots.Add(renderer.Slot);
+                        if (MeshUrlOfRenderer(renderer) is { } url && context.MeshBounds.TryGetValue(url, out var meshBox) && !meshBox.IsEmpty)
+                        {
+                            foreach (var corner in Corners(meshBox))
+                                bounds.Encapsulate(renderer.Slot.LocalPointToSpace(corner, group.Slot));
+                        }
+                    }
+                }
+                levels.Add((height, roots));
+            }
+            if (!usable || levels.Count == 0)
+                continue;
+            float size = bounds.IsEmpty ? 1f : System.Math.Max(bounds.Size.x, System.Math.Max(bounds.Size.y, bounds.Size.z));
+            group.Levels.Clear();
+            bool cullsAfterLast = levels[^1].Height > 0f;
+            foreach (var (height, roots) in levels)
+            {
+                float distance = height > 0f ? size / (2f * height * HalfFovTan) : 100000f;
+                var level = group.Levels.Add();
+                level.Distance.Value = distance;
+                foreach (var root in roots)
+                    level.Renderers.Add(root);
+            }
+            group.CullBeyondLast.Value = cullsAfterLast;
+        }
+    }
+
+    private static string? MeshUrlOfRenderer(Component renderer) => renderer switch
+    {
+        MeshRenderer { Mesh.Target: MeshProvider provider } => provider.URL.Value?.OriginalString,
+        SkinnedMeshRenderer skinned => MeshUrlOf(skinned),
+        _ => null,
+    };
+
+    private static IEnumerable<float3> Corners(BoundingBox box)
+    {
+        for (int i = 0; i < 8; i++)
+            yield return new float3((i & 1) == 0 ? box.Min.x : box.Max.x, (i & 2) == 0 ? box.Min.y : box.Max.y, (i & 4) == 0 ? box.Min.z : box.Max.z);
+    }
+
+    // A refraction saved before its depth guard existed bent everything behind it, and old fog took a 2.2
+    // gamma; the package gives old saves those values on load, so they arrive with them here too.
+    private static void ApplyOldSaveDefaults(Component component, string packageType, BuildContext context)
+    {
+        int version = context.TypeVersions.GetValueOrDefault(packageType);
+        if (version >= 1)
+            return;
+        if (component is RefractMaterial refract)
+        {
+            refract.DepthFadeDivisor.Value = 1e-6f;
+            refract.DepthBias.Value = 1f;
+        }
+        else if (component is FogBoxVolumeMaterial fog)
+        {
+            fog.GammaCurve.Value = 2.2f;
+        }
+    }
+
+    // The package lights range * average world scale of the light's slot, read when it draws; ours lights the
+    // range as written, so the scale the light stands at in the package is folded in here, once the tree exists.
+    // Its lights also fade with distance the way the package renders them (LightFalloff.Inverse).
+    private static void FinishLights(BuildContext context)
+    {
+        foreach (var light in context.Lights)
+        {
+            if (light.IsDestroyed || light.Slot == null)
+                continue;
+            var scale = light.Slot.GlobalScale;
+            float average = (System.Math.Abs(scale.x) + System.Math.Abs(scale.y) + System.Math.Abs(scale.z)) / 3f;
+            if (average > 0f && float.IsFinite(average))
+                light.Range.Value *= average;
+            light.Falloff.Value = LightFalloff.Inverse;
+        }
+    }
+
+    private static Uri? FontUrl(string id, BuildContext context)
+        => context.ById.TryGetValue(id, out var target) && target is Components.Assets.FontProvider { IsDestroyed: false } font
+            ? font.URL.Value
+            : null;
+
+    private static void FinishMenus(BuildContext context)
+    {
+        foreach (var (slot, data) in context.Submenus)
+        {
+            if (slot.IsDestroyed || slot.GetComponent<Components.UI.ContextMenuEntry>() is not { } entry)
+                continue;
+            if (ReadId(data, "ItemsRoot") is { } id && context.ById.TryGetValue(id, out var target) && target is Slot { IsDestroyed: false } opens)
+                entry.Opens.Target = opens;
+            if ((data.TryGetNode("SearchWholeHierarchy") as DataTreeDictionary)?.TryGetNode("Data") is DataTreeValue { Value: bool deep })
+                entry.Deep.Value = deep;
+        }
+    }
+
+    // A walk takes its pace from the character settings beside it. One that flies or floats is not a walk, and
+    // ours has nothing that flies, so it does not come across as one.
+    private static void FinishLocomotion(BuildContext context)
+    {
+        foreach (var (slot, type, data) in context.Locomotion)
+        {
+            if (slot.IsDestroyed || slot.GetComponent<Components.PhysicalLocomotion>() is not { } walk)
+                continue;
+            if (type == "PhysicalLocomotion")
+            {
+                if ((data.TryGetNode("Mode") as DataTreeDictionary)?.TryGetNode("Data") is DataTreeValue { Value: string mode }
+                    && mode != "GroundTraction")
+                {
+                    Logger.Log($"Package import: '{slot.SlotName.Value}' moves by {mode}, which no locomotion here does; left out");
+                    walk.Destroy();
+                }
+                continue;
+            }
+            if (ReadNumber(data, "Speed") is { } speed)
+                walk.Speed.Value = speed;
+            if (ReadNumber(data, "AirSpeed") is { } air)
+                walk.AirSpeed.Value = air;
+            if (ReadNumber(data, "JumpSpeed") is { } jump)
+                walk.JumpSpeed.Value = jump;
+        }
+    }
+
+    private static float? ReadNumber(DataTreeDictionary data, string member)
+        => (data.TryGetNode(member) as DataTreeDictionary)?.TryGetNode("Data") is DataTreeValue { Value: { } value }
+            && value is IConvertible ? Convert.ToSingle(value, System.Globalization.CultureInfo.InvariantCulture) : null;
+
+    // The id a stored reference member points at, when it points at anything.
+    private static string? ReadId(DataTreeDictionary data, string member)
+        => (data.TryGetNode(member) as DataTreeDictionary)?.TryGetNode("Data") is DataTreeValue { Value: string id }
+            && id.Length > 0 && !PackageMemberMapper.IsNullId(id) ? id : null;
 
     // Copy every member whose name and shape line up, and queue the references for the second pass.
     private static void CopyMembers(Component component, DataTreeDictionary data, BuildContext context)
@@ -1524,28 +1949,39 @@ public static class PackageObjectImporter
         return count;
     }
 
+    // The world thread's share of a frame for the import, the staged world load's own budget; true when
+    // it waited for the next frame. Counting slots instead held a cheap tree to 48 a frame and let a
+    // costly step run as long as it liked: a package of 196612 slots spent 4 s of one frame on the end.
+    private static async ValueTask<bool> PaceAsync(BuildContext context)
+    {
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (context.FrameEnd == 0)
+        {
+            context.FrameEnd = now + World.StagedBudgetTicks;
+            return false;
+        }
+        if (now < context.FrameEnd)
+            return false;
+        await WorldContext.NextUpdate();
+        context.FrameEnd = System.Diagnostics.Stopwatch.GetTimestamp() + World.StagedBudgetTicks;
+        return true;
+    }
+
     // Returns false when this slot and everything under it was stripped, so the caller can drop it.
     //
     // Async because a package is BIG: an avatar is 600+ slots and 700+ components, and building the lot
     // in one go froze the world for the better part of a minute. The build yields back to the update
-    // loop every SlotsPerFrame slots, so the import takes several frames and the game stays responsive
-    // instead of locking up. -xlinka
-    // NOTE: the awaits below deliberately do NOT use ConfigureAwait(false). Everything in this build
+    // loop whenever its share of a frame is spent, so the import takes several frames and the game stays
+    // responsive instead of locking up. -xlinka
+    // The awaits below deliberately do NOT use ConfigureAwait(false). Everything in this build
     // path touches the datamodel and, through the hooks, the scene tree - and the platform only allows
     // that from the main thread. NextUpdate() resumes there correctly, but ConfigureAwait(false) on the
     // recursive calls handed the continuation straight back to the thread pool, so slot creation ended
     // up calling AddChild off-thread. Background work belongs in ConvertAssetsAsync, not here. -xlinka
-    private const int SlotsPerFrame = 48;
-
-    private static async Task<bool> BuildSlotAsync(DataTreeDictionary node, Slot slot, BuildContext context)
+    private static async Task<bool> BuildSlotAsync(DataTreeDictionary node, Slot slot, BuildContext context, string? parentId = null)
     {
-        if (++context.SlotsThisFrame >= SlotsPerFrame)
-        {
-            context.SlotsThisFrame = 0;
-            await WorldContext.NextUpdate();
-            if (slot.IsDestroyed)
-                return false;
-        }
+        if (await PaceAsync(context) && slot.IsDestroyed)
+            return false;
 
         // Refused BEFORE anything is built, so the whole subtree goes with it: a package's laser is a slot
         // with the component on it and its mesh, cursor and line slots underneath, and dropping only the
@@ -1562,7 +1998,7 @@ public static class PackageObjectImporter
             && PackageTypeMap.IsGeneratedOrphanSlot(StripMarkup(generatedName)))
         {
             context.Result.SlotsConflicting++;
-            Logger.Log($"Package import: dropped generated slot '{StripMarkup(generatedName)}' and its subtree; "
+            Logger.Debug($"Package import: dropped generated slot '{StripMarkup(generatedName)}' and its subtree; "
                      + "the component that owns it is not ported");
             return false;
         }
@@ -1572,14 +2008,15 @@ public static class PackageObjectImporter
             && PackageTypeMap.IsSuppliedByUs(StripMarkup(suppliedName)))
         {
             context.Result.SlotsConflicting++;
-            Logger.Log($"Package import: dropped '{StripMarkup(suppliedName)}' and its subtree; "
+            Logger.Debug($"Package import: dropped '{StripMarkup(suppliedName)}' and its subtree; "
                      + "this engine supplies its own nameplate");
             return false;
         }
 
         context.Result.SlotsCreated++;
 
-        if ((node.TryGetNode("ID") as DataTreeValue)?.Value?.ToString() is string slotId && slotId.Length > 0)
+        string? slotId = (node.TryGetNode("ID") as DataTreeValue)?.Value?.ToString() is { Length: > 0 } id ? id : null;
+        if (slotId != null)
             context.ById[slotId] = slot;
 
         if (ReadValue(node, "Name") is string rawName)
@@ -1595,7 +2032,11 @@ public static class PackageObjectImporter
 
         ApplyTransform(node, slot);
 
-        int attached = AttachComponents(node, slot, context, out int strippedHere);
+        if (slotId != null)
+            context.Graphs.Slots[slotId] = new PackageSlotRecord(slotId, parentId, StripMarkup(ReadValue(node, "Name") as string ?? string.Empty), slot);
+        context.Graphs.RecordMembers(slot, node);
+
+        int attached = AttachComponents(node, slot, context, slotId, out int strippedHere);
 
         int survivingChildren = 0;
         if (node.TryGetNode("Children") is DataTreeList children)
@@ -1606,7 +2047,7 @@ public static class PackageObjectImporter
                     continue;
 
                 var childSlot = slot.AddSlot("Slot");
-                if (await BuildSlotAsync(childNode, childSlot, context))
+                if (await BuildSlotAsync(childNode, childSlot, context, slotId))
                     survivingChildren++;
                 else if (!childSlot.IsDestroyed)
                     childSlot.Destroy();
@@ -1675,7 +2116,7 @@ public static class PackageObjectImporter
         return false;
     }
 
-    private static int AttachComponents(DataTreeDictionary node, Slot slot, BuildContext context, out int stripped)
+    private static int AttachComponents(DataTreeDictionary node, Slot slot, BuildContext context, string? slotId, out int stripped)
     {
         stripped = 0;
         if (node.TryGetNode("Components") is not DataTreeNode componentsNode)
@@ -1712,10 +2153,28 @@ public static class PackageObjectImporter
                 context.PassThroughTypes[capturedId] = resolution.SimpleName;
             }
 
+            if (passData != null && resolution.SimpleName == "SpriteProvider"
+                && (passData.TryGetNode("ID") as DataTreeValue)?.Value?.ToString() is { Length: > 0 } spriteId
+                && ReadId(passData, "Texture") is { } textureId)
+                context.SpriteTextures[spriteId] = textureId;
+            if (passData != null && resolution.SimpleName == "ContextMenuSubmenu")
+                context.Submenus.Add((slot, passData));
+            if (passData != null && resolution.SimpleName is "CharacterController" or "PhysicalLocomotion")
+                context.Locomotion.Add((slot, resolution.SimpleName, passData));
+            if (passData != null && resolution.SimpleName is "SnapPlane" or "MultiUserAvatarAnchor")
+                context.Benches.Add((slot, resolution.SimpleName, passData));
+            if (passData != null && WorldK7.Collects(resolution.SimpleName))
+                context.TemplateLists.Add((slot, resolution.SimpleName, passData));
+
             if (resolution.Fate == PackageTypeFate.Stripped)
             {
                 context.Result.ComponentsStripped++;
                 stripped++;
+                if (context.Graphs.Wanted && passData != null && slotId != null && index < context.TypeNames.Count
+                    && PackageNodeGraphs.IsNodeType(context.TypeNames[index]))
+                    context.Graphs.Nodes.Add(new PackageNodeRecord(slotId, context.TypeNames[index], passData));
+                else if (context.Graphs.Wanted && passData != null)
+                    context.Graphs.RecordUnattached(resolution.SimpleName, passData);
                 continue;
             }
 
@@ -1724,13 +2183,19 @@ public static class PackageObjectImporter
             if (resolution.Target == null || data == null)
             {
                 context.Result.ComponentsSkipped++;
+                if (context.Graphs.Wanted && data != null)
+                    context.Graphs.RecordUnattached(resolution.SimpleName, data);
                 continue;
             }
 
             if (TryAttach(slot, resolution, data, context))
                 attached++;
             else
+            {
                 context.Result.ComponentsSkipped++;
+                if (context.Graphs.Wanted)
+                    context.Graphs.RecordUnattached(resolution.SimpleName, data);
+            }
         }
         return attached;
     }
@@ -1768,6 +2233,9 @@ public static class PackageObjectImporter
         DataTreeDictionary data, BuildContext context)
     {
         var target = resolution.Target!;
+        if (context.PlainColours.Count > 0 && (data.TryGetNode("ID") as DataTreeValue)?.Value is string plainId
+            && context.PlainColours.TryGetValue(plainId, out var plain))
+            target = plain;
         Component? component = null;
 
         try
@@ -1776,7 +2244,13 @@ public static class PackageObjectImporter
             // whatever lines up by name. Narrowing this to a hand-picked list of types was the earlier
             // approach and it left most of a package on the floor for no good reason - if we have the
             // component and its members match, there is nothing to be gained by refusing to build it.
-            component = slot.AttachComponent(target);
+            // A one-per-slot component that something on the slot already made for itself (a UI graphic makes
+            // its rect when it attaches) IS the package's one. A second would be refused and destroyed, and the
+            // package's values and every reference into it would go with it. -xlinka
+            component = target.IsDefined(typeof(SingleInstancePerSlotAttribute), inherit: true)
+                && slot.GetComponent(target) is { } existing && existing.GetType() == target
+                ? existing
+                : slot.AttachComponent(target);
         }
         catch (Exception ex)
         {
@@ -1790,11 +2264,21 @@ public static class PackageObjectImporter
         // The id is a bare string on the component, not a wrapped member.
         if ((data.TryGetNode("ID") as DataTreeValue)?.Value?.ToString() is string id && id.Length > 0)
             context.ById[id] = component;
+        context.Graphs.RecordMembers(component, data);
 
         if (component is Components.ParticleSystem particles)
             context.ParticleSystems.Add((particles, data));
+        if (component is Components.Assets.FontProvider chain && resolution.SimpleName == "FontChain")
+            context.FontChains.Add((chain, data));
+        if (component is Helio.UI.Canvas canvas)
+            context.Canvases.Add((canvas, data));
+        if (component is Light light)
+            context.Lights.Add(light);
+        if (component is LodGroup lods && resolution.SimpleName == "LODGroup")
+            context.LodGroups.Add((lods, data));
 
         CopyMembers(component, data, context);
+        ApplyOldSaveDefaults(component, resolution.SimpleName, context);
         context.Result.ComponentsAttached++;
         return true;
     }
@@ -1804,7 +2288,8 @@ public static class PackageObjectImporter
     private static async Task<Dictionary<string, Uri>> ConvertAssetsAsync(
         PackageArchive archive, DataTreeDictionary graph, PackageImportResult result,
         Dictionary<string, Dictionary<string, float4x4>> bindPoses,
-        Dictionary<string, float4x4[]> bindOrder)
+        Dictionary<string, float4x4[]> bindOrder,
+        Dictionary<string, BoundingBox> meshBounds)
     {
         await WorldContext.ToBackground();
 
@@ -1825,12 +2310,28 @@ public static class PackageObjectImporter
             }
         }
 
+        var unreadable = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var signature in wanted)
         {
             try
             {
                 var bytes = archive.ReadAsset(signature);
-                var kind = SniffKind(bytes);
+                var kind = SniffKind(bytes, archive.MetadataKind(signature));
+                // Baked cubemaps and procedural textures are in the package's own raw format; they come in
+                // as pictures our image path reads.
+                if (kind == null && PackageRawBitmap.IsRawBitmap(bytes))
+                {
+                    if (PackageRawBitmap.TryConvert(bytes, out var converted, out var extension, out var problem))
+                    {
+                        bytes = converted;
+                        kind = extension;
+                    }
+                    else
+                    {
+                        var what = "raw bitmaps that do not convert (" + problem + ")";
+                        unreadable[what] = unreadable.GetValueOrDefault(what) + 1;
+                    }
+                }
                 switch (kind)
                 {
                     case ".lmesh":
@@ -1841,6 +2342,7 @@ public static class PackageObjectImporter
                         var encoded = PhosMeshSerializer.Serialize(mesh);
                         var url = new Uri(await localDb.SaveAssetAsync(encoded, ".lmesh").ConfigureAwait(false));
                         map[signature] = url;
+                        meshBounds[url.OriginalString] = mesh.CalculateBoundingBox();
 
                         if (mesh.BoneCount > 0)
                         {
@@ -1871,7 +2373,7 @@ public static class PackageObjectImporter
                     {
                         // Textures and audio are the creator's original files and go in untouched.
                         map[signature] = new Uri(await localDb.SaveAssetAsync(bytes, kind).ConfigureAwait(false));
-                        if (kind is ".png" or ".jpg" or ".webp" or ".gif" or ".bmp" or ".exr")
+                        if (kind is ".png" or ".jpg" or ".webp" or ".gif" or ".bmp" or ".exr" or ".tga" or ".dds" or ".psd" or ".tif" or ".hdr")
                             result.TexturesImported++;
                         break;
                     }
@@ -1883,7 +2385,36 @@ public static class PackageObjectImporter
                 Logger.Warn($"Package import: asset {signature[..System.Math.Min(12, signature.Length)]} failed: {ex.Message}");
             }
         }
+        foreach (var (what, count) in unreadable)
+        {
+            result.AssetsFailed += count;
+            Logger.Warn($"Package import: {count} asset(s) are {what}; whatever uses them comes in without them");
+        }
         return map;
+    }
+
+    // The metadata kind says a payload is a picture when its bytes do not: TGA has no signature at the front.
+    private static string? SniffKind(byte[] b, string? metadataKind)
+    {
+        if (SniffKind(b) is { } kind)
+            return kind;
+        if (b.Length >= 4 && ((b[0] == 0 && b[1] == 1 && b[2] == 0 && b[3] == 0) || (b[0] == 't' && b[1] == 'r' && b[2] == 'u' && b[3] == 'e')
+            || (b[0] == 't' && b[1] == 't' && b[2] == 'c' && b[3] == 'f')))
+            return ".ttf";
+        if (b.Length >= 4 && b[0] == 'O' && b[1] == 'T' && b[2] == 'T' && b[3] == 'O')
+            return ".otf";
+        if (b.Length >= 4 && b[0] == 'w' && b[1] == 'O' && b[2] == 'F' && (b[3] == 'F' || b[3] == '2'))
+            return b[3] == 'F' ? ".woff" : ".woff2";
+        if (b.Length >= 4 && b[0] == 'D' && b[1] == 'D' && b[2] == 'S' && b[3] == ' ')
+            return ".dds";
+        if (b.Length >= 4 && b[0] == '8' && b[1] == 'B' && b[2] == 'P' && b[3] == 'S')
+            return ".psd";
+        if (TiffDecoder.IsTiff(b))
+            return ".tif";
+        if (metadataKind == "bitmap" && b.Length > 18 && b[1] <= 1 && (b[2] is 1 or 2 or 3 or 9 or 10 or 11)
+            && (b[16] is 8 or 15 or 16 or 24 or 32) && (b[12] | b[13] << 8) > 0 && (b[14] | b[15] << 8) > 0)
+            return ".tga";
+        return null;
     }
 
     private static string? SniffKind(byte[] b)
@@ -1911,6 +2442,17 @@ public static class PackageObjectImporter
     }
 
     // ---- graph helpers ----
+
+    private static List<string> ReadTypeNames(DataTreeDictionary graph)
+    {
+        var names = new List<string>();
+        if (graph.TryGetNode("Types") is DataTreeList types)
+        {
+            foreach (var node in types)
+                names.Add((node as DataTreeValue)?.Value?.ToString() ?? string.Empty);
+        }
+        return names;
+    }
 
     private static List<PackageTypeMap.Resolution> ReadTypeTable(DataTreeDictionary graph)
     {

@@ -22,8 +22,46 @@ namespace Lumora.Core.Assets.Interop;
 //
 // Anything that does not line up is skipped and counted. Nothing is guessed at: a member is written
 // only when the name matches AND the stored shape converts to our type. -xlinka
-public static class PackageMemberMapper
+public static partial class PackageMemberMapper
 {
+    static PackageMemberMapper()
+    {
+        MemberAliasesK1(MemberAliases);
+        MemberAliasesK2(MemberAliases);
+        MemberAliasesK3(MemberAliases);
+        MemberAliasesK4(MemberAliases);
+        MemberAliasesK5(MemberAliases);
+        MemberAliasesK6(MemberAliases);
+        MemberAliasesK7(MemberAliases);
+        MemberAliasesK8(MemberAliases);
+    }
+
+    static partial void MemberAliasesK1(Dictionary<string, Dictionary<string, string>> table);
+    static partial void MemberAliasesK2(Dictionary<string, Dictionary<string, string>> table);
+    static partial void MemberAliasesK3(Dictionary<string, Dictionary<string, string>> table);
+    static partial void MemberAliasesK4(Dictionary<string, Dictionary<string, string>> table);
+    static partial void MemberAliasesK5(Dictionary<string, Dictionary<string, string>> table);
+    static partial void MemberAliasesK6(Dictionary<string, Dictionary<string, string>> table);
+    static partial void MemberAliasesK7(Dictionary<string, Dictionary<string, string>> table);
+    static partial void MemberAliasesK8(Dictionary<string, Dictionary<string, string>> table);
+
+    static partial void ApplyK1(Component component, DataTreeDictionary data, Action<ISyncRef, string> queueReference,
+        Action<object, string, IReadOnlyList<string>> queueReferenceList, Func<Uri, Uri?> remapUrl);
+    static partial void ApplyK2(Component component, DataTreeDictionary data, Action<ISyncRef, string> queueReference,
+        Action<object, string, IReadOnlyList<string>> queueReferenceList, Func<Uri, Uri?> remapUrl);
+    static partial void ApplyK3(Component component, DataTreeDictionary data, Action<ISyncRef, string> queueReference,
+        Action<object, string, IReadOnlyList<string>> queueReferenceList, Func<Uri, Uri?> remapUrl);
+    static partial void ApplyK4(Component component, DataTreeDictionary data, Action<ISyncRef, string> queueReference,
+        Action<object, string, IReadOnlyList<string>> queueReferenceList, Func<Uri, Uri?> remapUrl);
+    static partial void ApplyK5(Component component, DataTreeDictionary data, Action<ISyncRef, string> queueReference,
+        Action<object, string, IReadOnlyList<string>> queueReferenceList, Func<Uri, Uri?> remapUrl);
+    static partial void ApplyK6(Component component, DataTreeDictionary data, Action<ISyncRef, string> queueReference,
+        Action<object, string, IReadOnlyList<string>> queueReferenceList, Func<Uri, Uri?> remapUrl);
+    static partial void ApplyK7(Component component, DataTreeDictionary data, Action<ISyncRef, string> queueReference,
+        Action<object, string, IReadOnlyList<string>> queueReferenceList, Func<Uri, Uri?> remapUrl);
+    static partial void ApplyK8(Component component, DataTreeDictionary data, Action<ISyncRef, string> queueReference,
+        Action<object, string, IReadOnlyList<string>> queueReferenceList, Func<Uri, Uri?> remapUrl);
+
     // Where the same data lives under a different member name on our side. Keyed by OUR component type
     // name, then by the PACKAGE's member name.
     //
@@ -40,6 +78,93 @@ public static class PackageMemberMapper
             {
                 ["Mesh"] = "MeshAsset",
             },
+
+            // Who holds it, read by graphs through the member.
+            ["Grabbable"] = new(StringComparer.Ordinal) { ["_grabber"] = "GrabberRef" },
+
+            ["PlaceAtUser"] = new(StringComparer.Ordinal) { ["TargetPositionOffset"] = "Offset" },
+
+            // Inline tags are read unless the text says not to.
+            ["Text"] = new(StringComparer.Ordinal) { ["ParseRichText"] = "RichText" },
+
+            // A scope's name is what every named variable under it binds by; unnamed, all of them bound nothing.
+            ["VariableScope"] = new(StringComparer.Ordinal)
+            {
+                ["SpaceName"] = "ScopeName",
+                ["OnlyDirectBinding"] = "DirectBindingOnly",
+            },
+
+            // An object standing for what it references, kept for good (see ApplyReferenceProxy).
+            ["ReferenceProxy"] = new(StringComparer.Ordinal)
+            {
+                ["Reference"] = "Target",
+                ["SpawnInstanceOnTrigger"] = "SpawnInstanceOnActivate",
+            },
+
+            // The package's probe box is a full size centred on the slot, as ours is, and its baked cubemap
+            // is the one ours shows (see ApplyReflectionProbe).
+            ["ReflectionProbe"] = new(StringComparer.Ordinal)
+            {
+                ["BoxSize"] = "Size",
+                ["BakedCubemap"] = "Cubemap",
+            },
+
+            // The package's switch and gradient drivers keep their target and stops under other names.
+            ["BoolToValue`1"] = new(StringComparer.Ordinal)
+            {
+                ["TargetField"] = "Target",
+            },
+            ["ValueGradient`1"] = new(StringComparer.Ordinal)
+            {
+                ["Points"] = "Stops",
+            },
+
+            // Press receivers and drivers under other names for the same members.
+            ["PressSetValue`1"] = new(StringComparer.Ordinal) { ["SetValue"] = "Value" },
+            ["PressSetReference`1"] = new(StringComparer.Ordinal) { ["SetReference"] = "Value" },
+            ["PressCycleReference`1"] = new(StringComparer.Ordinal) { ["Targets"] = "References" },
+            ["ValueEquals`1"] = new(StringComparer.Ordinal) { ["TargetValue"] = "Source" },
+            ["AnyAllBools"] = new(StringComparer.Ordinal) { ["Conditions"] = "Inputs" },
+            ["BoolToReference`1"] = new(StringComparer.Ordinal)
+            {
+                ["TargetReference"] = "Target",
+                ["FalseTarget"] = "FalseReference",
+                ["TrueTarget"] = "TrueReference",
+            },
+            ["ValueCaption`1"] = Caption("Value"),
+            ["ReferenceCaption`1"] = Caption("Reference"),
+            ["ValueCaptionCase`1"] = new(StringComparer.Ordinal) { ["ReferenceValue"] = "Match", ["Color"] = "Tint", ["Sprite"] = "Icon" },
+            ["ReferenceCaptionCase`1"] = new(StringComparer.Ordinal) { ["ReferenceTarget"] = "Match", ["Color"] = "Tint", ["Sprite"] = "Icon" },
+
+            ["AvatarScale"] = new(StringComparer.Ordinal) { ["DefaultScale"] = "Scale", ["SetOnEquip"] = "ApplyOnEquip" },
+            ["BlinkLocomotion"] = new(StringComparer.Ordinal) { ["RangeExp"] = "RangeExponent", ["Drag"] = "ArcDrag" },
+            ["Seat"] = new(StringComparer.Ordinal) { ["TransformRestoreMode"] = "RestoreMode" },
+            ["SeatReleaseOnMove"] = new(StringComparer.Ordinal)
+            {
+                ["ReleaseOnBinaryAction"] = "ReleaseOnJump",
+                ["ReleaseStrengthThreshold"] = "MoveStrengthThreshold",
+            },
+
+            // A menu entry and the pin that puts one on its owner's ring.
+            ["ContextMenuEntry"] = new(StringComparer.Ordinal)
+            {
+                ["Color"] = "Tint",
+                ["Sprite"] = "Icon",
+                ["ButtonEnabled"] = "Interactable",
+                ["CloseMenuOnPress"] = "CloseOnPress",
+            },
+            ["ContextMenuPin"] = new(StringComparer.Ordinal)
+            {
+                ["Item"] = "Entry",
+                ["OnlyForSide"] = "Side",
+                ["ExcludeOnTools"] = "NotWithTool",
+                ["ExcludePrimaryHand"] = "NotOnPrimaryHand",
+                ["ExcludeSecondaryHand"] = "NotOnSecondaryHand",
+            },
+
+            // A package button told to wait until the press is known not to be a drag is one that acts on
+            // release here. Both act on press otherwise.
+            ["Button"] = new(StringComparer.Ordinal) { ["RequireLockInToPress"] = "ActOnRelease" },
 
             // PARTICLE INITIALIZERS. A package's initializers name every parameter the same way whatever
             // it holds - Value, or MinValue and MaxValue - while ours name it after the quantity: MinColor,
@@ -144,6 +269,13 @@ public static class PackageMemberMapper
     private static readonly Dictionary<string, Dictionary<string, string>> EnumValueAliases =
         new(StringComparer.Ordinal)
         {
+            // An anchor's restore modes under the names a seat gives them. Its body points carry over by name.
+            ["TransformRestoreMode"] = new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["RelativeTransform"] = "SeatRelative",
+                ["GlobalTransform"] = "WorldTransform",
+            },
+
             // Names the face to DRAW: invert into our cull-this-face convention.
             ["Sidedness"] = new(StringComparer.OrdinalIgnoreCase)
             {
@@ -155,6 +287,11 @@ public static class PackageMemberMapper
                 ["Both"] = "None",
             },
             // Already names the face to CULL: Front and Back carry straight across, only "Off" differs.
+            // The package splits sRGB into with and without alpha; vertex colour blending only cares which space.
+            ["VertexColorInterpolationSpace"] = new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["sRGBAlpha"] = "sRGB",
+            },
             ["Culling"] = new(StringComparer.OrdinalIgnoreCase)
             {
                 ["Off"] = "None",
@@ -187,6 +324,16 @@ public static class PackageMemberMapper
             },
         };
 
+    private static Dictionary<string, string> Caption(string source) => new(StringComparer.Ordinal)
+    {
+        [source] = "Source",
+        ["ForceDeselected"] = "ShowOtherwise",
+        ["Color"] = "Tint",
+        ["Sprite"] = "Icon",
+        ["DefaultOption"] = "Otherwise",
+        ["Options"] = "Cases",
+    };
+
     // The package's Value / MinValue / MaxValue onto whatever this initializer calls the same thing.
     private static Dictionary<string, string> Range(string value) =>
         new(StringComparer.Ordinal) { ["Value"] = value };
@@ -194,9 +341,10 @@ public static class PackageMemberMapper
     private static Dictionary<string, string> Range(string min, string max) =>
         new(StringComparer.Ordinal) { ["MinValue"] = min, ["MaxValue"] = max };
 
-    private static string ResolveMemberName(Component component, string theirName)
+    internal static string ResolveMemberName(Component component, string theirName) => ResolveMemberName(component.GetType(), theirName);
+
+    private static string ResolveMemberName(Type? type, string theirName)
     {
-        var type = component.GetType();
         while (type != null)
         {
             if (MemberAliases.TryGetValue(type.Name, out var table)
@@ -230,6 +378,32 @@ public static class PackageMemberMapper
             ApplyViewOverride(view, data, remapUrl);
         if (component is ParticleForce force)
             ApplyGravityForce(force, data);
+        if (component is PBS_Triplanar triplanar)
+            ApplyTriplanar(triplanar, data);
+        if (component is ReflectionProbe probe)
+            ApplyReflectionProbe(probe, data);
+        if (component is Components.Audio.AudioClipPlayer player)
+            ApplyClipPlayback(player, data);
+        // The package's reference proxy is part of the object it sits on; ours by default is a card the
+        // inspector hands out, which deletes its slot once dropped or left alone.
+        if (component is ReferenceProxy referenceProxy)
+            referenceProxy.Temporary.Value = false;
+        if (component is Components.Utility.PlaceAtUser place)
+            ApplyPlaceAtUser(place, data);
+        if (component is Components.Utility.AnyAllBools bools)
+            ApplyNoneOf(bools, data);
+        if (component is Components.Avatar.Seat seat)
+            ApplyAnchor(seat, data);
+        if (component is Components.Avatar.SeatReleaseOnMove release)
+            ApplyAnchorRelease(release, data);
+        ApplyK1(component, data, queueReference, queueReferenceList, remapUrl);
+        ApplyK2(component, data, queueReference, queueReferenceList, remapUrl);
+        ApplyK3(component, data, queueReference, queueReferenceList, remapUrl);
+        ApplyK4(component, data, queueReference, queueReferenceList, remapUrl);
+        ApplyK5(component, data, queueReference, queueReferenceList, remapUrl);
+        ApplyK6(component, data, queueReference, queueReferenceList, remapUrl);
+        ApplyK7(component, data, queueReference, queueReferenceList, remapUrl);
+        ApplyK8(component, data, queueReference, queueReferenceList, remapUrl);
         // Index our members by name once, then walk the STORED members - that way an alias can point
         // a differently-named member at the right one, which a walk over our members alone cannot do.
         var ours = new Dictionary<string, ISyncMember>(StringComparer.Ordinal);
@@ -257,12 +431,18 @@ public static class PackageMemberMapper
             if (pair.Value is not DataTreeDictionary holder)
                 continue;
             var node = holder.TryGetNode("Data");
-            if (node == null)
-                continue;
-
             string ourName = ResolveMemberName(component, name);
             if (!ours.TryGetValue(ourName, out var member))
                 continue;
+            if (node == null)
+            {
+                // A record held in place keeps its own members beside its id, with no Data of its own.
+                if (RecordMembers(member.GetType()).Count == 0)
+                    continue;
+                matched++;
+                ApplyRecord(member, holder, queueReference, queueReferenceList, remapUrl);
+                continue;
+            }
 
             matched++;
             try
@@ -276,7 +456,126 @@ public static class PackageMemberMapper
             }
         }
 
+        // AvatarRoot.Scale is the authored wear scale, separate from the slot's saved world size
+        // and DefaultUserScale. In particular, One must not be mistaken for an unset calibration.
+        if (component is AvatarForm form
+            && (data.TryGetNode("Scale") as DataTreeDictionary)?.TryGetNode("Data") is { } equipScale
+            && TryConvert(equipScale, typeof(float3), out var convertedScale, remapUrl, "Scale")
+            && convertedScale is float3 scale
+            && float.IsFinite(scale.x) && float.IsFinite(scale.y) && float.IsFinite(scale.z)
+            && scale.x > 0f && scale.y > 0f && scale.z > 0f)
+            form.SetEquipScale(scale);
+
+        // A stereo texture there takes its left eye from the plain transform; ours keeps the left eye apart.
+        if (ours.TryGetValue("LeftEyeTextureScale", out var leftScale) && leftScale is Sync<float2> leftScaleField
+            && ours.TryGetValue("LeftEyeTextureOffset", out var leftOffset) && leftOffset is Sync<float2> leftOffsetField
+            && ours.TryGetValue("TextureScale", out var plainScale) && plainScale is Sync<float2> plainScaleField
+            && ours.TryGetValue("TextureOffset", out var plainOffset) && plainOffset is Sync<float2> plainOffsetField
+            && (data.TryGetNode("StereoTextureTransform") as DataTreeDictionary)?.TryGetNode("Data") is DataTreeValue { Value: true })
+        {
+            leftScaleField.Value = plainScaleField.Value;
+            leftOffsetField.Value = plainOffsetField.Value;
+        }
+
+        // A projection's transform works on its own panorama coordinates, which keep the package's rows.
+        if (component is MaterialProvider && component is not Projection360Material)
+            FlipTextureTransforms(ours);
         return matched;
+    }
+
+    // The package counts V up from the bottom; meshes come in with V mirrored (PackageMeshReader), so a texture
+    // transform on mesh UVs has to mirror with them: v' = 1 - v gives offset' = 1 - scale - offset. Whole-number
+    // tiling hides the difference, which is why it went unnoticed; a 0.5 tiling landed half a tile off.
+    private static readonly (string Scale, string Offset)[] UvTransforms =
+    {
+        ("TextureScale", "TextureOffset"),
+        ("DetailTextureScale", "DetailTextureOffset"),
+        ("MaskScale", "MaskOffset"),
+        ("OffsetTextureScale", "OffsetTextureOffset"),
+        ("LeftEyeTextureScale", "LeftEyeTextureOffset"),
+        ("RightEyeTextureScale", "RightEyeTextureOffset"),
+    };
+
+    private static void FlipTextureTransforms(Dictionary<string, ISyncMember> ours)
+    {
+        foreach (var (scaleName, offsetName) in UvTransforms)
+        {
+            if (!ours.TryGetValue(scaleName, out var scaleMember) || scaleMember is not Sync<float2> scale
+                || !ours.TryGetValue(offsetName, out var offsetMember) || offsetMember is not Sync<float2> offset)
+                continue;
+            offset.Value = new float2(offset.Value.x, 1f - scale.Value.y - offset.Value.y);
+        }
+    }
+
+    // A record's own members by name: a case of a caption, an input of a combiner. Each one goes through the
+    // same assignment as a component's member.
+    private static void ApplyRecord(object record, DataTreeDictionary data, Action<ISyncRef, string> queueReference,
+        Action<object, string, IReadOnlyList<string>> queueReferenceList, Func<Uri, Uri?> remapUrl)
+    {
+        var members = RecordMembers(record.GetType());
+        foreach (var (theirName, value) in data.Children)
+        {
+            if (value is not DataTreeDictionary holder || holder.TryGetNode("Data") is not { } node)
+                continue;
+            string ourName = ResolveMemberName(record.GetType(), theirName);
+            if (!members.TryGetValue(ourName, out var field) || field.GetValue(record) is not ISyncMember member)
+                continue;
+            try
+            {
+                Assign(member, node, ourName, theirName, queueReference, queueReferenceList, remapUrl);
+            }
+            catch
+            {
+                // As for a component's member: left at its default.
+            }
+        }
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, Dictionary<string, System.Reflection.FieldInfo>> _recordMembers = new();
+
+    // The synced members a record type declares, by name. A component's are indexed through the worker; a
+    // record's are read off its fields.
+    private static Dictionary<string, System.Reflection.FieldInfo> RecordMembers(Type type) =>
+        _recordMembers.GetOrAdd(type, static t =>
+        {
+            var found = new Dictionary<string, System.Reflection.FieldInfo>(StringComparer.Ordinal);
+            if (!typeof(SyncElement).IsAssignableFrom(t) || typeof(ISyncRef).IsAssignableFrom(t) || ValueProperty(t) != null)
+                return found;
+            foreach (var field in t.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+            {
+                if (field.IsInitOnly && typeof(ISyncMember).IsAssignableFrom(field.FieldType))
+                    found[field.Name] = field;
+            }
+            return found;
+        });
+
+    // A package anchor never lets go on its own; letting go on input is a component of its own, which comes
+    // across as SeatReleaseOnMove. Only an anchor stores a restore mode under that name. It turns the user to
+    // face its references' +Z, where ours face -Z: a half turn about their up.
+    private static void ApplyAnchor(Components.Avatar.Seat seat, DataTreeDictionary data)
+    {
+        if (data.TryGetNode("TransformRestoreMode") == null)
+            return;
+        seat.ReleaseOnJump.Value = false;
+        seat.RotationOffset.Value = floatQ.AxisAngle(float3.Up, MathF.PI);
+    }
+
+    // No strength stored means no letting go on a push of the stick, which ours writes as zero.
+    private static void ApplyAnchorRelease(Components.Avatar.SeatReleaseOnMove release, DataTreeDictionary data)
+    {
+        if ((data.TryGetNode("ReleaseStrengthThreshold") as DataTreeDictionary)?.TryGetNode("Data") is DataTreeValue { Value: null })
+            release.MoveStrengthThreshold.Value = 0f;
+    }
+
+    // A package combines with All, Any or None; ours has no None, which is Any turned over.
+    private static void ApplyNoneOf(Components.Utility.AnyAllBools bools, DataTreeDictionary data)
+    {
+        if ((data.TryGetNode("Mode") as DataTreeDictionary)?.TryGetNode("Data") is DataTreeValue { Value: string mode }
+            && string.Equals(mode, "None", StringComparison.OrdinalIgnoreCase))
+        {
+            bools.Mode.Value = Components.Utility.BoolCombineMode.Any;
+            bools.Invert.Value = true;
+        }
     }
 
     // A package's GravityForce stores one number and means "down"; ours stores the vector. The alias that
@@ -285,6 +584,95 @@ public static class PackageMemberMapper
     //
     // Only fires when the stored data actually has a Gravity member, so a real ParticleForce carrying
     // its own Force vector is untouched.
+    // The package's triplanar projection takes one 2D scale and offset for all three planes, a blend power, and
+    // an object-space switch. Ours: a scale and offset per axis, the same power as a sharpness, and a
+    // world-space switch, which is the opposite way round. Both compute position * scale and |n|^power, so
+    // the values carry over exactly for the usual even scale.
+    private static void ApplyTriplanar(PBS_Triplanar material, DataTreeDictionary data)
+    {
+        List<float>? Numbers(string name)
+        {
+            if ((data.TryGetNode(name) as DataTreeDictionary)?.TryGetNode("Data") is not DataTreeList list)
+                return null;
+            var values = new List<float>(3);
+            foreach (var node in list.Children)
+            {
+                if (node is DataTreeValue { Value: IConvertible number } && number is not string)
+                    values.Add(Convert.ToSingle(number, System.Globalization.CultureInfo.InvariantCulture));
+            }
+            return values;
+        }
+        if (Numbers("TextureScale") is { Count: >= 2 } scale)
+            material.Tiling.Value = new float3(scale[0], scale[1], scale[0]);
+        if (Numbers("TextureOffset") is { Count: >= 2 } offset)
+            material.Offset.Value = new float3(offset[0], offset[1], 0f);
+        if ((data.TryGetNode("TriplanarBlendPower") as DataTreeDictionary)?.TryGetNode("Data") is DataTreeValue { Value: IConvertible power }
+            && power is not string)
+            material.BlendSharpness.Value = Convert.ToSingle(power, System.Globalization.CultureInfo.InvariantCulture);
+        if ((data.TryGetNode("ObjectSpace") as DataTreeDictionary)?.TryGetNode("Data") is DataTreeValue { Value: bool objectSpace })
+            material.WorldSpace.Value = !objectSpace;
+    }
+
+    // A baked probe shows the cubemap stored with it, rendered once in the package's own lighting, and ours
+    // does the same (FromCubemap). A baked one whose cubemap is missing is captured here once instead, in
+    // this world's lighting; a realtime one keeps capturing. Shadows go into a capture when the package gave
+    // it a shadow distance.
+    private static void ApplyReflectionProbe(ReflectionProbe probe, DataTreeDictionary data)
+    {
+        if ((data.TryGetNode("ProbeType") as DataTreeDictionary)?.TryGetNode("Data") is DataTreeValue { Value: string type })
+            probe.UpdateMode.Value = type == "Realtime" ? ProbeUpdateMode.Always
+                : type == "Baked" && (data.TryGetNode("BakedCubemap") as DataTreeDictionary)?.TryGetNode("Data") is DataTreeValue { Value: string cubemap }
+                    && cubemap.Length > 0 && !IsNullId(cubemap) ? ProbeUpdateMode.FromCubemap
+                : ProbeUpdateMode.Once;
+        // The package's probes only reflect; the room's ambient comes from the world's own lighting.
+        probe.AmbientMode.Value = ProbeAmbientMode.Disabled;
+        if ((data.TryGetNode("ShadowDistance") as DataTreeDictionary)?.TryGetNode("Data") is DataTreeValue { Value: IConvertible shadow }
+            && shadow is not string)
+            probe.CaptureShadows.Value = Convert.ToSingle(shadow, CultureInfo.InvariantCulture) > 0f;
+    }
+
+    // Whose node it follows and which: the local user unless a user is named (a named user from a saved
+    // session is gone, so that falls back to the local one), the head unless the root is asked for, and the
+    // node's turn as well when a rotation source is set.
+    private static void ApplyPlaceAtUser(Components.Utility.PlaceAtUser place, DataTreeDictionary data)
+    {
+        object? Field(string name)
+        {
+            var node = data.TryGetNode(name);
+            if (node is DataTreeDictionary wrapped)
+                node = wrapped.TryGetNode("Data");
+            return (node as DataTreeValue)?.Value;
+        }
+        place.Mode.Value = Components.Utility.FacingUserMode.LocalUser;
+        place.UseHead.Value = Field("PositionSource") is not string source || source is "Head" or "View";
+        place.FollowRotation.Value = Field("RotationSource") is string rotation && rotation is not ("" or "None");
+    }
+
+    // The package keeps play, loop, speed and where the head was in one playback member; ours keeps loop and
+    // speed beside it. Without this a looping ambience saved playing comes in stopped.
+    private static void ApplyClipPlayback(Components.Audio.AudioClipPlayer player, DataTreeDictionary data)
+    {
+        if (data.TryGetNode("playback") is not DataTreeDictionary member)
+            return;
+        var state = member.TryGetNode("Data") as DataTreeDictionary ?? member;
+        object? Field(string name)
+        {
+            var node = state.TryGetNode(name);
+            if (node is DataTreeDictionary wrapped)
+                node = wrapped.TryGetNode("Data");
+            return (node as DataTreeValue)?.Value;
+        }
+        bool play = Field("Play") is bool p && p;
+        bool loop = Field("Loop") is bool l && l;
+        float position = Field("RawPosition") is IConvertible rp and not string and not bool ? Convert.ToSingle(rp, CultureInfo.InvariantCulture) : 0f;
+        float speed = Field("Speed") is IConvertible sp and not string and not bool ? Convert.ToSingle(sp, CultureInfo.InvariantCulture) : 1f;
+        if (!float.IsFinite(speed))
+            speed = 1f;
+        player.Loop.Value = loop;
+        player.Speed.Value = speed;
+        player.Playback.SetLoadedState(play, loop ? PlaybackLoopMode.Loop : PlaybackLoopMode.Once, position, speed);
+    }
+
     private static void ApplyGravityForce(ParticleForce force, DataTreeDictionary data)
     {
         if (data.TryGetNode("Gravity") is not DataTreeDictionary holder)
@@ -429,8 +817,9 @@ public static class PackageMemberMapper
         }
 
         // A list of references (materials on a renderer, for instance) is a list of member-shaped
-        // holders, each carrying one id.
-        if (node is DataTreeList list && LooksLikeReferenceList(list))
+        // holders, each carrying one id. A list of text is shaped the same and holds text: a selector's
+        // labels came in as references to nothing and the labels were blank.
+        if (node is DataTreeList list && LooksLikeReferenceList(list) && member is not SyncFieldList<string>)
         {
             var ids = new List<string>(list.Count);
             foreach (var entry in list.Children)
@@ -460,7 +849,17 @@ public static class PackageMemberMapper
             // every imported avatar arrived with its shape keys back at zero, so a body or a garment
             // shaped by a shape key came in the wrong shape and nothing said why. -xlinka
             if (node is DataTreeList values)
-                AssignValueList(member, values, remapUrl, theirName);
+                AssignValueList(member, values, remapUrl, theirName, queueReference, queueReferenceList);
+            return;
+        }
+
+        // A null text held as the value of a value component (a switch's two values, a selector's, a field or a
+        // variable of text) is a value of its own: driven into a text, null shows the text's hint
+        // (Text.NullContent) where an empty string shows nothing. Left at our empty default, a search box lost
+        // its "Search..." prompt. Names and other text members of those components keep the default. -xlinka
+        if (node is DataTreeValue { Value: null } && valueProperty.PropertyType == typeof(string) && HoldsTextValue(member))
+        {
+            valueProperty.SetValue(member, null);
             return;
         }
 
@@ -468,10 +867,32 @@ public static class PackageMemberMapper
             valueProperty.SetValue(member, value);
     }
 
+    // Whether a member is the value of a component made for a type of value: declared with that type, which
+    // here is text.
+    private static bool HoldsTextValue(ISyncMember member)
+    {
+        if ((member as SyncElement)?.Parent is not { } owner || !owner.GetType().IsGenericType)
+            return false;
+        const System.Reflection.BindingFlags Flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public
+            | System.Reflection.BindingFlags.NonPublic;
+        for (var type = owner.GetType(); type != null && type != typeof(object); type = type.BaseType)
+        {
+            foreach (var field in type.GetFields(Flags | System.Reflection.BindingFlags.DeclaredOnly))
+            {
+                if (!ReferenceEquals(field.GetValue(owner), member))
+                    continue;
+                return type.IsGenericType
+                    && type.GetGenericTypeDefinition().GetField(field.Name, Flags | System.Reflection.BindingFlags.DeclaredOnly)?.FieldType.ContainsGenericParameters == true;
+            }
+        }
+        return false;
+    }
+
     // Rebuild a sync list of plain values from the package's stored one. Elements arrive member-shaped
     // ({ ID, Data }), so each one is unwrapped before it is converted to whatever our element holds.
     private static void AssignValueList(ISyncMember member, DataTreeList list,
-        Func<Uri, Uri?> remapUrl, string theirName)
+        Func<Uri, Uri?> remapUrl, string theirName, Action<ISyncRef, string> queueReference,
+        Action<object, string, IReadOnlyList<string>> queueReferenceList)
     {
         var found = ResolveValueListShape(member.GetType());
         if (found == null)
@@ -490,7 +911,12 @@ public static class PackageMemberMapper
             var payload = entry is DataTreeDictionary holder ? holder.TryGetNode("Data") ?? entry : entry;
             var elementValue = ValueProperty(element.GetType());
             if (elementValue == null)
+            {
+                // A list of records: each entry is one, its members beside its id.
+                if (payload is DataTreeDictionary record && RecordMembers(element.GetType()).Count > 0)
+                    ApplyRecord(element, record, queueReference, queueReferenceList, remapUrl);
                 continue;
+            }
             if (TryConvert(payload, elementValue.PropertyType, out var converted, remapUrl, theirName))
                 elementValue.SetValue(element, converted);
         }
@@ -653,12 +1079,13 @@ public static class PackageMemberMapper
 
             try
             {
-                if (target == typeof(string)) { value = scalar.Value.ToString(); return true; }
+                if (target == typeof(string)) { value = PackageTextMarkup.Translate(scalar.Value.ToString() ?? string.Empty); return true; }
                 if (target == typeof(bool)) { value = Convert.ToBoolean(scalar.Value, CultureInfo.InvariantCulture); return true; }
                 if (target == typeof(float)) { value = Convert.ToSingle(scalar.Value, CultureInfo.InvariantCulture); return true; }
                 if (target == typeof(double)) { value = Convert.ToDouble(scalar.Value, CultureInfo.InvariantCulture); return true; }
                 if (target == typeof(int)) { value = Convert.ToInt32(scalar.Value, CultureInfo.InvariantCulture); return true; }
                 if (target == typeof(long)) { value = Convert.ToInt64(scalar.Value, CultureInfo.InvariantCulture); return true; }
+                if (target == typeof(byte)) { value = Convert.ToByte(scalar.Value, CultureInfo.InvariantCulture); return true; }
                 if (target == typeof(Uri) && scalar.Value is string)
                 {
                     // A URL inside the package points at package storage, which means nothing once the
@@ -680,6 +1107,14 @@ public static class PackageMemberMapper
         if (node is DataTreeList numbers)
         {
             var parts = ReadNumbers(numbers);
+            // Our colours are sRGB values. A package colour names its profile last; a Linear one is
+            // converted, or it came in at the wrong brightness (a 1.68 linear light ran at about twice
+            // its power). Values above 1 keep the same curve.
+            if ((target == typeof(color) || target == typeof(colorHDR)) && parts.Length >= 3 && IsLinearProfile(numbers))
+            {
+                for (int i = 0; i < 3; i++)
+                    parts[i] = parts[i] < 0f ? -ColorSpace.LinearToGamma(-parts[i]) : ColorSpace.LinearToGamma(parts[i]);
+            }
             if (!TryBuildVector(parts, target, out value))
                 return false;
             // Spatial members cross the handedness boundary here, by NAME, because a package stores a
@@ -693,6 +1128,16 @@ public static class PackageMemberMapper
             return true;
         }
 
+        return false;
+    }
+
+    private static bool IsLinearProfile(DataTreeList list)
+    {
+        foreach (var entry in list.Children)
+        {
+            if (entry is DataTreeValue { Value: string profile })
+                return profile == "Linear";
+        }
         return false;
     }
 

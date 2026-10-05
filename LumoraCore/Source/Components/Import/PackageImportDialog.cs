@@ -113,8 +113,23 @@ public sealed class PackageImportDialog : ImportDialog
         if (r.ComponentsSkipped == 0 && r.AssetsFailed == 0)
             Line(body, "Nothing", 12f, GoodColor);
 
+        if (r.ScriptsMade > 0)
+        {
+            Spacer(body, 8f);
+            Line(body, "SCRIPTS", 12f, HeadingColor);
+            Line(body, $"{r.ScriptsMade} node graphs became scripts, {r.ScriptsRunning} ready to run", 12f, GoodColor);
+            Line(body, $"{r.ScriptNodesConverted} nodes carried over", 12f, GoodColor);
+            if (r.ScriptNodesUnconverted > 0)
+            {
+                Line(body, $"{r.ScriptNodesUnconverted} nodes with no equivalent yet:", 12f, LossColor);
+                foreach (var (name, count) in r.UnconvertedNodes.OrderByDescending(p => p.Value).Take(6))
+                    Line(body, $"  {count}x {name}", 11f, LossColor);
+                if (r.UnconvertedNodes.Count > 6)
+                    Line(body, $"  and {r.UnconvertedNodes.Count - 6} more kinds (Log Details)", 11f, MutedColor);
+            }
+        }
+
         Spacer(body, 6f);
-        Line(body, $"Scripted behaviour stripped ({r.ComponentsStripped} nodes).", 11f, MutedColor);
         Line(body, $"{r.SlotsPruned} empty slots pruned.", 11f, MutedColor);
 
         Spacer(body, 8f);
@@ -128,7 +143,7 @@ public sealed class PackageImportDialog : ImportDialog
     // which meant no automated test could exercise the real import route. -xlinka
     internal void RunImport()
     {
-        if (_importing || _result != null)
+        if (_importing || _result != null || !CanInteract || RefuseSpawn())
             return;
 
         var path = Paths.Count > 0 ? Paths[0] : null;
@@ -145,7 +160,7 @@ public sealed class PackageImportDialog : ImportDialog
         // Position only. The anchor deliberately keeps identity rotation so the package's own authored
         // rotation ends up in WORLD space, the way its author built it, instead of being composed on top
         // of wherever the dialog happened to be facing.
-        var anchor = world.RootSlot.AddSlot("Imported Package");
+        var anchor = world.AddSpawnSlot(world.RootSlot, "Imported Package");
         anchor.GlobalPosition = Slot.GlobalPosition;
 
         world.StartTask(async () =>
@@ -278,9 +293,9 @@ public sealed class PackageImportDialog : ImportDialog
         if (stripped > 0)
         {
             Spacer(body, 6f);
-            Line(body, $"Scripted behaviour is stripped ({stripped} nodes).", 11f, MutedColor);
+            Line(body, $"Node graphs become scripts ({stripped} nodes).", 11f, MutedColor);
             if (report.PrunableSlots > 0)
-                Line(body, $"{report.PrunableSlots} empty slots pruned with it.", 11f, MutedColor);
+                Line(body, $"{report.PrunableSlots} slots that only held nodes are pruned.", 11f, MutedColor);
         }
 
         Spacer(body, 8f);
@@ -338,6 +353,17 @@ public sealed class PackageImportDialog : ImportDialog
         var report = _report;
         if (report == null)
             return;
+
+        // After an import, why parts of its node graphs did not come across.
+        if (_result is { ScriptsMade: > 0 } result)
+        {
+            Logger.Log($"Package scripts: {result.ScriptsMade} made, {result.ScriptsRunning} ready to run; "
+                     + $"{result.ScriptNodesConverted} nodes carried, {result.ScriptNodesUnconverted} not");
+            foreach (var (name, count) in result.UnconvertedNodes.OrderByDescending(p => p.Value))
+                Logger.Log($"  not carried: {count}x {name}");
+            foreach (var (problem, count) in result.ScriptProblems.OrderByDescending(p => p.Value))
+                Logger.Log($"  {count}x {problem}");
+        }
 
         Logger.Log($"Package '{CleanName(report.Name)}' ({Path.GetFileName(report.SourcePath)}):");
         Logger.Log($"  {report.SlotCount} slots, {report.ComponentInstances} component instances, built with {report.EngineVersion}");

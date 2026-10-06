@@ -1,10 +1,12 @@
 ﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using System.Collections.Generic;
 using Lumora.Core.Assets;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Math;
+using Lumora.Core.Phos;
 
 namespace Lumora.Core.Components;
 
@@ -127,6 +129,106 @@ public static class SlotBoundsHelper
         bounds = default;
         return false;
     }
+
+    // EXACT GEOMETRY
+
+    // Every vertex of every enabled mesh renderer at and under the slot, carried into space's local frame,
+    // skinned meshes at their bind pose. The renderer bounds above are boxes around boxes, and those grow with
+    // every rotation between a mesh and the space they are measured in; fitting a collider wants the geometry
+    // itself. A switched-off child does not count, the same as the renderer walk. -xlinka
+    public static void ForEachGeometryPoint(Slot slot, Slot space, Action<float3> visit)
+    {
+        if (slot == null || slot.IsDestroyed || space == null || space.IsDestroyed)
+            return;
+        VisitGeometry(slot, space, visit, isRoot: true);
+    }
+
+    public static bool TryComputeGeometryBounds(Slot slot, Slot space, out BoundingBox bounds)
+    {
+        var box = BoundingBox.Empty;
+        ForEachGeometryPoint(slot, space, point => box.Encapsulate(point));
+        bounds = box;
+        return IsValid(box);
+    }
+
+    // The sphere around the geometry from the middle of its box: every vertex inside, no further out than
+    // the farthest one.
+    public static bool TryFitSphere(Slot slot, out float3 centre, out float radius)
+    {
+        radius = 0f;
+        if (!TryComputeGeometryBounds(slot, slot, out var bounds))
+        {
+            centre = float3.Zero;
+            return false;
+        }
+        var middle = bounds.Center;
+        float farthest = 0f;
+        ForEachGeometryPoint(slot, slot, point => farthest = MathF.Max(farthest, (point - middle).LengthSquared));
+        centre = middle;
+        radius = MathF.Sqrt(farthest);
+        return radius > 0f;
+    }
+
+    // An upright cylinder around the geometry along the slot's Y axis: the box's middle, the farthest vertex
+    // from that axis for the radius, the box's height for the height.
+    public static bool TryFitUpright(Slot slot, out float3 centre, out float radius, out float height)
+    {
+        radius = 0f;
+        height = 0f;
+        if (!TryComputeGeometryBounds(slot, slot, out var bounds))
+        {
+            centre = float3.Zero;
+            return false;
+        }
+        var middle = bounds.Center;
+        float farthest = 0f;
+        ForEachGeometryPoint(slot, slot, point =>
+        {
+            float dx = point.x - middle.x, dz = point.z - middle.z;
+            farthest = MathF.Max(farthest, dx * dx + dz * dz);
+        });
+        centre = middle;
+        radius = MathF.Sqrt(farthest);
+        height = bounds.Size.y;
+        return radius > 0f || height > 0f;
+    }
+
+    private static void VisitGeometry(Slot slot, Slot space, Action<float3> visit, bool isRoot)
+    {
+        if (slot.IsDestroyed || (!isRoot && !slot.ActiveSelf.Value))
+            return;
+
+        foreach (var component in slot.Components)
+        {
+            if (component.IsDestroyed || !component.Enabled.Value)
+                continue;
+            var mesh = GeometryOf(component);
+            if (mesh == null || mesh.VertexCount == 0)
+                continue;
+            var positions = mesh.RawPositions;
+            int count = mesh.VertexCount;
+            if (ReferenceEquals(slot, space))
+            {
+                for (int i = 0; i < count; i++)
+                    visit(positions[i]);
+            }
+            else
+            {
+                var toSpace = slot.GetLocalToSpaceMatrix(space);
+                for (int i = 0; i < count; i++)
+                    visit(toSpace.MultiplyPoint(positions[i]));
+            }
+        }
+        foreach (var child in slot.Children)
+            VisitGeometry(child, space, visit, isRoot: false);
+    }
+
+    private static PhosMesh? GeometryOf(Component component) => component switch
+    {
+        MeshRenderer renderer => ConvexHullPointSource.GetMesh(renderer.Mesh.Target),
+        SkinnedMeshRenderer skinned => skinned.MeshAsset.Asset?.MeshData,
+        _ => null,
+    };
 
     // Transform all 8 corners rather than min/max alone, so rotated slots still produce a correct
     // box. A null space means world space; otherwise the corners land in that slot's local space.

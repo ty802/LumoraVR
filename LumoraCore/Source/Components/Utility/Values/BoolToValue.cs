@@ -5,6 +5,8 @@ using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core.Components.Utility;
 
+// Drives one of two values by a flag. Works when one of its own members changed, or somebody wrote over
+// the field it drives.
 [ComponentCategory("Utility/Values")]
 [DefaultUpdateOrder(-100)]
 [ComponentGenericTypes(GenericTypeGroup.Values)]
@@ -21,6 +23,8 @@ public class BoolToValue<T> : Component
 
     public static bool IsValidGenericType => DrivenValueTypes.IsPrimitive(typeof(T));
 
+    private ChangeFollow? _follow;
+
     public BoolToValue()
     {
         State = new Sync<bool>(this, false);
@@ -29,8 +33,28 @@ public class BoolToValue<T> : Component
         Target = new FieldDrive<T>(this) { LocalValueOnly = true };
     }
 
-    public override void OnUpdate(float delta)
+    public override void OnDestroy()
     {
-        Target.SetValue(State.Value ? TrueValue.Value : FalseValue.Value);
+        _follow?.Clear();
+        base.OnDestroy();
+    }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        var follow = _follow ??= new ChangeFollow(this);
+        follow.Begin();
+        follow.Add(Target.Target);
+        follow.End();
+
+        follow.BeginQuiet();
+        try
+        {
+            Target.SetValue(State.Value ? TrueValue.Value : FalseValue.Value);
+        }
+        finally
+        {
+            follow.EndQuiet();
+        }
     }
 }

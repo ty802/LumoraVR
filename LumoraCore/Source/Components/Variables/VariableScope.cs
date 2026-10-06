@@ -35,6 +35,22 @@ public class VariableScope : Component, ICustomInspectorUI
     {
         ScopeName = new Sync<string>(this, "");
         DirectBindingOnly = new Sync<bool>(this, false);
+        // A lookup reads the flag as it is, not as last applied, so it moves the epoch at once.
+        DirectBindingOnly.OnChanged += _ => ScopesMoved();
+    }
+
+    // Moves whenever a scope comes, goes, takes another name or changes its binding rule anywhere: what a
+    // cached scope lookup checks, with the slot hierarchy's own, before it trusts what it found.
+    private static int s_scopeEpoch;
+
+    internal static int ScopeEpoch => System.Threading.Volatile.Read(ref s_scopeEpoch);
+
+    private static void ScopesMoved() => System.Threading.Interlocked.Increment(ref s_scopeEpoch);
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        ScopesMoved();
     }
 
     // Null when ScopeName holds characters a variable path could never spell, so a bad name binds
@@ -90,6 +106,7 @@ public class VariableScope : Component, ICustomInspectorUI
 
     public override void OnDestroy()
     {
+        ScopesMoved();
         foreach (var manager in _managers.Values)
             manager.DetachAll();
         _managers.Clear();
@@ -194,6 +211,7 @@ public class VariableScope : Component, ICustomInspectorUI
         _activeName = processed;
         _appliedDirectOnly = directOnly;
         _stateApplied = true;
+        ScopesMoved();
         Touch();
         MarkSubtreeDirty();
     }

@@ -5,7 +5,9 @@ using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core.Components.Utility;
 
-// The reference-typed half of the pair, for fanning one world element out to many reference fields.
+// The reference-typed half of the pair, for fanning one world element out to many reference fields. Pushes
+// when something it reads changed: the reference, a drive in the list, or somebody writing over a reference
+// it drives.
 [ComponentCategory("Utility/Values")]
 [DefaultUpdateOrder(-100)]
 [ComponentGenericTypes(GenericTypeGroup.WorldElements, typeof(Component))]
@@ -14,6 +16,8 @@ public class ReferenceMultiDriver<T> : Component where T : class, IWorldElement
     public readonly SyncRef<T> Reference;
 
     public readonly SyncList<DriveRef<T>> Drives;
+
+    private ChangeFollow? _follow;
 
     public ReferenceMultiDriver()
     {
@@ -28,20 +32,42 @@ public class ReferenceMultiDriver<T> : Component where T : class, IWorldElement
         return drive;
     }
 
-    public override void OnUpdate(float delta)
+    public override void OnDestroy()
     {
+        _follow?.Clear();
+        base.OnDestroy();
+    }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        var follow = _follow ??= new ChangeFollow(this);
         int count = Drives.Count;
+        follow.Begin();
+        follow.AddRef(Reference);
+        follow.AddList(Drives);
+        for (int i = 0; i < count; i++)
+            follow.Add(Drives[i]?.Target);
+        follow.End();
         if (count == 0)
             return;
 
         var value = Reference.Target;
-        for (int i = 0; i < count; i++)
+        follow.BeginQuiet();
+        try
         {
-            var drive = Drives[i];
-            if (drive == null || ReferenceEquals(drive.Target, Reference))
-                continue;
-            drive.LocalValueOnly = true;
-            drive.SetValue(value);
+            for (int i = 0; i < count; i++)
+            {
+                var drive = Drives[i];
+                if (drive == null || ReferenceEquals(drive.Target, Reference))
+                    continue;
+                drive.LocalValueOnly = true;
+                drive.SetValue(value);
+            }
+        }
+        finally
+        {
+            follow.EndQuiet();
         }
     }
 }

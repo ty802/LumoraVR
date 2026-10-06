@@ -62,6 +62,18 @@ public class FaceLocalUser : Component
         // or the rotation itself since the last write. A standing viewer then costs a few compares per
         // plate rather than the whole facing solve. -xlinka
         var viewPoint = cache.Point;
+        // On your own body it faces where you face, a metre ahead of your eyes: aimed at your head from just
+        // above it, the slightest nod swung it round, and a mirror or a camera in front of you showed it
+        // spinning. Turned forward, they read it the right way round. -xlinka
+        // Something held is in front of you, not on you, so it turns to your eyes like anything else.
+        if (slot.ActiveUserRoot is { IsLocalUserRoot: true } own && !UserInputState.FocusedExternalCameraActive
+            && own.HeadSlot is { IsDestroyed: false } head && slot.GetComponentInParents<Interaction.Grabber>() == null)
+        {
+            var ahead = head.GlobalRotation * new float3(0f, 0f, -1f);
+            ahead.y = 0f;
+            if (ahead.LengthSquared > 1e-6f)
+                viewPoint = head.GlobalPosition + ahead.Normalized * own.GlobalScale;
+        }
         var position = slot.GlobalPosition;
         var parentRotation = parent.GlobalRotation;
         var current = slot.LocalRotation.Value;

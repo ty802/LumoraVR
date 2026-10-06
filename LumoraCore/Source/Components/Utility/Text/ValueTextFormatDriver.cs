@@ -10,9 +10,10 @@ namespace Lumora.Core.Components.Utility;
 
 // Formats one value into a text field.
 //
-// The formatting only runs when the value or the format string actually moved. That guard is the whole
-// point: a text field is a string, so an unguarded driver would allocate a new one every frame for
-// every counter in the world, and the mesh behind it would re-tessellate on each one. -xlinka
+// Works only when something it reads changed: its own members, the source field, or somebody writing over
+// the text it drives. A world with a thousand of these paid a thousand calls a frame to find nothing had
+// moved. The formatting still runs only when the value or the format string moved, so a counter does not
+// allocate a new string and re-tessellate its mesh for nothing. -xlinka
 [ComponentCategory("Utility/Text")]
 [DefaultUpdateOrder(-100)]
 [ComponentGenericTypes(GenericTypeGroup.Values)]
@@ -34,6 +35,7 @@ public class ValueTextFormatDriver<T> : Component
     private string? _lastFormat;
     private string? _formatted;
     private bool _hasFormatted;
+    private ChangeFollow? _follow;
 
     public ValueTextFormatDriver()
     {
@@ -42,8 +44,21 @@ public class ValueTextFormatDriver<T> : Component
         Text = new FieldDrive<string>(this) { LocalValueOnly = true };
     }
 
-    public override void OnUpdate(float delta)
+    public override void OnDestroy()
     {
+        _follow?.Clear();
+        base.OnDestroy();
+    }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        var follow = _follow ??= new ChangeFollow(this);
+        follow.Begin();
+        follow.AddRef(Source);
+        follow.Add(Text.Target);
+        follow.End();
+
         if (!Text.IsLinkValid)
             return;
 
@@ -65,7 +80,15 @@ public class ValueTextFormatDriver<T> : Component
             _hasFormatted = true;
         }
 
-        Text.SetValue(_formatted!);
+        follow.BeginQuiet();
+        try
+        {
+            Text.SetValue(_formatted!);
+        }
+        finally
+        {
+            follow.EndQuiet();
+        }
     }
 
     private static string? Render(string? format, T value)

@@ -80,7 +80,7 @@ public static class MagnetHelper
         for (int i = 0; i < sockets.Count; i++)
         {
             var socket = sockets[i];
-            if (autoAttachOnly && !socket.AutoAttach.Value)
+            if ((autoAttachOnly && !socket.AutoAttach.Value) || socket.ListedOnly.Value)
                 continue;
             if (socket.CanAttach(magnet, in worldPoint, in worldRotation))
                 results.Add(socket);

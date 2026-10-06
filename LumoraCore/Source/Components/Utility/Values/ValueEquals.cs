@@ -5,6 +5,8 @@ using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core.Components.Utility;
 
+// Drives true while the source equals the reference. Works when something it reads changed: its own
+// members, the source field, or somebody writing over the flag it drives.
 [ComponentCategory("Utility/Values")]
 [DefaultUpdateOrder(-100)]
 [ComponentGenericTypes(GenericTypeGroup.Values)]
@@ -22,6 +24,8 @@ public class ValueEquals<T> : Component
 
     public static bool IsValidGenericType => DrivenValueTypes.IsPrimitive(typeof(T));
 
+    private ChangeFollow? _follow;
+
     public ValueEquals()
     {
         Source = new SyncRef<IField<T>>(this);
@@ -30,13 +34,34 @@ public class ValueEquals<T> : Component
         Target = new FieldDrive<bool>(this) { LocalValueOnly = true };
     }
 
-    public override void OnUpdate(float delta)
+    public override void OnDestroy()
     {
+        _follow?.Clear();
+        base.OnDestroy();
+    }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        var follow = _follow ??= new ChangeFollow(this);
         var source = Source.Target;
+        follow.Begin();
+        follow.AddRef(Source);
+        follow.Add(Target.Target);
+        follow.End();
+
         var value = source != null ? source.Value : SyncCoder.GetDefault<T>();
         // Same comparison the sync layer uses to decide a field changed, so "equal" here means exactly
         // what "no delta was sent" means.
         bool equal = SyncCoder.Equals(value, Reference.Value);
-        Target.SetValue(Invert.Value ? !equal : equal);
+        follow.BeginQuiet();
+        try
+        {
+            Target.SetValue(Invert.Value ? !equal : equal);
+        }
+        finally
+        {
+            follow.EndQuiet();
+        }
     }
 }

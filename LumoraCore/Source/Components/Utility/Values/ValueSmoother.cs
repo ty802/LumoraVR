@@ -28,7 +28,11 @@ public class ValueSmoother<T> : Component
     // Higher is snappier, zero holds still.
     public readonly Sync<float> Speed;
 
-    public readonly FieldDrive<T> Value;
+    // A write that lands on the smoothed field becomes the new target instead, so whatever sets the field
+    // directly (a slider, a script, a grab) eases there rather than snapping and being pulled back.
+    public readonly Sync<bool> WriteBack;
+
+    public readonly HoldingFieldDrive<T> Value;
 
     public static bool IsValidGenericType => DrivenValueTypes.SupportsBlend(typeof(T));
 
@@ -36,7 +40,10 @@ public class ValueSmoother<T> : Component
     {
         TargetValue = new Sync<T>(this, SyncCoder.GetDefault<T>());
         Speed = new Sync<float>(this, 8f);
-        Value = new FieldDrive<T>(this) { LocalValueOnly = true };
+        WriteBack = new Sync<bool>(this, false);
+        Value = new HoldingFieldDrive<T>(this) { LocalValueOnly = true };
+        Value.Holds = () => WriteBack.Value;
+        Value.SetupValueSetHook((_, value) => TargetValue.Value = value);
     }
 
     public override void OnUpdate(float delta)

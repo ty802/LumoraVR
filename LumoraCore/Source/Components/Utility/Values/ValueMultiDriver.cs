@@ -12,7 +12,9 @@ namespace Lumora.Core.Components.Utility;
 //
 // Source wins over Value when it is set, so this covers both "hold a number here and push it to twenty
 // fields" and "follow that field and push it to twenty fields" without a second component in between.
-// -xlinka
+//
+// Pushes when something it reads changed: its own members, the source, a drive in the list, or somebody
+// writing over a field it drives. -xlinka
 [ComponentCategory("Utility/Values")]
 [DefaultUpdateOrder(-100)]
 [ComponentGenericTypes(GenericTypeGroup.Values)]
@@ -26,6 +28,8 @@ public class ValueMultiDriver<T> : Component
     public readonly SyncList<FieldDrive<T>> Drives;
 
     public static bool IsValidGenericType => DrivenValueTypes.IsPrimitive(typeof(T));
+
+    private ChangeFollow? _follow;
 
     public ValueMultiDriver()
     {
@@ -41,15 +45,42 @@ public class ValueMultiDriver<T> : Component
         return drive;
     }
 
-    public override void OnUpdate(float delta)
+    public override void OnDestroy()
     {
+        _follow?.Clear();
+        base.OnDestroy();
+    }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        var follow = _follow ??= new ChangeFollow(this);
         int count = Drives.Count;
+        follow.Begin();
+        follow.AddRef(Source);
+        follow.AddList(Drives);
+        for (int i = 0; i < count; i++)
+            follow.Add(Drives[i]?.Target);
+        follow.End();
         if (count == 0)
             return;
 
         var source = Source.Target;
         T value = source != null ? source.Value : Value.Value;
 
+        follow.BeginQuiet();
+        try
+        {
+            Push(source, value, count);
+        }
+        finally
+        {
+            follow.EndQuiet();
+        }
+    }
+
+    private void Push(IField<T>? source, T value, int count)
+    {
         for (int i = 0; i < count; i++)
         {
             var drive = Drives[i];

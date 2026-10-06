@@ -75,11 +75,19 @@ public static class Variables
         if (slot == null || slot.IsDestroyed)
             return null;
 
-        if (string.IsNullOrWhiteSpace(scopeName))
-            return slot.GetComponentInParents<VariableScope>(s => !s.DirectBindingOnly.Value);
-
-        return slot.GetComponentInParents<VariableScope>(
-            s => string.Equals(s.ActiveName, scopeName, StringComparison.Ordinal));
+        bool unnamed = string.IsNullOrWhiteSpace(scopeName);
+        for (var current = slot; current != null; current = current.Parent)
+        {
+            var components = current.Components;
+            for (int i = 0; i < components.Count; i++)
+            {
+                if (components[i] is not VariableScope scope)
+                    continue;
+                if (unnamed ? !scope.DirectBindingOnly.Value : string.Equals(scope.ActiveName, scopeName, StringComparison.Ordinal))
+                    return scope;
+            }
+        }
+        return null;
     }
 
     // False when nothing readable is bound.

@@ -46,4 +46,48 @@ public abstract class RangeMapBase : Component
             return Clamp.Value ? LuminaMath.Clamp(unit, 0f, 1f) : unit;
         }
     }
+
+    // The way back for a mapper whose output was written directly: the same position along the output range
+    // put into the source, so a grab or a slider on the output moves the input.
+    protected void WriteSource(float unit)
+    {
+        var source = Source.Target;
+        if (source == null || !source.CanWrite || !float.IsFinite(unit))
+            return;
+        if (Clamp.Value)
+            unit = LuminaMath.Clamp(unit, 0f, 1f);
+        source.Value = SourceMin.Value + (SourceMax.Value - SourceMin.Value) * unit;
+    }
+
+    // Where a value sits along the segment from min to max, 0 at min and 1 at max, measured on the segment's
+    // own direction so a value off the line still lands on the nearest point.
+    protected static float UnitAlong(float min, float max, float value)
+    {
+        float span = max - min;
+        return span == 0f ? 0f : (value - min) / span;
+    }
+
+    protected static float UnitAlong(in float2 min, in float2 max, in float2 value)
+    {
+        var span = max - min;
+        float length = span.x * span.x + span.y * span.y;
+        var at = value - min;
+        return length == 0f ? 0f : (at.x * span.x + at.y * span.y) / length;
+    }
+
+    protected static float UnitAlong(in float3 min, in float3 max, in float3 value)
+    {
+        var span = max - min;
+        float length = span.x * span.x + span.y * span.y + span.z * span.z;
+        var at = value - min;
+        return length == 0f ? 0f : (at.x * span.x + at.y * span.y + at.z * span.z) / length;
+    }
+
+    protected static float UnitAlong(in float4 min, in float4 max, in float4 value)
+    {
+        var span = max - min;
+        float length = span.x * span.x + span.y * span.y + span.z * span.z + span.w * span.w;
+        var at = value - min;
+        return length == 0f ? 0f : (at.x * span.x + at.y * span.y + at.z * span.z + at.w * span.w) / length;
+    }
 }

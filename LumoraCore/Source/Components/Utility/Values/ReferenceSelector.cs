@@ -3,6 +3,8 @@
 
 namespace Lumora.Core.Components.Utility;
 
+// Drives the reference the index picks. Works when something it reads changed: the index, an entry, or
+// somebody writing over the reference it drives.
 [ComponentCategory("Utility/Values")]
 [DefaultUpdateOrder(-100)]
 [ComponentGenericTypes(GenericTypeGroup.WorldElements, typeof(Component))]
@@ -14,6 +16,8 @@ public class ReferenceSelector<T> : Component where T : class, IWorldElement
     public readonly SyncRefList<T> References;
 
     public readonly DriveRef<T> Target;
+
+    private ChangeFollow? _follow;
 
     public ReferenceSelector()
     {
@@ -32,9 +36,33 @@ public class ReferenceSelector<T> : Component where T : class, IWorldElement
         }
     }
 
-    public override void OnUpdate(float delta)
+    public override void OnDestroy()
     {
-        if (References.Count > 0)
+        _follow?.Clear();
+        base.OnDestroy();
+    }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        var follow = _follow ??= new ChangeFollow(this);
+        follow.Begin();
+        follow.AddList(References);
+        for (int i = 0; i < References.Count; i++)
+            follow.AddRef(References.GetReference(i));
+        follow.Add(Target.Target);
+        follow.End();
+
+        if (References.Count == 0)
+            return;
+        follow.BeginQuiet();
+        try
+        {
             Target.SetValue(Selected);
+        }
+        finally
+        {
+            follow.EndQuiet();
+        }
     }
 }

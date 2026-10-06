@@ -60,6 +60,9 @@ public sealed class GradientStop<T> : SyncElement
 // LumoraMath's ColorGradient and FloatCurve are deliberately not used here: their keys are plain
 // arrays, not sync members, so a gradient built on them could not be edited in the inspector or
 // replicated stop by stop.
+//
+// Samples when something it reads changed: the progress, a stop, or somebody writing over the field it
+// drives.
 [ComponentCategory("Utility/Values")]
 [DefaultUpdateOrder(-100)]
 [ComponentGenericTypes(
@@ -80,6 +83,8 @@ public class ValueGradient<T> : Component
     public readonly FieldDrive<T> Target;
 
     public static bool IsValidGenericType => DrivenValueTypes.SupportsBlend(typeof(T));
+
+    private ChangeFollow? _follow;
 
     public ValueGradient()
     {
@@ -136,9 +141,37 @@ public class ValueGradient<T> : Component
         return blend(before.Value.Value, after.Value.Value, (progress - before.Position.Value) / span);
     }
 
-    public override void OnUpdate(float delta)
+    public override void OnDestroy()
     {
-        if (Stops.Count > 0)
+        _follow?.Clear();
+        base.OnDestroy();
+    }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        var follow = _follow ??= new ChangeFollow(this);
+        follow.Begin();
+        follow.AddList(Stops);
+        for (int i = 0; i < Stops.Count; i++)
+        {
+            var stop = Stops[i];
+            follow.Add(stop?.Position);
+            follow.Add(stop?.Value);
+        }
+        follow.Add(Target.Target);
+        follow.End();
+
+        if (Stops.Count == 0)
+            return;
+        follow.BeginQuiet();
+        try
+        {
             Target.SetValue(Sample(Progress.Value));
+        }
+        finally
+        {
+            follow.EndQuiet();
+        }
     }
 }

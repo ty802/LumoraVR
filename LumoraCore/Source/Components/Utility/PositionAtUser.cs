@@ -35,6 +35,8 @@ public class PositionAtUser : Component
     private readonly List<(SkinnedMeshRenderer Renderer, MeshDataAsset? Asset, int Bones, int Vertices)> _meshes = new();
     private readonly List<(Slot Bone, BoundingBox Bounds)> _headBounds = new();
     private readonly List<Slot> _headBones = new();
+    private readonly List<SkinnedMeshRenderer> _renderers = new();
+    private readonly List<(SkinnedMeshRenderer Renderer, MeshDataAsset? Asset, int Bones, int Vertices)> _current = new();
 
     public override void OnInit()
     {
@@ -56,11 +58,13 @@ public class PositionAtUser : Component
         if (changed || now >= _nextMeshCheck)
         {
             _nextMeshCheck = now + 1;
-            var meshes = avatar?.GetComponentsInChildren<SkinnedMeshRenderer>();
-            var current = new List<(SkinnedMeshRenderer Renderer, MeshDataAsset? Asset, int Bones, int Vertices)>();
-            if (meshes != null)
-                foreach (var renderer in meshes)
-                    current.Add((renderer, renderer.MeshAsset.Asset, renderer.Bones.Count, renderer.MeshAsset.Asset?.VertexCount ?? 0));
+            _renderers.Clear();
+            avatar?.GetComponentsInChildren(_renderers);
+            var current = _current;
+            current.Clear();
+            foreach (var renderer in _renderers)
+                current.Add((renderer, renderer.MeshAsset.Asset, renderer.Bones.Count, renderer.MeshAsset.Asset?.VertexCount ?? 0));
+            _renderers.Clear();
             if (current.Count != _meshes.Count)
                 changed = true;
             for (int i = 0; !changed && i < current.Count; i++)
@@ -84,15 +88,25 @@ public class PositionAtUser : Component
             if (entry.Bone.IsDestroyed || !entry.Bone.IsActive)
                 continue;
             var bounds = entry.Bounds;
+            var toWorld = entry.Bone.LocalToWorld;
             for (int i = 0; i < 8; i++)
             {
                 var corner = new float3((i & 1) == 0 ? bounds.Min.x : bounds.Max.x,
                     (i & 2) == 0 ? bounds.Min.y : bounds.Max.y,
                     (i & 4) == 0 ? bounds.Min.z : bounds.Max.z);
-                top = MathF.Max(top, entry.Bone.LocalPointToGlobal(corner).y);
+                top = MathF.Max(top, HeightOf(toWorld, corner));
             }
         }
         return top;
+    }
+
+    // The height a point is carried to, worked out the way the full transform works out its y and nothing
+    // else: the same sums in the same order, over the same w.
+    private static float HeightOf(in float4x4 toWorld, in float3 point)
+    {
+        float y = toWorld.c0.y * point.x + toWorld.c1.y * point.y + toWorld.c2.y * point.z + toWorld.c3.y * 1f;
+        float w = toWorld.c0.w * point.x + toWorld.c1.w * point.y + toWorld.c2.w * point.z + toWorld.c3.w * 1f;
+        return y / w;
     }
 
     private void MeasureHead(Slot head)

@@ -15,7 +15,9 @@ namespace Lumora.Core.Components.Magnets;
 // The whole decision runs on the ONE peer whose hand let go, and only the outcome replicates: the
 // reparent, the socket's occupancy, and the final pose. Every peer running the search would have
 // them all racing to claim the same socket over a distance test that nobody agrees on to the
-// millimetre. -xlinka
+// millimetre. That peer's hand is gone by the time the glide lands, so the magnet claims the placing on
+// the grabbable during the release (Grabbable.BeginPlacing) and gives it up once the object is down;
+// until then the gate still lets the releasing user write where it goes. -xlinka
 [ComponentCategory("Interaction/Magnets")]
 public class Magnet : Component, ICustomInspectorUI
 {
@@ -24,6 +26,10 @@ public class Magnet : Component, ICustomInspectorUI
 
     // Measure from the middle of the object's visual bounds instead of its slot origin.
     public readonly Sync<bool> UseBoundsCenter;
+
+    // With UseBoundsCenter, whether that middle is also what lands on the socket. Off, the search runs
+    // from the middle and the slot origin (plus SnapPoint) lands.
+    public readonly Sync<bool> BoundsCenterLands;
 
     // Free-form labels a socket's tag whitelist can ask for.
     public readonly SyncFieldList<string> Tags;
@@ -67,6 +73,12 @@ public class Magnet : Component, ICustomInspectorUI
     private floatQ _settleStartRotation;
     private float3 _settleEndPosition;
     private floatQ _settleEndRotation;
+    private bool _settleScale;
+    private float3 _settleStartScale;
+    private float3 _settleEndScale;
+
+    // Holding the grabbable's placing claim from the release until the object is down.
+    private bool _placing;
 
     private MagnetPlacementUndo? _carryUndo;
     private float _autoAttachTimer;
@@ -78,6 +90,7 @@ public class Magnet : Component, ICustomInspectorUI
     {
         Radius = new Sync<float>(this, 0.05f);
         UseBoundsCenter = new Sync<bool>(this, false);
+        BoundsCenterLands = new Sync<bool>(this, true);
         Tags = new SyncFieldList<string>(this);
         SocketWhitelist = new SyncRefList<MagnetSocket>(this);
         SnapPoint = new Sync<float3>(this, float3.Zero);
@@ -103,6 +116,9 @@ public class Magnet : Component, ICustomInspectorUI
             return slot.GlobalPointToLocal(bounds.Center) + SnapPoint.Value;
         }
     }
+
+    // The point that ends up on a socket's origin, in local space.
+    public float3 LocalLandingPoint => UseBoundsCenter.Value && !BoundsCenterLands.Value ? SnapPoint.Value : LocalSnapPoint;
 
     public float3 WorldSnapPoint
     {
@@ -147,6 +163,7 @@ public class Magnet : Component, ICustomInspectorUI
     public override void OnDestroy()
     {
         FinalizeInterruptedSettle();
+        EndPlacingClaim();
         UnhookCarrier();
         _carryUndo = null;
         base.OnDestroy();
@@ -173,17 +190,28 @@ public class Magnet : Component, ICustomInspectorUI
         {
             _resolvePending = false;
             ResolvePlacement();
-            return;
         }
-
-        if (_settling)
+        else if (_settling)
         {
             StepSettle(delta);
-            return;
+        }
+        else if (_carriedLocally)
+        {
+            PollAutoAttach(delta);
         }
 
-        if (_carriedLocally)
-            PollAutoAttach(delta);
+        // Down, or never going anywhere: the claim ends in the same update as the last write it covered.
+        if (_placing && !_resolvePending && !_settling)
+            EndPlacingClaim();
+    }
+
+    private void EndPlacingClaim()
+    {
+        if (!_placing)
+            return;
+        _placing = false;
+        if (_grabbable != null && !_grabbable.IsDestroyed)
+            _grabbable.EndPlacing();
     }
 
     // CARRIER BINDING
@@ -246,6 +274,7 @@ public class Magnet : Component, ICustomInspectorUI
         _carriedLocally = true;
         _settling = false;
         _resolvePending = false;
+        _placing = false;
         _autoAttachTimer = 0f;
 
         // The grab already reparented us under the hand with the world pose preserved, so the
@@ -285,6 +314,8 @@ public class Magnet : Component, ICustomInspectorUI
         var rotation = reference.GlobalRotation.Inverse * slot.GlobalRotation;
         var scale = reference.GlobalScaleToLocal(slot.GlobalScale);
         _carryUndo = MagnetPlacementUndo.Begin(this, reference, in position, in rotation, in scale, socket, UndoLocale.Move);
+        if (_carryUndo != null && ReferenceEquals(carrier.Slot, slot))
+            carrier.SuppressMoveUndo();
     }
 
     // RELEASE
@@ -299,6 +330,8 @@ public class Magnet : Component, ICustomInspectorUI
         _releasePoint = WorldSnapPoint;
         _releaseRotation = slot.GlobalRotation;
         _releaseParent = slot.Parent;
+        if (!_placing && grabbable is Grabbable carrier)
+            _placing = carrier.BeginPlacing();
     }
 
     // The resolve deliberately waits a tick instead of running straight out of the release event.
@@ -369,8 +402,9 @@ public class Magnet : Component, ICustomInspectorUI
 
         slot.SetParent(socketSlot, preserveGlobalTransform: true);
         socket.Claim(this);
-        socket.ComputeItemPose(this, slot.LocalScale.Value, out var endPosition, out var endRotation);
-        BeginSettle(in endPosition, in endRotation, socket.SettleTime.Value);
+        bool resetScale = socket.ResetItemScale.Value;
+        socket.ComputeItemPose(this, resetScale ? float3.One : slot.LocalScale.Value, out var endPosition, out var endRotation);
+        BeginSettle(in endPosition, in endRotation, socket.SettleTime.Value, resetScale ? float3.One : null);
         FinishCarry(socket);
         return true;
     }
@@ -417,12 +451,15 @@ public class Magnet : Component, ICustomInspectorUI
     // length of the glide and then the settled pose, never the in-between frames. Writing the final
     // up front instead would not work: the delta encodes the field's value at flush time, so the
     // rewind that starts the glide would ship as the replicated answer. -xlinka
-    private void BeginSettle(in float3 endPosition, in floatQ endRotation, float duration)
+    private void BeginSettle(in float3 endPosition, in floatQ endRotation, float duration, float3? endScale = null)
     {
         var slot = Slot!;
         _settleEndPosition = endPosition;
         _settleEndRotation = endRotation;
         _settleParent = slot.Parent;
+        _settleScale = endScale.HasValue;
+        _settleEndScale = endScale ?? slot.LocalScale.Value;
+        _settleStartScale = slot.LocalScale.Value;
 
         if (duration <= 0f)
         {
@@ -461,6 +498,8 @@ public class Magnet : Component, ICustomInspectorUI
         float eased = t * t * (3f - 2f * t);
         slot.LocalPosition.SetValueSilently(float3.Lerp(_settleStartPosition, _settleEndPosition, eased), change: true);
         slot.LocalRotation.SetValueSilently(floatQ.Slerp(_settleStartRotation, _settleEndRotation, eased), change: true);
+        if (_settleScale)
+            slot.LocalScale.SetValueSilently(float3.Lerp(_settleStartScale, _settleEndScale, eased), change: true);
     }
 
     private void WriteSettledPose()
@@ -470,6 +509,8 @@ public class Magnet : Component, ICustomInspectorUI
             return;
         slot.LocalPosition.Value = _settleEndPosition;
         slot.LocalRotation.Value = _settleEndRotation;
+        if (_settleScale)
+            slot.LocalScale.Value = _settleEndScale;
     }
 
     // AUTO-ATTACH

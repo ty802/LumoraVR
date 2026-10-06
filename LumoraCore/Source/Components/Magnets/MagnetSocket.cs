@@ -19,9 +19,12 @@ namespace Lumora.Core.Components.Magnets;
 // fields, so a purely stored occupancy would read "free" on the very socket that visibly holds
 // something and the next drop would stack a second item into it. Resolving through the children
 // when the ref is empty or stale costs a short scan and cannot disagree with what the world shows.
-// -xlinka
+//
+// Taken out and let go anywhere else, an item does not return under the socket: the socket refuses a
+// release's return to its own slot (IReleaseReturnBlock), so the item goes to the world root unless some
+// socket or surface takes it there. -xlinka
 [ComponentCategory("Interaction/Magnets")]
-public class MagnetSocket : Component, ICustomInspectorUI, IReparentBlock
+public class MagnetSocket : Component, ICustomInspectorUI, IReparentBlock, IReleaseReturnBlock
 {
     // How far an item's snap point may sit from this socket, in the socket's local scale.
     public readonly Sync<float> MaxDistance;
@@ -57,6 +60,12 @@ public class MagnetSocket : Component, ICustomInspectorUI, IReparentBlock
     // Keep the item's own up axis pointing at world up and only take yaw from this socket.
     public readonly Sync<bool> KeepItemUpright;
 
+    // The item settles at a local scale of one under this socket, whatever size it was carried at.
+    public readonly Sync<bool> ResetItemScale;
+
+    // Found only by magnets whose SocketWhitelist names it, never by the world scan.
+    public readonly Sync<bool> ListedOnly;
+
     private MagnetRegistry? _registry;
 
     public MagnetSocket()
@@ -72,7 +81,13 @@ public class MagnetSocket : Component, ICustomInspectorUI, IReparentBlock
         Attached = new SyncRef<Magnet>(this);
         UnparentOnDetach = new Sync<bool>(this, false);
         KeepItemUpright = new Sync<bool>(this, false);
+        ResetItemScale = new Sync<bool>(this, false);
+        ListedOnly = new Sync<bool>(this, false);
     }
+
+    bool IReleaseReturnBlock.BlocksReturn => true;
+
+    int IReleaseReturnBlock.ReturnBlockDepth => 0;
 
     // MaxDistance in world units.
     public float WorldMaxDistance => Slot != null ? Slot.LocalScaleToGlobal(System.Math.Max(0f, MaxDistance.Value)) : 0f;
@@ -186,12 +201,12 @@ public class MagnetSocket : Component, ICustomInspectorUI, IReparentBlock
     public float DistanceTo(in float3 worldPoint)
         => Slot == null ? float.MaxValue : (worldPoint - Slot.GlobalPosition).Length;
 
-    // Expressed in this socket's local space. The item's snap point lands exactly on the socket
+    // Expressed in this socket's local space. The item's landing point lands exactly on the socket
     // origin.
     public void ComputeItemPose(Magnet magnet, in float3 itemLocalScale, out float3 localPosition, out floatQ localRotation)
     {
         localRotation = ComputeItemRotation(magnet);
-        var offset = magnet.LocalSnapPoint * itemLocalScale;
+        var offset = magnet.LocalLandingPoint * itemLocalScale;
         localPosition = -(localRotation * offset);
     }
 

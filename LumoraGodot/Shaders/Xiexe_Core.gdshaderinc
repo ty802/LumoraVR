@@ -18,6 +18,8 @@ uniform bool use_main_texture = false;
 uniform vec2 main_texture_scale = vec2(1.0);
 uniform vec2 main_texture_offset = vec2(0.0);
 uniform bool use_vertex_colors = false;
+// Turns the albedo's hue round the colour wheel, in whole turns.
+uniform float hue_shift : hint_range(0.0, 1.0) = 0.0;
 // Pulls the albedo toward or away from its own luminance before anything is lit.
 uniform float saturation : hint_range(-1.0, 1.0) = 0.0;
 
@@ -102,6 +104,16 @@ void fragment() {
 	}
 	if (use_vertex_colors) {
 		base.rgb *= vertex_color;
+	}
+
+	// Hue as a turn about the grey axis: red goes to yellow, then green, as the shift grows. Greys stay
+	// put and brightness barely moves, which is what a hue slider is expected to do.
+	float hue_turn = fract(hue_shift);
+	if (hue_turn > 0.0005 && hue_turn < 0.9995) {
+		float angle = hue_turn * 6.28318530718;
+		vec3 axis = vec3(0.57735026919);
+		float ca = cos(angle);
+		base.rgb = max(base.rgb * ca + cross(axis, base.rgb) * sin(angle) + axis * dot(axis, base.rgb) * (1.0 - ca), vec3(0.0));
 	}
 
 	// Saturation around the surface's own luminance, before lighting - the original does this to the

@@ -14,6 +14,14 @@
 //
 // Godot's own PBR path has no coloured F0, so direct lighting runs through a light() of our own.
 // Ambient and reflections still go through Godot, fed the closest metallic-workflow equivalent. -xlinka
+//
+// The detail layer and the parallax are Unity's, the same pair the metallic material carries: a second
+// albedo and normal at their own tiling over the base, and a height map that leans the UV by the view
+// angle. A variant that defines DEPTH_OFFSET writes a biased depth, see DepthOffset.gdshaderinc. -xlinka
+
+#ifdef DEPTH_OFFSET
+#include "res://Shaders/DepthOffset.gdshaderinc"
+#endif
 
 // ---------------------------------------------------------------- albedo
 uniform vec4 albedo_color : source_color = vec4(1.0);
@@ -21,6 +29,9 @@ uniform sampler2D albedo_texture : source_color, filter_linear_mipmap_anisotropi
 uniform bool use_albedo_texture = false;
 uniform vec2 texture_scale = vec2(1.0);
 uniform vec2 texture_offset = vec2(0.0);
+uniform int albedo_uv : hint_enum("UV1", "UV2", "UV3", "UV4") = 0;
+uniform int emissive_uv : hint_enum("UV1", "UV2", "UV3", "UV4") = 0;
+#include "res://Shaders/MeshUV.gdshaderinc"
 
 // ---------------------------------------------------------------- specular / gloss
 // RGB is the reflectance colour at normal incidence, A is smoothness - Unity's _SpecGlossMap layout,
@@ -46,28 +57,89 @@ uniform bool use_emissive_map = false;
 uniform sampler2D occlusion_map : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool use_occlusion_map = false;
 
+// ---------------------------------------------------------------- detail
+// _DETAIL_MULX2 doubles the detail albedo so a neutral detail texture, mid grey, leaves the base alone.
+// Doubled in GAMMA: the sample here is already linear, where mid grey is 0.214, so the factor is Unity's
+// linear-space unity_ColorSpaceDouble, 2 raised to 2.2. A plain 2 would darken every detailed surface to
+// 43 percent.
+const float DETAIL_DOUBLE = 4.59479380;
+uniform sampler2D detail_albedo_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform bool use_detail_albedo_texture = false;
+uniform sampler2D detail_normal_map : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform bool use_detail_normal_map = false;
+uniform float detail_normal_scale : hint_range(0.0, 4.0) = 1.0;
+uniform vec2 detail_texture_scale = vec2(1.0);
+uniform vec2 detail_texture_offset = vec2(0.0);
+
+// ---------------------------------------------------------------- parallax
+// Unity clamps _Parallax to 0.005..0.08, a height in UV units; anything wider smears the surface into
+// streaks rather than giving it depth, so it is clamped here too. Height is read from GREEN.
+uniform sampler2D height_map : filter_linear_mipmap_anisotropic, repeat_enable;
+uniform bool use_height_map = false;
+uniform float height_scale : hint_range(0.005, 0.08) = 0.02;
+
 uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.5;
 // Set by the material hook from the BlendMode member. 0 Opaque, 1 Cutout, 2 Alpha, 3 Transparent,
 // 4 Additive, 5 Multiply. Only the cutout case changes anything here: blending itself is a compile-time
 // render_mode, so the rest is handled by which variant the hook loaded.
 uniform int blend_mode = 0;
 
-// The one thing Godot's light stage cannot carry for us: a per-channel F0.
-varying vec3 spec_f0;
+// Direct lighting and the spec_f0 varying it reads.
+#include "res://Shaders/PBS_Specular_Light.gdshaderinc"
+
+// Unity's UnpackScaleNormal: the map is tangent space, the scale leans only the XY.
+vec3 unpack_scale_normal(vec4 packed_normal, float scale) {
+	vec3 n = packed_normal.xyz * 2.0 - 1.0;
+	n.xy *= scale;
+	return n;
+}
+
+// Unity's BlendNormals, the whiteout blend: add the slopes, multiply the heights.
+vec3 blend_normals(vec3 n1, vec3 n2) {
+	return normalize(vec3(n1.xy + n2.xy, n1.z * n2.z));
+}
+
+// Unity's ParallaxOffset1Step. The +0.42 on z keeps the offset from exploding at grazing angles.
+vec2 parallax_offset(float h, float height, vec3 view_dir) {
+	h = h * height - height * 0.5;
+	vec3 v = normalize(view_dir);
+	v.z += 0.42;
+	return h * (v.xy / v.z);
+}
 
 void vertex() {
-	UV = UV * texture_scale + texture_offset;
+	lm_uv34 = CUSTOM1;
 }
 
 void fragment() {
+	// The base transform used to run per vertex. The detail layer needs the untransformed UV beside it,
+	// and an affine map comes out the same whether it is applied per vertex or per pixel.
+	vec2 base_uv = UV * texture_scale + texture_offset;
+	vec2 detail_uv = UV * detail_texture_scale + detail_texture_offset;
+	vec2 albedo_coords = mesh_uv(albedo_uv, UV, UV2, lm_uv34) * texture_scale + texture_offset;
+	vec2 emissive_coords = mesh_uv(emissive_uv, UV, UV2, lm_uv34) * texture_scale + texture_offset;
+
+	// Shifts BOTH uv sets, as Unity's Parallax() does, so the detail stays on the surface it details.
+	if (use_height_map) {
+		vec3 view_tangent = vec3(dot(VIEW, TANGENT), dot(VIEW, BINORMAL), dot(VIEW, NORMAL));
+		vec2 offset = parallax_offset(texture(height_map, base_uv).g, clamp(height_scale, 0.005, 0.08), view_tangent);
+		base_uv += offset;
+		detail_uv += offset;
+		albedo_coords += offset;
+		emissive_coords += offset;
+	}
+
 	vec4 base = albedo_color;
 	if (use_albedo_texture) {
-		base *= texture(albedo_texture, UV);
+		base *= texture(albedo_texture, albedo_coords);
+	}
+	if (use_detail_albedo_texture) {
+		base.rgb *= texture(detail_albedo_texture, detail_uv).rgb * DETAIL_DOUBLE;
 	}
 
 	vec4 spec = specular_color;
 	if (use_specular_map) {
-		spec = texture(specular_map, UV);
+		spec = texture(specular_map, base_uv);
 	}
 	float gloss = spec.a;
 
@@ -93,59 +165,28 @@ void fragment() {
 
 	vec3 emission = emissive_color.rgb * emissive_color.a;
 	if (use_emissive_map) {
-		emission *= texture(emissive_map, UV).rgb;
+		emission *= texture(emissive_map, emissive_coords).rgb;
 	}
 	EMISSION = emission;
 
 	if (use_occlusion_map) {
-		AO = texture(occlusion_map, UV).r;
+		AO = texture(occlusion_map, base_uv).r;
 		AO_LIGHT_AFFECT = 1.0;
 	}
 
-	if (use_normal_map) {
-		vec3 tn = texture(normal_map, UV).xyz * 2.0 - 1.0;
-		tn.xy *= normal_scale;
+	// A detail normal still applies with no base normal map: Unity blends it over a flat one.
+	if (use_normal_map || use_detail_normal_map) {
+		vec3 tn = vec3(0.0, 0.0, 1.0);
+		if (use_normal_map) {
+			tn = unpack_scale_normal(texture(normal_map, base_uv), normal_scale);
+		}
+		if (use_detail_normal_map) {
+			tn = blend_normals(tn, unpack_scale_normal(texture(detail_normal_map, detail_uv), detail_normal_scale));
+		}
 		NORMAL = normalize(TANGENT * tn.x + BINORMAL * tn.y + NORMAL * tn.z);
 	}
-}
 
-// Direct lighting. Cook-Torrance with a GGX distribution, Unity's Smith-joint visibility approximation
-// and a Schlick fresnel that runs on the COLOURED F0 - which is the whole reason this cannot be left to
-// Godot's built-in light path. -xlinka
-void light() {
-	vec3 N = normalize(NORMAL);
-	vec3 V = normalize(VIEW);
-	vec3 L = normalize(LIGHT);
-	vec3 H = normalize(L + V);
-
-	// One branch around the whole body rather than an early out: 'return' is rejected outright in a
-	// light() processor.
-	float n_dot_l = clamp(dot(N, L), 0.0, 1.0);
-	if (n_dot_l > 0.0) {
-		float n_dot_v = abs(dot(N, V)) + 1e-5;
-		float n_dot_h = clamp(dot(N, H), 0.0, 1.0);
-		float l_dot_h = clamp(dot(L, H), 0.0, 1.0);
-
-		// Clamped away from a perfect mirror: at zero roughness the lobe collapses to a subpixel spike
-		// that aliases into fireflies on anything animated.
-		float rough = clamp(ROUGHNESS, 0.045, 1.0);
-		float a = rough * rough;
-		float a2 = a * a;
-
-		float denom = (n_dot_h * a2 - n_dot_h) * n_dot_h + 1.0;
-		float d_term = a2 / max(PI * denom * denom, 1e-7);
-
-		float lambda_v = n_dot_l * (n_dot_v * (1.0 - a) + a);
-		float lambda_l = n_dot_v * (n_dot_l * (1.0 - a) + a);
-		float vis = 0.5 / max(lambda_v + lambda_l, 1e-5);
-
-		vec3 fresnel = spec_f0 + (vec3(1.0) - spec_f0) * pow(1.0 - l_dot_h, 5.0);
-
-		vec3 radiance = LIGHT_COLOR * ATTENUATION * n_dot_l;
-
-		// DIFFUSE_LIGHT is multiplied by ALBEDO when the pass resolves, so the lambert 1/PI goes here
-		// and the albedo does not.
-		DIFFUSE_LIGHT += radiance / PI;
-		SPECULAR_LIGHT += d_term * vis * fresnel * radiance;
-	}
+#ifdef DEPTH_OFFSET
+	DEPTH = offset_depth(FRAGCOORD.z);
+#endif
 }

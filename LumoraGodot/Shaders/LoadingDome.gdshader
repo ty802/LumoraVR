@@ -13,6 +13,7 @@ uniform vec4 bottom_color : source_color = vec4(0.02, 0.015, 0.05, 1.0);
 uniform vec4 accent_color : source_color = vec4(0.47, 0.37, 0.94, 1.0);
 uniform float horizon_width : hint_range(0.02, 0.6) = 0.2;
 uniform float pulse_speed : hint_range(0.0, 2.0) = 0.3;
+uniform float opacity : hint_range(0.0, 1.0) = 1.0;
 
 varying vec3 v_dir;
 
@@ -41,5 +42,5 @@ void fragment() {
 	col += accent_color.rgb * band * (0.08 + 0.08 * pulse + 0.05 * drift);
 
 	ALBEDO = col;
-	ALPHA = 1.0;
+	ALPHA = opacity;
 }

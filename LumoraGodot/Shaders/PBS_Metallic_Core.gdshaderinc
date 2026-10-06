@@ -22,6 +22,9 @@ uniform sampler2D albedo_texture : source_color, filter_linear_mipmap_anisotropi
 uniform bool use_albedo_texture = false;
 uniform vec2 texture_scale = vec2(1.0);
 uniform vec2 texture_offset = vec2(0.0);
+uniform int albedo_uv : hint_enum("UV1", "UV2", "UV3", "UV4") = 0;
+uniform int emissive_uv : hint_enum("UV1", "UV2", "UV3", "UV4") = 0;
+#include "res://Shaders/MeshUV.gdshaderinc"
 
 // ---------------------------------------------------------------- metallic / gloss
 // _MetallicGlossMap is R = metallic, A = smoothness. NOT the glTF packing, where roughness sits in
@@ -35,6 +38,8 @@ uniform float metallic : hint_range(0.0, 1.0) = 0.0;
 uniform float smoothness : hint_range(0.0, 1.0) = 0.25;
 uniform sampler2D metallic_map : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool use_metallic_map = false;
+// Scales the map by the sliders instead of letting it replace them.
+uniform bool sliders_scale_map = false;
 
 // ---------------------------------------------------------------- normal
 uniform sampler2D normal_map : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -61,8 +66,8 @@ uniform sampler2D emissive_map : source_color, filter_linear_mipmap_anisotropic,
 uniform bool use_emissive_map = false;
 
 // ---------------------------------------------------------------- detail
-// _DETAIL_MULX2: the detail albedo is a 2x multiply, so a neutral detail texture is mid GREY, not white.
-// Sampling one and multiplying straight would halve the brightness of every detailed surface.
+// _DETAIL_MULX2: the detail albedo is a 2x multiply in gamma space, so a neutral detail texture is mid GREY,
+// not white. The texels arrive linear here, where that grey is 0.2159, so the factor is 4.5948, not 2.
 uniform sampler2D detail_albedo_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool use_detail_albedo_texture = false;
 uniform sampler2D detail_normal_map : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -100,9 +105,15 @@ vec2 parallax_offset(float h, float height, vec3 view_dir) {
 	return h * (v.xy / v.z);
 }
 
+void vertex() {
+	lm_uv34 = CUSTOM1;
+}
+
 void fragment() {
 	vec2 base_uv = UV * texture_scale + texture_offset;
 	vec2 detail_uv = UV * detail_texture_scale + detail_texture_offset;
+	vec2 albedo_coords = mesh_uv(albedo_uv, UV, UV2, lm_uv34) * texture_scale + texture_offset;
+	vec2 emissive_coords = mesh_uv(emissive_uv, UV, UV2, lm_uv34) * texture_scale + texture_offset;
 
 	// Parallax shifts BOTH uv sets, matching Unity's Parallax() which offsets texcoords.xy and .zw
 	// together. Offsetting only the base would slide the detail layer off the surface it details.
@@ -114,15 +125,17 @@ void fragment() {
 			view_tangent);
 		base_uv += offset;
 		detail_uv += offset;
+		albedo_coords += offset;
+		emissive_coords += offset;
 	}
 
 	vec4 base = albedo_color;
 	if (use_albedo_texture) {
-		base *= texture(albedo_texture, base_uv);
+		base *= texture(albedo_texture, albedo_coords);
 	}
 
 	if (use_detail_albedo_texture) {
-		base.rgb *= texture(detail_albedo_texture, detail_uv).rgb * 2.0;
+		base.rgb *= texture(detail_albedo_texture, detail_uv).rgb * 4.5947938;
 	}
 
 	if (blend_mode == 1 && base.a < alpha_cutoff) {
@@ -133,8 +146,8 @@ void fragment() {
 	float gloss = smoothness;
 	if (use_metallic_map) {
 		vec4 mg = texture(metallic_map, base_uv);
-		metal = mg.r;
-		gloss = mg.a;
+		metal = sliders_scale_map ? mg.r * metallic : mg.r;
+		gloss = sliders_scale_map ? mg.a * smoothness : mg.a;
 	}
 
 	ALBEDO = base.rgb;
@@ -155,7 +168,7 @@ void fragment() {
 
 	vec3 emission = emissive_color.rgb * emissive_color.a;
 	if (use_emissive_map) {
-		emission *= texture(emissive_map, base_uv).rgb;
+		emission *= texture(emissive_map, emissive_coords).rgb;
 	}
 	EMISSION = emission;
 

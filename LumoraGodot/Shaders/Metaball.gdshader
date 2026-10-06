@@ -30,7 +30,7 @@ uniform float line_strength : hint_range(0.0, 1.0) = 0.34;
 varying vec3 world_pos;
 
 void vertex() {
-    world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 // The ripple rings under each bubble used to be evaluated here: a loop over every bubble in every
@@ -40,40 +40,40 @@ void vertex() {
 // can keep writing them. - xlinka
 
 float mesh_edge(vec2 local_p) {
-    vec2 normalized = local_p / max(volume_extents, vec2(0.001));
-    float radial = length(normalized);
-    float edge = smoothstep(0.955, 0.988, radial) * (1.0 - smoothstep(1.0, 1.025, radial));
-    return edge;
+	vec2 normalized = local_p / max(volume_extents, vec2(0.001));
+	float radial = length(normalized);
+	float edge = smoothstep(0.955, 0.988, radial) * (1.0 - smoothstep(1.0, 1.025, radial));
+	return edge;
 }
 
 float wave_lines(vec2 p, float t) {
-    float a = sin(p.x * 0.42 + sin(p.y * 0.18 + t * 0.38) * 1.35 + t * 0.36);
-    float b = sin((p.x * 0.24 + p.y * 0.36) - t * 0.28 + sin(p.x * 0.10) * 0.9);
-    float aa = max(fwidth(a) + fwidth(b), 0.012);
-    float line_a = 1.0 - smoothstep(0.018, 0.018 + aa * 1.5, abs(a));
-    float line_b = 1.0 - smoothstep(0.016, 0.016 + aa * 1.5, abs(b));
-    float fade = 0.55 + 0.45 * sin(t * 0.22 + p.x * 0.035 + p.y * 0.025);
-    return clamp((line_a * 0.70 + line_b * 0.42) * fade, 0.0, 1.0);
+	float a = sin(p.x * 0.42 + sin(p.y * 0.18 + t * 0.38) * 1.35 + t * 0.36);
+	float b = sin((p.x * 0.24 + p.y * 0.36) - t * 0.28 + sin(p.x * 0.10) * 0.9);
+	float aa = max(fwidth(a) + fwidth(b), 0.012);
+	float line_a = 1.0 - smoothstep(0.018, 0.018 + aa * 1.5, abs(a));
+	float line_b = 1.0 - smoothstep(0.016, 0.016 + aa * 1.5, abs(b));
+	float fade = 0.55 + 0.45 * sin(t * 0.22 + p.x * 0.035 + p.y * 0.025);
+	return clamp((line_a * 0.70 + line_b * 0.42) * fade, 0.0, 1.0);
 }
 
 void fragment() {
-    vec3 floor_world = world_pos;
-    vec3 origin = MODEL_MATRIX[3].xyz + volume_offset;
-    float t = TIME * time_scale;
-    vec2 local_p = floor_world.xz - origin.xz;
+	vec3 floor_world = world_pos;
+	vec3 origin = MODEL_MATRIX[3].xyz + volume_offset;
+	float t = TIME * time_scale;
+	vec2 local_p = floor_world.xz - origin.xz;
 
-    float edge = mesh_edge(local_p);
-    float waves = wave_lines(floor_world.xz, t) * wave_strength;
-    float line_mask = clamp(edge * 1.15 + waves * 0.40, 0.0, 1.0);
-    float tint_mix = clamp(waves * 0.45, 0.0, 1.0);
+	float edge = mesh_edge(local_p);
+	float waves = wave_lines(floor_world.xz, t) * wave_strength;
+	float line_mask = clamp(edge * 1.15 + waves * 0.40, 0.0, 1.0);
+	float tint_mix = clamp(waves * 0.45, 0.0, 1.0);
 
-    vec3 final_rgb = mix(ripple_color.rgb, tint_b.rgb, tint_mix);
-    vec3 final_emission = final_rgb * (0.38 + line_mask * 1.10) * emission_strength * line_strength;
-    float alpha = clamp(line_mask * (0.50 + line_strength * 0.35), 0.0, 0.82) * alpha_scale;
+	vec3 final_rgb = mix(ripple_color.rgb, tint_b.rgb, tint_mix);
+	vec3 final_emission = final_rgb * (0.38 + line_mask * 1.10) * emission_strength * line_strength;
+	float alpha = clamp(line_mask * (0.50 + line_strength * 0.35), 0.0, 0.82) * alpha_scale;
 
-    ALBEDO = final_rgb;
-    EMISSION = final_emission;
-    ALPHA = alpha;
-    ROUGHNESS = 0.35;
-    METALLIC = 0.0;
+	ALBEDO = final_rgb;
+	EMISSION = final_emission;
+	ALPHA = alpha;
+	ROUGHNESS = 0.35;
+	METALLIC = 0.0;
 }

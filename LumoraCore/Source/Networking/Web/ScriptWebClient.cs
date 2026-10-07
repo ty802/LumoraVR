@@ -111,7 +111,7 @@ public sealed class ScriptWebClient
     // Why a host can never be reached from here, or null when it might be.
     internal string? Unreachable(string host) => RefuseLocal(host);
 
-    // The connect step every request takes, for a websocket's handshake: resolved here, public addresses only.
+    // The connect step every request takes, for a websocket's handshake: resolved here and filtered.
     internal ValueTask<Stream> ConnectFiltered(SocketsHttpConnectionContext context, CancellationToken token)
         => ConnectAsync(context, token);
 
@@ -183,6 +183,11 @@ public sealed class ScriptWebClient
             var local = RefuseLocal(host);
             if (local != null)
                 return ScriptWebResult.Failed(at, local);
+            // A public site may not send a request on into the local network: that is a site reaching the
+            // router behind whoever allowed it, with a prompt the person would read as harmless. A local
+            // service redirecting within the local network is fine. -xlinka
+            if (cameFrom != null && !WebAddressFilter.IsLocalHost(cameFrom) && WebAddressFilter.IsLocalHost(host))
+                return ScriptWebResult.Failed(at, $"A redirect from {cameFrom} into the local network was refused");
 
             string reason = cameFrom == null
                 ? "WebAccess.Reason.Request".AsLocale("A script wants to send a {0} request here.", method.ToString()).Resolve()
@@ -244,20 +249,18 @@ public sealed class ScriptWebClient
         }
     }
 
-    // An address written straight into the URL is checked before anyone is asked about it. The connect
-    // step would refuse it anyway, but a prompt for a host that can only ever fail helps nobody.
+    // An address written straight into the URL is checked before anyone is asked about it, so a prompt is
+    // never shown for one no socket can open. A local address or this machine goes to the prompt like any host.
     private string? RefuseLocal(string host)
     {
-        if (IPAddress.TryParse(host, out var literal))
-            return _allowAddress(literal) ? null : $"{host} is a local network address, which scripts cannot reach";
-        if (host == "localhost" || host.EndsWith(".localhost", StringComparison.Ordinal))
-        {
-            return _allowAddress(IPAddress.Loopback) || _allowAddress(IPAddress.IPv6Loopback)
-                ? null
-                : $"{host} is this machine, which scripts cannot reach";
-        }
+        if (IPAddress.TryParse(host, out var literal) && !Allowed(host, literal))
+            return $"{host} is not an address a request can be sent to";
         return null;
     }
+
+    // A public address always; a local one only for a host named as local (see WebAddressFilter).
+    private bool Allowed(string host, IPAddress address)
+        => _allowAddress(address) || (WebAddressFilter.IsLocalHost(host) && WebAddressFilter.IsReachable(address));
 
     // Resolves the host here rather than letting the socket layer do it, so the filter sees every
     // address before a connection is attempted, and tries the allowed ones in the order they came back.
@@ -268,9 +271,12 @@ public sealed class ScriptWebClient
         if (host.Length > 2 && host[0] == '[' && host[^1] == ']')
             host = host.Substring(1, host.Length - 2);
 
+        // Anything under .localhost is this machine by definition; not every resolver says so.
         IPAddress[] addresses = IPAddress.TryParse(host, out var literal)
             ? new[] { literal }
-            : await _resolve(host, token).ConfigureAwait(false);
+            : host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)
+                ? new[] { IPAddress.Loopback, IPAddress.IPv6Loopback }
+                : await _resolve(host, token).ConfigureAwait(false);
         if (addresses.Length == 0)
             throw new SocketException((int)SocketError.HostNotFound);
 
@@ -278,7 +284,7 @@ public sealed class ScriptWebClient
         bool anyAllowed = false;
         foreach (var candidate in addresses)
         {
-            if (!_allowAddress(candidate))
+            if (!Allowed(host, candidate))
                 continue;
             anyAllowed = true;
             var address = candidate.IsIPv4MappedToIPv6 ? candidate.MapToIPv4() : candidate;
@@ -298,7 +304,7 @@ public sealed class ScriptWebClient
         }
 
         if (!anyAllowed)
-            throw new WebAddressBlockedException($"{host} only leads to local network addresses, which scripts cannot reach");
+            throw new WebAddressBlockedException($"{host} leads to a local network address; name the address itself or a local name such as name.local to reach it");
         throw failure ?? new SocketException((int)SocketError.HostUnreachable);
     }
 

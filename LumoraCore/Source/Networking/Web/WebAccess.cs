@@ -23,12 +23,15 @@ namespace Lumora.Core.Networking.Web;
 //
 // A host nobody has decided yet goes to the user as a prompt. Asks for the same host share one prompt,
 // one prompt is on screen at a time, and a machine with nobody to ask (a server, a headless run) says
-// no without remembering it. Allow and Deny are kept in a small file in the data folder and edited from
-// Settings. A prompt that is dismissed or left alone for two minutes is not kept, so the next request
-// asks again. -xlinka
+// no without remembering it. A prompt that is dismissed or left alone for two minutes is not kept, so
+// the next request asks again.
+//
+// Allow and Deny live in the settings store, one key per site (WebAccess.Sites.<host>), edited from
+// Settings and following the account to every computer it signs in on. -xlinka
 public sealed class WebAccess
 {
-    public const string FileName = "web_access.json";
+    // Where decisions were kept before they moved into the settings store; read once and removed.
+    public const string LegacyFileName = "web_access.json";
 
     // Distinct hosts that may wait for an answer at once, the one on screen included. A new host past
     // this is refused on the spot, so a script cannot stack up a wall of prompts.
@@ -36,35 +39,53 @@ public sealed class WebAccess
 
     public static readonly TimeSpan PromptTimeout = TimeSpan.FromMinutes(2);
 
-    private const int FileVersion = 1;
     private const int MaxPromptText = 200;
 
     private static readonly Lazy<WebAccess> _shared = new(() =>
-        new WebAccess(PathResolver.Resolve(FileName), new WebAccessDashboardPrompter(), PromptTimeout));
+        new WebAccess(new WebAccessDashboardPrompter(), PromptTimeout, PathResolver.Resolve(LegacyFileName)));
 
     public static WebAccess Shared => _shared.Value;
 
     private readonly object _lock = new();
-    private readonly string _path;
     private readonly IWebAccessPrompter? _prompter;
     private readonly TimeSpan _promptTimeout;
-    private Dictionary<string, bool>? _decisions;
     // Hosts waiting for a turn on screen, oldest first. The one on screen is _showing and not in here.
     private readonly List<Pending> _queue = new();
     private Pending? _showing;
     private int _version;
 
-    // Shared is the only instance the engine makes. A test builds one on a scratch file with a fake
-    // prompter and a short timeout.
-    internal WebAccess(string path, IWebAccessPrompter? prompter, TimeSpan promptTimeout)
+    // Shared is the only instance the engine makes. A test builds one with a fake prompter and a short
+    // timeout, on a scratch data folder.
+    internal WebAccess(IWebAccessPrompter? prompter, TimeSpan promptTimeout, string? legacyFile = null)
     {
-        _path = path;
         _prompter = prompter;
         _promptTimeout = promptTimeout;
+        Settings.Changed += (key, _) =>
+        {
+            if (key.StartsWith(AccountSettings.WebAccessSites, StringComparison.Ordinal))
+                Interlocked.Increment(ref _version);
+        };
+        if (legacyFile != null)
+            Migrate(legacyFile);
     }
 
-    // Bumped on every change to the saved decisions. Settings polls it to know when to rebuild its rows.
+    // Bumped on every change to the saved decisions, whichever computer made it. Settings polls it to
+    // know when to rebuild its rows.
     public int Version => Volatile.Read(ref _version);
+
+    // STORE
+
+    private static string KeyOf(string host) => AccountSettings.WebAccessSites + host;
+
+    // True or false for a decided host, null for one nobody has decided.
+    private static bool? Decision(string host) => Settings.ReadValue(KeyOf(host), string.Empty) switch
+    {
+        "allow" => true,
+        "deny" => false,
+        _ => null,
+    };
+
+    private static void Store(string host, bool allowed) => Settings.WriteValue(KeyOf(host), allowed ? "allow" : "deny");
 
     // HOST KEYS
 
@@ -125,11 +146,7 @@ public sealed class WebAccess
         var key = NormalizeHost(host);
         if (key == null)
             return false;
-        lock (_lock)
-        {
-            EnsureLoaded();
-            return _decisions!.TryGetValue(key, out bool allowed) && allowed;
-        }
+        return Decision(key) == true;
     }
 
     // False for a host nobody has decided.
@@ -139,25 +156,23 @@ public sealed class WebAccess
         var key = NormalizeHost(host);
         if (key == null)
             return false;
-        lock (_lock)
-        {
-            EnsureLoaded();
-            return _decisions!.TryGetValue(key, out allowed);
-        }
+        var decision = Decision(key);
+        allowed = decision == true;
+        return decision != null;
     }
 
     // Every decided host, sorted by name.
     public IReadOnlyList<WebAccessEntry> Entries()
     {
-        lock (_lock)
+        var list = new List<WebAccessEntry>();
+        foreach (var key in Settings.KeysUnder(AccountSettings.WebAccessSites))
         {
-            EnsureLoaded();
-            var list = new List<WebAccessEntry>(_decisions!.Count);
-            foreach (var pair in _decisions)
-                list.Add(new WebAccessEntry(pair.Key, pair.Value));
-            list.Sort((a, b) => string.CompareOrdinal(a.Host, b.Host));
-            return list;
+            string host = key.Substring(AccountSettings.WebAccessSites.Length);
+            if (Decision(host) is bool allowed)
+                list.Add(new WebAccessEntry(host, allowed));
         }
+        list.Sort((a, b) => string.CompareOrdinal(a.Host, b.Host));
+        return list;
     }
 
     // Saved exactly as if the user had answered a prompt with it, and anyone already waiting on that
@@ -170,16 +185,10 @@ public sealed class WebAccess
 
         WebAccessQuestion? withdrawn = null;
         Pending? next = null;
+        if (Decision(key) != allowed)
+            Store(key, allowed);
         lock (_lock)
         {
-            EnsureLoaded();
-            if (!_decisions!.TryGetValue(key, out bool current) || current != allowed)
-            {
-                _decisions[key] = allowed;
-                SaveLocked();
-                _version++;
-            }
-
             var answer = allowed ? WebAccessAnswer.Allowed : WebAccessAnswer.Denied;
             if (_showing != null && _showing.Host == key)
             {
@@ -215,15 +224,10 @@ public sealed class WebAccess
         var key = NormalizeHost(host);
         if (key == null)
             return false;
-        lock (_lock)
-        {
-            EnsureLoaded();
-            if (!_decisions!.Remove(key))
-                return false;
-            SaveLocked();
-            _version++;
-            return true;
-        }
+        if (!Settings.HasValue(KeyOf(key)))
+            return false;
+        Settings.DeleteValue(KeyOf(key));
+        return true;
     }
 
     // ASKING
@@ -244,11 +248,10 @@ public sealed class WebAccess
         Pending pending;
         var waiter = new Waiter();
         Pending? next = null;
+        if (Decision(key) is bool decided)
+            return Task.FromResult(decided ? WebAccessAnswer.Allowed : WebAccessAnswer.Denied);
         lock (_lock)
         {
-            EnsureLoaded();
-            if (_decisions!.TryGetValue(key, out bool allowed))
-                return Task.FromResult(allowed ? WebAccessAnswer.Allowed : WebAccessAnswer.Denied);
 
             var existing = FindLocked(key);
             if (existing == null)
@@ -303,12 +306,7 @@ public sealed class WebAccess
             _showing = null;
             shown.StopTimer();
             if (remember && answer != WebAccessAnswer.Ignored)
-            {
-                EnsureLoaded();
-                _decisions![shown.Host] = answer == WebAccessAnswer.Allowed;
-                SaveLocked();
-                _version++;
-            }
+                Store(shown.Host, answer == WebAccessAnswer.Allowed);
             ResolveLocked(shown, answer);
             next = TakeNextLocked();
         }
@@ -363,14 +361,13 @@ public sealed class WebAccess
     // waited is answered from that and never shown.
     private Pending? TakeNextLocked()
     {
-        EnsureLoaded();
         while (_showing == null && _queue.Count > 0)
         {
             var next = _queue[0];
             _queue.RemoveAt(0);
             if (next.Waiters.Count == 0)
                 continue;
-            if (_decisions!.TryGetValue(next.Host, out bool allowed))
+            if (Decision(next.Host) is bool allowed)
             {
                 ResolveLocked(next, allowed ? WebAccessAnswer.Allowed : WebAccessAnswer.Denied);
                 continue;
@@ -480,80 +477,47 @@ public sealed class WebAccess
         return builder.ToString().Trim();
     }
 
-    // FILE
+    // THE OLD FILE
     //
-    // {"version":1,"hosts":{"example.com":"allow","other.example":"deny"}}. Read once, on first use;
-    // written whole through a temp file and a move, so a crash mid-write leaves the old file intact. A
-    // file that will not parse costs its decisions and nothing else. -xlinka
+    // {"version":1,"hosts":{"example.com":"allow","other.example":"deny"}}, from before decisions lived
+    // in the settings store. Taken in once, without overriding anything the store already decided, then
+    // removed so there is one place they live. A file that will not parse is left alone, and said so.
 
-    private void EnsureLoaded()
+    private static void Migrate(string path)
     {
-        if (_decisions != null)
-            return;
-        _decisions = new Dictionary<string, bool>(StringComparer.Ordinal);
         try
         {
-            if (!File.Exists(_path))
+            if (!File.Exists(path))
                 return;
-            using var document = JsonDocument.Parse(File.ReadAllBytes(_path));
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object
-                || !root.TryGetProperty("hosts", out var hosts)
-                || hosts.ValueKind != JsonValueKind.Object)
-                return;
-            foreach (var entry in hosts.EnumerateObject())
+            using (var document = JsonDocument.Parse(File.ReadAllBytes(path)))
             {
-                var key = NormalizeHost(entry.Name);
-                if (key == null || entry.Value.ValueKind != JsonValueKind.String)
-                    continue;
-                switch (entry.Value.GetString())
+                var root = document.RootElement;
+                if (root.ValueKind == JsonValueKind.Object
+                    && root.TryGetProperty("hosts", out var hosts)
+                    && hosts.ValueKind == JsonValueKind.Object)
                 {
-                    case "allow":
-                        _decisions[key] = true;
-                        break;
-                    case "deny":
-                        _decisions[key] = false;
-                        break;
+                    foreach (var entry in hosts.EnumerateObject())
+                    {
+                        var key = NormalizeHost(entry.Name);
+                        if (key == null || entry.Value.ValueKind != JsonValueKind.String || Decision(key) != null)
+                            continue;
+                        switch (entry.Value.GetString())
+                        {
+                            case "allow":
+                                Store(key, true);
+                                break;
+                            case "deny":
+                                Store(key, false);
+                                break;
+                        }
+                    }
                 }
             }
+            File.Delete(path);
         }
         catch (Exception ex)
         {
-            _decisions.Clear();
-            LumoraLogger.Warn($"WebAccess: could not read {FileName}, no sites are decided: {ex.Message}");
-        }
-    }
-
-    private void SaveLocked()
-    {
-        try
-        {
-            var directory = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(directory))
-                Directory.CreateDirectory(directory);
-
-            var hosts = new List<string>(_decisions!.Keys);
-            hosts.Sort(StringComparer.Ordinal);
-            using var buffer = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(buffer, new JsonWriterOptions { Indented = true }))
-            {
-                writer.WriteStartObject();
-                writer.WriteNumber("version", FileVersion);
-                writer.WriteStartObject("hosts");
-                foreach (var host in hosts)
-                    writer.WriteString(host, _decisions[host] ? "allow" : "deny");
-                writer.WriteEndObject();
-                writer.WriteEndObject();
-            }
-
-            var temp = _path + ".tmp";
-            File.WriteAllBytes(temp, buffer.ToArray());
-            File.Move(temp, _path, overwrite: true);
-        }
-        catch (Exception ex)
-        {
-            // The decision still stands for this run.
-            LumoraLogger.Warn($"WebAccess: could not save {FileName}: {ex.Message}");
+            LumoraLogger.Warn($"WebAccess: could not bring {LegacyFileName} into the settings: {ex.Message}");
         }
     }
 

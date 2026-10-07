@@ -8,8 +8,8 @@ using Lumora.Script;
 namespace Lumora.Core.Scripting;
 
 // Whether this machine's user already lets scripts reach a host, named as a host or by any address on it.
-// decided is false while nobody has said either way; an address on a local network, which scripts never
-// reach, reads decided and not allowed. A Shared script reads the host's decisions, a Local one this
+// decided is false while nobody has said either way; an address no socket can open reads decided and not
+// allowed. A Shared script reads the host's decisions, a Local one this
 // machine's. A decision covers the whole host, whatever the port or scheme.
 [Node("Web/Is Host Allowed", Capability.Web)]
 public sealed class WebHostAllowed : ReadNode

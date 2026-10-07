@@ -12,8 +12,8 @@ namespace Lumora.Core.Scripting;
 // address on it, and carries on through next at once. allowed or denied runs with the answer, at once for a
 // host already decided; ignored when the prompt was closed or left for two minutes, which is not kept, so a
 // later ask asks again. A Shared script asks the host's user, a Local one each person on their own machine.
-// The prompt shows the engine's own words, never text from a script. An address on a local network, or text
-// that names no host, is denied at once without asking.
+// The prompt shows the engine's own words, never text from a script, and says when the host is local. An
+// address no socket can open, or text that names no host, is denied at once without asking.
 [Node("Web/Request Host Access", Capability.Web)]
 [Answers("allowed", "denied", "ignored")]
 public sealed class AskWebHost : AwaitNode<HostAccessAnswer>

@@ -7,15 +7,20 @@ using System.Net.Sockets;
 
 namespace Lumora.Core.Networking.Web;
 
-// The addresses a script's web request may open a socket to: the public internet and nothing else.
+// The addresses a script's web request may open a socket to.
 //
-// Refused: loopback, the private and carrier-grade NAT blocks, link-local, unique local, site-local,
-// multicast, unspecified and broadcast, the reserved, benchmarking, discard and documentation blocks,
-// and every IPv6 shape that carries an IPv4 address inside it (mapped, compatible, translated, NAT64,
-// 6to4) when that IPv4 address is one of the refused ones. The client applies this to the address a
-// socket is about to connect to, after its own resolution, so a name that points somewhere local, or
-// starts to halfway through a session, never gets a connection. Scripts and settings have no way to
-// turn it off. -xlinka
+// Public: everything but loopback, the private and carrier-grade NAT blocks, link-local, unique local,
+// site-local, multicast, unspecified and broadcast, the reserved, benchmarking, discard and documentation
+// blocks, and every IPv6 shape that carries an IPv4 address inside it (mapped, compatible, translated,
+// NAT64, 6to4) when that IPv4 address is one of those.
+//
+// A local address is reached only when the script named a local host itself: an address written out, this
+// machine, or a name only a local network resolves. The user at the machine allows that host like any other,
+// and the prompt says it is local. A public name never reaches a local address, even after it is allowed:
+// allowing a site is not allowing whatever it points its name at, the router behind the person included.
+// The client applies this to the address a socket is about to connect to, after its own resolution, so a
+// public name that points somewhere local, or starts to halfway through a session, never gets a connection.
+// -xlinka
 public static class WebAddressFilter
 {
     private static readonly (uint Network, int Prefix)[] BlockedV4 =
@@ -52,6 +57,54 @@ public static class WebAddressFilter
         }
         return false;
     }
+
+    // An address a socket can be opened to at all: not unspecified, multicast, broadcast or reserved.
+    public static bool IsReachable(IPAddress? address)
+    {
+        if (address == null)
+            return false;
+        if (address.IsIPv4MappedToIPv6)
+            address = address.MapToIPv4();
+        if (address.AddressFamily == AddressFamily.InterNetwork)
+        {
+            Span<byte> v4 = stackalloc byte[4];
+            if (!address.TryWriteBytes(v4, out _))
+                return false;
+            return v4[0] != 0 && v4[0] < 224;
+        }
+        if (address.AddressFamily == AddressFamily.InterNetworkV6)
+        {
+            Span<byte> v6 = stackalloc byte[16];
+            return address.TryWriteBytes(v6, out _) && !AllZero(v6) && v6[0] != 0xFF;
+        }
+        return false;
+    }
+
+    // A host named as local: an address written out, this machine, or a name only a local network resolves
+    // (one label, or under .local, .lan, .home, .home.arpa, .internal or .localdomain).
+    public static bool IsLocalHost(string? host)
+    {
+        if (string.IsNullOrEmpty(host))
+            return false;
+        if (host.Length > 2 && host[0] == '[' && host[^1] == ']')
+            host = host.Substring(1, host.Length - 2);
+        if (IPAddress.TryParse(host, out _))
+            return true;
+        host = host.TrimEnd('.').ToLowerInvariant();
+        if (host.Length == 0)
+            return false;
+        if (host.IndexOf('.') < 0)
+            return true;
+        foreach (var suffix in LocalSuffixes)
+        {
+            if (host.EndsWith(suffix, StringComparison.Ordinal))
+                return true;
+        }
+        return false;
+    }
+
+    private static readonly string[] LocalSuffixes =
+        { ".localhost", ".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain" };
 
     private static bool IsPublicV4(uint address)
     {

@@ -12,7 +12,8 @@ namespace Lumora.Core.Scripting;
 // runs response for whatever status the server sent, 404 and 500 included; failed when nothing came back
 // (no connection, a timeout, a limit passed, an address that is not http or https); denied when this
 // machine's user refused the host or never answered. A Shared script runs on the host, so the host's user is
-// asked; a Local one asks each person on their own machine. Addresses on a local network are never reached.
+// asked; a Local one asks each person on their own machine. A local address is reached only when the URL
+// names it, or a local name for it, itself; a public name that leads to one is refused.
 // headers is one "Name: value" per line, for the request and for what comes back. The body goes out as UTF-8
 // with POST, PUT, PATCH and a DELETE that has one, as JSON unless a Content-Type header says otherwise.
 [Node("Web/HTTP Request", Capability.Web)]
@@ -30,7 +31,7 @@ public sealed class HttpRequest : AwaitNode<HttpAnswer>
         }
 
         var request = new ScriptWebRequest(address, method, headers, body, timeout);
-        string requester = ctx.Principal.AuthorKey + (ctx.IsLocal ? "/local" : "/shared");
+        string requester = ctx.Principal.AuthorKey + (ctx.OffHost ? "/local" : "/shared");
         var sending = ScriptWebClient.Shared.SendAsync(request, requester, ctx.Principal.DisplayName ?? "a script", ctx.World.Name,
             ticket.Cancelled);
         sending.ContinueWith(done => Answer(ticket, done, text), TaskScheduler.Default);

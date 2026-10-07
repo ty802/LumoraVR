@@ -12,7 +12,7 @@ namespace Lumora.Core.Scripting;
 // with the socket once it is open, to keep in a Stored Value and send through; failed when nothing opened (no
 // connection, a timeout, a limit passed, an address that is not ws or wss); denied when this machine's user
 // refused the host or never answered. It is asked and guarded like HTTP Request: the user at the machine
-// allows the host, addresses on a local network are never reached, and one author's Shared scripts, or Local
+// allows the host, a local address is reached only when the URL names it, and one author's Shared scripts, or Local
 // ones, hold at most four open on a machine. What comes in arrives through On WebSocket Message and the end
 // through On WebSocket Closed. headers is one "Name: value" per line; protocols a comma list the server may
 // pick one of. The socket closes when the script stops, and stays open through a live graph swap.
@@ -24,7 +24,7 @@ public sealed class ConnectWebSocket : AwaitNode<SocketOpened>
         float timeout = 30f)
     {
         var host = ctx.Host;
-        bool local = ctx.IsLocal;
+        bool local = ctx.OffHost;
         string requester = ctx.Principal.AuthorKey + (local ? "/local" : "/shared");
         var opening = ScriptWebSocket.ConnectAsync(url, headers, protocols, timeout, requester, ctx.Principal.DisplayName ?? "a script",
             ctx.World.Name,

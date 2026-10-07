@@ -28,8 +28,11 @@ public sealed record CubemapVariantDescriptor(
 
 public sealed class CubemapUploadRequest
 {
-    // Six RGBA8 faces, each FaceSize squared times four bytes, in CubemapFace order.
+    // Six faces in CubemapFace order, FaceSize squared texels each: RGBA8, or half-float RGBA (eight
+    // bytes a texel, linear light) when Hdr is set.
     public byte[][] Faces { get; init; } = Array.Empty<byte[]>();
+
+    public bool Hdr { get; init; }
 
     // Faces are always square and always equal.
     public int FaceSize { get; init; }
@@ -51,9 +54,9 @@ public interface ICubemapAssetHook : IAssetHook
     Task WaitForUploadAsync();
 }
 
-// Six RGBA8 cube faces. URL instances decode an equirectangular panorama in LoadSelf
-// and project it onto the faces; procedural instances (gradient, checker, noise) and the six-image
-// assembler push their faces straight in through SetFaces.
+// Six cube faces, RGBA8, or half-float RGBA from an HDR panorama. URL instances decode an
+// equirectangular panorama in LoadSelf and project it onto the faces; procedural instances (gradient,
+// checker, noise) and the six-image assembler push their faces straight in through SetFaces.
 //
 // Faces are the only form kept. A panorama is an import format, not a runtime one: keeping both
 // would double the resident bytes of every skybox, and the cube is what a sky shader, a probe
@@ -68,6 +71,7 @@ public class CubemapAsset : ImplementableAsset<ICubemapAssetHook>
     private byte[][] _faces = Array.Empty<byte[]>();
     private int _faceSize;
     private bool _hasMipmaps;
+    private bool _hdr;
 
     // 0 when nothing has been uploaded.
     public int FaceSize => _faceSize;
@@ -76,6 +80,9 @@ public class CubemapAsset : ImplementableAsset<ICubemapAssetHook>
     public byte[][] Faces => _faces;
 
     public bool HasMipmaps => _hasMipmaps;
+
+    // Faces are half-float RGBA in linear light, values above 1 kept.
+    public bool IsHdr => _hdr;
 
     public long MemorySize
     {
@@ -110,19 +117,19 @@ public class CubemapAsset : ImplementableAsset<ICubemapAssetHook>
 
         byte[]? panorama;
         int width, height;
+        bool hdr;
         try
         {
-            // An HDR panorama cannot go through the 8-bit decoder. Radiance would come back tone-mapped
-            // and an EXR would fail with a decode error that says nothing useful, and in both cases the
-            // sky quietly loses the range it was chosen for. Refuse it with a reason instead: a skybox
-            // that does not load is a question, a skybox that loads wrong is a bug hunt. -xlinka
-            if (TextureMetadata.DetectHdr(bytes))
-            {
-                FailLoad($"HDR panoramas are not supported yet (needs a half-float projector): {AssetURL}");
-                return;
-            }
-
-            panorama = TextureVariantStore.DecodeRgba(bytes, out width, out height);
+            // An HDR panorama cannot go through the 8-bit decoder: Radiance would come back tone-mapped
+            // and the sky or probe would lose the range it was chosen for. It decodes to half floats
+            // instead and keeps that range on the faces, a lamp at 50 included. -xlinka
+            // The panorama is a picture like any other: under the texture size cap it is decoded
+            // already reduced, and the faces come from that.
+            hdr = TextureMetadata.DetectHdr(bytes);
+            int cap = EngineSettings.MaxTextureSize;
+            panorama = hdr
+                ? CappedImageDecoder.DecodeRgbaHalf(bytes, cap, out width, out height, out _, out _)
+                : CappedImageDecoder.DecodeRgba(bytes, cap, out width, out height, out _, out _);
         }
         catch (Exception ex)
         {
@@ -137,24 +144,29 @@ public class CubemapAsset : ImplementableAsset<ICubemapAssetHook>
         }
 
         SourcePanoramaSize = (width, height);
-        int faceSize = CubemapProjector.ChooseFaceSize(descriptor.FaceSize, width);
-        var faces = CubemapProjector.ProjectPanorama(panorama, width, height, faceSize);
+        // Never past what the panorama holds. A requested size above it (the texture-size cap arrives as
+        // one) only upsamples, and six faces of that is real memory, twice over for HDR.
+        int faceSize = System.Math.Min(CubemapProjector.ChooseFaceSize(descriptor.FaceSize, width),
+            CubemapProjector.SourceFaceSize(width));
+        var faces = hdr
+            ? CubemapProjector.ProjectPanoramaHalf(panorama, width, height, faceSize)
+            : CubemapProjector.ProjectPanorama(panorama, width, height, faceSize);
 
-        SetFaces(faces, faceSize, descriptor.GenerateMipmaps);
+        SetFaces(faces, faceSize, descriptor.GenerateMipmaps, hdr);
 
         if (Hook != null)
             await Hook.WaitForUploadAsync().ConfigureAwait(false);
     }
 
-    // Every face must be square, the same size, and RGBA8.
-    public void SetFaces(byte[][] faces, int faceSize, bool mipmaps = true)
+    // Every face must be square and the same size: RGBA8, or half-float RGBA with hdr set.
+    public void SetFaces(byte[][] faces, int faceSize, bool mipmaps = true, bool hdr = false)
     {
         if (faces == null || faces.Length != 6)
             throw new ArgumentException("A cubemap needs exactly six faces", nameof(faces));
         if (faceSize < MinFaceSize)
             throw new ArgumentOutOfRangeException(nameof(faceSize), $"Face size must be at least {MinFaceSize}");
 
-        int expected = faceSize * faceSize * 4;
+        int expected = faceSize * faceSize * (hdr ? 8 : 4);
         for (int i = 0; i < faces.Length; i++)
         {
             if (faces[i] == null || faces[i].Length < expected)
@@ -165,15 +177,37 @@ public class CubemapAsset : ImplementableAsset<ICubemapAssetHook>
         _faces = faces;
         _faceSize = faceSize;
         _hasMipmaps = mipmaps;
+        _hdr = hdr;
         Version++;
 
-        Hook?.UploadCubemap(new CubemapUploadRequest
+        var hook = Hook;
+        hook?.UploadCubemap(new CubemapUploadRequest
         {
             Faces = faces,
             FaceSize = faceSize,
             GenerateMipmaps = mipmaps,
+            Hdr = hdr,
             Report = bytes => GpuBytes = bytes,
         });
+        if (hook != null)
+            _ = ReleaseFacesAfterUploadAsync(hook, Version);
+    }
+
+    // The renderer builds its cube from the faces once and nothing else reads them, so they go when the
+    // upload lands: six faces of a big sky are hundreds of megabytes held for nobody. Without a renderer
+    // the faces are the only copy and stay. -xlinka
+    private async Task ReleaseFacesAfterUploadAsync(ICubemapAssetHook hook, int version)
+    {
+        try
+        {
+            await hook.WaitForUploadAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            return;
+        }
+        if (Version == version)
+            _faces = Array.Empty<byte[]>();
     }
 
     public static CubemapAsset FromFaces(byte[][] faces, int faceSize, bool mipmaps = true)
@@ -189,6 +223,7 @@ public class CubemapAsset : ImplementableAsset<ICubemapAssetHook>
         _faces = Array.Empty<byte[]>();
         _faceSize = 0;
         _hasMipmaps = false;
+        _hdr = false;
         GpuBytes = null;
         SourcePanoramaSize = null;
         base.Unload();

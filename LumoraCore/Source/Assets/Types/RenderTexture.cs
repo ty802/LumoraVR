@@ -53,10 +53,7 @@ public class RenderTexture : TextureAsset
         (Hook as IRenderTextureAssetHook)?.SetCameraOverride(parameters);
     }
 
-    /// <summary>
-    /// Pause or resume the offscreen render. The viewport and its texture stay
-    /// alive so consumers keep a valid (stale) image while paused.
-    /// </summary>
+    // Paused, the viewport and its texture stay alive so consumers keep a valid (stale) image.
     public void SetRenderEnabled(bool enabled)
     {
         if (RenderEnabled == enabled) return;
@@ -64,10 +61,15 @@ public class RenderTexture : TextureAsset
         (Hook as IRenderTextureAssetHook)?.SetRenderEnabled(enabled);
     }
 
-    /// <summary>
-    /// Ask the offscreen viewport to render a single frame now (used when the captured UI actually changed).
-    /// No-op while paused. This is what lets the UI render only on change instead of every frame. -xlinka
-    /// </summary>
+    // The next frame it films, as an image; null with no renderer behind it.
+    public System.Threading.Tasks.Task<byte[]?> CaptureAsync(ImageEncoding encoding, float quality)
+        => Hook is IRenderTextureAssetHook hook ? hook.CaptureAsync(encoding, quality) : System.Threading.Tasks.Task.FromResult<byte[]?>(null);
+
+    public System.Threading.Tasks.Task<PixelFrame?> CaptureRawAsync()
+        => Hook is IRenderTextureAssetHook hook ? hook.CaptureRawAsync() : System.Threading.Tasks.Task.FromResult<PixelFrame?>(null);
+
+    // Ask the offscreen viewport to render a single frame now (used when the captured UI actually changed).
+    // No-op while paused. This is what lets the UI render only on change instead of every frame. -xlinka
     public void RequestRender()
     {
         if (!RenderEnabled) return;

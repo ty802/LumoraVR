@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Buffers.Binary;
 using System.Threading.Tasks;
 using Lumora.Core.Math;
 
@@ -87,11 +88,132 @@ public static class CubemapProjector
         return System.Math.Clamp(size, CubemapAsset.MinFaceSize, CubemapAsset.MaxFaceSize);
     }
 
+    // The face size that holds all of a panorama's detail: a quarter of its width, rounded up to a power of
+    // two. ChooseFaceSize rounds down, so this is only ever a ceiling.
+    public static int SourceFaceSize(int panoramaWidth)
+    {
+        int quarter = System.Math.Max(1, panoramaWidth / 4);
+        int size = CubemapAsset.MinFaceSize;
+        while (size < quarter && size < CubemapAsset.MaxFaceSize)
+            size *= 2;
+        return size;
+    }
+
+    // ProjectPanorama for half-float RGBA, eight bytes a texel in and out. Values pass through as they
+    // are, above 1 included, which is the point of an HDR panorama.
+    public static byte[][] ProjectPanoramaHalf(byte[] panorama, int width, int height, int faceSize)
+    {
+        if (panorama == null)
+            throw new ArgumentNullException(nameof(panorama));
+        if (width <= 0 || height <= 0 || panorama.Length < (long)width * height * 8)
+            throw new ArgumentException("Panorama buffer is smaller than its declared size", nameof(panorama));
+        if (faceSize < CubemapAsset.MinFaceSize)
+            throw new ArgumentOutOfRangeException(nameof(faceSize));
+
+        var faces = new byte[6][];
+        Parallel.For(0, 6, faceIndex =>
+        {
+            var face = (CubemapFace)faceIndex;
+            var pixels = new byte[faceSize * faceSize * 8];
+            float inv = 1f / faceSize;
+            for (int y = 0; y < faceSize; y++)
+            {
+                float t = (y + 0.5f) * inv;
+                for (int x = 0; x < faceSize; x++)
+                {
+                    float s = (x + 0.5f) * inv;
+                    var dir = Normalize(FaceDirection(face, s, t));
+                    SamplePanoramaHalf(panorama, width, height, dir, pixels, (y * faceSize + x) * 8);
+                }
+            }
+            faces[faceIndex] = pixels;
+        });
+        return faces;
+    }
+
+    private static void SamplePanoramaHalf(byte[] pixels, int width, int height, in float3 dir, byte[] target, int at)
+    {
+        var uv = DirectionToPanoramaUv(dir);
+        float fx = uv.x * width - 0.5f;
+        float fy = uv.y * height - 0.5f;
+        int x0 = (int)MathF.Floor(fx);
+        int y0 = (int)MathF.Floor(fy);
+        float tx = fx - x0;
+        float ty = fy - y0;
+        int x1 = WrapX(x0 + 1, width);
+        int y1 = ClampY(y0 + 1, height);
+        x0 = WrapX(x0, width);
+        y0 = ClampY(y0, height);
+
+        int i00 = (y0 * width + x0) * 8;
+        int i10 = (y0 * width + x1) * 8;
+        int i01 = (y1 * width + x0) * 8;
+        int i11 = (y1 * width + x1) * 8;
+        for (int c = 0; c < 8; c += 2)
+        {
+            float top = ReadHalf(pixels, i00 + c) + (ReadHalf(pixels, i10 + c) - ReadHalf(pixels, i00 + c)) * tx;
+            float bottom = ReadHalf(pixels, i01 + c) + (ReadHalf(pixels, i11 + c) - ReadHalf(pixels, i01 + c)) * tx;
+            BinaryPrimitives.WriteHalfLittleEndian(target.AsSpan(at + c), (Half)(top + (bottom - top) * ty));
+        }
+    }
+
+    private static float ReadHalf(byte[] pixels, int at) => (float)BinaryPrimitives.ReadHalfLittleEndian(pixels.AsSpan(at));
+
     public static float2 DirectionToPanoramaUv(in float3 dir)
     {
         float u = MathF.Atan2(dir.x, -dir.z) / (2f * MathF.PI) + 0.5f;
         float v = MathF.Acos(System.Math.Clamp(dir.y, -1f, 1f)) / MathF.PI;
         return new float2(u, v);
+    }
+
+    // The inverse of DirectionToPanoramaUv, unit length: -Z at the centre column, straight up at v = 0.
+    public static float3 PanoramaUvToDirection(float u, float v)
+    {
+        float longitude = (u - 0.5f) * 2f * MathF.PI;
+        float polar = v * MathF.PI;
+        float ring = MathF.Sin(polar);
+        return new float3(MathF.Sin(longitude) * ring, MathF.Cos(polar), -MathF.Cos(longitude) * ring);
+    }
+
+    // The inverse of FaceDirection: the face a direction lands on and its (s, t) there, t from the top row.
+    public static CubemapFace DirectionToFace(in float3 dir, out float s, out float t)
+    {
+        float ax = MathF.Abs(dir.x);
+        float ay = MathF.Abs(dir.y);
+        float az = MathF.Abs(dir.z);
+        CubemapFace face;
+        float sc, tc, major;
+        if (ax >= ay && ax >= az)
+        {
+            major = ax;
+            face = dir.x >= 0f ? CubemapFace.PositiveX : CubemapFace.NegativeX;
+            sc = dir.x >= 0f ? -dir.z : dir.z;
+            tc = -dir.y;
+        }
+        else if (ay >= az)
+        {
+            major = ay;
+            face = dir.y >= 0f ? CubemapFace.PositiveY : CubemapFace.NegativeY;
+            sc = dir.x;
+            tc = dir.y >= 0f ? dir.z : -dir.z;
+        }
+        else
+        {
+            major = az;
+            face = dir.z >= 0f ? CubemapFace.PositiveZ : CubemapFace.NegativeZ;
+            sc = dir.z >= 0f ? dir.x : -dir.x;
+            tc = -dir.y;
+        }
+
+        if (major <= 1e-8f)
+        {
+            s = 0.5f;
+            t = 0.5f;
+            return face;
+        }
+        s = (sc / major + 1f) * 0.5f;
+        t = (tc / major + 1f) * 0.5f;
+        return face;
     }
 
     private static color SamplePanorama(byte[] pixels, int width, int height, in float3 dir)

@@ -1,0 +1,13 @@
+<Project>
+  <!--
+    The optimizer setting goes into the hash the build uses to decide whether a project needs compiling
+    again. It is not in there by default, so turning LumoraOptimize (or Optimize) on or off rebuilt only
+    the projects that had other changes and left the rest as they were: a run meant to measure optimized
+    code quietly ran half of it unoptimized. -xlinka
+  -->
+  <Target Name="LumoraHashOptimize" BeforeTargets="_GenerateCompileDependencyCache">
+    <ItemGroup>
+      <CoreCompileCache Include="Optimize=$(Optimize)" />
+    </ItemGroup>
+  </Target>
+</Project>

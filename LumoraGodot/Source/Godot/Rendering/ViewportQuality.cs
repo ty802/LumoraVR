@@ -4,6 +4,7 @@
 using System;
 using Godot;
 using Lumora.Core;
+using Lumora.Source.Godot.Bootstrap;
 
 namespace Lumora.Source.Godot.Rendering;
 
@@ -23,6 +24,11 @@ public static class ViewportQuality
     // double for a downsample the compositor undoes. -xlinka
     private const float StandaloneXrSupersampleScale = 1.0f;
 
+    // Frame's runtime provides its recommended eye resolution; the Pico-specific 1.3 correction
+    // has not been measured there and would add 69% more pixels on a battery-powered GPU.
+    internal static float DefaultRenderTargetMultiplier => HeadsetDeviceMode.IsSteamFrame ? 1.0f
+        : AndroidDeviceMode.IsHeadset ? StandaloneXrRenderTargetMultiplier : DesktopXrRenderTargetMultiplier;
+
     // Returns true when the running session was taken down to change the multiplier; the caller has
     // to wait for it to actually be gone before calling Initialize() again.
     public static bool ConfigureOpenXRBeforeInitialize(OpenXRInterface? xrInterface, Action<string>? log = null)
@@ -30,9 +36,7 @@ public static class ViewportQuality
         if (xrInterface == null)
             return false;
 
-        var multiplier = OS.HasFeature("android")
-            ? StandaloneXrRenderTargetMultiplier
-            : DesktopXrRenderTargetMultiplier;
+        var multiplier = DefaultRenderTargetMultiplier;
 
         if (xrInterface.IsInitialized())
         {
@@ -66,9 +70,9 @@ public static class ViewportQuality
         // Measured GPU at 72 Hz, MSAA 2x, XR on the root viewport: 1.25x 12.7 ms, 1.3x 13.3 ms,
         // 1.4x 14-18 ms (drops to 59-70). 1.3x holds 72 in the home; a heavier world will want a
         // dynamic step down, which is the next thing to build. -xlinka
-        if (OS.HasFeature("android"))
+        if (HeadsetDeviceMode.IsHeadset)
         {
-            float mult = StandaloneXrRenderTargetMultiplier;
+            float mult = DefaultRenderTargetMultiplier;
             if (System.Math.Abs(xrInterface.RenderTargetSizeMultiplier - mult) > 0.001f)
             {
                 var before = xrInterface.GetRenderTargetSize();
@@ -126,7 +130,7 @@ public static class ViewportQuality
 
         try
         {
-            bool standalone = OS.HasFeature("android");
+            bool standalone = HeadsetDeviceMode.IsHeadset;
             viewport.Scaling3DMode = Viewport.Scaling3DModeEnum.Bilinear;
             viewport.Scaling3DScale = standalone ? StandaloneXrSupersampleScale : DesktopXrSupersampleScale;
             viewport.FsrSharpness = 1.0f;
@@ -162,7 +166,7 @@ public static class ViewportQuality
                 RenderingServer.DirectionalSoftShadowFilterSetQuality(RenderingServer.ShadowQuality.Hard);
                 RenderingServer.PositionalSoftShadowFilterSetQuality(RenderingServer.ShadowQuality.Hard);
                 viewport.PositionalShadowAtlasSize = 1024;
-                GD.Print("OpenXR quality: standalone shadows set to hard, directional atlas 2048, positional atlas 1024.");
+                Lumora.Core.Logging.Logger.Debug("OpenXR quality: standalone shadows set to hard, directional atlas 2048, positional atlas 1024.");
 
             }
         }
@@ -192,38 +196,21 @@ public static class ViewportQuality
         viewport.UseTaa = false;
     }
 
-    public static void ApplyAntiAliasing(Viewport viewport, int index)
+    public static void ApplyAntiAliasing(Viewport viewport, int mode)
     {
         if (viewport == null)
             return;
 
-        switch (index)
+        mode = EngineSettings.SnapAntiAliasing(mode);
+        // Clear the previous algorithm as well as enabling the selected one.
+        viewport.UseTaa = false;
+        viewport.ScreenSpaceAA = mode == 1 ? Viewport.ScreenSpaceAAEnum.Fxaa : Viewport.ScreenSpaceAAEnum.Disabled;
+        viewport.Msaa3D = mode switch
         {
-            case 0:
-                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
-                viewport.Msaa3D = Viewport.Msaa.Disabled;
-                viewport.UseTaa = false;
-                break;
-            case 1:
-                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Fxaa;
-                viewport.Msaa3D = Viewport.Msaa.Disabled;
-                viewport.UseTaa = false;
-                break;
-            case 2:
-                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
-                viewport.Msaa3D = Viewport.Msaa.Msaa2X;
-                viewport.UseTaa = false;
-                break;
-            case 3:
-                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
-                viewport.Msaa3D = Viewport.Msaa.Msaa4X;
-                viewport.UseTaa = false;
-                break;
-            case 4:
-                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
-                viewport.Msaa3D = Viewport.Msaa.Disabled;
-                viewport.UseTaa = true;
-                break;
-        }
+            2 => Viewport.Msaa.Msaa2X,
+            4 => Viewport.Msaa.Msaa4X,
+            8 => Viewport.Msaa.Msaa8X,
+            _ => Viewport.Msaa.Disabled,
+        };
     }
 }

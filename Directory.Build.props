@@ -1,0 +1,27 @@
+<Project>
+  <!--
+    The optimizer, set once for every project in the tree.
+
+    ExportRelease: Godot builds its own project as ExportRelease and hands that name on to every project
+    it references, and a library only turns the optimizer on for a configuration called Release, so a
+    released build ran all of the engine's own code unoptimized.
+
+    Debug: optimized too. The game is played from the editor's Debug build, and unoptimized the engine
+    spent more than twice as long on a busy world's update as the same code built for release. Symbols
+    stay, portable, so stack traces still name files and lines. LumoraDebugCode=true, as a property or
+    an environment variable, turns the optimizer off for stepping through code; the number crunching
+    (math, simulation, audio, shading, the script runtime) stays optimized even then, since nobody steps
+    through a spline or the wasm interpreter. LumoraOptimize=true optimizes everything whatever else
+    says. -xlinka
+  -->
+  <PropertyGroup Condition="'$(LumoraDebugCode)' != 'true' Or '$(LumoraOptimize)' == 'true'">
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'LumoraMath' Or '$(MSBuildProjectName)' == 'LumoraSimulation' Or '$(MSBuildProjectName)' == 'LumoraAudio' Or '$(MSBuildProjectName)' == 'LumoraShading' Or '$(MSBuildProjectName)' == 'LumoraWasm' Or '$(MSBuildProjectName)' == 'LumoraScript'">
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+</Project>

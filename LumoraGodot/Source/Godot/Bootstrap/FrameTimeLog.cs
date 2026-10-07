@@ -15,14 +15,15 @@ namespace Lumora.Source.Godot.Bootstrap;
 // One CSV row per frame of where the wall time went, with no console in the loop. The console's
 // frame capture samples one frame every quarter second and subtracts THIS frame's engine time from
 // a delta that describes the PREVIOUS iteration, so each sample is off by a frame and it only ever
-// sees four frames a second. This writes every frame and aligns the subtraction: Godot's process
-// delta is the full wall time of the previous iteration (that iteration's _Process work, then the
-// scene tree, the physics ticks, the render submit, the present, and any vsync or frame-limiter
-// sleep), so the previous frame's measured host work is what comes off it.
+// sees four frames a second. This writes every frame, and a row is everything between two of its
+// calls at the end of the host's _Process: the rest of the last frame (the scene tree, the render
+// submit, the present, any vsync or frame-limiter sleep), this frame's physics ticks, then this
+// frame's own update. Wall time, measured here: Godot's process delta never says more than
+// max_physics_steps_per_frame physics steps, 133 ms at the defaults, so a 600 ms stall read as 133. -xlinka
 //
-//   delta_ms       Godot's process delta
-//   ours_prev_ms   network + engine + tail measured in the previous _Process
-//   godot_ms       delta_ms - ours_prev_ms, everything Godot did between our two updates
+//   delta_ms       wall time since the previous row
+//   ours_ms        network + engine + tail measured in this _Process
+//   godot_ms       delta_ms - ours_ms, everything Godot did between our two updates
 //   render_cpu_ms  main viewport render submit, CPU side
 //   render_gpu_ms  main viewport GPU time
 //   setup_cpu_ms   RenderingServer frame setup
@@ -43,7 +44,7 @@ public sealed class FrameTimeLog : IDisposable
     private readonly StreamWriter _writer;
     private readonly double _quitAfterSeconds;
     private readonly StringBuilder _line = new(256);
-    private double _prevOurs;
+    private long _prevStamp;
     private ulong _prevPhysicsFrames;
     private double _elapsed;
     private long _frame;
@@ -82,7 +83,7 @@ public sealed class FrameTimeLog : IDisposable
             Directory.CreateDirectory(directory);
 
         _writer = new StreamWriter(resolved, false, new UTF8Encoding(false), 1 << 16);
-        _writer.WriteLine("frame,time_s,delta_ms,ours_prev_ms,godot_ms,render_cpu_ms,render_gpu_ms,setup_cpu_ms,physics_ticks,physics_ms,max_fps,vsync,focused");
+        _writer.WriteLine("frame,time_s,delta_ms,ours_ms,godot_ms,render_cpu_ms,render_gpu_ms,setup_cpu_ms,physics_ticks,physics_ms,max_fps,vsync,focused");
         _quitAfterSeconds = quitAfterSeconds;
         _prevPhysicsFrames = global::Godot.Engine.GetPhysicsFrames();
         LumoraLogger.Log($"FrameTimeLog: writing every frame to {resolved}"
@@ -109,9 +110,12 @@ public sealed class FrameTimeLog : IDisposable
         ulong ticks = physicsFrames - _prevPhysicsFrames;
         _prevPhysicsFrames = physicsFrames;
 
-        double deltaMs = delta * 1000.0;
-        double godotMs = deltaMs - _prevOurs;
-        _elapsed += delta;
+        long stamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        double deltaMs = _prevStamp != 0 ? (stamp - _prevStamp) * 1000.0 / System.Diagnostics.Stopwatch.Frequency : delta * 1000.0;
+        _prevStamp = stamp;
+        double oursMs = networkMs + engineMs + tailMs;
+        double godotMs = deltaMs - oursMs;
+        _elapsed += deltaMs / 1000.0;
 
         bool focused;
         try { focused = DisplayServer.WindowIsFocused(); }
@@ -122,7 +126,7 @@ public sealed class FrameTimeLog : IDisposable
         _line.Append(_frame).Append(',')
             .Append(_elapsed.ToString("0.000", c)).Append(',')
             .Append(deltaMs.ToString("0.000", c)).Append(',')
-            .Append(_prevOurs.ToString("0.000", c)).Append(',')
+            .Append(oursMs.ToString("0.000", c)).Append(',')
             .Append(godotMs.ToString("0.000", c)).Append(',')
             .Append(renderCpu.ToString("0.000", c)).Append(',')
             .Append(renderGpu.ToString("0.000", c)).Append(',')
@@ -134,7 +138,6 @@ public sealed class FrameTimeLog : IDisposable
             .Append(focused ? 1 : 0);
         _writer.WriteLine(_line.ToString());
 
-        _prevOurs = networkMs + engineMs + tailMs;
         _frame++;
         if (_frame % FlushEveryFrames == 0)
             _writer.Flush();

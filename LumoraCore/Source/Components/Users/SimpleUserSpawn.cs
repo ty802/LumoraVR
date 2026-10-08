@@ -66,9 +66,10 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
             _userSlots.Remove(user); // stale, rebuild
         }
 
-        LumoraLogger.Log($"SimpleUserSpawn: [Authority] Building scaffold for '{user.UserName.Value ?? "(null)"}', RefID={user.ReferenceID}");
+        LumoraLogger.Debug($"SimpleUserSpawn: [Authority] Building scaffold for '{user.UserName.Value ?? "(null)"}', RefID={user.ReferenceID}");
         try
         {
+            using var setup = EnterUserSetup();
             var userName = user.UserName.Value;
             if (string.IsNullOrEmpty(userName))
                 userName = $"User_{user.ReferenceID}";
@@ -122,8 +123,9 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
             // equipment rig mints (hand tool, grabber, laser beam, context menu) lands in the user's namespace
             // and reads as owned by the permission gate - both for this local build and on the host when the add
             // replicates. The joiner's ambient context is already its own byte after JoinGrant, but pinning here
-            // makes the build robust to any stray allocation scope that didn't restore. Host = authority byte
-            // (no-op scope). -xlinka
+            // makes the build robust to any stray allocation scope that didn't restore. On the host it is the
+            // authority byte in a world being built (no-op scope) and its item byte in a frozen one, so there its
+            // equipment is its own like a guest's and the build needs no pass through the gate. -xlinka
             using (World.EnterLocalUserAllocation())
             {
                 GetBuilder().BuildOwnedEquipment(root);
@@ -166,10 +168,40 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
         if (!World.IsAuthority) return;
         if (_userSlots.TryGetValue(user, out var slot))
         {
-            slot.Destroy();
+            using (EnterUserSetup())
+            {
+                LetGoOfOthersThings(slot, user);
+                slot.Destroy();
+            }
             _userSlots.Remove(user);
         }
     }
+
+    // Before the leaver's body goes, whatever its hands held that is not the leaver's own, a world prop or
+    // another user's thing, is let go into the world. The leaver's own things go with the leaver. -xlinka
+    private static void LetGoOfOthersThings(Slot body, User leaver)
+    {
+        byte leaverByte = leaver.AllocationID.Value;
+        if (!RefIDConstants.IsValidUserByte(leaverByte))
+            leaverByte = leaver.ReferenceID.GetUserByte();
+        bool Leavers(byte b) => b == leaverByte || leaver.IsItemByte(b);
+        foreach (var grabbable in body.GetComponentsInChildren<Grabbable>())
+        {
+            var hand = grabbable.GrabberRef.Value;
+            var item = grabbable.Slot;
+            if (hand.IsNull || !Leavers(hand.GetUserByte()) || item == null || item.IsDestroyed
+                || Leavers(item.ReferenceID.GetUserByte()) || !item.IsDescendantOf(body))
+                continue;
+            grabbable.ReleaseForLeaver(body);
+        }
+    }
+
+    // Building a user's body when they arrive and taking it down when they leave is the engine's own work,
+    // not an edit of the world, so it runs past the gate: a world hosted Social or Event froze the host out of
+    // building anyone's body, its own included. Only on the authority and only for the world's own spawn
+    // point; one a visitor brought in gets no such pass. -xlinka
+    private IDisposable? EnterUserSetup()
+        => World is { IsAuthority: true } world && ReferenceID.IsAuthorityID ? world.DataModelPermissions?.EnterSystemBypass() : null;
 
     public override void OnFocusChanged(World.WorldFocus focus) { }
     public override void OnWorldDestroy() { }

@@ -28,7 +28,11 @@ public class UserRoot : Component
         LeftHand,
         RightHand,
         LeftFoot,
-        RightFoot
+        RightFoot,
+        Hips,
+        Feet,
+        GroundProjectedHead,
+        View
     }
 
     // USER REFERENCE
@@ -45,6 +49,19 @@ public class UserRoot : Component
 
     public Avatar.IRenderSettingsSource? ActiveRenderSettings
         => RenderSettings.Target is { IsDestroyed: false } source ? source : null;
+
+    // Where this user sees from instead of the head, and where the user's tracked space is drawn from instead
+    // of this root, while something the user holds or wears asks for it (HolderViewOverride). Only the user's own
+    // machine writes either; everyone reads them, so a script on another machine asking where this user
+    // looks from gets the same answer. A screen camera sits exactly on the view; a headset keeps the head,
+    // since a view that does not turn with the head is not something to put on anyone's face. The root
+    // moves a headset's eyes, and nothing on a screen, whose camera follows the view. -xlinka
+    public readonly SyncRef<Slot> ViewOverride = new();
+    public readonly SyncRef<Slot> RootOverride = new();
+
+    public Slot? ActiveViewOverride => ViewOverride.Target is { IsDestroyed: false } view ? view : null;
+
+    public Slot? ActiveRootOverride => RootOverride.Target is { IsDestroyed: false } space ? space : null;
 
     public void SetAvatarTrackingOffset(float3 offset)
     {
@@ -77,6 +94,25 @@ public class UserRoot : Component
     public Slot HeadSlot => GetBodyNodeSlot(ref _cachedHeadSlot, Input.BodyNode.Head)
                             ?? FallbackChildLookup(ref _cachedHeadSlot, "Head");
 
+    // The first context menu under this body, as found in the body's present structure. Scripts ask whether a
+    // person's menu is open every frame, and each ask walked the whole body and the avatar on it.
+    private int _menuSearchedAt = -1;
+    private UI.ContextMenuSystem? _menu;
+
+    internal UI.ContextMenuSystem? ContextMenu
+    {
+        get
+        {
+            int structure = Slot.StructureEpoch;
+            if (structure != _menuSearchedAt)
+            {
+                _menu = Slot.GetComponentInChildren<UI.ContextMenuSystem>();
+                _menuSearchedAt = structure;
+            }
+            return _menu;
+        }
+    }
+
     public Slot LeftHandSlot => GetBodyNodeSlot(ref _cachedLeftHandSlot, Input.BodyNode.LeftHand)
                                 ?? FallbackChildLookup(ref _cachedLeftHandSlot, "LeftHand");
 
@@ -107,8 +143,7 @@ public class UserRoot : Component
         if (IsDestroyed)
             return null!;
 
-        var positioner = GetRegisteredComponent<TrackedDevicePositioner>(p => p.AutoBodyNode.Value == node);
-        var resolved = positioner?.Slot;
+        var resolved = PositionerSlot(node);
 
         if (cache != null && !cache.IsDestroyed)
         {
@@ -126,12 +161,34 @@ public class UserRoot : Component
         // registered object slots before giving up.
         if (resolved == null)
         {
-            resolved = GetRegisteredComponent<Avatar.AvatarSocket>(s => s.Node.Value == node)?.Slot;
+            resolved = SocketSlot(node);
         }
 
         if (resolved != null)
             cache = resolved;
         return resolved!;
+    }
+
+    // Plain loops over the registry: the body node accessors run several times a frame per user, and a
+    // predicate capturing the node was two allocations every call.
+    private Slot? PositionerSlot(Input.BodyNode node)
+    {
+        foreach (var positioner in GetComponentsOfType<TrackedDevicePositioner>())
+        {
+            if (!positioner.IsDestroyed && positioner.AutoBodyNode.Value == node)
+                return positioner.Slot;
+        }
+        return null;
+    }
+
+    private Slot? SocketSlot(Input.BodyNode node)
+    {
+        foreach (var socket in GetComponentsOfType<Avatar.AvatarSocket>())
+        {
+            if (!socket.IsDestroyed && socket.Node.Value == node)
+                return socket.Slot;
+        }
+        return null;
     }
 
     // Old string-named child lookup. Kept as a fallback for slots that exist
@@ -165,6 +222,8 @@ public class UserRoot : Component
     public AudioListener PrimaryListener
         => _primaryListener != null && !_primaryListener.IsDestroyed ? _primaryListener : null!;
 
+    public AudioOutput? VoiceOutput => _voiceOutput is { IsDestroyed: false } ? _voiceOutput : null;
+
     private void EnsurePrimaryListener()
     {
         if (_primaryListener != null && !_primaryListener.IsDestroyed)
@@ -184,7 +243,10 @@ public class UserRoot : Component
         {
             _primaryListener = existing;
             if (World.IsAuthority && existing.ActiveUser.Target != user)
-                existing.ActiveUser.Target = user;
+            {
+                using (EnterScaffoldScope())
+                    existing.ActiveUser.Target = user;
+            }
             return;
         }
 
@@ -193,10 +255,21 @@ public class UserRoot : Component
         if (!World.IsAuthority)
             return;
 
-        var listener = head.AttachComponent<AudioListener>();
-        listener.ActiveUser.Target = user;
-        _primaryListener = listener;
+        using (EnterScaffoldScope())
+        {
+            var listener = head.AttachComponent<AudioListener>();
+            listener.ActiveUser.Target = user;
+            _primaryListener = listener;
+        }
     }
+
+    // The ear and the voice are part of the scaffold the authority builds on every body, a guest's included,
+    // so they are made past the gate like the rest of it: a Social or Event world's freeze refused them on
+    // every body but the host's own and left each guest deaf and silent. Opened around each write that is
+    // actually made, so a finished body costs nothing a frame, and only for a root the authority made: one a
+    // visitor put on a thing it brought gets nothing built past the gate. -xlinka
+    private IDisposable? EnterScaffoldScope()
+        => World is { IsAuthority: true } world && ReferenceID.IsAuthorityID ? world.DataModelPermissions?.EnterSystemBypass() : null;
 
     // VOICE
     //
@@ -258,15 +331,19 @@ public class UserRoot : Component
         {
             if (!authority)
                 return;
-            _voiceStream = Slot.AttachComponent<UserAudioStream>();
+            using (EnterScaffoldScope())
+                _voiceStream = Slot.AttachComponent<UserAudioStream>();
         }
 
         if (_voiceOutput == null || _voiceOutput.IsDestroyed)
         {
             if (!authority)
                 return;
-            _voiceOutput = head.AttachComponent<AudioOutput>();
-            ConfigureVoiceOutput(_voiceOutput);
+            using (EnterScaffoldScope())
+            {
+                _voiceOutput = head.AttachComponent<AudioOutput>();
+                ConfigureVoiceOutput(_voiceOutput);
+            }
         }
 
         if (_voiceOutputManager == null || _voiceOutputManager.IsDestroyed)
@@ -276,24 +353,42 @@ public class UserRoot : Component
             return;
 
         if (stream != null && _voiceStream.Stream.Target != stream)
-            _voiceStream.Stream.Target = stream;
+        {
+            using (EnterScaffoldScope())
+                _voiceStream.Stream.Target = stream;
+        }
 
         if (_voiceOutput.Source.Target != _voiceStream)
-            _voiceOutput.Source.Target = _voiceStream;
+        {
+            using (EnterScaffoldScope())
+                _voiceOutput.Source.Target = _voiceStream;
+        }
 
         // Where the voice comes from, published on the root registry so a mouth visualiser or a level
         // meter finds it without guessing at a slot name.
-        var info = GetRegisteredComponent<AvatarVoiceInfo>() ?? Slot.AttachComponent<AvatarVoiceInfo>();
-        if (info.AudioSource.Target != _voiceStream)
-            info.AudioSource.Target = _voiceStream;
+        var info = GetRegisteredComponent<AvatarVoiceInfo>();
+        if (info == null || info.AudioSource.Target != _voiceStream)
+        {
+            using (EnterScaffoldScope())
+            {
+                info ??= Slot.AttachComponent<AvatarVoiceInfo>();
+                info.AudioSource.Target = _voiceStream;
+            }
+        }
 
         // Distances, rolloff, spatialization and the exclusion are the manager's from here. They used to
         // be a hard-coded 1..100 m written once at attach, which meant a voice had exactly one range and
         // whisper/shout/broadcast had nowhere to land.
-        if (_voiceOutputManager == null || _voiceOutputManager.IsDestroyed)
-            _voiceOutputManager = head.AttachComponent<AvatarAudioOutputManager>();
-        if (_voiceOutputManager.AudioOutput.Target != _voiceOutput)
-            _voiceOutputManager.BindTo(_voiceOutput);
+        if (_voiceOutputManager == null || _voiceOutputManager.IsDestroyed || _voiceOutputManager.AudioOutput.Target != _voiceOutput)
+        {
+            using (EnterScaffoldScope())
+            {
+                if (_voiceOutputManager == null || _voiceOutputManager.IsDestroyed)
+                    _voiceOutputManager = head.AttachComponent<AvatarAudioOutputManager>();
+                if (_voiceOutputManager.AudioOutput.Target != _voiceOutput)
+                    _voiceOutputManager.BindTo(_voiceOutput);
+            }
+        }
 
         // Wired once. A remote user's stream arrives a moment after their root, so until it does the
         // walk repeats; after that this is a pair of null checks a frame.
@@ -337,32 +432,144 @@ public class UserRoot : Component
         }
     }
 
+    // BODY POINTS
+    //
+    // Where a seat, an anchor or a script places a person by. Each is read off whatever knows best: a tracker
+    // on that part, else the bone of the avatar they wear, else an estimate from the head. Setting one never
+    // writes a body slot, since tracking and IK rewrite those every frame and most of these points are worked
+    // out rather than slots at all. It moves the whole rig by however far the point is from where it should
+    // be, so the point lands there and the rest of the body keeps its place around it. -xlinka
+
+    // A standing head sits over the toes, not the heels: the floor point and the estimated hips are taken
+    // this far behind it.
+    private const float HeadAheadOfFeet = 0.1f;
+
+    // How far up from the feet to the head the estimated hips sit.
+    private const float HipsUpFeetToHead = 0.6f;
+
+    // Between the feet: tracked feet, else the worn avatar's foot bones, else the floor under the head.
     public float3 FeetPosition
     {
         get
         {
-            if (LeftFootSlot != null && RightFootSlot != null)
-            {
-                return (LeftFootSlot.GlobalPosition + RightFootSlot.GlobalPosition) / 2f;
-            }
-            // Fallback: project head position to ground
-            var headPos = HeadPosition;
-            return new float3(headPos.x, Slot.GlobalPosition.y, headPos.z);
+            if (TrackedPart(Input.BodyNode.LeftFoot) is { } left && TrackedPart(Input.BodyNode.RightFoot) is { } right)
+                return (left.GlobalPosition + right.GlobalPosition) * 0.5f;
+            var rig = WornRig();
+            if (WornBone(rig, Input.BodyNode.LeftFoot) is { } leftBone && WornBone(rig, Input.BodyNode.RightFoot) is { } rightBone)
+                return (leftBone.GlobalPosition + rightBone.GlobalPosition) * 0.5f;
+            return Slot.LocalPointToGlobal(LocalGroundUnderHead() - LocalHeadFacing() * HeadAheadOfFeet);
         }
-        set
+        set => ShiftBy(value - FeetPosition);
+    }
+
+    // Tracked feet face the way they point, turned to agree with the head; anything else faces with the head.
+    public floatQ FeetRotation
+    {
+        get
         {
-            var offset = value - FeetPosition;
-            Slot.GlobalPosition += offset;
+            var facing = LocalHeadFacing();
+            if (TrackedPart(Input.BodyNode.LeftFoot) is { } left && TrackedPart(Input.BodyNode.RightFoot) is { } right)
+            {
+                var along = Slot.GlobalDirectionToLocal(left.GlobalRotation * float3.Backward + right.GlobalRotation * float3.Backward);
+                var flat = new float3(along.x, 0f, along.z);
+                if (flat.LengthSquared > 1e-8f)
+                {
+                    flat = flat.Normalized;
+                    return LevelRotation(float3.Dot(flat, facing) < 0f ? -flat : flat);
+                }
+            }
+            return LevelRotation(facing);
         }
     }
 
+    // A hips tracker, else the worn avatar's hips bone, else most of the way up from the feet to the head and
+    // a little behind it.
+    public float3 HipsPosition
+    {
+        get
+        {
+            if (TrackedPart(Input.BodyNode.Hips) is { } tracked)
+                return tracked.GlobalPosition;
+            if (WornBone(WornRig(), Input.BodyNode.Hips) is { } bone)
+                return bone.GlobalPosition;
+            var feet = FeetPosition;
+            return feet + (HeadPosition - feet) * HipsUpFeetToHead - Slot.LocalVectorToGlobal(LocalHeadFacing() * HeadAheadOfFeet);
+        }
+        set => ShiftBy(value - HipsPosition);
+    }
+
+    public floatQ HipsRotation
+        => TrackedPart(Input.BodyNode.Hips) is { } tracked ? tracked.GlobalRotation : LevelHeadRotation;
+
+    // Under the head on the user's own floor, the root's plane, so a rig tipped in a seat tips this with it.
+    public float3 GroundProjectedHeadPosition
+    {
+        get => Slot.LocalPointToGlobal(LocalGroundUnderHead());
+        set => ShiftBy(value - GroundProjectedHeadPosition);
+    }
+
+    // The head's rotation with its tilt taken out: level with the root, turned the way the head looks.
+    public floatQ LevelHeadRotation => LevelRotation(LocalHeadFacing());
+
+    // The way the head looks flattened onto the user's floor, in root space, unit length. Looking nearly
+    // straight up or down, the top of the head gives the heading instead.
+    private float3 LocalHeadFacing()
+    {
+        var head = HeadSlot;
+        if (head == null || head.IsDestroyed)
+            return float3.Backward;
+        var look = Slot.GlobalRotationToLocal(head.GlobalRotation);
+        var forward = look * float3.Backward;
+        var flat = new float3(forward.x, 0f, forward.z);
+        if (flat.LengthSquared < 1e-4f)
+        {
+            var top = look * float3.Up;
+            flat = forward.y < 0f ? new float3(top.x, 0f, top.z) : new float3(-top.x, 0f, -top.z);
+        }
+        return flat.LengthSquared < 1e-8f ? float3.Backward : flat.Normalized;
+    }
+
+    private float3 LocalGroundUnderHead()
+    {
+        var head = Slot.GlobalPointToLocal(HeadPosition);
+        return new float3(head.x, 0f, head.z);
+    }
+
+    // Turns only about the root's up, its forward (-Z) onto a root-space direction on the floor.
+    private floatQ LevelRotation(float3 localFacing)
+    {
+        float yaw = MathF.Atan2(-localFacing.x, -localFacing.z);
+        return (Slot.GlobalRotation * floatQ.AxisAngle(float3.Up, yaw)).Normalized;
+    }
+
+    // What a tracker on that body part carries it by, while one is tracking it.
+    private Slot? TrackedPart(Input.BodyNode node)
+    {
+        foreach (var positioner in GetComponentsOfType<TrackedDevicePositioner>())
+        {
+            if (positioner.IsDestroyed || !positioner.IsTracking.Value
+                || (positioner.AutoBodyNode.Value ?? positioner.CorrespondingBodyNode.Value) != node)
+                continue;
+            var part = positioner.BodyNodeRoot.Target;
+            return part is { IsDestroyed: false } ? part : positioner.Slot;
+        }
+        return null;
+    }
+
+    private Avatar.HumanoidRig? WornRig()
+    {
+        var rig = GetRegisteredComponent<Avatar.AvatarIK>(static ik => ik.IsEquipped)?.Rig.Target;
+        return rig is { IsDestroyed: false } ? rig : null;
+    }
+
+    private static Slot? WornBone(Avatar.HumanoidRig? rig, Input.BodyNode node)
+        => rig?.TryGetBone(node) is { IsDestroyed: false } bone ? bone : null;
+
+    // The user's size in the world, whatever the root hangs from: a carrier's space or a seat can be scaled.
     public float GlobalScale
     {
-        get => Slot.Scale.x;
-        set
-        {
-            Slot.Scale = float3.One * value;
-        }
+        get => Slot.GlobalScale.x;
+        set => Slot.GlobalScale = float3.One * value;
     }
 
     private TransformStreamDriver _rootStreamDriver = null!;
@@ -398,6 +605,62 @@ public class UserRoot : Component
     // Below a hundredth of a millimetre the pivot correction is float noise, and paying it every frame
     // would put a transform write (and a hook update) on the root for every frame of mouse look.
     private const float PivotCorrectionSq = 1e-10f;
+
+    // The whole rig moved by an offset, or turned about its own origin, the way its own movement writes it.
+    public void ShiftBy(float3 offset)
+    {
+        if (Slot == null || offset.LengthSquared <= PivotCorrectionSq)
+            return;
+        WriteRootPosition(Slot.GlobalPosition + offset);
+    }
+
+    public void TurnBy(floatQ delta)
+    {
+        if (Slot == null)
+            return;
+        WriteRootRotation((delta * Slot.GlobalRotation).Normalized);
+    }
+
+    private float _scaleFrom;
+    private float _scaleTarget;
+    private float _scaleSeconds;
+    private float _scaleElapsed;
+    private bool _scaling;
+
+    // The user's scale eased to another over some seconds, the feet held where they stand, inside the engine's
+    // range and the role's. Only the machine this user is at moves the root, so anywhere else it does nothing.
+    public void ScaleTo(float scale, float seconds)
+    {
+        if (!IsLocalUserRoot || Slot == null || !float.IsFinite(scale) || !float.IsFinite(seconds))
+            return;
+        var locomotion = Slot.GetComponent<LocomotionController>();
+        scale = locomotion != null ? locomotion.ClampUserScale(scale)
+            : World?.DataModelPermissions?.ClampScale(ActiveUser, scale) ?? scale;
+        _scaleFrom = GlobalScale;
+        _scaleTarget = scale;
+        _scaleSeconds = MathF.Max(seconds, 0f);
+        _scaleElapsed = 0f;
+        _scaling = true;
+        StepScale(0f);
+    }
+
+    private void StepScale(float delta)
+    {
+        if (Slot == null || Slot.IsDestroyed)
+        {
+            _scaling = false;
+            return;
+        }
+        _scaleElapsed += delta;
+        float t = _scaleSeconds <= 0f ? 1f : MathF.Min(_scaleElapsed / _scaleSeconds, 1f);
+        var feet = FeetPosition;
+        GlobalScale = _scaleFrom + (_scaleTarget - _scaleFrom) * t;
+        var offset = feet - FeetPosition;
+        if (offset.LengthSquared > PivotCorrectionSq)
+            WriteRootPosition(Slot.GlobalPosition + offset);
+        if (t >= 1f)
+            _scaling = false;
+    }
 
     // Rotate the WHOLE rig and keep the head where it is. Everything tracked hangs off this slot in
     // user-root space - head, controllers, hands, the avatar - so turning the root is what carries them
@@ -475,17 +738,24 @@ public class UserRoot : Component
             // not an edit: the social freeze refuses every write to what the writer does not own. -xlinka
             using (World.DataModelPermissions?.EnterSystemBypass())
                 user.Root = this;
-            LumoraLogger.Log($"User: Registered UserRoot for authority user '{user.UserName.Value}'");
+            LumoraLogger.Debug($"User: Registered UserRoot for authority user '{user.UserName.Value}'");
         }
 
-        LumoraLogger.Log($"UserRoot: Initialized for user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
+        LumoraLogger.Debug($"UserRoot: Initialized for user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
     }
 
     public override void OnAwake()
     {
         base.OnAwake();
         Slot?.RegisterUserRoot(this);
+        // Where a user sees from is for that user alone to point: the host turns away any remote write that
+        // aims it at something unless it comes from this root's own user. Clearing is never asked about. -xlinka
+        ViewOverride.CheckRemoteSets(SentByOwnUser);
+        RootOverride.CheckRemoteSets(SentByOwnUser);
     }
+
+    private bool SentByOwnUser(User? sender, RefID _, Slot? __)
+        => sender != null && ReferenceEquals(sender, TargetUser?.Target);
 
     // Typed component cache. Every UserRootComponent in the user's slot
     // hierarchy registers here. Lookups like "find the AvatarIK attached
@@ -580,7 +850,7 @@ public class UserRoot : Component
         {
             World.LocalUser.Root = this;
             _isRegistered = true;
-            LumoraLogger.Log($"UserRoot: Registered as Root for local user '{TargetUser.Target?.UserName?.Value}'");
+            LumoraLogger.Debug($"UserRoot: Registered as Root for local user '{TargetUser.Target?.UserName?.Value}'");
         }
 
         if (TargetUser.Target != World?.LocalUser && _isRegistered)
@@ -593,18 +863,24 @@ public class UserRoot : Component
         }
     }
 
+    // View is where the user sees from: the head, unless something they hold or wear has moved it
+    // (ViewOverride). A body slot is the torso when an avatar has one; without it the hips stand in.
     public float3 GetGlobalPosition(UserNode node)
     {
         return node switch
         {
             UserNode.None => float3.Zero,
             UserNode.Root => Slot.GlobalPosition,
-            UserNode.Head => HeadSlot?.GlobalPosition ?? Slot.GlobalPosition,
-            UserNode.Body => BodySlot?.GlobalPosition ?? Slot.GlobalPosition,
+            UserNode.Head => HeadPosition,
+            UserNode.View => ActiveViewOverride?.GlobalPosition ?? HeadPosition,
+            UserNode.Body => BodySlot?.GlobalPosition ?? HipsPosition,
             UserNode.LeftHand => LeftHandSlot?.GlobalPosition ?? Slot.GlobalPosition,
             UserNode.RightHand => RightHandSlot?.GlobalPosition ?? Slot.GlobalPosition,
             UserNode.LeftFoot => LeftFootSlot?.GlobalPosition ?? Slot.GlobalPosition,
             UserNode.RightFoot => RightFootSlot?.GlobalPosition ?? Slot.GlobalPosition,
+            UserNode.Hips => HipsPosition,
+            UserNode.Feet => FeetPosition,
+            UserNode.GroundProjectedHead => GroundProjectedHeadPosition,
             _ => throw new ArgumentException($"Invalid UserNode: {node}")
         };
     }
@@ -615,12 +891,16 @@ public class UserRoot : Component
         {
             UserNode.None => floatQ.Identity,
             UserNode.Root => Slot.GlobalRotation,
-            UserNode.Head => HeadSlot?.GlobalRotation ?? floatQ.Identity,
-            UserNode.Body => BodySlot?.GlobalRotation ?? floatQ.Identity,
-            UserNode.LeftHand => LeftHandSlot?.GlobalRotation ?? floatQ.Identity,
-            UserNode.RightHand => RightHandSlot?.GlobalRotation ?? floatQ.Identity,
-            UserNode.LeftFoot => LeftFootSlot?.GlobalRotation ?? floatQ.Identity,
-            UserNode.RightFoot => RightFootSlot?.GlobalRotation ?? floatQ.Identity,
+            UserNode.Head => HeadRotation,
+            UserNode.View => ActiveViewOverride?.GlobalRotation ?? HeadRotation,
+            UserNode.Body => BodySlot?.GlobalRotation ?? HipsRotation,
+            UserNode.LeftHand => LeftHandSlot?.GlobalRotation ?? Slot.GlobalRotation,
+            UserNode.RightHand => RightHandSlot?.GlobalRotation ?? Slot.GlobalRotation,
+            UserNode.LeftFoot => LeftFootSlot?.GlobalRotation ?? Slot.GlobalRotation,
+            UserNode.RightFoot => RightFootSlot?.GlobalRotation ?? Slot.GlobalRotation,
+            UserNode.Hips => HipsRotation,
+            UserNode.Feet => FeetRotation,
+            UserNode.GroundProjectedHead => LevelHeadRotation,
             _ => throw new ArgumentException($"Invalid UserNode: {node}")
         };
     }
@@ -648,37 +928,15 @@ public class UserRoot : Component
         }
     }
 
+    // Moves the ROOT so the node lands on the point; see BODY POINTS for why never the node itself.
     public void SetGlobalPosition(UserNode node, float3 position)
     {
-        switch (node)
-        {
-            case UserNode.Root:
-                Slot.GlobalPosition = position;
-                break;
-            case UserNode.Head:
-                HeadPosition = position;
-                break;
-            case UserNode.Body:
-                if (BodySlot != null)
-                    BodySlot.GlobalPosition = position;
-                break;
-            case UserNode.LeftHand:
-                if (LeftHandSlot != null)
-                    LeftHandSlot.GlobalPosition = position;
-                break;
-            case UserNode.RightHand:
-                if (RightHandSlot != null)
-                    RightHandSlot.GlobalPosition = position;
-                break;
-            case UserNode.LeftFoot:
-                if (LeftFootSlot != null)
-                    LeftFootSlot.GlobalPosition = position;
-                break;
-            case UserNode.RightFoot:
-                if (RightFootSlot != null)
-                    RightFootSlot.GlobalPosition = position;
-                break;
-        }
+        if (Slot == null || node == UserNode.None)
+            return;
+        if (node == UserNode.Root)
+            WriteRootPosition(position);
+        else
+            ShiftBy(position - GetGlobalPosition(node));
     }
 
     // Rotates the ROOT, not the node's own slot: every body node except Root is written each frame by
@@ -709,6 +967,9 @@ public class UserRoot : Component
         // After the ear, because the voice output has to exclude it and the list is filled once.
         EnsureVoiceOutput();
 
+        if (_scaling)
+            StepScale(delta);
+
         // Validate scale to prevent invalid transforms. These corrective writes run on EVERY peer (incl. an
         // observer holding a REMOTE user's root), and use the THROWING .Value/Scale setters - so a foreign-write
         // denial would throw per frame. It's engine sanitization of a body transform, not a user edit, so bypass
@@ -723,17 +984,19 @@ public class UserRoot : Component
             Slot.LocalScale.Value = float3.One;
         }
 
-        if (System.Math.Abs(scale.x - scale.y) > 0.0001f || System.Math.Abs(scale.y - scale.z) > 0.0001f)
+        // Even in the world, not against the parent: a root hung from a squashed space keeps its own shape.
+        var size = Slot.GlobalScale;
+        if (System.Math.Abs(size.x - size.y) > 0.0001f || System.Math.Abs(size.y - size.z) > 0.0001f)
         {
-            var avgScale = (scale.x + scale.y + scale.z) / 3f;
+            var avgScale = (size.x + size.y + size.z) / 3f;
             using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
-            Slot.Scale = float3.One * avgScale;
+            Slot.GlobalScale = float3.One * avgScale;
         }
     }
 
     public override void OnDestroy()
     {
-        LumoraLogger.Log($"UserRoot: Destroying UserRoot for user '{ActiveUser?.UserName.Value ?? "Unknown"}'");
+        LumoraLogger.Debug($"UserRoot: Destroying UserRoot for user '{ActiveUser?.UserName.Value ?? "Unknown"}'");
 
         Slot?.UnregisterUserRootHierarchy(this);
 

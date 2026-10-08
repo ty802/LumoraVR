@@ -40,7 +40,7 @@ public class HeadOutput : ImplementableComponent
             return;
         }
 
-        LumoraLogger.Log($"HeadOutput: Initialized for user '{activeUser.UserName.Value}'");
+        LumoraLogger.Debug($"HeadOutput: Initialized for user '{activeUser.UserName.Value}'");
     }
 
     public override void OnStart()
@@ -48,14 +48,14 @@ public class HeadOutput : ImplementableComponent
         base.OnStart();
 
         // Hook will handle camera creation
-        LumoraLogger.Log($"HeadOutput: OnStart called for slot '{Slot.SlotName.Value}'");
+        LumoraLogger.Debug($"HeadOutput: OnStart called for slot '{Slot.SlotName.Value}'");
     }
 
     public override void OnDestroy()
     {
         UserRoot = null!;
         base.OnDestroy();
-        LumoraLogger.Log("HeadOutput: Destroyed");
+        LumoraLogger.Debug("HeadOutput: Destroyed");
     }
 }
 

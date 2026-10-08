@@ -10,33 +10,23 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// 3D loading indicator that appears during session joining.
-/// Tracks a target world's joining progress and displays it as 3D text in front of the user.
-/// </summary>
 [ComponentCategory("Network")]
 public class SessionJoinIndicator : Component
 {
-    /// <summary>
-    /// The world being joined (target world).
-    /// </summary>
     public World TargetWorld { get; set; } = null!;
 
-    /// <summary>
-    /// The session sync manager providing progress information.
-    /// </summary>
     public SessionSyncManager SessionSync { get; set; } = null!;
 
-    // Sync fields for the visual elements
     public readonly SyncRef<Slot> Visual;
     public readonly SyncRef<TextRenderer> StatusText;
     public readonly SyncRef<TextRenderer> ProgressText;
 
     private float _disappearThreshold = 0f;
 
-    // Progress tracking
     private float _lastProgress = 0f;
     private string _lastStatus = "";
+    private float _settleRefreshIn;
+    private const float SettleRefreshSeconds = 0.25f;
 
     public bool Visible
     {
@@ -63,13 +53,11 @@ public class SessionJoinIndicator : Component
         // allocation soft-block, so creating slots/components/text there logs a "RefID allocation during OnAwake"
         // warning for EVERY allocation (the text setup alone floods dozens of lines). OnInit runs after that block
         // is released - it's the correct place to spawn child objects. -xlinka
-        // Create visual hierarchy
         Visual.Target = Slot.AddSlot("SessionJoinVisual");
 
         var fontProvider = Visual.Target.AttachComponent<Lumora.Core.Components.Assets.FontProvider>();
         fontProvider.URL.Value = new Uri("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf");
 
-        // Main status text slot
         var statusSlot = Visual.Target.AddSlot("StatusText");
         var statusRenderer = statusSlot.AttachComponent<TextRenderer>();
         statusRenderer.Text.Value = "Joining session...";
@@ -78,7 +66,6 @@ public class SessionJoinIndicator : Component
         statusRenderer.Font.Target = fontProvider;
         StatusText.Target = statusRenderer;
 
-        // Progress details text slot (smaller, below main text)
         var progressSlot = Visual.Target.AddSlot("ProgressText");
         progressSlot.LocalPosition.Value = new float3(0, -0.15f, 0);
         var progressRenderer = progressSlot.AttachComponent<TextRenderer>();
@@ -88,13 +75,11 @@ public class SessionJoinIndicator : Component
         progressRenderer.Font.Target = fontProvider;
         ProgressText.Target = progressRenderer;
 
-        // Initialize sync members created in OnAwake
         InitializeNewSyncMembers();
 
-        // Start at visible position in front of user
         UpdatePosition();
 
-        LumoraLogger.Log("SessionJoinIndicator: Created visual elements");
+        LumoraLogger.Debug("SessionJoinIndicator: Created visual elements");
     }
 
     public override void OnUpdate(float delta)
@@ -106,40 +91,52 @@ public class SessionJoinIndicator : Component
             return;
         }
 
-        // Check if target world is destroyed
         if (TargetWorld.IsDestroyed)
         {
-            LumoraLogger.Log("SessionJoinIndicator: Target world destroyed, removing indicator");
+            LumoraLogger.Debug("SessionJoinIndicator: Target world destroyed, removing indicator");
             Slot.Destroy();
             return;
         }
 
-        // Check if we should disappear (world is running and fully synchronized)
+        // Once the world runs, the join is not over until it is the world in view: the world manager may
+        // hold its focus while it settles, and this stays up with what it is still waiting on. It goes when
+        // the world is focused, or a second after the focus request went somewhere else or never came.
         if (TargetWorld.State == World.WorldState.Running)
         {
-            _disappearThreshold += delta;
-            if (_disappearThreshold >= 1f) // Wait 1 second after Running to ensure stability
+            var manager = Engine.Current?.WorldManager;
+            if (manager == null || manager.FocusedWorld == TargetWorld)
             {
-                LumoraLogger.Log("SessionJoinIndicator: Target world is running and stable, removing indicator");
+                LumoraLogger.Debug("SessionJoinIndicator: Target world is in view, removing indicator");
                 Slot.Destroy();
                 return;
+            }
+
+            if (manager.PendingFocusWorld == TargetWorld)
+            {
+                _disappearThreshold = 0f;
+                UpdateSettleProgress(delta);
+            }
+            else
+            {
+                _disappearThreshold += delta;
+                if (_disappearThreshold >= 1f)
+                {
+                    LumoraLogger.Debug("SessionJoinIndicator: Target world is running but not wanted in view, removing indicator");
+                    Slot.Destroy();
+                    return;
+                }
+                UpdateProgress();
             }
         }
         else
         {
             _disappearThreshold = 0f;
+            UpdateProgress();
         }
 
-        // Update progress from SessionSyncManager
-        UpdateProgress();
-
-        // Smoothly follow user's head
         UpdatePosition(delta);
     }
 
-    /// <summary>
-    /// Update progress display based on SessionSyncManager state.
-    /// </summary>
     private void UpdateProgress()
     {
         // The session connects a moment after we're created, so pick up the sync manager lazily from the target
@@ -161,13 +158,11 @@ public class SessionJoinIndicator : Component
                 _lastProgress = progress;
                 _lastStatus = status;
 
-                // Update main status text
                 if (StatusText?.Target != null)
                 {
                     StatusText.Target.Text.Value = GetMainStatusText();
                 }
 
-                // Update progress details text
                 if (ProgressText?.Target != null)
                 {
                     var progressPercent = (int)(progress * 100f);
@@ -188,9 +183,26 @@ public class SessionJoinIndicator : Component
         }
     }
 
-    /// <summary>
-    /// Get main status text based on world state.
-    /// </summary>
+    // The world is running and waiting for its focus: say what it is still setting up.
+    private void UpdateSettleProgress(float delta)
+    {
+        _settleRefreshIn -= delta;
+        if (_settleRefreshIn > 0f)
+            return;
+        _settleRefreshIn = SettleRefreshSeconds;
+
+        var waiting = TargetWorld.DescribeSettle();
+        var status = string.IsNullOrEmpty(waiting) ? "Finishing up..." : waiting;
+        if (status == _lastStatus)
+            return;
+        _lastStatus = status;
+
+        if (StatusText?.Target != null)
+            StatusText.Target.Text.Value = "Almost there...";
+        if (ProgressText?.Target != null)
+            ProgressText.Target.Text.Value = status;
+    }
+
     private string GetMainStatusText()
     {
         if (TargetWorld == null)
@@ -214,31 +226,24 @@ public class SessionJoinIndicator : Component
         };
     }
 
-    /// <summary>
-    /// Update indicator position to follow user's head.
-    /// Uses InputInterface for head tracking since LocalUser may not be available in userspace.
-    /// </summary>
     private void UpdatePosition(float delta = 0f)
     {
         try
         {
-            // Get head position from InputInterface (works even without LocalUser)
+            // Head comes from InputInterface: LocalUser may not exist in userspace.
             var inputInterface = Engine.Current?.InputInterface;
             var headDevice = inputInterface?.HeadDevice;
             if (headDevice == null || !headDevice.IsTracked)
             {
-                // Use default position if no head tracking
                 var defaultPos = new float3(0, 1.5f, 2f);
                 Slot.GlobalPosition = defaultPos;
                 Slot.GlobalRotation = floatQ.LookRotation(float3.Backward, float3.Up);
                 return;
             }
 
-            // Get head position and rotation from HeadDevice
             var headPos = new float3(headDevice.Position.X, headDevice.Position.Y, headDevice.Position.Z);
             var headRot = new floatQ(headDevice.Rotation.X, headDevice.Rotation.Y, headDevice.Rotation.Z, headDevice.Rotation.W);
 
-            // Position indicator 1.5m in front of user, slightly down
             var forward = headRot * float3.Forward;
             var targetPosition = headPos + forward * 1.5f + float3.Down * 0.3f;
 
@@ -260,7 +265,6 @@ public class SessionJoinIndicator : Component
 
             if (delta > 0f)
             {
-                // Smooth interpolation
                 var currentPos = Slot.GlobalPosition;
                 var currentRot = Slot.GlobalRotation;
                 Slot.GlobalPosition = float3.Lerp(currentPos, targetPosition, delta * 3f);
@@ -279,10 +283,6 @@ public class SessionJoinIndicator : Component
         }
     }
 
-    /// <summary>
-    /// Create a SessionJoinIndicator in the specified world.
-    /// Create a SessionJoinIndicator in the specified world.
-    /// </summary>
     public static SessionJoinIndicator CreateIndicator(World currentWorld, World targetWorld, SessionSyncManager sessionSync)
     {
         SessionJoinIndicator indicator = null!;
@@ -296,7 +296,7 @@ public class SessionJoinIndicator : Component
                 indicator.TargetWorld = targetWorld;
                 indicator.SessionSync = sessionSync;
 
-                LumoraLogger.Log($"SessionJoinIndicator: Created indicator in world '{currentWorld.Name}' for target '{targetWorld.Name}'");
+                LumoraLogger.Debug($"SessionJoinIndicator: Created indicator in world '{currentWorld.Name}' for target '{targetWorld.Name}'");
             }
             catch (Exception ex)
             {
@@ -307,9 +307,6 @@ public class SessionJoinIndicator : Component
         return indicator!;
     }
 
-    /// <summary>
-    /// Static helper to create indicator asynchronously.
-    /// </summary>
     public static void CreateIndicatorAsync(World currentWorld, World targetWorld, SessionSyncManager sessionSync, Action<SessionJoinIndicator> onCreated = null!)
     {
         if (currentWorld == null || targetWorld == null || sessionSync == null)
@@ -329,7 +326,7 @@ public class SessionJoinIndicator : Component
 
     public override void OnDestroy()
     {
-        LumoraLogger.Log("SessionJoinIndicator: Indicator destroyed");
+        LumoraLogger.Debug("SessionJoinIndicator: Indicator destroyed");
         base.OnDestroy();
     }
 }

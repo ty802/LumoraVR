@@ -463,7 +463,7 @@ public sealed class LibVlcBackend : IVideoDecoderBackend
         {
             _firstFrameSeen = true;
             _firstFrameTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-            LumoraLogger.Log($"LibVlcBackend: first frame {width}x{height} from {Describe(_source)}");
+            LumoraLogger.Debug($"LibVlcBackend: first frame {width}x{height} from {Describe(_source)}");
         }
     }
 
@@ -535,7 +535,7 @@ public sealed class LibVlcBackend : IVideoDecoderBackend
         var tracks = CollectAudioTracks(player, media);
         _isLive = live;
         Ready?.Invoke(new VideoReadyInfo(length, width, height, false, EngineName, tracks, live));
-        LumoraLogger.Log($"LibVlcBackend: ready {width}x{height} live={live} audioOnly={audioOnly} length={(live ? "-" : (lengthKnown ? length.ToString("0.0") : "?"))}s from {Describe(_source)}");
+        LumoraLogger.Debug($"LibVlcBackend: ready {width}x{height} live={live} audioOnly={audioOnly} length={(live ? "-" : (lengthKnown ? length.ToString("0.0") : "?"))}s from {Describe(_source)}");
     }
 
     private bool UnclassifiedLooksLive()

@@ -7,6 +7,7 @@ using Helio.UI.Layout;
 using Lumora.Core.Assets;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.Import;
+using Lumora.Core.Components.Magnets;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Components.Twitch;
 using Lumora.Core.Components.UI;
@@ -14,6 +15,7 @@ using Lumora.Core.Math;
 using Lumora.Core.Localization;
 using Lumora.Core.Media;
 using Lumora.Core.Persistence;
+using Lumora.Core.Physics;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 using StereoLayoutMode = Lumora.Core.Components.Import.StereoLayout;
 using WorldAudioOutput = Lumora.Core.Components.Audio.AudioOutput;
@@ -21,9 +23,10 @@ using VideoProjectionMode = Lumora.Core.Components.Import.VideoProjection;
 
 namespace Lumora.Core.Components.Media;
 
-// The whole in-world video item: a screen, a frame, a sphere for the two projections, the sound, and
-// the controls under it. Attaching this to a bare slot builds all of it, so spawning a player is one
-// AttachComponent and nothing has to know the part list.
+// The whole in-world video item: a screen, a frame, the sound, and the controls under it. Attaching this to
+// a bare slot builds all of it, so spawning a player is one AttachComponent and nothing has to know the
+// part list. The chat column, the stats readout and the 360 orb are companions (VideoPlayerPart): they
+// start beside the screen and anyone can carry them off, after which they stay where they were put.
 //
 // It owns no playback state of its own. The provider's SyncPlayback is the clock every peer already
 // agrees on, so this is a face on top of it: everything the panel shows is read back out of replicated
@@ -55,6 +58,17 @@ public sealed class VideoPlayer : Component, IPlayable
 
     // A twitch.tv channel brings its chat along, parked off the left edge of the screen.
     public readonly Sync<bool> ShowChat;
+
+    // The companions. Made and removed only by the authority; a reference to a part some other player owns
+    // (this one is a duplicate, or a save kept the link but not the part) is ignored and replaced.
+    public readonly SyncRef<VideoPlayerPart> ChatPart;
+    public readonly SyncRef<VideoPlayerPart> StatsPart;
+    public readonly SyncRef<VideoPlayerPart> OrbPart;
+
+    // Which build of the controls and companions this item carries. A saved player from an older build is
+    // brought up to date by the authority when it loads, so it gets the controls everyone else has.
+    public readonly Sync<int> ControlsVersion;
+    private const int CurrentControlsVersion = 2;
 
     // The controls canvas is authored in pixels and then scaled so its width matches the screen's, the
     // way the import dialogs do it: layout numbers stay readable and the panel tracks the item's size.
@@ -96,17 +110,14 @@ public sealed class VideoPlayer : Component, IPlayable
 
     private Slot? _displaySlot;
     private Slot? _frameSlot;
-    private Slot? _sphereSlot;
     private Slot? _controlsSlot;
     private Slot? _controlsFrameSlot;
     private Slot? _audioOnlySlot;
 
     private QuadMesh? _displayMesh;
-    private SphereMesh? _sphereMesh;
     private RoundedQuadMesh? _frameMesh;
     private BoxCollider? _displayCollider;
     private UnlitMaterial? _displayMaterial;
-    private UnlitMaterial? _sphereMaterial;
     private FontProvider? _font;
 
     private Text? _titleLabel;
@@ -119,14 +130,12 @@ public sealed class VideoPlayer : Component, IPlayable
     private Button? _loopButton;
     private Button? _spatialButton;
     private Button? _statsButton;
-    private Slot? _chatSlot;
-    private TwitchChat? _chat;
-    private TwitchChatPanel? _chatPanel;
-    private Slot? _statsSlot;
+    private Button? _chatButton;
     private Slot? _liveBadgeSlot;
     private FontProvider? _titleFont;
     private Slider? _timeline;
     private Slider? _volumeSlider;
+    private Text? _volumeValue;
     private TextInput? _sourceInput;
 
     private bool _built;
@@ -134,10 +143,12 @@ public sealed class VideoPlayer : Component, IPlayable
     private bool _subscribed;
     private float _labelPoll;
     private float2 _lastDisplaySize = new float2(-1f, -1f);
+    private (VideoPlayerPart? Chat, VideoPlayerPart? Stats, VideoPlayerPart? Orb) _lastDocked;
     private bool _toggleStateKnown;
     private bool _lastLoop;
     private bool _lastSpatialize;
     private bool _lastStats;
+    private bool _lastChat;
 
     public VideoPlayer()
     {
@@ -149,6 +160,10 @@ public sealed class VideoPlayer : Component, IPlayable
         AudioOutput = new SyncRef<WorldAudioOutput>(this);
         ShowStats = new Sync<bool>(this, false);
         ShowChat = new Sync<bool>(this, true);
+        ChatPart = new SyncRef<VideoPlayerPart>(this);
+        StatsPart = new SyncRef<VideoPlayerPart>(this);
+        OrbPart = new SyncRef<VideoPlayerPart>(this);
+        ControlsVersion = new Sync<int>(this, 0);
     }
 
     public VideoTextureProvider? Provider => Video.Target;
@@ -162,41 +177,189 @@ public sealed class VideoPlayer : Component, IPlayable
             return;
         video.Stream.Value = stream;
         video.URL.Value = url;
-        SyncChat(url);
+        if (World is { IsAuthority: true })
+            SyncParts(video);
     }
 
-    // CHAT
+    // PARTS
 
-    // Only the peer that set the source builds or removes the chat; the slot and its components
-    // replicate from there, and every peer then reads the channel for itself.
-    private void SyncChat(Uri? url)
+    // The live companion behind a reference, if it is really this player's. A duplicated player keeps its
+    // original's references to companions that were carried off, and those belong to the original.
+    private VideoPlayerPart? PartOf(SyncRef<VideoPlayerPart> reference)
     {
-        if (Slot == null || Slot.IsDestroyed)
+        var part = reference.Target;
+        if (part == null || part.IsDestroyed || part.Slot is not { IsDestroyed: false })
+            return null;
+        return ReferenceEquals(part.Owner.Target, this) ? part : null;
+    }
+
+    private VideoPlayerPart? Chat => PartOf(ChatPart);
+    private VideoPlayerPart? Stats => PartOf(StatsPart);
+    private VideoPlayerPart? Orb => PartOf(OrbPart);
+
+    private UnlitMaterial? OrbMaterial => Orb?.Slot.GetComponent<UnlitMaterial>();
+
+    // The authority alone makes and removes companions; each slot replicates from there and every peer
+    // reads the chat channel and the decoder for itself. Called from its poll, so a source that arrives by
+    // any path (a paste, a saved item, a guest's edit) brings the right set along.
+    private void SyncParts(VideoTextureProvider video)
+    {
+        if (Slot == null || Slot.IsDestroyed || World is not { IsAuthority: true })
             return;
 
-        string channel = TwitchChat.ChannelFromUrl(url);
-        if (channel.Length == 0)
+        string channel = TwitchChat.ChannelFromUrl(video.URL.Value);
+        var chat = Chat;
+        if (ShowChat.Value && channel.Length > 0)
         {
-            var stale = Slot.FindChild("Chat", recursive: false);
-            if (stale != null && !stale.IsDestroyed)
-                stale.Destroy();
-            _chatSlot = null;
-            _chat = null;
-            _chatPanel = null;
-            return;
+            chat ??= MakeChat();
+            var reader = chat?.Slot.GetComponent<TwitchChat>();
+            if (reader != null && !string.Equals(reader.Channel.Value, channel, StringComparison.Ordinal))
+            {
+                LumoraLogger.Debug($"VideoPlayer: twitch channel '{channel}' detected, chat goes beside the screen");
+                reader.Channel.Value = channel;
+            }
+        }
+        else if (chat != null)
+        {
+            RemovePart(ChatPart, chat);
         }
 
-        _chatSlot = Slot.FindChildOrAdd("Chat");
-        _chat = _chatSlot.GetOrAttachComponent<TwitchChat>();
-        if (!string.Equals(_chat.Channel.Value, channel, StringComparison.Ordinal))
+        var stats = Stats;
+        if (ShowStats.Value && stats == null)
+            MakeStats(video);
+        else if (!ShowStats.Value && stats != null)
+            RemovePart(StatsPart, stats);
+
+        // Made the first time a projection needs it and kept after: it carries the material anything painted
+        // with it is still using, so going back to flat only puts away the one still beside the screen.
+        if (Projection.Value != VideoProjectionMode.Flat && Orb == null)
+            MakeOrb(video);
+    }
+
+    // A companion's close button lands here; the authority takes the part down on its next poll.
+    public void ClosePart(VideoPlayerPartKind kind)
+    {
+        switch (kind)
         {
-            LumoraLogger.Debug($"VideoPlayer: twitch channel '{channel}' detected, chat panel goes beside the screen");
-            _chat.Channel.Value = channel;
+            case VideoPlayerPartKind.Chat:
+                ShowChat.Value = false;
+                break;
+            case VideoPlayerPartKind.Stats:
+                ShowStats.Value = false;
+                break;
+            case VideoPlayerPartKind.Orb:
+                Projection.Value = VideoProjectionMode.Flat;
+                break;
         }
-        _chatPanel = _chatSlot.GetOrAttachComponent<TwitchChatPanel>();
-        if (!ReferenceEquals(_chatPanel.Chat.Target, _chat))
-            _chatPanel.Chat.Target = _chat;
+    }
+
+    private void RemovePart(SyncRef<VideoPlayerPart> reference, VideoPlayerPart part)
+    {
+        try
+        {
+            part.Slot.Destroy();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return;
+        }
+        reference.Target = null!;
         _lastDisplaySize = new float2(-1f, -1f);
+    }
+
+    private VideoPlayerPart NewPart(string name, VideoPlayerPartKind kind, SyncRef<VideoPlayerPart> reference)
+    {
+        var slot = Slot.AddSlot(name);
+        var grab = slot.AttachComponent<Grabbable>();
+        grab.AllowGrab.Value = true;
+        grab.Scalable.Value = true;
+        // Carried off, it stays where it is let go rather than jumping back beside the screen.
+        grab.ReturnToParent.Value = false;
+        var part = slot.AttachComponent<VideoPlayerPart>();
+        part.Owner.Target = this;
+        part.Kind.Value = kind;
+        reference.Target = part;
+        _lastDisplaySize = new float2(-1f, -1f);
+        return part;
+    }
+
+    private VideoPlayerPart? MakeChat()
+    {
+        try
+        {
+            var part = NewPart("Chat", VideoPlayerPartKind.Chat, ChatPart);
+            var reader = part.Slot.AttachComponent<TwitchChat>();
+            var panel = part.Slot.AttachComponent<TwitchChatPanel>();
+            panel.Chat.Target = reader;
+            return part;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    // The readout's slot is synced and placed as the chat and orb are; the panel under it builds its own local
+    // canvas on every peer.
+    private VideoPlayerPart? MakeStats(VideoTextureProvider video)
+    {
+        try
+        {
+            var part = NewPart("Stats", VideoPlayerPartKind.Stats, StatsPart);
+            var panel = part.Slot.AttachComponent<VideoStatsPanel>();
+            panel.Video.Target = video;
+            return part;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    // A material orb drawn in the 360 or 180 picture. The mesh is an orb's own size and the player scales it
+    // up beside the screen, so seated in a material tool it is the same small orb as any other, and the tool
+    // paints the live video with it.
+    private VideoPlayerPart? MakeOrb(VideoTextureProvider video)
+    {
+        try
+        {
+            var part = NewPart("360 Orb", VideoPlayerPartKind.Orb, OrbPart);
+            var slot = part.Slot;
+            var mesh = slot.AttachComponent<SphereMesh>();
+            mesh.Radius.Value = MaterialOrb.Radius;
+            mesh.Segments.Value = 64;
+            mesh.Rings.Value = 32;
+
+            var material = slot.AttachComponent<UnlitMaterial>();
+            material.Texture.Target = video;
+            material.BlendMode.Value = BlendMode.Opaque;
+            // The unlit shader compiles with culling off, so this is a statement of intent rather than a
+            // switch. A ray from the middle of a sphere leaves through exactly one surface, so a viewer
+            // inside sees one face and not two.
+            material.Culling.Value = Culling.None;
+            material.TintColor.Value = colorHDR.White;
+
+            var renderer = slot.AttachComponent<MeshRenderer>();
+            renderer.Mesh.Target = mesh;
+            renderer.Material.Target = material;
+            renderer.ShadowCastMode.Value = ShadowCastMode.Off;
+
+            var collider = slot.AttachComponent<SphereCollider>();
+            collider.Radius.Value = MaterialOrb.Radius;
+            collider.Type.Value = ColliderType.Trigger;
+
+            var magnet = slot.AttachComponent<Magnet>();
+            magnet.Tags.Add(MaterialOrb.MagnetTag);
+            slot.AttachComponent<MaterialOrb>();
+
+            ApplyStereo();
+            ApplyProjection();
+            return part;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     public void SetSource(string source)
@@ -313,8 +476,29 @@ public sealed class VideoPlayer : Component, IPlayable
         if (_subscribed && _sourceInput != null && !_sourceInput.IsDestroyed)
             _sourceInput.EditingFinished -= OnSourceEditingFinished;
         _subscribed = false;
+        // Companions carried off go with the player. A part can not see this for itself while it is hidden
+        // (its player was put away first), because a slot that is off gets no updates. The docked ones are
+        // children and already went. Raw targets: the plain ones read null while this is being removed.
+        if (World is { IsAuthority: true, IsDisposed: false, IsDestroyed: false })
+        {
+            foreach (var reference in new[] { ChatPart, StatsPart, OrbPart })
+            {
+                var part = reference.RawTarget;
+                if (part == null || part.IsDestroyed || part.Slot is not { IsDestroyed: false } partSlot)
+                    continue;
+                if (!ReferenceEquals(part.Owner.RawTarget, this))
+                    continue;
+                try { partSlot.Destroy(); }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
         base.OnDestroy();
     }
+
+    // Whether this player keeps the part. A copy of a carried-off companion still names the player as its
+    // owner but is not one of its own.
+    internal bool Tracks(VideoPlayerPart part)
+        => ReferenceEquals(ChatPart.Target, part) || ReferenceEquals(StatsPart.Target, part) || ReferenceEquals(OrbPart.Target, part);
 
     // BUILD
 
@@ -367,11 +551,11 @@ public sealed class VideoPlayer : Component, IPlayable
         BuildFont();
         BuildDisplay(video);
         BuildLiveBadge();
-        BuildStats(video);
         BuildFrame();
-        BuildSphere(video);
         BuildControls(video, audio);
-        SyncChat(video.URL.Value);
+        ControlsVersion.Value = CurrentControlsVersion;
+        if (World is { IsAuthority: true })
+            SyncParts(video);
 
         _wired = true;
         ApplyProjection();
@@ -465,17 +649,6 @@ public sealed class VideoPlayer : Component, IPlayable
         _liveBadgeSlot.ActiveSelf.Value = false;
     }
 
-    // The readout stands beside the screen on a synced anchor the player places; the panel component
-    // under it builds its own local canvas on every peer.
-    private void BuildStats(VideoTextureProvider video)
-    {
-        _statsSlot = Slot.FindChildOrAdd("Stats");
-        _statsSlot.ActiveSelf.Value = ShowStats.Value;
-        var panel = _statsSlot.GetOrAttachComponent<VideoStatsPanel>();
-        if (!ReferenceEquals(panel.Video.Target, video))
-            panel.Video.Target = video;
-    }
-
     private void BuildFrame()
     {
         _frameSlot = Slot.FindChildOrAdd("Frame");
@@ -491,30 +664,6 @@ public sealed class VideoPlayer : Component, IPlayable
         renderer.Mesh.Target = _frameMesh;
         renderer.Material.Target = frameMaterial;
         renderer.ShadowCastMode.Value = ShadowCastMode.Off;
-    }
-
-    private void BuildSphere(VideoTextureProvider video)
-    {
-        _sphereSlot = Slot.FindChildOrAdd("Sphere");
-        _sphereMesh = _sphereSlot.GetOrAttachComponent<SphereMesh>();
-        _sphereMesh.Radius.Value = 0.25f;
-        _sphereMesh.Segments.Value = 64;
-        _sphereMesh.Rings.Value = 32;
-
-        _sphereMaterial = _sphereSlot.GetOrAttachComponent<UnlitMaterial>();
-        _sphereMaterial.Texture.Target = video;
-        _sphereMaterial.BlendMode.Value = BlendMode.Opaque;
-        // The unlit shader compiles with culling off, so this is a statement of intent rather than a
-        // switch: nothing is culled either way. It costs nothing, because a ray from the middle of a
-        // sphere leaves through exactly one surface, so a viewer inside sees one face and not two.
-        _sphereMaterial.Culling.Value = Culling.None;
-        _sphereMaterial.TintColor.Value = colorHDR.White;
-
-        var renderer = _sphereSlot.GetOrAttachComponent<MeshRenderer>();
-        renderer.Mesh.Target = _sphereMesh;
-        renderer.Material.Target = _sphereMaterial;
-        renderer.ShadowCastMode.Value = ShadowCastMode.Off;
-        _sphereSlot.ActiveSelf.Value = false;
     }
 
     // CONTROLS
@@ -553,9 +702,12 @@ public sealed class VideoPlayer : Component, IPlayable
         FillRect(content);
         // Its own chunk so the buttons draw above the rounded backdrop on the canvas root.
         content.GetOrAttachComponent<GraphicChunkRoot>();
-        if (content.ChildCount > 0)
-            return;
+        if (content.ChildCount == 0)
+            BuildControlRows(content, video, audio);
+    }
 
+    private void BuildControlRows(Slot content, VideoTextureProvider video, WorldAudioOutput audio)
+    {
         var ui = new UIBuilder(content);
         ui.Font(_font);
         ui.FontSize(16f);
@@ -642,18 +794,27 @@ public sealed class VideoPlayer : Component, IPlayable
         _playButton = ui.Button("Play", OnPlayPausePressed, DashTheme.Surface);
         _playButton.Slot.Name.Value = "PlayPause";
         _playLabel = ChildText(_playButton);
+        ui.PopStyle();
 
+        ui.PushStyle().MinWidth(90f).PreferredWidth(90f).FlexibleWidth(0f);
         ui.Button("Stop", OnStopPressed, DashTheme.Surface);
-
-        ui.PushStyle().MinWidth(90f).PreferredWidth(90f);
         _loopButton = ui.Button("Loop", OnLoopPressed, DashTheme.Surface);
         _loopButton.Slot.Name.Value = "Loop";
         ui.PopStyle();
 
-        ui.PushStyle().MinWidth(120f).PreferredWidth(120f);
+        ui.PushStyle().MinWidth(80f).PreferredWidth(80f).FlexibleWidth(0f);
+        ui.Button("-10s", OnSeekBackPressed, DashTheme.Surface);
+        ui.Button("+10s", OnSeekForwardPressed, DashTheme.Surface);
+        ui.PopStyle();
+
+        ui.PushStyle().MinWidth(120f).PreferredWidth(120f).FlexibleWidth(0f);
         _spatialButton = ui.Button("3D Audio", OnSpatialPressed, DashTheme.Surface);
         _spatialButton.Slot.Name.Value = "Spatialize";
         ui.PopStyle();
+
+        // Named, with its level beside it: a bare bar under the timeline reads as a second timeline.
+        ui.PushStyle().MinWidth(84f).PreferredWidth(84f).FlexibleWidth(0f);
+        Label(ui, "VolumeLabel", "Volume", 15f, DashTheme.TextMuted, TextHorizontalAlignment.Right);
         ui.PopStyle();
 
         // Volume is heard, not measured: a linear fader spends most of its travel in a range nobody can
@@ -662,19 +823,18 @@ public sealed class VideoPlayer : Component, IPlayable
         float initial = MathF.Sqrt(Clamp01(audio.Volume.Value));
         _volumeSlider = ui.Slider(initial, 0f, 1f, OnVolumeChanged, DashTheme.Field);
         _volumeSlider.Slot.Name.Value = "Volume";
-        Metrics(_volumeSlider.Slot, 90f, 90f, 1f, 24f, 24f, 0f);
+        Metrics(_volumeSlider.Slot, 160f, 160f, 1f, 24f, 24f, 0f);
         ui.PopStyle();
 
-        ui.PushStyle().MinWidth(80f).PreferredWidth(80f).FlexibleWidth(0f);
-        ui.Button("-10s", OnSeekBackPressed, DashTheme.Surface);
-        ui.Button("+10s", OnSeekForwardPressed, DashTheme.Surface);
-        _statsButton = ui.Button("VideoPlayer.Stats".AsLocale("Stats"), OnStatsPressed, DashTheme.Surface);
-        _statsButton.Slot.Name.Value = "Stats";
+        ui.PushStyle().MinWidth(60f).PreferredWidth(60f).FlexibleWidth(0f);
+        _volumeValue = Label(ui, "VolumeValue", VolumeText(initial), 15f, DashTheme.TextDim, TextHorizontalAlignment.Left);
         ui.PopStyle();
 
         ui.NestOut();
         ui.PopStyle();
     }
+
+    private static string VolumeText(float sliderValue) => $"{MathF.Round(Clamp01(sliderValue) * 100f):0}%";
 
     private void BuildSourceRow(UIBuilder ui)
     {
@@ -701,6 +861,11 @@ public sealed class VideoPlayer : Component, IPlayable
         ui.PushStyle().MinWidth(100f).PreferredWidth(100f);
         ui.Button("Stereo", OnStereoPressed, DashTheme.Surface);
         ui.PopStyle();
+        _statsButton = ui.Button("VideoPlayer.Stats".AsLocale("Stats"), OnStatsPressed, DashTheme.Surface);
+        _statsButton.Slot.Name.Value = "Stats";
+        // Only shown while the video's URL has a chat to bring; it brings back a chat that was closed.
+        _chatButton = ui.Button("VideoPlayer.Chat".AsLocale("Chat"), OnChatPressed, DashTheme.Surface);
+        _chatButton.Slot.Name.Value = "ChatToggle";
         ui.PopStyle();
 
         ui.NestOut();
@@ -714,7 +879,11 @@ public sealed class VideoPlayer : Component, IPlayable
     [SyncMethod]
     public void OnPlayPausePressed(Button button, UIInteractionContext context) => TogglePlayback();
 
+    [SyncMethod]
     public void OnStatsPressed(Button button, UIInteractionContext context) => ShowStats.Value = !ShowStats.Value;
+
+    [SyncMethod]
+    public void OnChatPressed(Button button, UIInteractionContext context) => ShowChat.Value = !ShowChat.Value;
 
     [SyncMethod]
     public void OnStopPressed(Button button, UIInteractionContext context) => Stop();
@@ -757,6 +926,7 @@ public sealed class VideoPlayer : Component, IPlayable
             return;
         float t = Clamp01(value);
         audio.Volume.Value = t * t;
+        SetText(_volumeValue, VolumeText(t));
     }
 
     [SyncMethod]
@@ -868,10 +1038,11 @@ public sealed class VideoPlayer : Component, IPlayable
         if (_displayMaterial != null && !_displayMaterial.IsDestroyed)
             ApplyStereoLayout(_displayMaterial, layout);
 
-        if (_sphereMaterial != null && !_sphereMaterial.IsDestroyed)
+        var orbMaterial = OrbMaterial;
+        if (orbMaterial != null && !orbMaterial.IsDestroyed)
         {
             var (scale, offset) = SphereTransform(Projection.Value);
-            ApplyStereoLayout(_sphereMaterial, layout, scale, offset);
+            ApplyStereoLayout(orbMaterial, layout, scale, offset);
         }
     }
 
@@ -886,12 +1057,32 @@ public sealed class VideoPlayer : Component, IPlayable
             ? (new float2(2f, 1f), new float2(-1f, 0f))
             : (float2.One, float2.Zero);
 
-    // The screen stays up in every mode; the orb joins it for 360 and 180 and stereo only changes
-    // what both of them show.
+    // The screen stays up in every mode and the orb beside it joins it for 360 and 180. An orb somebody
+    // carried off is an object of its own (in a material tool, on a shelf) and stays out whatever the screen
+    // shows. Stereo only changes what both of them show.
     private void ApplyProjection()
     {
-        bool flat = Projection.Value == VideoProjectionMode.Flat;
-        SetActive(_sphereSlot, !flat);
+        var orb = Orb;
+        if (orb == null)
+            return;
+        if (orb.Docked)
+            SetActive(orb.Slot, Projection.Value != VideoProjectionMode.Flat);
+        else
+            orb.ShowForOwner();
+    }
+
+    // A companion off on its own hides itself while the player is put away; this brings it back once the
+    // player is out again, and leaves alone one somebody switched off by hand. One beside the screen follows
+    // the player's own slot.
+    private void ShowParts()
+    {
+        var chat = Chat;
+        if (chat != null && !chat.Docked)
+            chat.ShowForOwner();
+        var stats = Stats;
+        if (stats != null && !stats.Docked)
+            stats.ShowForOwner();
+        ApplyProjection();
     }
 
     // PER-FRAME
@@ -900,6 +1091,13 @@ public sealed class VideoPlayer : Component, IPlayable
     {
         base.OnCommonUpdate();
 
+        // Rows the authority rebuilt (an older save brought up to date) show up here as destroyed
+        // references: look the controls up again once the new rows have arrived.
+        if (_wired && _playButton is { IsDestroyed: true })
+        {
+            _wired = false;
+            _subscribed = false;
+        }
         if (!_wired)
             Wire();
 
@@ -907,33 +1105,64 @@ public sealed class VideoPlayer : Component, IPlayable
         if (video == null || video.IsDestroyed)
             return;
 
+        if (World is { IsAuthority: true } && _wired && ControlsVersion.Value < CurrentControlsVersion)
+            Upgrade(video);
+
         UpdateSurfaces(video);
+        ShowParts();
 
         float delta = World?.Time?.Delta ?? 0f;
-        bool showStats = ShowStats.Value;
-        if (_statsSlot != null && !_statsSlot.IsDestroyed && _statsSlot.ActiveSelf.Value != showStats)
-        {
-            SetActive(_statsSlot, showStats);
-            _lastDisplaySize = new float2(-1f, -1f);
-        }
-        if (_chatSlot == null || _chatSlot.IsDestroyed)
-        {
-            _chatSlot = Slot.FindChild("Chat", recursive: false);
-            if (_chatSlot != null)
-                _lastDisplaySize = new float2(-1f, -1f);
-        }
-        SetActive(_chatSlot, ShowChat.Value);
-
         _labelPoll -= delta;
         if (_labelPoll > 0f)
             return;
         _labelPoll = 0.1f;
         UpdateLabels(video);
-        // The source can arrive by any path (a paste, a saved item, a peer's edit), so the host keeps
-        // the chat in step with the URL rather than trusting one entry point to have done it.
-        if (World != null && World.IsAuthority)
-            SyncChat(video.URL.Value);
+        if (World is { IsAuthority: true })
+            SyncParts(video);
     }
+
+    // A player saved by an older build kept its companions inside it under fixed names, and its rows had no
+    // volume readout or chat toggle. The companions are made again from the player's own state, so nothing
+    // anyone set is lost; the rows are rebuilt in place and every peer looks its controls up again.
+    private void Upgrade(VideoTextureProvider video)
+    {
+        if (Slot == null || Slot.IsDestroyed)
+            return;
+        var audio = AudioOutput.Target;
+        var content = _controlsSlot?.FindChild("Content", recursive: false);
+        if (_subscribed && _sourceInput != null && !_sourceInput.IsDestroyed)
+            _sourceInput.EditingFinished -= OnSourceEditingFinished;
+        _subscribed = false;
+        try
+        {
+            foreach (var name in LegacyPartNames)
+            {
+                var old = Slot.FindChild(name, recursive: false);
+                if (old != null && !old.IsDestroyed && old.GetComponent<VideoPlayerPart>() == null)
+                    old.Destroy();
+            }
+            if (content != null && audio != null && !audio.IsDestroyed)
+            {
+                var rows = new System.Collections.Generic.List<Slot>(content.Children);
+                foreach (var row in rows)
+                    row.Destroy();
+                BuildControlRows(content, video, audio);
+            }
+            ControlsVersion.Value = CurrentControlsVersion;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return;
+        }
+        LumoraLogger.Debug("VideoPlayer: brought a saved player's controls and companions up to date");
+        _wired = false;
+        _toggleStateKnown = false;
+        _lastDisplaySize = new float2(-1f, -1f);
+        Wire();
+        SyncParts(video);
+    }
+
+    private static readonly string[] LegacyPartNames = { "Chat", "Stats", "Sphere" };
 
     // Sizing runs off the video's own dimensions, so it is computed locally on every peer from a number
     // they all read out of the same file, and written silently - a replicated quad size would be four
@@ -958,9 +1187,16 @@ public sealed class VideoPlayer : Component, IPlayable
         var size = new float2(width * compensation.x, width * aspect * compensation.y);
         SetActive(_audioOnlySlot, ready && !hasPicture);
 
-        if (size == _lastDisplaySize)
+        // Which companions ride beside the screen changes on any peer without the picture changing size (one
+        // arrives from the authority, one is carried off), and each of those moves the rest along.
+        var chat = Chat;
+        var stats = Stats;
+        var orb = Orb;
+        var docked = (chat != null && chat.Docked ? chat : null, stats != null && stats.Docked ? stats : null, orb != null && orb.Docked ? orb : null);
+        if (size == _lastDisplaySize && docked == _lastDocked)
             return;
         _lastDisplaySize = size;
+        _lastDocked = docked;
 
         _displayMesh.Size.SetValueSilently(size);
 
@@ -970,32 +1206,33 @@ public sealed class VideoPlayer : Component, IPlayable
         if (_frameMesh != null && !_frameMesh.IsDestroyed)
             _frameMesh.Size.SetValueSilently(new float2(size.x + FrameMargin * 2f, size.y + FrameMargin * 2f));
 
-        if (_chatSlot != null && !_chatSlot.IsDestroyed)
+        if (docked.Item1 is { } dockedChat)
         {
+            var chatSlot = dockedChat.Slot;
             float scale = size.y / TwitchChatPanel.PanelHeight;
             float chatWidth = TwitchChatPanel.PanelWidth * scale;
             float yaw = ChatYawDegrees * (MathF.PI / 180f);
             float half = chatWidth * 0.5f;
-            _chatSlot.LocalScale.SetValueSilently(new float3(scale, scale, scale), change: true);
-            _chatSlot.LocalRotation.SetValueSilently(floatQ.AxisAngle(float3.Up, yaw), change: true);
+            chatSlot.LocalScale.SetValueSilently(new float3(scale, scale, scale), change: true);
+            chatSlot.LocalRotation.SetValueSilently(floatQ.AxisAngle(float3.Up, yaw), change: true);
             // Turned about its own middle, so the inner edge is pulled back to the screen's plane and
             // the outer edge comes forward by the same amount.
-            _chatSlot.LocalPosition.SetValueSilently(
+            chatSlot.LocalPosition.SetValueSilently(
                 new float3(-(size.x * 0.5f + FrameMargin + ChatGap + half * MathF.Cos(yaw)), 0f, half * MathF.Sin(yaw)), change: true);
         }
 
         float rightEdge = size.x * 0.5f + FrameMargin;
-        if (_statsSlot != null && !_statsSlot.IsDestroyed)
+        if (docked.Item2 is { } dockedStats)
         {
+            var statsSlot = dockedStats.Slot;
             float scale = size.x / CanvasWidth;
             float yaw = ChatYawDegrees * (MathF.PI / 180f);
             float half = VideoStatsPanel.PanelWidth * scale * 0.5f;
-            _statsSlot.LocalScale.SetValueSilently(new float3(scale, scale, scale), change: true);
-            _statsSlot.LocalRotation.SetValueSilently(floatQ.AxisAngle(float3.Up, -yaw), change: true);
-            _statsSlot.LocalPosition.SetValueSilently(
+            statsSlot.LocalScale.SetValueSilently(new float3(scale, scale, scale), change: true);
+            statsSlot.LocalRotation.SetValueSilently(floatQ.AxisAngle(float3.Up, -yaw), change: true);
+            statsSlot.LocalPosition.SetValueSilently(
                 new float3(rightEdge + ChatGap + half * MathF.Cos(yaw), size.y * 0.5f - VideoStatsPanel.PanelHeight * scale * 0.5f - FrameMargin, half * MathF.Sin(yaw)), change: true);
-            if (ShowStats.Value)
-                rightEdge += ChatGap + VideoStatsPanel.PanelWidth * scale * MathF.Cos(yaw) + ControlsFrameMargin * scale;
+            rightEdge += ChatGap + VideoStatsPanel.PanelWidth * scale * MathF.Cos(yaw) + ControlsFrameMargin * scale;
         }
 
         if (_liveBadgeSlot != null && !_liveBadgeSlot.IsDestroyed)
@@ -1009,12 +1246,13 @@ public sealed class VideoPlayer : Component, IPlayable
                 new float3(size.x * 0.5f - badgeWidth * 0.5f - margin, size.y * 0.5f - badgeHeight * 0.5f - margin, 0.003f), change: true);
         }
 
-        if (_sphereSlot != null && !_sphereSlot.IsDestroyed)
+        if (docked.Item3 is { } dockedOrb)
         {
+            // The mesh keeps an orb's own radius; the scale makes it the screen's size beside it.
             float radius = size.y * OrbHeightRatio * 0.5f;
-            if (_sphereMesh != null && !_sphereMesh.IsDestroyed)
-                _sphereMesh.Radius.SetValueSilently(radius);
-            _sphereSlot.LocalPosition.SetValueSilently(
+            float orbScale = radius / MaterialOrb.Radius;
+            dockedOrb.Slot.LocalScale.SetValueSilently(new float3(orbScale, orbScale, orbScale), change: true);
+            dockedOrb.Slot.LocalPosition.SetValueSilently(
                 new float3(rightEdge + OrbGap + radius, 0f, 0f), change: true);
         }
 
@@ -1079,22 +1317,27 @@ public sealed class VideoPlayer : Component, IPlayable
         bool loop = video.Loop;
         bool spatial = audio != null && !audio.IsDestroyed && audio.Spatialize.Value;
         bool stats = ShowStats.Value;
-        if (!_toggleStateKnown || loop != _lastLoop || spatial != _lastSpatialize || stats != _lastStats)
+        bool chat = ShowChat.Value;
+        if (!_toggleStateKnown || loop != _lastLoop || spatial != _lastSpatialize || stats != _lastStats || chat != _lastChat)
         {
             _toggleStateKnown = true;
             _lastLoop = loop;
             _lastSpatialize = spatial;
             _lastStats = stats;
+            _lastChat = chat;
             Highlight(_loopButton, loop);
             Highlight(_spatialButton, spatial);
             Highlight(_statsButton, stats);
+            Highlight(_chatButton, chat);
         }
+        SetActive(_chatButton?.Slot, TwitchChat.ChannelFromUrl(video.URL.Value).Length > 0);
 
         if (_volumeSlider != null && !_volumeSlider.IsDestroyed && audio != null && !audio.IsDestroyed)
         {
             float wanted = MathF.Sqrt(Clamp01(audio.Volume.Value));
             if (MathF.Abs(wanted - _volumeSlider.Value.Value) > 0.01f)
                 _volumeSlider.Value.SetValueSilently(wanted);
+            SetText(_volumeValue, VolumeText(wanted));
         }
     }
 
@@ -1125,7 +1368,6 @@ public sealed class VideoPlayer : Component, IPlayable
 
         _displaySlot = Slot.FindChild("Display", recursive: false);
         _frameSlot = Slot.FindChild("Frame", recursive: false);
-        _sphereSlot = Slot.FindChild("Sphere", recursive: false);
         _controlsSlot = Slot.FindChild("Controls", recursive: false);
         _controlsFrameSlot = Slot.FindChild("ControlsFrame", recursive: false);
         // The panel arrives a slot at a time, so latching on the canvas alone would cache a screenful
@@ -1142,14 +1384,8 @@ public sealed class VideoPlayer : Component, IPlayable
         _displayMaterial = _displaySlot.GetComponent<UnlitMaterial>();
         _audioOnlySlot = _displaySlot.FindChild("AudioOnly", recursive: false);
         _liveBadgeSlot = Slot.FindChild("LiveBadge", recursive: false);
-        _statsSlot = Slot.FindChild("Stats", recursive: false);
         _titleFont = Slot.FindChild("Font", recursive: false)?.FindChild("FontBold", recursive: false)?.GetComponent<FontProvider>();
         _frameMesh = _frameSlot?.GetComponent<RoundedQuadMesh>();
-        _sphereMesh = _sphereSlot?.GetComponent<SphereMesh>();
-        _sphereMaterial = _sphereSlot?.GetComponent<UnlitMaterial>();
-        _chatSlot = Slot.FindChild("Chat", recursive: false);
-        _chat = _chatSlot?.GetComponent<TwitchChat>();
-        _chatPanel = _chatSlot?.GetComponent<TwitchChatPanel>();
         _font = Slot.FindChild("Font", recursive: false)?.GetComponent<FontProvider>();
 
         _titleLabel = FindText("TitleLabel");
@@ -1157,6 +1393,7 @@ public sealed class VideoPlayer : Component, IPlayable
         _liveBadge = FindText("LiveBadge");
         _statusLabel = FindText("StatusLabel");
         _timeLabel = FindText("TimeLabel");
+        _volumeValue = FindText("VolumeValue");
 
         _timeline = _controlsSlot.FindChild("Timeline", recursive: true)?.GetComponent<Slider>();
         _volumeSlider = _controlsSlot.FindChild("Volume", recursive: true)?.GetComponent<Slider>();
@@ -1165,7 +1402,9 @@ public sealed class VideoPlayer : Component, IPlayable
         _loopButton = FindButton("Loop");
         _spatialButton = FindButton("Spatialize");
         _statsButton = FindButton("Stats");
+        _chatButton = FindButton("ChatToggle");
         _playLabel = ChildText(_playButton);
+        _toggleStateKnown = false;
 
         // A local event, bound per peer, because the peer doing the typing is the only one that has
         // anything to finish editing.

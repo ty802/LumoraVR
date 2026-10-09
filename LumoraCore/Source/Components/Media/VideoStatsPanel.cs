@@ -17,7 +17,8 @@ namespace Lumora.Core.Components.Media;
 
 // The playback readout beside a video screen: what the decoder, the clock, the audio path, the
 // buffer and the mixer are doing, one row each. The slot it sits on is synced and placed by the
-// player; everything under it is LOCAL, because every peer reads its own decoder and mixer. -xlinka
+// player until somebody carries it off; everything under it is LOCAL, because every peer reads its
+// own decoder and mixer. -xlinka
 [ComponentCategory("Media")]
 public sealed class VideoStatsPanel : Component
 {
@@ -105,16 +106,33 @@ public sealed class VideoStatsPanel : Component
         Metrics(header, 44f, 0f);
         SettingsUI.Panel(header, DashTheme.Surface, DashTheme.Outline, DashTheme.RadiusControl);
         var headerLayout = header.AttachComponent<HorizontalLayout>();
+        headerLayout.Spacing.Value = 8f;
         headerLayout.PaddingLeft.Value = 14f;
-        headerLayout.PaddingRight.Value = 14f;
-        headerLayout.ForceExpandWidth.Value = true;
+        headerLayout.PaddingRight.Value = 6f;
+        headerLayout.PaddingTop.Value = 6f;
+        headerLayout.PaddingBottom.Value = 6f;
+        headerLayout.ForceExpandWidth.Value = false;
         headerLayout.ForceExpandHeight.Value = true;
         var headerUi = new UIBuilder(header);
         headerUi.Font(_titleFont);
+        headerUi.PushStyle().MinWidth(0f).PreferredWidth(0f).FlexibleWidth(1f);
         var title = headerUi.Text("VideoStats.Title".AsLocale("Playback stats"), 20f, DashTheme.Text);
         title.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         title.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         title.WordWrap.Value = false;
+        headerUi.PopStyle();
+        headerUi.PushStyle().MinWidth(32f).PreferredWidth(32f).FlexibleWidth(0f);
+        var close = headerUi.Button("×", OnClosePressed, DashTheme.Field);
+        headerUi.PopStyle();
+        close.Slot.Name.Value = "Close";
+        foreach (var driver in close.ColorDrivers)
+        {
+            if (driver == null || driver.IsDestroyed)
+                continue;
+            driver.HighlightColor.Value = DashTheme.Negative;
+            driver.PressedColor.Value = DashTheme.SurfacePressed;
+            driver.Apply();
+        }
 
         var labels = new LocaleText[]
         {
@@ -153,6 +171,25 @@ public sealed class VideoStatsPanel : Component
             value.WordWrap.Value = false;
             ui.PopStyle();
             _values[i] = value;
+        }
+    }
+
+    // Back behind the player's Stats button. The canvas is local, so this runs on the machine of whoever
+    // pressed it; a press on something they may not change does nothing.
+    public void OnClosePressed(Button button, UIInteractionContext context)
+    {
+        if (Slot is not { IsDestroyed: false } slot)
+            return;
+        try
+        {
+            var part = slot.GetComponent<VideoPlayerPart>();
+            if (part != null && part.Tracked)
+                part.Player!.ClosePart(VideoPlayerPartKind.Stats);
+            else
+                slot.Destroy();
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 

@@ -162,7 +162,7 @@ public sealed class VideoServiceResolver : IVideoServiceResolver
             var master = WriteHlsMaster(formats, request, out var masterVideo, out var masterAudio);
             if (master != null && masterVideo != null)
             {
-                LumoraLogger.Log($"{LogPrefix} HLS {masterVideo.Id} ({masterVideo.Width}x{masterVideo.Height} {masterVideo.Vcodec})"
+                LumoraLogger.Debug($"{LogPrefix} HLS {masterVideo.Id} ({masterVideo.Width}x{masterVideo.Height} {masterVideo.Vcodec})"
                     + (masterAudio != null ? $" + audio {masterAudio.Id} ({masterAudio.Note})" : string.Empty) + $" for '{title}'");
                 return new VideoServiceResolution(
                     master,
@@ -197,7 +197,7 @@ public sealed class VideoServiceResolver : IVideoServiceResolver
             }
         }
 
-        LumoraLogger.Log($"{LogPrefix} picked format {picked.Id} ({picked.Width}x{picked.Height} {picked.Vcodec}/{picked.Acodec})"
+        LumoraLogger.Debug($"{LogPrefix} picked format {picked.Id} ({picked.Width}x{picked.Height} {picked.Vcodec}/{picked.Acodec})"
             + (audio != null ? $" + audio {audio.Id} ({audio.Acodec})" : string.Empty) + $" for '{title}'");
 
         return new VideoServiceResolution(

@@ -49,9 +49,8 @@ public static class LibVlcRuntime
                 _attempted = true;
                 try
                 {
-                    // Windows takes the directory of the natives we ship beside the assemblies. Linux and
-                    // macOS have no package to ship, so null means "whatever libvlc the system installed",
-                    // which is how a distro package or a Homebrew VLC gets picked up.
+                    // Windows takes the directory of the natives we ship beside the assemblies. Linux loads
+                    // its bundle itself (LibVLCSharp refuses a directory there) and keeps nativeDir null.
                     string? nativeDir = OperatingSystem.IsWindows() ? FindWindowsNativeDirectory() : null;
                     if (OperatingSystem.IsWindows() && nativeDir == null)
                     {
@@ -59,6 +58,8 @@ public static class LibVlcRuntime
                         LumoraLogger.Warn($"LibVlcRuntime: {UnavailableReason}");
                         return null;
                     }
+                    string? linuxBundle = OperatingSystem.IsLinux() ? PrepareLinux() : null;
+                    string? pluginDir = nativeDir ?? linuxBundle;
 
                     LibVLCSharp.Shared.Core.Initialize(nativeDir);
 
@@ -74,7 +75,7 @@ public static class LibVlcRuntime
                         "--no-stats",
                         "--verbose=1",
                     };
-                    if (nativeDir != null && !File.Exists(Path.Combine(nativeDir, "plugins", "plugins.dat")))
+                    if (pluginDir != null && !File.Exists(Path.Combine(pluginDir, "plugins", "plugins.dat")))
                         args.Add("--reset-plugins-cache");
 
                     _instance = new LibVLC(args.ToArray());
@@ -96,7 +97,7 @@ public static class LibVlcRuntime
                         LumoraLogger.Debug($"LibVlcRuntime: no libVLC log file: {ex.Message}");
                     }
 
-                    LumoraLogger.Log($"LibVlcRuntime: libVLC {_instance.Version} ready (natives: {nativeDir ?? "system"}, log: {LogFilePath ?? "none"})");
+                    LumoraLogger.Log($"LibVlcRuntime: libVLC {_instance.Version} ready (natives: {pluginDir ?? "system"}, log: {LogFilePath ?? "none"})");
                 }
                 catch (Exception ex)
                 {
@@ -133,6 +134,87 @@ public static class LibVlcRuntime
                 return flatDir;
         }
         return null;
+    }
+
+    private static nint _linuxLibvlc;
+    private static bool _linuxResolverSet;
+
+    // The Linux export carries its own libVLC in libvlc/linux-x64 (tools/libvlc_linux.py) because SteamOS
+    // and most distros have none, or only libvlc.so.5 without the libvlc.so name LibVLCSharp's import
+    // asks for. Nothing there can lean on LD_LIBRARY_PATH, so every library is loaded by full path in
+    // lib/load-order.txt order, dependencies first; each later DT_NEEDED then matches an object already in
+    // the process by SONAME. With no bundle (an editor run) the distro's libvlc.so.5 is used. Returns the
+    // bundle directory, or null. -xlinka
+    private static string? PrepareLinux()
+    {
+        string? bundle = FindLinuxBundle();
+        if (bundle != null)
+        {
+            string lib = Path.Combine(bundle, "lib");
+            int failed = 0;
+            foreach (var line in File.ReadAllLines(Path.Combine(lib, "load-order.txt")))
+            {
+                string soname = line.Trim();
+                if (soname.Length == 0)
+                    continue;
+                try
+                {
+                    nint handle = NativeLibrary.Load(Path.Combine(lib, soname));
+                    if (soname == "libvlc.so.5")
+                        _linuxLibvlc = handle;
+                }
+                catch (Exception ex)
+                {
+                    // Usually a desktop library the bundle expects from the system is absent; whatever
+                    // depends on it is lost, the rest still plays.
+                    if (++failed <= 5)
+                        LumoraLogger.Warn($"LibVlcRuntime: bundled {soname} did not load: {ex.Message}");
+                }
+            }
+            SetNativeEnvironment("VLC_PLUGIN_PATH", Path.Combine(bundle, "plugins"));
+        }
+
+        if (!_linuxResolverSet)
+        {
+            _linuxResolverSet = true;
+            NativeLibrary.SetDllImportResolver(typeof(LibVLC).Assembly, ResolveLinux);
+        }
+        return bundle;
+    }
+
+    private static nint ResolveLinux(string name, System.Reflection.Assembly assembly, DllImportSearchPath? searchPath)
+    {
+        if (name != "libvlc")
+            return IntPtr.Zero;
+        if (_linuxLibvlc == IntPtr.Zero && !NativeLibrary.TryLoad("libvlc.so.5", out _linuxLibvlc))
+            NativeLibrary.TryLoad("libvlc.so", out _linuxLibvlc);
+        return _linuxLibvlc;
+    }
+
+    private static string? FindLinuxBundle()
+    {
+        foreach (var root in CandidateRoots())
+        {
+            if (string.IsNullOrEmpty(root))
+                continue;
+            string dir = Path.Combine(root, "libvlc", "linux-x64");
+            if (File.Exists(Path.Combine(dir, "lib", "load-order.txt")))
+                return dir;
+        }
+        return null;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int SetEnvFunction([MarshalAs(UnmanagedType.LPUTF8Str)] string name, [MarshalAs(UnmanagedType.LPUTF8Str)] string value, int overwrite);
+
+    // Environment.SetEnvironmentVariable only changes the runtime's own copy on Unix; libVLC reads the
+    // process environment with getenv, so this goes through libc.
+    private static void SetNativeEnvironment(string name, string value)
+    {
+        if (NativeLibrary.TryLoad("libc.so.6", out var libc) && NativeLibrary.TryGetExport(libc, "setenv", out var setenv))
+            Marshal.GetDelegateForFunctionPointer<SetEnvFunction>(setenv)(name, value, 1);
+        else
+            LumoraLogger.Warn($"LibVlcRuntime: could not set {name}; bundled plugins will not be found");
     }
 
     private static string?[] CandidateRoots()

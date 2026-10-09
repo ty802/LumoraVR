@@ -548,6 +548,14 @@ public sealed class AudioPlayer : Component, IPlayable
         ApplyTypeGroup();
     }
 
+    // A kind somebody chose, kept over the guess from the clip's length.
+    public void SetKind(Lumora.Core.Audio.AudioTypeGroup group)
+    {
+        TypeClassified.Value = true;
+        TypeGroup.Value = group;
+        ApplyTypeGroup();
+    }
+
     private void ApplyTypeGroup()
     {
         var audio = AudioOutput.Target;

@@ -114,7 +114,7 @@ public class SessionBrowser : Component
             if (announcerId != Guid.Empty)
             {
                 ignoreId = announcerId;
-                LumoraLogger.Log($"SessionBrowser: Filtering out own announcer ID: {announcerId}");
+                LumoraLogger.Debug($"SessionBrowser: Filtering out own announcer ID: {announcerId}");
             }
         }
 
@@ -132,7 +132,7 @@ public class SessionBrowser : Component
         _ownRefreshTimer = 0f;
         RefreshOwnHostedSession();
 
-        LumoraLogger.Log("SessionBrowser: Started scanning for sessions");
+        LumoraLogger.Debug("SessionBrowser: Started scanning for sessions");
     }
 
     public void StopScanning()
@@ -159,7 +159,7 @@ public class SessionBrowser : Component
 
         IsScanning.Value = false;
 
-        LumoraLogger.Log("SessionBrowser: Stopped scanning");
+        LumoraLogger.Debug("SessionBrowser: Stopped scanning");
     }
 
     public void ClearSessions()
@@ -217,7 +217,7 @@ public class SessionBrowser : Component
 
         if (isNew)
         {
-            LumoraLogger.Log($"SessionBrowser: Found session '{entry.Name}' ({entry.ActiveUsers}/{entry.MaxUsers} users)");
+            LumoraLogger.Debug($"SessionBrowser: Found session '{entry.Name}' ({entry.ActiveUsers}/{entry.MaxUsers} users)");
             OnSessionFound?.Invoke(entry);
         }
         else
@@ -242,7 +242,7 @@ public class SessionBrowser : Component
 
         if (removed != null)
         {
-            LumoraLogger.Log($"SessionBrowser: Lost session '{removed.Name}'");
+            LumoraLogger.Debug($"SessionBrowser: Lost session '{removed.Name}'");
             OnSessionLost?.Invoke(sessionId);
         }
     }
@@ -352,6 +352,8 @@ public class SessionBrowser : Component
     {
         var entry = BuildEntry(discovered.Metadata);
         entry.JoinUrl = discovered.GetConnectionUrl();
+        if (entry.JoinUrl != null && !entry.JoinUrls.Contains(entry.JoinUrl))
+            entry.JoinUrls.Insert(0, entry.JoinUrl);
         return entry;
     }
 
@@ -367,6 +369,7 @@ public class SessionBrowser : Component
             MaxUsers = m.MaxUsers,
             Visibility = m.Visibility,
             JoinUrl = (m.SessionURLs != null && m.SessionURLs.Count > 0) ? m.SessionURLs[0] : null!,
+            JoinUrls = m.SessionURLs != null ? m.SessionURLs.Where(u => u != null).ToList() : new List<Uri>(),
             ThumbnailUrl = m.ThumbnailUrl,
             ThumbnailBase64 = m.ThumbnailBase64,
             Tags = m.Tags != null ? new List<string>(m.Tags) : new List<string>(),
@@ -383,21 +386,19 @@ public class SessionBrowser : Component
         if (dto == null || string.IsNullOrEmpty(dto.SessionId))
             return null;
 
-        Uri? joinUrl = null;
+        var joinUrls = new List<Uri>();
         if (dto.SessionUrls != null)
         {
             foreach (var raw in dto.SessionUrls)
             {
                 if (Uri.TryCreate(raw, UriKind.Absolute, out var parsed))
-                {
-                    joinUrl = parsed;
-                    break;
-                }
+                    joinUrls.Add(parsed);
             }
         }
 
-        if (joinUrl == null)
+        if (joinUrls.Count == 0)
             return null;
+        var joinUrl = joinUrls[0];
 
         return new SessionListEntry
         {
@@ -409,6 +410,7 @@ public class SessionBrowser : Component
             MaxUsers = dto.MaxUsers,
             Visibility = dto.AccessLevel,
             JoinUrl = joinUrl,
+            JoinUrls = joinUrls,
             ThumbnailUrl = dto.ThumbnailUrl ?? "",
             ThumbnailBase64 = null,
             Tags = dto.Tags != null ? new List<string>(dto.Tags) : new List<string>(),
@@ -444,6 +446,13 @@ public class SessionListEntry
     public SessionVisibility Visibility { get; set; }
 
     public Uri JoinUrl { get; set; } = null!;
+
+    // Every address the host advertised, JoinUrl among them. Joins hand over all of them: the first is
+    // usually the host's LAN card, which only answers inside the host's own network.
+    public List<Uri> JoinUrls { get; set; } = new();
+
+    public IReadOnlyList<Uri> AllJoinUrls
+        => JoinUrls.Count > 0 ? JoinUrls : JoinUrl != null ? new[] { JoinUrl } : Array.Empty<Uri>();
 
     public string ThumbnailUrl { get; set; } = null!;
 

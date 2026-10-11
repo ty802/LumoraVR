@@ -192,6 +192,7 @@ internal sealed class BrowserParts
         text.HorizontalAlignment.Value = align;
         text.VerticalAlignment.Value = wrap ? TextVerticalAlignment.Top : TextVerticalAlignment.Middle;
         text.WordWrap.Value = wrap;
+        text.Ellipsis.Value = true;
         return text;
     }
 

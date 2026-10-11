@@ -2,6 +2,8 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using Lumora.Core.Components.Network;
 using Lumora.Core.Math;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -311,7 +313,7 @@ public abstract class WorldLink : Component
         string name = string.IsNullOrEmpty(DisplayName.Value) ? url.Host : DisplayName.Value;
         if (loader != null)
         {
-            loader.JoinSessionAsync(name, url, focusWhenReady: true);
+            loader.JoinSessionAsync(name, JoinAddresses(url), focusWhenReady: true);
             return true;
         }
 
@@ -444,6 +446,26 @@ public abstract class WorldLink : Component
             ActiveUsers.Value = active;
         if (max > 0 && MaxUsers.Value != max)
             MaxUsers.Value = max;
+    }
+
+    // The link stores one address; the live listing has every address the host advertises now, Steam
+    // among them, so a joiner outside the host's network still gets in.
+    private IReadOnlyList<Uri> JoinAddresses(Uri stored)
+    {
+        var id = SessionId.Value;
+        if (!string.IsNullOrEmpty(id))
+        {
+            var listed = FindBrowser()?.GetSessions()
+                .FirstOrDefault(e => string.Equals(e.SessionId, id, StringComparison.OrdinalIgnoreCase));
+            if (listed != null && listed.AllJoinUrls.Count > 0)
+            {
+                var all = new List<Uri>(listed.AllJoinUrls);
+                if (!all.Contains(stored))
+                    all.Add(stored);
+                return all;
+            }
+        }
+        return new[] { stored };
     }
 
     // The browser lives on the userspace root, one per client. Read only from here: this runs inside a

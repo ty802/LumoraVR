@@ -2,70 +2,62 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Lumora.Core.Assets;
 using Lumora.Core.Components.Avatar;
+using Lumora.Core.Components.UI;
 using Lumora.Core.Localization;
 using Lumora.Core.Math;
-using Lumora.Nexus.Cloud.Cdn;
 using Helio.UI;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
 
 namespace Lumora.Core.Components;
 
-// The plate that floats in front of you while a world is arriving: how many assets are still
-// loading, how many transfers are in flight from the content service and from peers, and how many
-// bytes are still to come. One per world, local only, and only for the world you are looking at.
+// One local card in userspace, shared by joins and saved-world loads. It survives the focus switch,
+// then retires after this arrival; later imports and texture upgrades cannot reopen it.
 //
-// It is about WORLD LOADING and nothing else. The window opens when the world itself is coming up,
-// which is a deferred start (opening a saved world) or the first seconds of a session this client
-// joined, and it closes for good once that load has drained. Asset work on its own never opens it,
-// so importing a model in a world that is already up shows the import readout and not this. The
-// checkered placeholder on a surface says "this one is not here yet"; this says how much of the
-// world's arrival is left. -xlinka
+// It stands 1.1 m out, which is usually inside the world being left, so every part of it draws in its
+// own overlay band with no depth test: walls and floors never cut through it and the panel never covers
+// its own text. The percentage is the stage's share of the bar plus how much of that stage's count is
+// done; a stage with no count holds at its start rather than guess. -xlinka
 [ComponentCategory("Hidden")]
 public sealed class WorldLoadIndicator : Component
 {
-    private const float PanelWidth = 0.52f;
-    private const float PanelHeight = 0.20f;
-    private const float PanelCornerRadius = 0.022f;
-    private const float RimWidth = 0.006f;
-    private const float PanelDepth = -0.002f;
-    private const float BarWidth = 0.44f;
-    private const float BarHeight = 0.022f;
-    private const float BarHalfWidth = BarWidth * 0.5f;
+    private const float Width = 0.64f;
+    private const float Height = 0.25f;
+    private const float Inset = 0.032f;
+    private const float BarWidth = Width - 2f * Inset;
+    private const float BarHeight = 0.008f;
     private const float ShowAfterSeconds = 0.35f;
-    // How long after a world appears a join still counts as "arriving".
-    private const float JoinWindowSeconds = 3f;
-    private const float LingerSeconds = 0.8f;
-    private const float RefreshSeconds = 0.2f;
+    private const float AfterEntrySeconds = 8f;
+    private const float LingerSeconds = 1.0f;
 
-    private static readonly color PanelColor = new color(0.07f, 0.08f, 0.11f, 0.88f);
-    private static readonly color RimColor = new color(0.30f, 0.55f, 0.95f, 0.95f);
-    private static readonly color BarTrackColor = new color(0.16f, 0.17f, 0.21f, 0.95f);
-    private static readonly color BarFillColor = new color(0.32f, 0.68f, 1f, 1f);
-    private static readonly color StatusColor = new color(0.78f, 0.84f, 0.94f, 1f);
+    private enum Stage { Connect, Load, Build, Finish }
 
+    // Where each stage starts on the bar. Finish is the long tail on a fresh machine: shader compiles,
+    // uploads and textures.
+    private static readonly float[] StageStart = { 0f, 0.12f, 0.32f, 0.62f, 1f };
+
+    private readonly HashSet<World> _seen = new();
+    private readonly List<(TextRenderer Label, int Order)> _unlifted = new();
+    private readonly TextRenderer?[] _stages = new TextRenderer?[4];
+    private World? _target;
     private Slot? _plate;
-    private TextRenderer? _title;
-    private TextRenderer? _status;
     private Slot? _fill;
-    // Waiting: the world has not started loading yet (or never will). Open: it is loading. Closed:
-    // that load finished, and nothing reopens it for this world.
-    private enum Window { Waiting, Open, Closed }
-
-    private Window _window = Window.Waiting;
+    private TextRenderer? _percent;
+    private TextRenderer? _title;
+    private TextRenderer? _detail;
+    private Stage _stage;
+    private int _peak;
+    private float _progress;
+    private float _bar;
     private float _age;
-    private float _busyFor;
+    private float _enteredFor;
     private float _idleFor;
     private float _refreshIn;
     private bool _visible;
     private bool _placed;
-    private long _mostBytes;
-    private int _mostAssets;
-    private string _lastStatus = string.Empty;
 
-    // Attached by the world manager to every world it brings up; the component decides for itself
-    // when there is anything to say.
     public static void Attach(World world)
     {
         if (world == null || world.IsDestroyed)
@@ -74,6 +66,9 @@ public sealed class WorldLoadIndicator : Component
         {
             if (world.IsDestroyed || world.RootSlot == null)
                 return;
+            foreach (var child in world.RootSlot.Children)
+                if (child.GetComponent<WorldLoadIndicator>() != null)
+                    return;
             var slot = world.RootSlot.AddLocalSlot("World Load Indicator");
             slot.Persistent.Value = false;
             slot.AttachComponent<WorldLoadIndicator>();
@@ -89,196 +84,295 @@ public sealed class WorldLoadIndicator : Component
 
     private void Compose()
     {
-        if (Slot == null || World == null)
-            return;
         var theme = NameplateTheme.For(World);
+        _plate = Slot.AddLocalSlot("Loading card");
+        int band = UserspaceRenderBands.LoadingCard;
 
-        _plate = Slot.AddLocalSlot("Plate");
-        _plate.Persistent.Value = false;
-        _plate.AttachComponent<FaceLocalUser>();
+        AddQuad(_plate, "Panel", 0f, new float2(Width, Height), 0.022f, DashTheme.Panel, theme, band);
 
-        var rim = _plate.AddSlot("Rim");
-        rim.LocalPosition.Value = new float3(0f, 0f, PanelDepth);
-        var rimMesh = rim.AttachComponent<LumoraMeshes.RoundedQuadRingMesh>();
-        rimMesh.Size.Value = new float2(PanelWidth, PanelHeight);
-        rimMesh.CornerRadius.Value = PanelCornerRadius;
-        rimMesh.RimWidth.Value = RimWidth;
-        rimMesh.Color = RimColor;
-        AttachRenderer(rim, rimMesh, theme);
+        var edge = _plate.AddSlot("Edge");
+        var ring = edge.AttachComponent<LumoraMeshes.RoundedQuadRingMesh>();
+        ring.Size.Value = new float2(Width, Height);
+        ring.CornerRadius.Value = 0.022f;
+        ring.RimWidth.Value = 0.0016f;
+        ring.Color = new color(DashTheme.Accent.r, DashTheme.Accent.g, DashTheme.Accent.b, 0.5f);
+        AttachRenderer(edge, ring, theme, band + 1);
 
-        var panel = _plate.AddSlot("Panel");
-        panel.LocalPosition.Value = new float3(0f, 0f, PanelDepth);
-        var panelMesh = panel.AttachComponent<LumoraMeshes.RoundedQuadMesh>();
-        panelMesh.Size.Value = new float2(PanelWidth, PanelHeight);
-        panelMesh.CornerRadius.Value = PanelCornerRadius;
-        panelMesh.Color = PanelColor;
-        AttachRenderer(panel, panelMesh, theme);
+        var track = AddQuad(_plate, "Progress track", -0.094f, new float2(BarWidth, BarHeight), BarHeight * 0.5f,
+            DashTheme.SurfaceHover, theme, band + 2);
+        _fill = AddQuad(track, "Progress", 0f, new float2(BarWidth, BarHeight), BarHeight * 0.5f,
+            DashTheme.Accent, theme, band + 3);
 
-        var title = _plate.AddSlot("Title");
-        title.LocalPosition.Value = new float3(0f, 0.048f, 0f);
-        _title = title.AttachComponent<TextRenderer>();
-        if (theme?.Font != null)
-            _title.Font.Target = theme.Font;
-        _title.Size.Value = 0.042f;
-        _title.Color.Value = color.White;
-        _title.HorizontalAlign.Value = TextHorizontalAlignment.Center;
-        _title.VerticalAlign.Value = TextVerticalAlignment.Middle;
-        _title.OutlineThickness.Value = 1.2f;
-        _title.Text.Value = "WorldLoad.Title".AsLocale("Loading world").Resolve();
+        float left = -BarWidth * 0.5f;
+        int ink = band + 4;
+        AddText("Heading", left, 0.094f, 0.019f, DashTheme.AccentHover, TextHorizontalAlignment.Left,
+            "WorldLoad.Title".AsLocale("Loading world").Resolve(), theme, ink);
+        _percent = AddText("Percent", -left, 0.080f, 0.044f, DashTheme.Text, TextHorizontalAlignment.Right,
+            "0%", theme, ink);
+        _title = AddText("World name", left, 0.056f, 0.034f, DashTheme.Text, TextHorizontalAlignment.Left,
+            "", theme, ink);
 
-        var status = _plate.AddSlot("Status");
-        status.LocalPosition.Value = new float3(0f, -0.004f, 0f);
-        _status = status.AttachComponent<TextRenderer>();
-        if (theme?.Font != null)
-            _status.Font.Target = theme.Font;
-        _status.Size.Value = 0.028f;
-        _status.Color.Value = StatusColor;
-        _status.HorizontalAlign.Value = TextHorizontalAlignment.Center;
-        _status.VerticalAlign.Value = TextVerticalAlignment.Middle;
-        _status.Text.Value = string.Empty;
+        string[] names =
+        {
+            "WorldLoad.StageConnect".AsLocale("Connect").Resolve(),
+            "WorldLoad.StageLoad".AsLocale("Load").Resolve(),
+            "WorldLoad.StageBuild".AsLocale("Build").Resolve(),
+            "WorldLoad.StageFinish".AsLocale("Finish").Resolve(),
+        };
+        for (int i = 0; i < _stages.Length; i++)
+            _stages[i] = AddText("Stage " + names[i], left + i * (BarWidth / _stages.Length), 0.008f, 0.018f,
+                DashTheme.TextMuted, TextHorizontalAlignment.Left, names[i], theme, ink);
 
-        var track = _plate.AddSlot("BarTrack");
-        track.LocalPosition.Value = new float3(0f, -0.055f, 0f);
-        var trackMesh = track.AttachComponent<LumoraMeshes.RoundedQuadMesh>();
-        trackMesh.Size.Value = new float2(BarWidth, BarHeight);
-        trackMesh.CornerRadius.Value = BarHeight * 0.5f;
-        trackMesh.Color = BarTrackColor;
-        AttachRenderer(track, trackMesh, theme);
-
-        _fill = track.AddSlot("BarFill");
-        _fill.LocalPosition.Value = new float3(-BarHalfWidth, 0f, 0.001f);
-        _fill.LocalScale.Value = new float3(0.0001f, 1f, 1f);
-        var fillMesh = _fill.AttachComponent<LumoraMeshes.RoundedQuadMesh>();
-        fillMesh.Size.Value = new float2(BarWidth, BarHeight * 0.72f);
-        fillMesh.CornerRadius.Value = BarHeight * 0.36f;
-        fillMesh.Color = BarFillColor;
-        AttachRenderer(_fill, fillMesh, theme);
+        _detail = AddText("Detail", left, -0.040f, 0.020f, DashTheme.TextDim, TextHorizontalAlignment.Left,
+            "", theme, ink);
     }
 
-    private static void AttachRenderer(Slot slot, LumoraMeshes.ProceduralMesh mesh, NameplateTheme? theme)
+    private static Slot AddQuad(Slot parent, string name, float y, float2 size, float radius, color fill,
+        NameplateTheme? theme, int order)
+    {
+        var slot = parent.AddSlot(name);
+        slot.LocalPosition.Value = new float3(0f, y, 0f);
+        var mesh = slot.AttachComponent<LumoraMeshes.RoundedQuadMesh>();
+        mesh.Size.Value = size;
+        mesh.CornerRadius.Value = radius;
+        mesh.Color = fill;
+        AttachRenderer(slot, mesh, theme, order);
+        return slot;
+    }
+
+    private static void AttachRenderer(Slot slot, LumoraMeshes.ProceduralMesh mesh, NameplateTheme? theme, int order)
     {
         var renderer = slot.AttachComponent<MeshRenderer>();
         renderer.Mesh.Target = mesh;
         if (theme?.PlateMaterial != null)
             renderer.Material.Target = theme.PlateMaterial;
-        // A floating readout has no business darkening the floor under it.
         renderer.ShadowCastMode.Value = ShadowCastMode.Off;
+        renderer.SetOverlayOrder(order, depthTest: false);
+    }
+
+    private TextRenderer AddText(string name, float x, float y, float size, color ink, TextHorizontalAlignment align,
+        string text, NameplateTheme? theme, int order)
+    {
+        var slot = _plate!.AddSlot(name);
+        slot.LocalPosition.Value = new float3(x, y, 0f);
+        var label = slot.AttachComponent<TextRenderer>();
+        if (theme?.Font != null)
+            label.Font.Target = theme.Font;
+        label.Size.Value = size;
+        label.Color.Value = ink;
+        label.HorizontalAlign.Value = align;
+        label.VerticalAlign.Value = TextVerticalAlignment.Middle;
+        label.OutlineThickness.Value = 0f;
+        label.Text.Value = text;
+        _unlifted.Add((label, order));
+        return label;
+    }
+
+    // A text renderer builds its mesh slot when it starts, so each label is lifted once that is there.
+    private void LiftLabels()
+    {
+        for (int i = _unlifted.Count - 1; i >= 0; i--)
+        {
+            var (label, order) = _unlifted[i];
+            var renderer = label.IsDestroyed ? null : label.Slot.FindChild("TextRenderer")?.GetComponent<MeshRenderer>();
+            if (renderer == null && !label.IsDestroyed)
+                continue;
+            renderer?.SetOverlayOrder(order, depthTest: false);
+            _unlifted.RemoveAt(i);
+        }
     }
 
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
-        var world = World;
-        if (world == null || world.IsDestroyed)
+        var manager = Engine.Current?.WorldManager;
+        if (manager == null)
             return;
-
-        _age += delta;
-        bool focused = Engine.Current?.WorldManager?.FocusedWorld == world;
-        var (downloads, _, remainingBytes, totalBytes) = TransferRegistry.Totals();
-        int assets = Asset.LoadingCount;
-        var transferer = Engine.Current?.ActiveSessionTransferer;
-        int peer = transferer != null && focused ? transferer.DownloadJobCount : 0;
-
-        // Only a world coming up opens the window: a deferred start, or the opening seconds of a
-        // session this client joined rather than hosts. Everything else, an import included, is
-        // somebody else's readout.
-        if (_window == Window.Waiting)
+        var operation = Engine.Current?.WorldLoadingService?.CurrentOperation;
+        bool joining = operation != null && !operation.IsCancelled && !operation.IsFailed && !operation.IsComplete;
+        var candidate = (joining ? operation!.World : null) ?? manager.LoadingWorld ?? manager.FocusedWorld;
+        if (candidate != null && candidate != World && !candidate.IsDestroyed && _seen.Add(candidate))
         {
-            bool joining = !world.IsAuthority && _age <= JoinWindowSeconds;
-            if (world.IsSessionStartPending || joining)
-                _window = Window.Open;
-            else if (_age > JoinWindowSeconds)
-                _window = Window.Closed;
-        }
-
-        if (_window != Window.Open)
-        {
-            if (_visible)
-                SetVisible(false);
-            return;
-        }
-
-        bool busy = focused && (world.IsSessionStartPending || assets > 0 || downloads > 0 || peer > 0);
-
-        if (busy)
-        {
-            _busyFor += delta;
-            _idleFor = 0f;
-            if (assets > _mostAssets) _mostAssets = assets;
-            if (totalBytes > _mostBytes) _mostBytes = totalBytes;
-        }
-        else
-        {
-            _idleFor += delta;
-            if (_idleFor > LingerSeconds)
+            if (joining || candidate.IsLoading || candidate.IsSettling)
             {
-                // The load drained. This world only arrives once, so the window shuts for good.
-                _busyFor = 0f;
-                _mostAssets = 0;
-                _mostBytes = 0;
-                _window = Window.Closed;
+                _target = candidate;
+                _age = _enteredFor = _idleFor = _refreshIn = 0f;
+                _progress = _bar = 0f;
+                _stage = Stage.Connect;
+                _peak = 0;
+                _placed = false;
             }
         }
 
-        // A flicker of loading, the kind a single texture makes, never earns the plate.
-        bool show = busy ? _busyFor >= ShowAfterSeconds : _visible && _idleFor < LingerSeconds;
-        if (show != _visible)
-            SetVisible(show);
-        if (!show)
+        var target = _target;
+        if (target == null)
+            return;
+        bool failed = target.IsDestroyed || target.State == World.WorldState.Failed
+            || (operation?.World == target && (operation.IsCancelled || operation.IsFailed));
+        bool wanted = manager.FocusedWorld == target || manager.PendingFocusWorld == target
+            || (joining && operation!.World == target);
+        if (failed || !wanted)
+        {
+            Dismiss();
+            return;
+        }
+
+        _age += delta;
+        bool entered = manager.FocusedWorld == target && target.State == World.WorldState.Running;
+        if (entered)
+            _enteredFor += delta;
+        // Global asset work is useful only as a brief arrival hint. It must never extend this
+        // deadline: other people can keep adding content indefinitely.
+        bool busy = target.IsLoading || target.IsSettling || Asset.LoadingCount > 0;
+        _idleFor = busy ? 0f : _idleFor + delta;
+        if (_enteredFor >= AfterEntrySeconds || _idleFor >= LingerSeconds || _age >= 75f)
+        {
+            Dismiss();
+            return;
+        }
+        SetVisible(_age >= ShowAfterSeconds);
+        if (!_visible)
             return;
 
+        LiftLabels();
         UpdatePosition(delta);
 
         _refreshIn -= delta;
-        if (_refreshIn > 0f)
-            return;
-        _refreshIn = RefreshSeconds;
+        if (_refreshIn <= 0f)
+        {
+            _refreshIn = 0.1f;
+            Refresh(target, operation?.World == target ? operation : null, busy);
+        }
 
-        string status;
+        _bar += (_progress - _bar) * (1f - MathF.Exp(-10f * delta));
+        if (_fill != null)
+        {
+            float width = System.Math.Clamp(_bar, 0.002f, 1f);
+            _fill.LocalScale.Value = new float3(width, 1f, 1f);
+            _fill.LocalPosition.Value = new float3(-BarWidth * 0.5f * (1f - width), 0f, 0f);
+        }
+    }
+
+    private void Refresh(World target, Management.WorldLoadingOperation? operation, bool busy)
+    {
+        var state = target.State;
+        Stage live;
+        int left = -1;
+        float known = -1f;
+        string detail;
+
         if (!busy)
         {
-            status = "WorldLoad.Done".AsLocale("Ready").Resolve();
+            live = Stage.Finish;
+            left = 0;
+            detail = "WorldLoad.Done".AsLocale("Ready").Resolve();
         }
-        else if (world.IsSessionStartPending)
+        else if (target.IsStagedLoading)
         {
-            status = "WorldLoad.Opening".AsLocale("Opening the world").Resolve();
+            live = Stage.Load;
+            int done = target.StagedLoadCount;
+            int queued = target.StagedLoadLeft;
+            if (queued >= 0 && done + queued > 0)
+                known = (float)done / (done + queued);
+            detail = "WorldLoad.LoadedObjects".AsLocale("{0} objects loaded", done.ToString("N0")).Resolve();
+        }
+        else if (state is World.WorldState.Created or World.WorldState.InitializingNetwork or World.WorldState.WaitingForJoinGrant)
+        {
+            live = Stage.Connect;
+            // A join reports 0.45 once the world data starts to arrive, which is where Load takes over.
+            if (operation != null)
+                known = operation.Progress / 0.45f;
+            detail = target.LoadStateDescription.Resolve();
+        }
+        else if (target.IsSessionStartPending || state != World.WorldState.Running)
+        {
+            live = Stage.Load;
+            detail = target.LoadStateDescription.Resolve();
+        }
+        else if (target.PendingHookCreations > 0)
+        {
+            live = Stage.Build;
+            left = target.PendingHookCreations;
+            detail = "WorldLoad.BuildLeft".AsLocale("{0} objects left to build", left.ToString("N0")).Resolve();
         }
         else
         {
-            var parts = new System.Collections.Generic.List<string>(3);
+            live = Stage.Finish;
+            int assets = Asset.LoadingCount;
+            left = target.CountSettle().Total + assets;
+            string settle = target.DescribeSettle();
             if (assets > 0)
-                parts.Add(assets == 1 ? "WorldLoad.OneAsset".AsLocale("1 asset").Resolve() : "WorldLoad.Assets".AsLocale("{0} assets", assets).Resolve());
-            if (downloads + peer > 0)
-                parts.Add((downloads + peer) == 1 ? "WorldLoad.OneTransfer".AsLocale("1 transfer").Resolve() : "WorldLoad.Transfers".AsLocale("{0} transfers", downloads + peer).Resolve());
-            if (remainingBytes > 0)
-                parts.Add("WorldLoad.Remaining".AsLocale("{0} left", FormatBytes(remainingBytes)).Resolve());
-            status = parts.Count > 0 ? string.Join(" · ", parts) : "WorldLoad.Working".AsLocale("Working").Resolve();
-        }
-        if (status != _lastStatus && _status != null && !_status.IsDestroyed)
-        {
-            _status.Text.Value = status;
-            _lastStatus = status;
+            {
+                string loading = "WorldLoad.AssetsLoading".AsLocale("{0} assets loading", assets.ToString("N0")).Resolve();
+                settle = settle.Length > 0 ? settle + " · " + loading : loading;
+            }
+            detail = _enteredFor >= AfterEntrySeconds - 1f
+                ? "WorldLoad.Background".AsLocale("Finishing in the background").Resolve()
+                : settle.Length > 0 ? settle
+                : "WorldLoad.Textures".AsLocale("Bringing your world into view").Resolve();
         }
 
-        float fraction;
-        if (!busy)
-            fraction = 1f;
-        else if (_mostBytes > 0)
-            fraction = 1f - (float)remainingBytes / _mostBytes;
-        else if (_mostAssets > 0)
-            fraction = 1f - (float)assets / _mostAssets;
-        else
-            fraction = 0.05f;
-        if (_fill != null && !_fill.IsDestroyed)
+        // Never a step back: builds queued by a late spawn once finishing began are still finishing, as far
+        // as the person waiting can tell.
+        if (live > _stage)
         {
-            float clamped = System.Math.Clamp(fraction, 0.02f, 1f);
-            _fill.LocalScale.Value = new float3(clamped, 1f, 1f);
-            _fill.LocalPosition.Value = new float3(-BarHalfWidth + BarHalfWidth * clamped, 0f, 0.001f);
+            _stage = live;
+            _peak = 0;
         }
+        float within = 0f;
+        if (left >= 0)
+        {
+            _peak = System.Math.Max(_peak, left);
+            within = _peak > 0 ? 1f - (float)left / _peak : 1f;
+        }
+        else if (known >= 0f)
+        {
+            within = System.Math.Clamp(known, 0f, 1f);
+        }
+        int at = (int)_stage;
+        float overall = busy ? MathF.Min(StageStart[at] + (StageStart[at + 1] - StageStart[at]) * within, 0.99f) : 1f;
+        _progress = MathF.Max(_progress, overall);
+
+        _title!.Text.Value = FitName(target.WorldName?.Value ?? target.Name);
+        _percent!.Text.Value = $"{(int)MathF.Floor(_progress * 100f)}%";
+        _detail!.Text.Value = detail;
+        for (int i = 0; i < _stages.Length; i++)
+        {
+            if (_stages[i] is { } label)
+                label.Color.Value = !busy || i < at ? DashTheme.AccentHover : i == at ? DashTheme.Text : DashTheme.TextMuted;
+        }
+
+        // Unusually wide glyphs and translated lines still fit the fixed card. Measure is supplied by text
+        // meshing; scale the label, not its font, so fitting cannot oscillate.
+        FitLabel(_title, BarWidth - 0.15f);
+        FitLabel(_detail, BarWidth);
+    }
+
+    private static void FitLabel(TextRenderer label, float room)
+    {
+        float width = label.RenderedSize.x;
+        float scale = width > room ? room / width : 1f;
+        label.Slot.LocalScale.Value = new float3(scale, scale, 1f);
+    }
+
+    private static string FitName(string? value)
+    {
+        string name = (value ?? string.Empty).Replace('\n', ' ').Replace('\r', ' ').Trim();
+        // TextRenderer has no wrapping. Keep even wide glyphs beside the percentage.
+        return name.Length <= 26 ? name : name[..25] + "…";
+    }
+
+    private void Dismiss()
+    {
+        _target = null;
+        SetVisible(false);
+        _seen.RemoveWhere(world => world.IsDestroyed);
     }
 
     private void SetVisible(bool visible)
     {
+        if (_visible == visible && _plate?.ActiveSelf.Value == visible)
+            return;
         _visible = visible;
         if (_plate != null && !_plate.IsDestroyed)
             _plate.ActiveSelf.Value = visible;
@@ -286,26 +380,18 @@ public sealed class WorldLoadIndicator : Component
             _placed = false;
     }
 
-    // Just ahead of the head and a little below the eye line, eased so it drifts with a turn rather
-    // than snapping. The plate child does the facing.
     private void UpdatePosition(float delta)
     {
-        var head = World?.LocalUser?.Root?.HeadSlot;
-        if (head == null || head.IsDestroyed || Slot == null || Slot.IsDestroyed)
+        var head = Engine.Current?.WorldManager?.FocusedWorld?.LocalUser?.Root?.HeadSlot
+            ?? World?.LocalUser?.Root?.HeadSlot;
+        if (head == null || head.IsDestroyed)
             return;
-        var target = head.GlobalPosition + (head.GlobalRotation * float3.Backward) * 1.1f + float3.Up * -0.12f;
-        if (_placed)
-            Slot.GlobalPosition = float3.Lerp(Slot.GlobalPosition, target, System.Math.Min(1f, delta * 6f));
-        else
-            Slot.GlobalPosition = target;
+        var target = head.GlobalPosition + (head.GlobalRotation * float3.Backward) * 1.1f - float3.Up * 0.14f;
+        Slot.GlobalPosition = _placed
+            ? float3.Lerp(Slot.GlobalPosition, target, 1f - MathF.Exp(-5f * delta)) : target;
+        if (_plate != null && Utility.UserFacing.TryLookRotation(Slot.GlobalPosition, head.GlobalPosition,
+                float3.Up, yawOnly: false, out var facing))
+            _plate.GlobalRotation = facing;
         _placed = true;
-    }
-
-    private static string FormatBytes(long bytes)
-    {
-        if (bytes >= 1024L * 1024L * 1024L) return $"{bytes / (1024.0 * 1024.0 * 1024.0):0.0} GB";
-        if (bytes >= 1024L * 1024L) return $"{bytes / (1024.0 * 1024.0):0.0} MB";
-        if (bytes >= 1024L) return $"{bytes / 1024.0:0} KB";
-        return $"{bytes} B";
     }
 }

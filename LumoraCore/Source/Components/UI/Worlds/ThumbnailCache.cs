@@ -98,6 +98,22 @@ internal sealed class ThumbnailCache
         Destroy(entry.Provider);
     }
 
+    public void OfferUrl(string key, string? url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+            return;
+        string hash = "url:" + uri.AbsoluteUri;
+        if (_entries.TryGetValue(key, out var existing) && (existing.Hash == hash || existing.Loading))
+            return;
+        var provider = _host.AddSlot("Thumb").AttachComponent<ImageProvider>();
+        provider.URL.Value = uri;
+        provider.GenerateMipmaps.Value = false;
+        provider.MaxSizeOverride.Value = -1;
+        _entries[key] = new Entry { Hash = hash, Provider = provider };
+        Destroy(existing?.Provider);
+    }
+
     public void Clear()
     {
         foreach (var entry in _entries.Values)

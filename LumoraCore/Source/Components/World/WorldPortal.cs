@@ -491,6 +491,7 @@ public sealed class WorldPortal : WorldLink
         {
             if (root.IsDestroyed)
                 return;
+            using var own = into.EnterSpawnAllocation();
             var slot = root.AddSlot("World Portal");
             // A door with a minute to live has no business in a world save.
             slot.Persistent.Value = false;

@@ -8,8 +8,8 @@ using LumoraEngine = Lumora.Core.Engine;
 
 namespace Lumora.Source.Godot.Services;
 
-// Publishes a picture of the world you are HOSTING into its session metadata, so the card in
-// somebody else's world browser shows the place instead of a placeholder. Announcements carry the
+// Keeps a local preview of every visited world and publishes hosted previews into session metadata.
+// Announcements carry the
 // bytes inline, which is why it is a small JPEG on a slow timer rather than a real screenshot.
 //
 // The capture itself goes through InputInterface.TryCaptureWorldView, the same seam the sidecar
@@ -25,37 +25,47 @@ public partial class SessionThumbnailService : Node
     [Export] public int ThumbnailHeight { get; set; } = 144;
 
     private float _captureTimer;
+    private Lumora.Core.World? _world;
 
     public override void _Process(double delta)
     {
+        var world = LumoraEngine.Current?.WorldManager?.FocusedWorld;
+        if (!ReferenceEquals(world, _world))
+        {
+            _world = world;
+            // Let the newly focused viewport render before its first capture.
+            _captureTimer = CaptureInterval - 1f;
+        }
         _captureTimer += (float)delta;
         if (_captureTimer < CaptureInterval)
             return;
-        _captureTimer = 0f;
-        CaptureAndUpdateThumbnail();
+        _captureTimer = CaptureAndUpdateThumbnail() ? 0f : CaptureInterval - 1f;
     }
 
-    private void CaptureAndUpdateThumbnail()
+    private bool CaptureAndUpdateThumbnail()
     {
         var world = LumoraEngine.Current?.WorldManager?.FocusedWorld;
-        var session = world?.Session;
-        if (session == null || !world!.IsAuthority)
-            return;
+        if (world == null || world.IsDestroyed || world.IsLoading)
+            return false;
 
         var input = LumoraEngine.Current?.InputInterface;
-        if (input == null)
-            return;
+        if (input == null || input.IsDashboardOpen)
+            return false;
 
         try
         {
             if (!input.TryCaptureWorldView(ThumbnailWidth, ThumbnailHeight, out var jpeg) || jpeg.Length == 0)
-                return;
+                return false;
             var base64 = Convert.ToBase64String(jpeg);
-            session.UpdateMetadata(meta => meta.ThumbnailBase64 = base64);
+            world.LocalThumbnailBase64 = base64;
+            if (world.IsAuthority)
+                world.Session?.UpdateMetadata(meta => meta.ThumbnailBase64 = base64);
+            return true;
         }
         catch (Exception ex)
         {
             LumoraLogger.Warn($"SessionThumbnailService: capture failed - {ex.Message}");
+            return false;
         }
     }
 }

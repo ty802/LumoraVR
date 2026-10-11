@@ -37,6 +37,8 @@ internal sealed class WorldCard
 
     public readonly Slot Root;
     public Action? Activate;
+    private Action? _closeAction;
+    private readonly PillButton _close;
 
     private readonly ArtBlock _art;
     private readonly RoundedPanel _frame;
@@ -47,12 +49,14 @@ internal sealed class WorldCard
     private readonly Chip _badge;
     private readonly int _nameBudget;
     private readonly int _metaBudget;
-    private bool _groupChipShown;
+    private readonly float _width;
+    private string _chipLayout = string.Empty;
 
     public WorldCard(BrowserParts parts, Slot parent, string name,
         float width = DefaultWidth, float height = DefaultHeight)
     {
         // Character budgets scale with the card so the smaller template tiles clip at the right place.
+        _width = width;
         _nameBudget = (int)(width / 8.8f);
         _metaBudget = (int)(width / 6.5f);
 
@@ -120,7 +124,25 @@ internal sealed class WorldCard
         washDriver.HighlightColor.Value = new color(1f, 1f, 1f, 0.08f);
         washDriver.PressedColor.Value = new color(1f, 1f, 1f, 0.14f);
         washDriver.DisabledColor.Value = color.Transparent;
+        _close = parts.AddButton(Root, "×", 26f, 26f, DashTheme.Field,
+            DashTheme.Negative, DashTheme.NegativeHover, DashTheme.Negative,
+            BrowserParts.Weight.Bold, () => _closeAction?.Invoke(), radius: 7f);
+        _close.Root.Name.Value = "CloseWorld";
+        _close.Text.Size.Value = 22f;
+        var closeText = _close.Button.AddColorDriver(_close.Text.Color, DashTheme.Negative, InteractionColorMode.Direct);
+        closeText.HighlightColor.Value = DashTheme.OnAccent;
+        closeText.PressedColor.Value = DashTheme.OnAccent;
+        closeText.DisabledColor.Value = DashTheme.TextMuted;
+        BrowserParts.PinTopCorner(_close.Root.GetComponent<RectTransform>()!, 8f, 26f, 26f, fromRight: true);
+        _close.SetActive(false);
+    }
 
+    public void SetCloseAction(Action? close)
+    {
+        bool changed = (_closeAction == null) != (close == null);
+        _closeAction = close;
+        _close.SetActive(close != null);
+        if (changed) _chipLayout = string.Empty;
     }
 
     public void Destroy()
@@ -135,35 +157,25 @@ internal sealed class WorldCard
         BrowserParts.SetText(_name, BrowserParts.Truncate(displayName, _nameBudget));
         BrowserParts.SetText(_meta, BrowserParts.Truncate(meta, _metaBudget));
 
-        bool hasGroup = !string.IsNullOrEmpty(groupTag);
-        if (hasGroup)
+        string? groupLabel = string.IsNullOrEmpty(groupTag) ? null : BrowserParts.Truncate(groupTag, 6);
+        if (groupLabel != null)
         {
-            _groupChip.Set(BrowserParts.Truncate(groupTag, 6),
+            _groupChip.Set(groupLabel,
                 new color(DashTheme.Accent.r, DashTheme.Accent.g, DashTheme.Accent.b, 0.85f), DashTheme.OnAccent);
         }
-        BrowserParts.SetActive(_groupChip.Root, hasGroup);
 
-        // The chips are pinned, not laid out, so the mode chip has to be moved out of the way rather than
-        // pushed. Only on the frame the answer changes: re-pinning writes four sync fields. -xlinka
-        if (hasGroup != _groupChipShown)
-        {
-            _groupChipShown = hasGroup;
-            float modeInset = hasGroup ? ChipInset + GroupChipWidth + ChipGap : ChipInset;
-            BrowserParts.PinTopCorner(_modeChip.Root.GetComponent<RectTransform>()!, modeInset, ModeChipWidth,
-                DashTheme.ChipHeight, fromRight: false);
-        }
-
+        string? modeLabel = mode.HasValue ? DashTheme.ModeLabel(mode.Value) : null;
         if (mode.HasValue)
         {
             var tint = DashTheme.ModeTint(mode.Value);
-            _modeChip.Set(DashTheme.ModeLabel(mode.Value),
-                new color(tint.r, tint.g, tint.b, 0.85f), DashTheme.OnAccent);
+            _modeChip.Set(modeLabel!, new color(tint.r, tint.g, tint.b, 0.85f), DashTheme.OnAccent);
         }
-        BrowserParts.SetActive(_modeChip.Root, mode.HasValue);
 
-        if (!string.IsNullOrEmpty(badge))
-            BrowserParts.SetText(_badge.Text, badge!);
-        BrowserParts.SetActive(_badge.Root, !string.IsNullOrEmpty(badge));
+        string? badgeLabel = string.IsNullOrEmpty(badge) ? null : badge;
+        if (badgeLabel != null)
+            BrowserParts.SetText(_badge.Text, badgeLabel);
+
+        LayoutChips(groupLabel, modeLabel, badgeLabel);
 
         BrowserParts.SetOutline(_frame, highlighted ? DashTheme.Accent : DashTheme.Outline,
             FrameThickness);
@@ -172,4 +184,36 @@ internal sealed class WorldCard
     }
 
     public void ApplyArt(IAssetProvider<TextureAsset>? texture) => _art.SetTexture(texture);
+
+    // The tags run left to right, group then mode then badge, each as wide as its words and a gap apart. A fixed
+    // 88-unit badge pinned to the right ran into the mode chip on a narrow card, and a tag with no room left is
+    // hidden rather than drawn over another. Re-pinned only when the tags change: each pin writes sync fields.
+    private void LayoutChips(string? group, string? mode, string? badge)
+    {
+        string key = $"{group}|{mode}|{badge}";
+        if (key == _chipLayout)
+            return;
+        _chipLayout = key;
+        float x = ChipInset;
+        float limit = _width - ChipInset - (_closeAction != null ? 30f : 0f);
+        x = PlaceChip(_groupChip, group, x, limit);
+        x = PlaceChip(_modeChip, mode, x, limit);
+        PlaceChip(_badge, badge, x, limit);
+    }
+
+    private static float PlaceChip(Chip chip, string? label, float x, float limit)
+    {
+        bool shown = !string.IsNullOrEmpty(label);
+        float width = shown ? ChipWidthFor(label!) : 0f;
+        if (shown && x + width > limit)
+            shown = false;
+        BrowserParts.SetActive(chip.Root, shown);
+        if (!shown)
+            return x;
+        BrowserParts.PinTopCorner(chip.Root.GetComponent<RectTransform>()!, x, width, DashTheme.ChipHeight, fromRight: false);
+        return x + width + ChipGap;
+    }
+
+    // FontLabel semibold runs about 6.6 units a character; the pill carries 20 of padding.
+    private static float ChipWidthFor(string label) => MathF.Max(40f, label.Length * 6.6f + 20f);
 }

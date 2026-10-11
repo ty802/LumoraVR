@@ -364,6 +364,7 @@ public sealed class WorldOrb : WorldLink, IHeldActivatable
         {
             if (root.IsDestroyed)
                 return;
+            using var own = into.EnterSpawnAllocation();
             var slot = root.AddSlot("World Orb: " + name);
             slot.GlobalPosition = InFrontOfLocalHead(into);
             var orb = slot.AttachComponent<WorldOrb>();

@@ -19,6 +19,8 @@ namespace Lumora.Core.Components.UI.Worlds;
 // -xlinka
 internal sealed class SessionStrip
 {
+    public Func<SessionListEntry, Lumora.Core.Assets.IAssetProvider<Lumora.Core.Assets.TextureAsset>?>? ThumbnailFor;
+    public Action<string>? ForgetThumbnail;
     public const float CardWidth = 300f;
     public const float CardHeight = 150f;
     private const float CardGap = 12f;
@@ -51,6 +53,8 @@ internal sealed class SessionStrip
 
     private float _pressX;
     private float _pressScroll;
+    private float _handleTarget;
+    private bool _handleDragging;
     private int _sizeRetries;
 
     public string? SelectedId { get; private set; }
@@ -84,6 +88,8 @@ internal sealed class SessionStrip
         BrowserParts.Flex(viewport, 1f, 1f);
         viewport.AttachComponent<Mask>().ShowMaskGraphic.Value = false;
         _scroll = viewport.AttachComponent<ScrollRect>();
+        // Each card carries a Join.
+        _scroll.RowsActOnRelease.Value = true;
         // The strip only travels sideways, so give the wheel somewhere to go: four notches of the
         // vertical step per notch puts a card and a bit under each click of the wheel.
         _scroll.WheelScrollsHorizontal.Value = true;
@@ -127,10 +133,11 @@ internal sealed class SessionStrip
         _handleRect.AnchorMax.Value = new float2(0f, 1f);
         _handleRect.OffsetMin.Value = float2.Zero;
         _handleRect.OffsetMax.Value = new float2(MinHandleWidth, 0f);
-        BrowserParts.Panel(handle, DashTheme.TextMuted, BarHeight * 0.5f);
-        var interaction = handle.AttachComponent<InteractionElement>();
+        var handlePanel = BrowserParts.Panel(handle, DashTheme.TextMuted, BarHeight * 0.5f);
+        var interaction = DashScrollbar.CreateHandleInteraction(handle, handlePanel.Color);
         interaction.Pressed += OnHandlePress;
         interaction.Dragged += OnHandleDrag;
+        interaction.Released += OnHandleRelease;
     }
 
     public void SetActive(bool active) => BrowserParts.SetActive(Root, active);
@@ -159,6 +166,7 @@ internal sealed class SessionStrip
             {
                 dead.Destroy();
                 _cards.Remove(_order[i]);
+                ForgetThumbnail?.Invoke(_order[i]);
             }
             _order.RemoveAt(i--);
         }
@@ -183,6 +191,7 @@ internal sealed class SessionStrip
                 };
             }
             card.Apply(entry);
+            card.ApplyArt(ThumbnailFor?.Invoke(entry));
         }
 
         // The selection has to survive a session vanishing: fall through to the first card that is
@@ -207,6 +216,7 @@ internal sealed class SessionStrip
 
     public void Clear()
     {
+        foreach (var id in _order) ForgetThumbnail?.Invoke(id);
         foreach (var card in _cards.Values)
             card.Destroy();
         _cards.Clear();
@@ -282,8 +292,11 @@ internal sealed class SessionStrip
 
     private void OnHandlePress(UIInteractionContext context)
     {
+        _scroll.StopScrolling();
         _pressX = context.LocalPoint.x;
         _pressScroll = _scroll.AbsolutePosition.x;
+        _handleTarget = _pressScroll;
+        _handleDragging = false;
     }
 
     private void OnHandleDrag(UIInteractionContext context)
@@ -300,8 +313,20 @@ internal sealed class SessionStrip
         if (travel <= 0f)
             return;
         float delta = context.LocalPoint.x - _pressX;
-        _scroll.AbsolutePosition = new float2(
-            System.Math.Clamp(_pressScroll + delta * (excess / travel), 0f, excess), 0f);
+        _handleTarget = System.Math.Clamp(_pressScroll + delta * (excess / travel), 0f, excess);
+        _handleDragging = true;
+        float shown = DashScrollbar.Follow(_scroll.AbsolutePosition.x, _handleTarget, _scroll.World);
+        _scroll.AbsolutePosition = new float2(System.Math.Clamp(shown, 0f, excess), 0f);
+    }
+
+    // Let go, the strip lands where the last drag frame put the handle, not where the release jolted it.
+    private void OnHandleRelease(UIInteractionContext context)
+    {
+        if (!_handleDragging)
+            return;
+        _handleDragging = false;
+        if (!_scroll.IsDestroyed)
+            _scroll.AbsolutePosition = new float2(_handleTarget, 0f);
     }
 }
 
@@ -319,6 +344,7 @@ internal sealed class SessionCard
     private readonly Chip _sourceChip;
     private readonly Chip _visibilityChip;
     private readonly PillButton _join;
+    private readonly ArtBlock _art;
 
     public SessionCard(BrowserParts parts, Slot parent)
     {
@@ -340,11 +366,16 @@ internal sealed class SessionCard
         BrowserParts.PinTop(hostSlot.AttachComponent<RectTransform>(), 14f, 24f, 14f);
         _host = parts.Label(hostSlot, string.Empty, DashTheme.FontBody, DashTheme.Text,
             BrowserParts.Weight.Semibold);
+        hostSlot.GetComponent<RectTransform>()!.OffsetMax.Value = new float2(-114f, -14f);
 
         var usersSlot = Root.AddSlot("Users");
         BrowserParts.PinTop(usersSlot.AttachComponent<RectTransform>(), 40f, 20f, 14f);
         _users = parts.Label(usersSlot, string.Empty, DashTheme.FontSmall, DashTheme.TextDim,
             BrowserParts.Weight.Regular);
+        usersSlot.GetComponent<RectTransform>()!.OffsetMax.Value = new float2(-114f, -40f);
+        var picture = Root.AddSlot("Preview");
+        BrowserParts.PinTopCorner(picture.AttachComponent<RectTransform>(), 12f, 92f, 58f, fromRight: true);
+        _art = new ArtBlock(parts, picture, DashTheme.RadiusControl, 26f, 92f / 58f, 0f);
 
         _sourceChip = parts.AddChip(Root, string.Empty, DashTheme.Field, DashTheme.TextDim, 68f);
         BrowserParts.PinBottomCorner(_sourceChip.Root.GetComponent<RectTransform>()!, 14f, 68f,
@@ -370,6 +401,7 @@ internal sealed class SessionCard
     public void Apply(SessionListEntry entry)
     {
         Entry = entry;
+        _art.SetPlaceholder(WorldGroup.TryReadMode(entry.Tags, out var mode) ? mode : null, entry.Name);
         string host = string.IsNullOrEmpty(entry.HostUsername) ? "(unnamed host)" : entry.HostUsername;
         BrowserParts.SetText(_host, BrowserParts.Truncate(host, 28));
         BrowserParts.SetText(_users, $"{entry.ActiveUsers}/{entry.MaxUsers} users");
@@ -385,4 +417,6 @@ internal sealed class SessionCard
         BrowserParts.SetOutline(_frame, selected ? DashTheme.Accent : DashTheme.Outline,
             selected ? 2f : DashTheme.OutlineWidth);
     }
+
+    public void ApplyArt(Lumora.Core.Assets.IAssetProvider<Lumora.Core.Assets.TextureAsset>? texture) => _art.SetTexture(texture);
 }

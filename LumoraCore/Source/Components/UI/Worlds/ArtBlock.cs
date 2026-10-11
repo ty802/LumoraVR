@@ -79,17 +79,19 @@ internal sealed class ArtBlock
             _texture = texture;
             _image.Texture.Target = texture!;
         }
-        bool hasArt = texture != null;
+        var asset = _image.Texture.Asset;
+        bool hasArt = texture != null && asset != null && asset.Width > 0 && asset.Height > 0;
         BrowserParts.SetActive(_imageSlot, hasArt);
         BrowserParts.SetActive(_placeholder, !hasArt);
         if (!hasArt)
             return;
 
-        var asset = _image.Texture.Asset;
         float sourceAspect = asset != null && asset.Width > 0 && asset.Height > 0
             ? asset.Width / (float)asset.Height
             : AssumedSourceAspect;
-        var window = CoverWindow(_targetAspect, sourceAspect);
+        var rect = Root.GetComponent<RectTransform>()!.LocalComputeRect;
+        float targetAspect = rect.width > 1f && rect.height > 1f ? rect.width / rect.height : _targetAspect;
+        var window = CoverWindow(targetAspect, sourceAspect);
         if (_image.UVRect.Value != window)
             _image.UVRect.Value = window;
     }

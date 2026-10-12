@@ -3,6 +3,7 @@
 
 using System;
 using Lumora.Core;
+using Lumora.Core.Math;
 
 namespace Helio.UI;
 
@@ -21,13 +22,24 @@ public sealed class CollapsibleSection : InteractionElement
     // Duplicable change action - see Button.Pressed.
     public readonly SyncDelegate<Action<CollapsibleSection, bool>> ChangeAction;
 
+    // Folds when the press lets go instead of when it lands. See Button.ActOnRelease.
+    public readonly Sync<bool> ActOnRelease;
+
     public event Action<CollapsibleSection, bool>? ExpandedChanged;
 
     public CollapsibleSection()
     {
         Expanded = new Sync<bool>(this, false);
         ChangeAction = new SyncDelegate<Action<CollapsibleSection, bool>>(this);
+        ActOnRelease = new Sync<bool>(this, false);
     }
+
+    protected override bool ActsOnPress => !ActOnRelease.Value && !InReleaseList();
+    protected override bool IsClickControl => true;
+
+    // A drag that starts here scrolls the list it sits in, the same as from a button.
+    public override bool PassDragToParent(in float2 dragDelta)
+        => System.Math.Abs(dragDelta.x) > DragPassThreshold || System.Math.Abs(dragDelta.y) > DragPassThreshold;
 
     public void SetAction(Action<CollapsibleSection, bool>? action)
     {

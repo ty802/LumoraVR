@@ -3,6 +3,7 @@
 
 using System;
 using Lumora.Core;
+using Lumora.Core.Components.Interaction;
 using Lumora.Core.Math;
 
 namespace Helio.UI;
@@ -15,12 +16,31 @@ public class Button : InteractionElement
     // clone's handler). Closures can't be referenced this way - they use Clicked.
     public readonly SyncDelegate<Action<Button, UIInteractionContext>> PressAction;
 
+    // A press here takes the keyboard off whatever text field the presser was typing into. Off by default:
+    // the in-world keyboard's keys are buttons too, and they must leave the field they type into alone.
+    public readonly Sync<bool> ClearFocusOnPress;
+
+    // A button acts the moment it is pressed. This one waits for the press to let go over it instead, and
+    // does nothing if the list under it took the press for a scroll. For the few where a stray press costs
+    // more than a slower one: a card that is also dragged, a delete in a list. Older saves have no value
+    // here and come back acting on press.
+    public readonly Sync<bool> ActOnRelease;
+
+    // Hold controls (virtual keyboard keys) keep their press until the trigger actually releases,
+    // rather than ending when it eases off the optional deep-click threshold.
+    public readonly Sync<bool> KeepPressUntilRelease = new();
+
     public event Action<Button, UIInteractionContext>? Clicked;
 
     public Button()
     {
         PressAction = new SyncDelegate<Action<Button, UIInteractionContext>>(this);
+        ClearFocusOnPress = new Sync<bool>(this, false);
+        ActOnRelease = new Sync<bool>(this, false);
     }
+
+    protected override bool ActsOnPress => !ActOnRelease.Value && !InReleaseList();
+    protected override bool IsClickControl => !KeepPressUntilRelease.Value;
 
     // Bind a click action. A method on a world element (a component) is stored as
     // a duplicable reference; a closure falls back to the local-only Clicked event.
@@ -49,10 +69,18 @@ public class Button : InteractionElement
         return AddColorDriver(tint, tint.Value);
     }
 
-    // A button inside a scroll list relinquishes any real drag so the list scrolls; a click (no movement)
-    // stays with the button and still fires on release.
+    // A button inside a scroll list relinquishes any real drag so the list scrolls. It acted as the press
+    // landed and does not act again; one that acts on release never acts once the list has the drag.
     public override bool PassDragToParent(in float2 dragDelta)
         => System.Math.Abs(dragDelta.x) > DragPassThreshold || System.Math.Abs(dragDelta.y) > DragPassThreshold;
+
+    // The field focus is this machine's alone, and so is the press: whoever pressed is the one typing. A field
+    // on this button's own slot is the thing being pressed, not somewhere else.
+    protected override void OnPress(in UIInteractionContext context)
+    {
+        if (ClearFocusOnPress.Value && TextInput.Focused is { IsDestroyed: false } typing && !ReferenceEquals(typing.Slot, Slot))
+            typing.Unfocus();
+    }
 
     protected override void OnSubmit(in UIInteractionContext context)
     {
@@ -86,6 +114,9 @@ public class Button : InteractionElement
                 Lumora.Core.Logging.Logger.Error($"Button: a press receiver threw: {ex.Message}");
             }
         }
+
+        if (!IsDestroyed && !slot.IsDestroyed)
+            new PressEvent(this, context.Actor, context.WorldPoint).Send(slot);
     }
 
     // Quiet on purpose. A click is confirmation, and confirmation that competes with the room is

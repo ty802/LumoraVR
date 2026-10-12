@@ -7,12 +7,8 @@ using Lumora.Core.Math;
 
 namespace Helio.UI.Layout;
 
-/// <summary>
-/// Flows children left-to-right, wrapping to a new row when the next child would
-/// overflow the available width (CSS flex-wrap). Each row's height is its tallest
-/// child; rows stack top-to-bottom. Children size to their preferred metrics,
-/// clamped to the container width.
-/// </summary>
+// Rows fill left to right and wrap when the next child would overflow; a row is as tall as its tallest
+// child. Children take their preferred size, clamped to the container width.
 [ComponentCategory("UI/Helio/Layout")]
 public class WrapLayout : LayoutController
 {
@@ -35,6 +31,11 @@ public class WrapLayout : LayoutController
 
     private readonly List<float> _w = new();
     private readonly List<float> _h = new();
+    private readonly List<RectTransform> _measureChildren = new();
+    private float _measuredWidth = float.NaN;
+
+    internal bool MeasuredAtOtherWidth(float width) => float.IsNaN(_measuredWidth)
+        || System.MathF.Abs(width - _measuredWidth) > 0.01f;
 
     public WrapLayout()
     {
@@ -120,7 +121,8 @@ public class WrapLayout : LayoutController
     {
         if (RectTransform == null) return;
 
-        var children = RectTransform.RectChildren;
+        LayoutSizing.CollectMeasureChildren(RectTransform, _measureChildren);
+        var children = _measureChildren;
 
         if (direction == LayoutDirection.Horizontal)
         {
@@ -144,6 +146,7 @@ public class WrapLayout : LayoutController
         }
 
         // Vertical height depends on the wrap at the current width.
+        _measuredWidth = RectTransform.LocalComputeRect.width;
         float innerW = RectTransform.LocalComputeRect.width - _padL - _padR;
         if (innerW < 0f) innerW = 0f;
         MeasureChildren(children, innerW);

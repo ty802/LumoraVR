@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Globalization;
 using Lumora.Core;
 using Lumora.Core.Input;
 
@@ -30,6 +31,11 @@ public sealed class TextInput : InteractionElement
     public readonly Sync<bool> Mask;
     // display-only: can't be focused or edited
     public readonly Sync<bool> ReadOnly;
+    // what typing leaves behind once it stops, applied as focus goes
+    public readonly Sync<TextFinishHandling> FinishHandling;
+    // keep what was typed when focus goes elsewhere (a click away, another field, the on-screen keyboard
+    // closing) the way Enter keeps it; Escape still drops the edit
+    public readonly Sync<bool> SubmitOnBlur;
 
     public readonly SyncDelegate<Action<TextInput, string>> ChangeAction;
     public readonly SyncDelegate<Action<TextInput, string>> SubmitAction;
@@ -38,7 +44,8 @@ public sealed class TextInput : InteractionElement
     public event Action<TextInput, string>? EditingChanged;
     public event Action<TextInput, string>? EditingFinished;
     // fires on ANY focus loss (enter, escape, click-away, destroy), unlike EditingFinished which
-    // is submit-only. editors use it to close a typing session exactly once.
+    // is submit-only (enter, or a blur on a SubmitOnBlur field). editors use it to close a typing
+    // session exactly once. it runs before EditingFinished.
     public event Action<TextInput, string>? FocusLost;
 
     // drives the child Text's content. declared member: the target replicates and saves.
@@ -49,9 +56,10 @@ public sealed class TextInput : InteractionElement
     private Helio.UI.Text? _text;
     private int _caret;
     private int _selStart = -1; // selection anchor, -1 = no selection
-    // The suppression set we registered with while focused. Cached so the release always hits the
-    // SAME instance even if the focused world changes underneath us; no stuck-unable-to-walk state. -xlinka
-    private Lumora.Core.Components.UserInputState? _suppressionState;
+    private KeyRepeat _backspaceRepeat;
+    private KeyRepeat _deleteRepeat;
+    // the text as focus came in: a blur that typed nothing submits nothing
+    private string _focusText = string.Empty;
 
     public bool IsFocused => ReferenceEquals(_focused, this);
 
@@ -72,6 +80,8 @@ public sealed class TextInput : InteractionElement
         MaxLength = new Sync<int>(this, 0);
         Mask = new Sync<bool>(this, false);
         ReadOnly = new Sync<bool>(this, false);
+        FinishHandling = new Sync<TextFinishHandling>(this, TextFinishHandling.LeaveAsIs);
+        SubmitOnBlur = new Sync<bool>(this, false);
         ChangeAction = new SyncDelegate<Action<TextInput, string>>(this);
         SubmitAction = new SyncDelegate<Action<TextInput, string>>(this);
     }
@@ -110,7 +120,6 @@ public sealed class TextInput : InteractionElement
             // Destroyed mid-edit (pane rebuild): close the session and let go of the keyboard.
             FocusLost?.Invoke(this, Text.Value ?? string.Empty);
         }
-        SetTypingSuppression(false);
         _text = null;
         base.OnDestroy();
     }
@@ -136,7 +145,7 @@ public sealed class TextInput : InteractionElement
         base.OnUpdate(delta);
         if (!IsFocused)
             return;
-        if (!CanInteract)
+        if (!CanInteract || ReadOnly.Value)
         {
             Unfocus();
             return;
@@ -162,28 +171,35 @@ public sealed class TextInput : InteractionElement
         // two keyboards can never end up with different ideas of what copy means on a field. Handled
         // before the typed-text insert and returning out of the frame: the shortcut has consumed the
         // keystroke, and letting it fall through would type a stray character on top of the paste. -xlinka
-        if (kb.IsKeyPressed(Key.LeftControl) || kb.IsKeyPressed(Key.RightControl))
+        bool shortcut = (kb.IsKeyPressed(Key.LeftControl) || kb.IsKeyPressed(Key.RightControl))
+            && !kb.IsKeyPressed(Key.LeftAlt) && !kb.IsKeyPressed(Key.RightAlt);
+        if (shortcut)
         {
+            if (kb.IsKeyJustPressed(Key.A)) { SelectRange(0, value.Length); return; }
             if (kb.IsKeyJustPressed(Key.C)) { CopySelection(); return; }
             if (kb.IsKeyJustPressed(Key.X)) { CutSelection(); return; }
             if (kb.IsKeyJustPressed(Key.V)) { PasteClipboard(); return; }
+            if (kb.IsKeyJustPressed(Key.Z) || kb.IsKeyJustPressed(Key.Y))
+            {
+                var undo = Lumora.Core.Components.UndoManager.ForLocalUser(World.IsUserspace
+                    ? Engine.Current?.WorldManager?.FocusedWorld : World);
+                if (kb.IsKeyJustPressed(Key.Y) || shift) undo?.Redo(); else undo?.Undo();
+                return;
+            }
         }
 
         // Typed characters: replace the selection (if any), then insert at the caret.
-        string typed = kb.GetTypedText();
+        string typed = shortcut ? string.Empty : kb.GetTypedText();
         if (!string.IsNullOrEmpty(typed))
             changed |= InsertText(ref value, typed);
 
-        if (kb.IsKeyJustPressed(Key.Backspace))
-            changed |= DeleteBack(ref value);
-        if (kb.IsKeyJustPressed(Key.Delete))
-        {
-            if (HasSelection()) { DeleteSelection(ref value); changed = true; }
-            else if (_caret < value.Length) { value = value.Remove(_caret, 1); changed = true; }
-        }
+        int backs = DeletionCount(kb, Key.Backspace, ref _backspaceRepeat, delta);
+        int deletes = DeletionCount(kb, Key.Delete, ref _deleteRepeat, delta);
+        for (int i = 0; i < backs; i++) changed |= DeleteBack(ref value);
+        for (int i = 0; i < deletes; i++) changed |= DeleteForward(ref value);
 
-        if (kb.IsKeyJustPressed(Key.LeftArrow)) { MoveCaret(_caret - 1, shift); caretMoved = true; }
-        if (kb.IsKeyJustPressed(Key.RightArrow)) { MoveCaret(_caret + 1, shift, value.Length); caretMoved = true; }
+        if (kb.IsKeyJustPressed(Key.LeftArrow)) { MoveCaret(TextElements.Previous(value, _caret), shift); caretMoved = true; }
+        if (kb.IsKeyJustPressed(Key.RightArrow)) { MoveCaret(TextElements.Next(value, _caret), shift, value.Length); caretMoved = true; }
         // Home/End are line-relative (single-line has no newlines, so this is unchanged for it). Up/Down
         // keep the column and hop to the same spot on the neighbor line - the caret moves users expect
         // in a multi-line editor. -xlinka
@@ -211,7 +227,13 @@ public sealed class TextInput : InteractionElement
             UpdateDisplay();
 
         if (enter) { Submit(); return; }
-        if (escape) { Unfocus(); return; }
+        if (escape) { Cancel(); return; }
+    }
+
+    private static int DeletionCount(Keyboard keyboard, Key key, ref KeyRepeat repeat, float delta)
+    {
+        if (keyboard.IsKeyJustPressed(key)) { repeat.Begin(); return 1; }
+        return repeat.Advance(keyboard.IsKeyPressed(key), delta);
     }
 
     // Index of the first char on the caret's line (just after the previous '\n', or 0).
@@ -260,8 +282,8 @@ public sealed class TextInput : InteractionElement
 
     private void ClampCaret(string value)
     {
-        _caret = System.Math.Clamp(_caret, 0, value.Length);
-        if (_selStart > value.Length) _selStart = value.Length;
+        _caret = TextElements.Floor(value, System.Math.Clamp(_caret, 0, value.Length));
+        if (_selStart >= 0) _selStart = TextElements.Floor(value, _selStart);
     }
 
     // Printable characters only: control codes and DEL are dropped, which is what keeps a stray
@@ -270,19 +292,21 @@ public sealed class TextInput : InteractionElement
     {
         int max = MaxLength.Value;
         bool changed = false;
-        foreach (char c in typed)
+        var characters = StringInfo.GetTextElementEnumerator(typed);
+        while (characters.MoveNext())
         {
-            if (c < ' ' || c == (char)127)
+            string character = characters.GetTextElement();
+            if (character[0] < ' ' || character[0] == (char)127)
                 continue;
             if (HasSelection())
             {
                 DeleteSelection(ref value);
                 changed = true;
             }
-            if (max > 0 && value.Length >= max)
+            if (max > 0 && value.Length + character.Length > max)
                 break;
-            value = value.Insert(_caret, c.ToString());
-            _caret++;
+            value = value.Insert(_caret, character);
+            _caret += character.Length;
             changed = true;
         }
         return changed;
@@ -310,8 +334,18 @@ public sealed class TextInput : InteractionElement
         }
         if (_caret <= 0)
             return false;
-        value = value.Remove(_caret - 1, 1);
-        _caret--;
+        int start = TextElements.Previous(value, _caret);
+        value = value.Remove(start, _caret - start);
+        _caret = start;
+        return true;
+    }
+
+    private bool DeleteForward(ref string value)
+    {
+        if (HasSelection()) { DeleteSelection(ref value); return true; }
+        if (_caret >= value.Length) return false;
+        int end = TextElements.Next(value, _caret);
+        value = value.Remove(_caret, end - _caret);
         return true;
     }
 
@@ -342,7 +376,7 @@ public sealed class TextInput : InteractionElement
 
         if (target < 0) target = 0;
         if (limit > 0 && target > limit) target = limit;
-        _caret = target;
+        _caret = TextElements.Floor(Text.Value ?? string.Empty, target);
     }
 
     private void ApplyValue(string value)
@@ -360,7 +394,7 @@ public sealed class TextInput : InteractionElement
     // replacement behave identically no matter which keyboard you typed on. All of them stand down
     // unless this field currently holds focus. -xlinka
 
-    private bool CanType => !IsDestroyed && IsFocused && !ReadOnly.Value;
+    private bool CanType => CanInteract && IsFocused && !ReadOnly.Value;
 
     public void TypeString(string text)
     {
@@ -381,6 +415,15 @@ public sealed class TextInput : InteractionElement
         ClampCaret(value);
         if (DeleteBack(ref value))
             ApplyValue(value);
+        UpdateDisplay();
+    }
+
+    public void PressDelete()
+    {
+        if (!CanType) return;
+        string value = Text.Value ?? string.Empty;
+        ClampCaret(value);
+        if (DeleteForward(ref value)) ApplyValue(value);
         UpdateDisplay();
     }
 
@@ -423,7 +466,10 @@ public sealed class TextInput : InteractionElement
             return;
         string value = Text.Value ?? string.Empty;
         ClampCaret(value);
-        MoveCaret(_caret + delta, false, value.Length);
+        int target = _caret;
+        for (int i = 0; i < System.Math.Min(System.Math.Abs((long)delta), value.Length); i++)
+            target = delta < 0 ? TextElements.Previous(value, target) : TextElements.Next(value, target);
+        MoveCaret(target, false, value.Length);
         UpdateDisplay();
     }
 
@@ -462,6 +508,7 @@ public sealed class TextInput : InteractionElement
         _caret = System.Math.Clamp(caret, 0, value.Length);
         int start = System.Math.Clamp(anchor, 0, value.Length);
         _selStart = start == _caret ? -1 : start;
+        ClampCaret(value);
         UpdateDisplay();
     }
 
@@ -558,83 +605,143 @@ public sealed class TextInput : InteractionElement
 
     // Take focus without a click. The pointer path goes through OnPress; anything else that needs to
     // start a typing session (a harness, a panel handing off to a field) calls this.
+    //
+    // Typing takes the keyboard and nothing else. While a field holds focus the action map's keyboard
+    // source reads as released (InputInterface raises TextFocusHeld off Focused), so walking, crouch and the
+    // hotkeys stand down; the mouse, the camera and the headset stay with the user. Holding the whole desktop
+    // channel would freeze mouse look, the third-person orbit and the free camera, and park the sticks in VR,
+    // for as long as anyone is typing. -xlinka
     public void Focus()
     {
         if (ReferenceEquals(_focused, this))
             return;
         _focused?.Unfocus();
         _focused = this;
-        _caret = (Text.Value ?? string.Empty).Length;
+        _backspaceRepeat.Reset();
+        _deleteRepeat.Reset();
+        _focusText = Text.Value ?? string.Empty;
+        _caret = _focusText.Length;
         _selStart = -1;
         UpdateDisplay();
-        // Typing owns the keyboard: gate walking/crouch/hotkeys through the shared requester set
-        // until focus is released.
-        SetTypingSuppression(true);
         EditingStarted?.Invoke(this);
     }
 
-    // The blur path: drop focus, release the keyboard, fire FocusLost, and commit nothing. Escape,
-    // click-away and the VR keyboard's Close and Esc keys all land here.
-    public void Unfocus()
+    // A press that goes down anywhere but on the field ends its edit, the way a click away does. The field,
+    // anything inside it, and a surface that types into it (the on-screen keyboard) keep it. Canvases report
+    // the element a press lands on, the laser what it hit out in the world, or nothing. -xlinka
+    public static void PressedAt(Slot? at, User? by)
     {
-        bool was = ReferenceEquals(_focused, this);
-        if (was)
-            _focused = null;
-        _selStart = -1;
-        UpdateDisplay();
-        if (was)
+        var field = _focused;
+        if (field == null || field.IsDestroyed || field.Slot == null)
+            return;
+        if (by != null && !by.IsLocal)
+            return;
+        for (var slot = at; slot != null; slot = slot.Parent)
         {
-            SetTypingSuppression(false);
-            FocusLost?.Invoke(this, Text.Value ?? string.Empty);
+            if (ReferenceEquals(slot, field.Slot) || KeepsFocus(slot))
+                return;
         }
+        field.Unfocus();
     }
 
-    private void SetTypingSuppression(bool active)
+    private static bool KeepsFocus(Slot slot)
     {
-        if (active)
+        foreach (var component in slot.Components)
         {
-            var state = Lumora.Core.Components.UserInputState.ForFocusedLocalUser;
-            if (_suppressionState != null && !ReferenceEquals(_suppressionState, state))
-                _suppressionState.SetDesktopInputSuppressed(this, false);
-            _suppressionState = state;
-            state?.SetDesktopInputSuppressed(this, true);
+            if (component is IKeepsTextFocus)
+                return true;
         }
-        else
+        return false;
+    }
+
+    // The blur path: drop focus, release the keyboard and fire FocusLost. Click-away, another field and
+    // the VR keyboard's Close land here. A SubmitOnBlur field submits what was typed, when anything was;
+    // any other field commits nothing.
+    public void Unfocus()
+    {
+        if (EndFocus(out string text) && SubmitOnBlur.Value && !string.Equals(text, _focusText, StringComparison.Ordinal))
+            RaiseSubmitted(text);
+    }
+
+    // Escape, from either keyboard: the edit is dropped on every field, SubmitOnBlur or not.
+    public void Cancel() => EndFocus(out _);
+
+    private bool EndFocus(out string text)
+    {
+        _backspaceRepeat.Reset();
+        _deleteRepeat.Reset();
+        bool was = ReferenceEquals(_focused, this);
+        if (was)
         {
-            _suppressionState?.SetDesktopInputSuppressed(this, false);
-            _suppressionState = null;
+            _focused = null;
+            ApplyFinishHandling();
         }
+        _selStart = -1;
+        UpdateDisplay();
+        text = Text.Value ?? string.Empty;
+        if (was)
+            FocusLost?.Invoke(this, text);
+        return was;
+    }
+
+    // Typing stopped: an empty or blank value becomes no value at all, when the field is set to.
+    private void ApplyFinishHandling()
+    {
+        string? value = Text.Value;
+        if (value == null || ReadOnly.Value)
+            return;
+        bool clear = FinishHandling.Value switch
+        {
+            TextFinishHandling.NullOnEmpty => value.Length == 0,
+            TextFinishHandling.NullOnWhitespace => string.IsNullOrWhiteSpace(value),
+            _ => false,
+        };
+        if (clear)
+            Text.Value = null!;
     }
 
     private void Submit()
     {
-        var value = Text.Value ?? string.Empty;
-        Unfocus();
+        EndFocus(out string value);
+        RaiseSubmitted(value);
+    }
+
+    private void RaiseSubmitted(string value)
+    {
         EditingFinished?.Invoke(this, value);
         SubmitAction.Target?.Invoke(this, value);
     }
 
     private void UpdateDisplay()
     {
-        string value = Text.Value ?? string.Empty;
+        string? raw = Text.Value;
+        string value = raw ?? string.Empty;
         string masked = Mask.Value && value.Length > 0 ? new string('•', value.Length) : value;
 
-        string content;
+        // No text at all and no hint of the field's own leaves the shown text empty, so it shows its own
+        // null hint instead.
+        string? content;
         if (IsFocused)
             content = masked;
         else if (value.Length == 0)
-            content = Placeholder.Value ?? string.Empty;
+            content = string.IsNullOrEmpty(Placeholder.Value) ? raw : Placeholder.Value;
         else
             content = masked;
 
-        ContentDrive.SetValue(content);
+        ContentDrive.SetValue(content!);
+
+        // The caret goes on whatever text the content drive lands on, which need not be a child named Text.
+        if (ContentDrive.Target is Lumora.Core.Networking.Sync.SyncElement { Parent: Helio.UI.Text driven }
+            && !driven.IsDestroyed && !ReferenceEquals(driven, _text))
+            _text = driven;
 
         if (_text != null)
         {
+            int length = content?.Length ?? 0;
             if (IsFocused)
             {
-                _text.CaretPosition.Value = System.Math.Clamp(_caret, 0, content.Length);
-                _text.SelectionStart.Value = HasSelection() ? System.Math.Clamp(_selStart, 0, content.Length) : -1;
+                _text.CaretPosition.Value = System.Math.Clamp(_caret, 0, length);
+                _text.SelectionStart.Value = HasSelection() ? System.Math.Clamp(_selStart, 0, length) : -1;
             }
             else
             {

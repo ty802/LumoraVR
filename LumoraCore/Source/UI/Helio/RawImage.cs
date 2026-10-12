@@ -18,6 +18,8 @@ public sealed class RawImage : Graphic
     public readonly Sync<bool> PreserveAspect;
     public readonly Sync<bool> FlipHorizontal;
     public readonly Sync<bool> FlipVertical;
+    // Off: never hit-tested, so a press on it passes through to whatever lies under it.
+    public readonly Sync<bool> InteractionTarget;
 
     private IAssetProvider<TextureAsset>? _textureProvider;
     private IAssetProvider<MaterialAsset>? _material;
@@ -37,6 +39,7 @@ public sealed class RawImage : Graphic
         PreserveAspect = new Sync<bool>(this, false);
         FlipHorizontal = new Sync<bool>(this, false);
         FlipVertical = new Sync<bool>(this, false);
+        InteractionTarget = new Sync<bool>(this, true);
     }
 
     public override bool RequiresPreGraphicsCompute => false;
@@ -91,7 +94,7 @@ public sealed class RawImage : Graphic
 
     public override bool IsPointInside(in float2 point)
     {
-        return RectTransform?.LocalComputeRect.Contains(point) ?? false;
+        return InteractionTarget.Value && (RectTransform?.LocalComputeRect.Contains(point) ?? false);
     }
 
     public static int GenerateImage(

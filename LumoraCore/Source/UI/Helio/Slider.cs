@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using Helio.UI.Layout;
 using Lumora.Core;
 using Lumora.Core.Math;
 
@@ -15,6 +16,9 @@ public sealed class Slider : InteractionElement
     public readonly Sync<float> Max;
     public readonly Sync<float> Power;
     public readonly Sync<float2> AnchorOffset;
+    // The axis the value runs along: left to right, or bottom to top. Min may be the larger end, which runs it
+    // the other way.
+    public readonly Sync<LayoutDirection> Direction;
     // Handle/fill anchor drives. Declared members: the targets replicate and save.
     public readonly FieldDrive<float2> HandleAnchorMinDrive = new();
     public readonly FieldDrive<float2> HandleAnchorMaxDrive = new();
@@ -33,6 +37,7 @@ public sealed class Slider : InteractionElement
         Max = new Sync<float>(this, 1f);
         Power = new Sync<float>(this, 1f);
         AnchorOffset = new Sync<float2>(this, new float2(0f, 0.5f));
+        Direction = new Sync<LayoutDirection>(this, LayoutDirection.Horizontal);
         ChangeAction = new SyncDelegate<Action<Slider, float>>(this);
     }
 
@@ -91,7 +96,9 @@ public sealed class Slider : InteractionElement
     // Horizontal slider: keep horizontal drags (that's the value), but hand a clearly-vertical drag to a
     // scrolling ancestor so the slider doesn't trap a scroll gesture.
     public override bool PassDragToParent(in float2 dragDelta)
-        => System.Math.Abs(dragDelta.y) > DragPassThreshold && System.Math.Abs(dragDelta.y) > System.Math.Abs(dragDelta.x);
+        => Direction.Value == LayoutDirection.Vertical
+            ? System.Math.Abs(dragDelta.x) > DragPassThreshold && System.Math.Abs(dragDelta.x) > System.Math.Abs(dragDelta.y)
+            : System.Math.Abs(dragDelta.y) > DragPassThreshold && System.Math.Abs(dragDelta.y) > System.Math.Abs(dragDelta.x);
 
     protected override void OnPress(in UIInteractionContext context)
     {
@@ -106,12 +113,15 @@ public sealed class Slider : InteractionElement
     private void SetValueFromPoint(in UIInteractionContext context)
     {
         var rect = RectTransform?.LocalComputeRect;
-        if (!rect.HasValue || rect.Value.width <= 0f) return;
+        bool vertical = Direction.Value == LayoutDirection.Vertical;
+        if (!rect.HasValue || (vertical ? rect.Value.height : rect.Value.width) <= 0f) return;
 
         // PointIn, not LocalPoint: a slider inside a scrolled list draws where its chunk offset puts it, so
         // the raw canvas point would read against the rect's unscrolled position and jump the value. -xlinka
         var point = context.PointIn(Slot);
-        float t = (point.x - rect.Value.xMin) / rect.Value.width;
+        float t = vertical
+            ? (point.y - rect.Value.yMin) / rect.Value.height
+            : (point.x - rect.Value.xMin) / rect.Value.width;
         if (t < 0f) t = 0f;
         if (t > 1f) t = 1f;
         if (Power.Value > 0f && Power.Value != 1f)
@@ -143,7 +153,9 @@ public sealed class Slider : InteractionElement
         }
         if (FillAnchorMaxDrive.IsLinkValid)
         {
-            FillAnchorMaxDrive.SetValue(new float2(anchor.x - AnchorOffset.Value.x, 1f));
+            FillAnchorMaxDrive.SetValue(Direction.Value == LayoutDirection.Vertical
+                ? new float2(1f, anchor.y - AnchorOffset.Value.y)
+                : new float2(anchor.x - AnchorOffset.Value.x, 1f));
         }
     }
 
@@ -151,7 +163,7 @@ public sealed class Slider : InteractionElement
     {
         float min = Min.Value;
         float max = Max.Value;
-        float t = max > min ? (Value.Value - min) / (max - min) : 0f;
+        float t = max != min ? (Value.Value - min) / (max - min) : 0f;
         if (t < 0f) t = 0f;
         if (t > 1f) t = 1f;
 
@@ -161,6 +173,6 @@ public sealed class Slider : InteractionElement
             t = MathF.Pow(t, power);
         }
 
-        return new float2(t, 0f) + AnchorOffset.Value;
+        return (Direction.Value == LayoutDirection.Vertical ? new float2(0f, t) : new float2(t, 0f)) + AnchorOffset.Value;
     }
 }

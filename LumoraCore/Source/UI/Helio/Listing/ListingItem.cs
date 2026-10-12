@@ -178,6 +178,15 @@ public class ListingChoice : ListingItem
     }
 }
 
+// Long choices open a searchable list instead of allocating a button for every option.
+public sealed class ListingDropdown : ListingChoice
+{
+    public IReadOnlyList<string> OptionDetails = Array.Empty<string>();
+    public LocaleText ListHint;
+
+    public ListingDropdown(string key, LocaleText label) : base(key, label) { }
+}
+
 public class ListingAction : ListingItem
 {
     public required Action Invoke;

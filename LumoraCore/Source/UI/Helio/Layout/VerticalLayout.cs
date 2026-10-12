@@ -34,6 +34,7 @@ public class VerticalLayout : LayoutController
     private MainAxisAlignment _mainAlignment;
     private readonly List<LayoutMetrics> _metrics = new();
     private readonly List<LayoutSizing.Element> _elements = new();
+    private readonly List<RectTransform> _arranged = new();
 
     public VerticalLayout()
     {
@@ -69,11 +70,16 @@ public class VerticalLayout : LayoutController
         _mainAlignment = MainAlignment.Value;
     }
 
-    public override void ArrangeChildren(IReadOnlyList<RectTransform> children)
+    public override void ArrangeChildren(IReadOnlyList<RectTransform> all)
     {
-        if (RectTransform == null || children.Count == 0) return;
+        if (RectTransform == null) return;
+        // A child that ignores layout takes no place and no spacing; the canvas anchors it to this rect.
+        var children = LayoutSizing.Arranged(all, _arranged);
+        if (children.Count == 0) return;
 
-        var rect = RectTransform.LocalComputeRect;
+        // Arranged in the rect as placed: a RectLerp on this slot moves the rect and what is anchored to it,
+        // not what this layout arranges.
+        var rect = RectTransform.PlacedComputeRect;
         float innerHeight = rect.height - _padTop - _padBottom;
         if (innerHeight < 0f) innerHeight = 0f;
 
@@ -119,7 +125,10 @@ public class VerticalLayout : LayoutController
             if (!_forceExpandWidth)
             {
                 var horizontal = LayoutSizing.Measured(children[i], LayoutDirection.Horizontal);
-                childWidth = Clamp(horizontal.Flexible > 0f ? cellWidth : Max(horizontal.Min, Min(horizontal.Preferred, cellWidth)), 0f, cellWidth);
+                childWidth = horizontal.Flexible > 0f ? cellWidth : Max(horizontal.Min, Min(horizontal.Preferred, cellWidth));
+                // Per-metric rules let a child's minimum stand past the column; otherwise it is cut to the column.
+                if (RectTransform.Canvas is not { PerMetricPriority.Value: true })
+                    childWidth = Clamp(childWidth, 0f, cellWidth);
                 // Cross-axis (horizontal): Start=left, End=right, Center=middle.
                 float align = _crossAlignment switch { LayoutAlignment.Start => 0f, LayoutAlignment.End => 1f, _ => 0.5f };
                 childX = xMin + margin.x + (cellWidth - childWidth) * align;
@@ -143,11 +152,12 @@ public class VerticalLayout : LayoutController
         float preferred = 0f;
         float flexible = 0f;
         LayoutSizing.CollectMeasureChildren(RectTransform, _measureChildren);
-        int count = _measureChildren.Count;
+        int count = 0;
 
-        for (int i = 0; i < count; i++)
+        for (int i = 0; i < _measureChildren.Count; i++)
         {
             if (LayoutSizing.IsIgnored(_measureChildren[i])) continue;
+            count++;
             var metrics = LayoutSizing.Measured(_measureChildren[i], direction);
             var margin = LayoutSizing.GetMargin(_measureChildren[i]);
             if (direction == LayoutDirection.Vertical)
@@ -182,7 +192,7 @@ public class VerticalLayout : LayoutController
             // Cross-axis flexibility is the SUM of children's (Largest min/preferred + Sum flexible). The
             // old flexible/count divisor silently eroded a nested flexible child's pull to ~0, collapsing
             // it under a ForceExpand=false parent. -xlinka
-            _flexibleWidth = flexible;
+            _flexibleWidth = LayoutSizing.CrossFlexible(RectTransform, flexible, count);
         }
     }
 

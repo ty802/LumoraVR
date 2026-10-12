@@ -49,6 +49,7 @@ public sealed class TextShaper
         public float Width;
         public float MaxSizeScale = 1f;   // largest per-glyph size multiplier on this line
         public bool HardBreak;            // ended at an explicit newline (not a wrap), so justify leaves it alone
+        public float FontHeightScale = 1f; // tallest glyph font's line height over the first font's, where a text asks
     }
 
     private readonly List<Line> _lines = new();
@@ -90,10 +91,7 @@ public sealed class TextShaper
         }
     }
 
-    /// <summary>
-    /// Shape content into positioned glyph lines. No-op when every shaping
-    /// input matches the cached result. Returns true if a reshape happened.
-    /// </summary>
+    // No-op when every shaping input matches the cached result; true when it reshaped.
     public bool Shape(FontSet font, string content, float size, bool wrap, float maxWidth, IReadOnlyList<float>? sizeScales = null, IReadOnlyList<bool>? nobr = null,
         IReadOnlyList<(int Index, FontSet? Font)>? fontMarks = null, IReadOnlyList<float>? spriteAspects = null)
     {
@@ -146,10 +144,7 @@ public sealed class TextShaper
         _valid = false;
     }
 
-    /// <summary>
-    /// Request atlas rasterization for every renderable codepoint in content.
-    /// Call before Shape when the content may contain new glyphs.
-    /// </summary>
+    // Call before Shape when the content may hold new glyphs.
     public static void RequestGlyphs(FontSet font, string content, float size, IReadOnlyList<(int Index, FontSet? Font)>? fontMarks = null)
     {
         if (font == null || string.IsNullOrEmpty(content))

@@ -22,7 +22,7 @@ public class GridLayout : LayoutController
     public readonly Sync<float> PaddingTop;
     public readonly Sync<float> PaddingBottom;
 
-    /// <summary>Fixed cell size in canvas units. x > 0 switches to fixed-cell mode (y <= 0 = square).</summary>
+    // Canvas units. x > 0 switches to fixed-cell mode (y <= 0 = square).
     public readonly Sync<float2> CellSize;
 
     private int _columns;
@@ -60,9 +60,13 @@ public class GridLayout : LayoutController
         _cellSize = CellSize.Value;
     }
 
-    public override void ArrangeChildren(IReadOnlyList<RectTransform> children)
+    private readonly List<RectTransform> _arranged = new();
+
+    public override void ArrangeChildren(IReadOnlyList<RectTransform> all)
     {
-        if (RectTransform == null || children.Count == 0) return;
+        if (RectTransform == null) return;
+        var children = LayoutSizing.Arranged(all, _arranged);
+        if (children.Count == 0) return;
 
         var rect = RectTransform.LocalComputeRect;
         float xStart = rect.xMin + _padLeft;
@@ -78,7 +82,6 @@ public class GridLayout : LayoutController
 
             for (int i = 0; i < children.Count; i++)
             {
-                if (LayoutSizing.IsIgnored(children[i])) continue;
                 int col = i % cols;
                 int row = i / cols;
                 float x = xStart + col * (cellW + _spacing);
@@ -102,7 +105,6 @@ public class GridLayout : LayoutController
 
         for (int i = 0; i < children.Count; i++)
         {
-            if (LayoutSizing.IsIgnored(children[i])) continue;
             int col = i % columns;
             int row = i / columns;
             float x = xStart + col * (colW + _spacing);

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using Lumora.Core;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Phos;
@@ -57,44 +58,25 @@ public sealed class LocalMeshSource : ProceduralMesh
         CopySubmeshes(source, target);
     }
 
+    // Whole channels at a time: a heavy panel's submit was copying its canvas mesh vertex by vertex.
     private static void CopyVertices(PhosMesh source, PhosMesh target)
     {
-        for (int i = 0; i < source.VertexCount; i++)
-        {
-            target.RawPositions[i] = source.RawPositions[i];
-        }
-
+        int count = source.VertexCount;
+        Array.Copy(source.RawPositions, target.RawPositions, count);
         if (source.HasNormals)
-        {
-            for (int i = 0; i < source.VertexCount; i++)
-            {
-                target.RawNormals[i] = source.RawNormals[i];
-            }
-        }
-
+            Array.Copy(source.RawNormals, target.RawNormals, count);
         if (source.HasTangents)
-        {
-            for (int i = 0; i < source.VertexCount; i++)
-            {
-                target.RawTangents[i] = source.RawTangents[i];
-            }
-        }
-
+            Array.Copy(source.RawTangents, target.RawTangents, count);
         if (source.HasColors)
-        {
-            for (int i = 0; i < source.VertexCount; i++)
-            {
-                target.RawColors[i] = source.RawColors[i];
-            }
-        }
-
+            Array.Copy(source.RawColors, target.RawColors, count);
         if (source.HasUV0s)
-        {
-            for (int i = 0; i < source.VertexCount; i++)
-            {
-                target.SetUV(0, i, source.RawUV0s[i]);
-            }
-        }
+            Array.Copy(source.RawUV0s, target.RawUV0s, count);
+        if (source.UVChannelCount > 1 && source.RawUV1s.Length >= count)
+            Array.Copy(source.RawUV1s, target.RawUV1s, count);
+        if (source.UVChannelCount > 2 && source.RawUV2s.Length >= count)
+            Array.Copy(source.RawUV2s, target.RawUV2s, count);
+        if (source.UVChannelCount > 3 && source.RawUV3s.Length >= count)
+            Array.Copy(source.RawUV3s, target.RawUV3s, count);
     }
 
     private static void CopySubmeshes(PhosMesh source, PhosMesh target)
@@ -109,11 +91,11 @@ public sealed class LocalMeshSource : ProceduralMesh
             var targetTriangleSubmesh = new PhosTriangleSubmesh(target);
             target.Submeshes.Add(targetTriangleSubmesh);
 
-            for (int i = 0; i < sourceTriangleSubmesh.Count; i++)
-            {
-                sourceTriangleSubmesh.GetIndices(i, out int v0, out int v1, out int v2);
-                targetTriangleSubmesh.AddTriangle(v0, v1, v2);
-            }
+            int triangles = sourceTriangleSubmesh.Count;
+            if (triangles == 0)
+                continue;
+            targetTriangleSubmesh.IncreaseCount(triangles);
+            Array.Copy(sourceTriangleSubmesh.RawIndices, targetTriangleSubmesh.RawIndices, sourceTriangleSubmesh.IndexCount);
         }
     }
 }

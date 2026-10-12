@@ -30,9 +30,18 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         // press off to a scrolling ancestor this gesture.
         public float2 PressPoint;
         public bool Transferred;
+        // The press was handed on to what sat under the pointer after the element first pressed stopped
+        // taking input. It was never a click on what it landed on, so letting go does not submit it.
+        public bool HandedOff;
         // A laser press a finger took over: held down until the trigger comes up, so the same squeeze
         // cannot re-press once the finger leaves.
         public bool PressSuppressed;
+        // The trigger eased off its deep level and let go of a click, but is still held: the next deep
+        // squeeze presses again (see StepDeepTrigger).
+        public bool DeepRearmed;
+        // The world update a deep edge was last taken on, so a second pass in the same update cannot
+        // take it twice.
+        public ulong DeepUpdate = ulong.MaxValue;
     }
 
     private readonly Dictionary<int, PointerState> _pointers = new();
@@ -54,6 +63,35 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // transparent SORT - the depth test still clips UI pixels against opaque world geometry, which is how
     // world objects "show through" a sorted-on-top menu. Set before the first build (mint-time flag). -xlinka
     public readonly Sync<bool> Overlay = new();
+
+    // Whose canvas this is. Set, it answers that user's lasers and fingers alone: everyone else sees it and
+    // points straight through it, so nothing on it hovers, presses or scrolls for them. An Overlay canvas
+    // with an owner draws over the world on the owner's machine only; anyone else sees it stand in the world,
+    // depth tested, rather than through walls and through the owner's own head. Null lets anyone in. Set
+    // before the first build, like Overlay. -xlinka
+    public readonly SyncRef<User> Exclusive = new();
+
+    // Whether a pointer this user drives may reach the canvas. No user means this machine's own.
+    public bool AcceptsPointerFrom(User? actor)
+    {
+        if (Exclusive.Value.IsNull)
+            return true;
+        var owner = Exclusive.Target;
+        return owner != null && ReferenceEquals(owner, actor ?? World?.LocalUser);
+    }
+
+    // Overlay as this machine draws it.
+    public bool DrawsOverlay => Overlay.Value && AcceptsPointerFrom(null);
+
+    // Which faces of the canvas's pictures draw, counted from the side it is read from: Back (the default)
+    // draws the reading side only, None both, Front only the side behind. A graphic wearing a material of
+    // its own keeps that material's culling, and text draws the reading side only. -xlinka
+    public readonly Sync<Culling> Culling = new(Lumora.Core.Assets.Culling.Back);
+
+    // Read from the slot's backward (-Z) side instead of its forward (+Z) one: the canvas turns half a turn
+    // about its up axis, pictures, colliders and pointers alike. A canvas brought in from a package reads
+    // this way. -xlinka
+    public readonly Sync<bool> FaceBackward = new();
 
     // A small distance-field expansion keeps fine strokes readable at panel scale without widening
     // the shader's screen-space antialiasing edge. Zero remains available for the original face. -xlinka
@@ -81,6 +119,13 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // distance goes on every chunk renderer this canvas owns, including the ones built later, and the
     // renderer does the test Godot was already doing for frustum culling. -xlinka
     public readonly Sync<float> MaxViewDistance = new();
+
+    // How a slot's layout elements combine into its sizes. Off: the highest priority element answers every
+    // metric alone. On: each metric comes from the highest priority element that gives it and same-priority
+    // answers meet at the larger, a size fitter answers for the axes it fits, a metric nobody gives is the
+    // rect's own authored size, and a row averages its children's cross-axis flexibility. Panels brought in
+    // from a package are laid out by these rules. -xlinka
+    public readonly Sync<bool> PerMetricPriority = new();
 
     // Dissolve band in front of the cut, so a panel fades out over the last three metres rather than
     // popping off as you walk backwards.
@@ -155,25 +200,38 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     private readonly Dictionary<IAssetProvider<TextureAsset>, MainTexturePropertyBlock> _sharedImageBlocks = new();
     private readonly Dictionary<IAssetProvider<TextureAsset>, UIUnlitMaterial> _sharedImageMaterials = new();
 
+    // A canvas whose content never scrolls can draw from the world's shared UI materials (SharedUIMaterials)
+    // instead of minting its own: its text, image and plain materials and their per-surface priority clones
+    // come from one pool. Set before it first draws. A scrolling canvas must not: a scroll writes its clip
+    // offset into its clones, and shared clones would carry one canvas's scroll onto every other's. -xlinka
+    public bool SharesMaterials { get; set; }
+
     // All text drawn from the same atlas shares one material -> one submesh per atlas (per clip). - xlinka
     internal UITextMaterial GetSharedTextMaterial(TextureAsset atlas)
     {
+        if (SharesMaterials && World is { } world)
+            return SharedUIMaterials.Of(world).Text(atlas, this);
         if (!_sharedTextMaterials.TryGetValue(atlas, out var material) || material.IsDestroyed)
         {
             material = Slot.AddLocalSlot("TextMaterial").AttachComponent<UITextMaterial>();
-            material.DirectTexture = atlas;
-            // Reconstruct glyphs from the distance field when the atlas is MSDF; otherwise the shader falls back
-            // to coverage. The atlas carries this so we don't need the FontAsset here. -xlinka
-            material.UseMSDF.Value = atlas.IsMSDF;
-            if (atlas.IsMSDF)
-                material.PixelRange.Value = atlas.MsdfPixelRange;
-            if (Overlay.Value)
-                material.ZTest.Value = ZTest.Always;
-            ApplyTextStyle(material);
-            material.ForceUpdate();
+            SetUpTextMaterial(material, atlas);
             _sharedTextMaterials[atlas] = material;
         }
         return material;
+    }
+
+    internal void SetUpTextMaterial(UITextMaterial material, TextureAsset atlas)
+    {
+        material.DirectTexture = atlas;
+        // Reconstruct glyphs from the distance field when the atlas is MSDF; otherwise the shader falls back
+        // to coverage. The atlas carries this so we don't need the FontAsset here. -xlinka
+        material.UseMSDF.Value = atlas.IsMSDF;
+        if (atlas.IsMSDF)
+            material.PixelRange.Value = atlas.MsdfPixelRange;
+        if (DrawsOverlay)
+            material.ZTest.Value = ZTest.Always;
+        ApplyTextStyle(material);
+        material.ForceUpdate();
     }
 
     private void ApplyTextStyle(UITextMaterial material)
@@ -189,6 +247,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
 
     private void UpdateTextStyle()
     {
+        // A sharing canvas's text material is keyed by its style, so a new style is a new material: draw again.
+        if (SharesMaterials)
+        {
+            MarkDirty();
+            return;
+        }
         foreach (var material in _sharedTextMaterials.Values)
         {
             if (material.IsDestroyed) continue;
@@ -201,6 +265,8 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // All images using the same texture share one property block -> one submesh per texture. - xlinka
     internal MainTexturePropertyBlock GetSharedImageBlock(IAssetProvider<TextureAsset> texture)
     {
+        if (SharesMaterials && World is { } world)
+            return SharedUIMaterials.Of(world).Block(texture);
         if (!_sharedImageBlocks.TryGetValue(texture, out var block) || block.IsDestroyed)
         {
             ForgetDestroyedTextures(_sharedImageBlocks);
@@ -217,15 +283,23 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // is cloned once and cached, so it silently misses those writes and the image freezes while text scrolls. -xlinka
     internal UIUnlitMaterial GetSharedImageMaterial(IAssetProvider<TextureAsset> texture)
     {
-        if (!_sharedImageMaterials.TryGetValue(texture, out var material) || material.IsDestroyed)
+        if (SharesMaterials && World is { } world)
+            return SharedUIMaterials.Of(world).Image(texture, DrawsOverlay, Culling.Value);
+        if (_sharedImageMaterials.TryGetValue(texture, out var material) && !material.IsDestroyed
+            && material.Culling.Value != Culling.Value)
+        {
+            material.Culling.Value = Culling.Value;
+            material.ForceUpdate();
+        }
+        if (!_sharedImageMaterials.TryGetValue(texture, out material) || material.IsDestroyed)
         {
             ForgetDestroyedTextures(_sharedImageMaterials);
             material = Slot.AddLocalSlot("ImageMaterial").AttachComponent<UIUnlitMaterial>();
             material.Texture.Target = texture;
-            material.Culling.Value = Culling.None;
+            material.Culling.Value = Culling.Value;
             material.ZWrite.Value = ZWrite.Off;
             material.RenderQueue.Value = 3000;
-            if (Overlay.Value)
+            if (DrawsOverlay)
                 material.ZTest.Value = ZTest.Always;
             material.ForceUpdate();
             _sharedImageMaterials[texture] = material;
@@ -271,6 +345,8 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // clip would let it spill past the viewport), and a mask INSIDE the chunk clips as a geometry trim
     // instead of a material window - it moves with the geometry, and a material window can't. -xlinka
     private bool _chunkRidesScroll;
+    // Set while a chunk's partition walk meets the root of another chunk inside it.
+    private bool _partitionFoundChunk;
     // Guards the async rebuild cycle: prepare (main) -> emit (worker) -> submit (main). Only one
     // cycle at a time; a change mid-cycle leaves its dirty flag set so the next OnCommonUpdate
     // re-runs. Touched only on the main thread (OnCommonUpdate + the RunSynchronously submit
@@ -279,6 +355,19 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     private bool _cycleRenderRoot;
     // Any emit failure this cycle: written on the worker, read on main in FinishRebuildCycle.
     private volatile bool _emitFailed;
+
+    // Lift given to an overlay-level chunk that sits under no StackLayer: a modal hung straight on the canvas
+    // root has to clear every lifted sheet, or their depth-writing backings hide it. Zero leaves the canvas
+    // flat, which is every canvas that stacks nothing. -xlinka
+    public float OverlayLift { get; set; }
+
+    private bool _placementDirty;
+
+    // A StackLayer moved or rose. Only chunk transforms change: no layout, no mesh.
+    public void MarkPlacementDirty() => _placementDirty = true;
+
+    // A press began here, with what it landed on (null when nothing took it), before that element acts on it.
+    public event Action<IUIInteractable?, UIInteractionContext>? PressBegan;
 
     // Full refresh: recompute layout and rebuild the root chunk and every nested chunk. - xlinka
     public void MarkDirty()
@@ -431,6 +520,15 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         return true;
     }
 
+    // Something on the canvas changed its pixels without changing its mesh (a texture updated in place, a
+    // desktop or a video), so the host captures one more frame. Mid-rebuild it is left to the cycle's own
+    // request at the end, which shows the new pixels too and never catches the canvas half meshed. -xlinka
+    public void RequestRender()
+    {
+        if (!_updateRunning)
+            _renderRequested = true;
+    }
+
     public RectTransform? RootRectTransform => _rootRect;
 
     // Cheap spatial reject for the pointer scan. Every hit area in the canvas is its RectTransform's
@@ -488,9 +586,30 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     {
         return new InteractionDescription
         {
-            Name = Slot?.SlotName.Value,
+            Name = HoveredTip(GetInteractionSource(laser), GetPointerId(laser)) ?? Slot?.SlotName.Value,
             Cursor = LaserCursor.Default,
         };
+    }
+
+    // The authored tip of the element a pointer is on, or null when it has none. Surfaces that feed this
+    // canvas a pointer (the dash, popped panels) ask with the same interaction source and pointer id.
+    public string? HoveredTip(UIInteractionSource source, int pointerId)
+    {
+        if (!_pointers.TryGetValue(PointerKey(source, pointerId), out var state))
+            return null;
+        if (state.Hovered is not InteractionElement { IsDestroyed: false } element)
+            return null;
+        var tip = element.Tip.Value;
+        return string.IsNullOrEmpty(tip) ? null : tip;
+    }
+
+    public bool TryGetLaserDragPoint(InteractionLaser laser, in float3 rayOrigin, in float3 rayDirection, out float3 point)
+    {
+        point = default;
+        if (!TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, GetInteractionSource(laser), GetPointerId(laser), GetInteractionActor(laser)))
+            return false;
+        point = context.WorldPoint;
+        return true;
     }
 
     public bool TryGetLaserPointerHit(
@@ -501,6 +620,10 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         out LaserPointerHit hit)
     {
         hit = default;
+        if (!AcceptsPointerFrom(GetInteractionActor(laser)) || !MightReach(rayOrigin, rayDirection, maxDistance))
+        {
+            return false;
+        }
         var source = GetInteractionSource(laser);
         int pointerId = GetPointerId(laser);
 
@@ -520,13 +643,132 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
 
         var candidate = default(HitCandidate);
         ScanHitSlot(Slot, in context, ref candidate, null, float2.Zero);
-        if (candidate.Interactable == null)
+        if (candidate.Interactable == null && !IsSurfaceAt(Slot, in context.LocalPoint, null, float2.Zero))
         {
             return false;
         }
 
         hit = new LaserPointerHit(context.Distance, context.WorldPoint);
         return true;
+    }
+
+    // Whether the canvas has anything drawn (or a blocker) under the point. The beam stops on a panel's
+    // backing as well as on its controls: a panel that only caught the beam on its buttons let it through
+    // to the wall behind in every gap between them. Where nothing is drawn it still passes. Same active,
+    // clip and scroll rules as the hit scan. -xlinka
+    private bool IsSurfaceAt(Slot slot, in float2 canvasPoint, Rect? clipRect, float2 scroll)
+    {
+        if (slot != Slot && !slot.ActiveSelf.Value)
+            return false;
+        if (clipRect.HasValue && !clipRect.Value.Contains(canvasPoint))
+            return false;
+
+        scroll += SlotHitStep(slot);
+        var point = canvasPoint - scroll;
+        var rect = slot.GetComponent<RectTransform>();
+        var mask = slot.GetComponent<Mask>();
+        bool isMask = mask != null && mask.Enabled.Value && rect != null;
+        if (rect != null && rect.LocalComputeRect.Contains(point))
+        {
+            var comps = slot.Components;
+            for (int ci = 0; ci < comps.Count; ci++)
+            {
+                if (comps[ci] is Graphic graphic && graphic.Enabled.Value && (!isMask || mask!.ShowMaskGraphic.Value))
+                    return true;
+                if (comps[ci] is InteractionBlock block && block.BlocksPoint(point))
+                    return true;
+            }
+        }
+
+        var nextClip = clipRect;
+        if (isMask)
+        {
+            var maskRect = Translate(rect!.LocalComputeRect, scroll);
+            nextClip = nextClip.HasValue ? nextClip.Value.Intersection(maskRect) : maskRect;
+            if (nextClip.Value.IsEmpty)
+                return false;
+        }
+
+        var children = slot.Children;
+        for (int i = 0; i < children.Count; i++)
+        {
+            if (IsSurfaceAt(children[i], in canvasPoint, nextClip, scroll))
+                return true;
+        }
+        var localChildren = slot.LocalChildren;
+        for (int i = 0; i < localChildren.Count; i++)
+        {
+            if (IsSurfaceAt(localChildren[i], in canvasPoint, nextClip, scroll))
+                return true;
+        }
+        return false;
+    }
+
+    // A headset beam on an element's edge keeps that element until it is clearly past it, so hand tremor
+    // does not blink the highlight between neighbours or move a press onto the one next door. The margin is
+    // an angle at the beam's distance. A mouse and a fingertip are exact and get none. Off its edge only: a
+    // beam still inside it is on whatever the scan found there, a button in the window it was resting on or
+    // a window in front, and holding then kept the hover and the press on the body behind. Nor when the
+    // scan found another control: the hold reaches over a key gap, and must never keep the last key while
+    // the beam already sits on the next one. -xlinka
+    private const float HoverHoldAngle = 0.5f * MathF.PI / 180f;
+
+    private bool HoldsHover(IUIInteractable held, IUIInteractable? found, in UIInteractionContext context)
+    {
+        if (found != null && !ReferenceEquals(found, held) && IsPressable(found))
+            return false;
+        if (context.Source is not (UIInteractionSource.VRLeft or UIInteractionSource.VRRight))
+            return false;
+        var input = Engine.Current?.InputInterface;
+        if (input != null && !input.IsVRActive)
+            return false;
+        if (!held.CanInteract || held is not Component { Slot: { } heldSlot })
+            return false;
+        float scale = MathF.Abs(Slot.GlobalScale.x);
+        if (scale <= 0.000001f)
+            return false;
+        float margin = context.Distance * HoverHoldAngle / scale;
+        var point = CanvasPointToLocal(heldSlot, context.LocalPoint);
+        if (held.IsPointInside(point))
+            return false;
+        if (held.IsPointInside(point + new float2(margin, 0f)) || held.IsPointInside(point - new float2(margin, 0f))
+            || held.IsPointInside(point + new float2(0f, margin)) || held.IsPointInside(point - new float2(0f, margin)))
+            return true;
+        // Diagonals, for a beam off a corner, where two gaps cross.
+        float d = margin * 0.70710678f;
+        return held.IsPointInside(point + new float2(d, d)) || held.IsPointInside(point + new float2(-d, d))
+            || held.IsPointInside(point + new float2(d, -d)) || held.IsPointInside(point - new float2(d, d));
+    }
+
+    // Something a press lands on to do a job, as against a body, a bar or a list it sits in.
+    private static bool IsPressable(IUIInteractable element)
+        => element is InteractionElement { ClickControl: true } or Slider or TextInput or Pad2D;
+
+    // How far a press may wander before it counts as a drag, in this canvas's units. A headset beam takes
+    // it as an angle at the beam's distance, sized as the hover hold is: a squeeze jolts the aim by an angle
+    // whatever the panel's scale. A mouse and a fingertip keep the plain unit count.
+    private const float DragSlopAngle = 2f * MathF.PI / 180f;
+
+    private float DragSlop(in UIInteractionContext context)
+    {
+        if (context.Source is UIInteractionSource.VRLeft or UIInteractionSource.VRRight)
+        {
+            var input = Engine.Current?.InputInterface;
+            float scale = MathF.Abs(Slot.GlobalScale.x);
+            if ((input == null || input.IsVRActive) && scale > 0.000001f && context.Distance > 0f)
+                return context.Distance * DragSlopAngle / scale;
+        }
+        return InteractionElement.DragPassThreshold;
+    }
+
+    // A release-acting click whose beam slid off it during the squeeze, but not far enough to be a drag.
+    private bool ReleasedInPlace(PointerState state, IUIInteractable pressed, in UIInteractionContext context)
+    {
+        if (state.Transferred || pressed is not InteractionElement { ClickControl: true })
+            return false;
+        var travel = context.LocalPoint - state.PressPoint;
+        float slop = DragSlop(in context);
+        return MathF.Abs(travel.x) <= slop && MathF.Abs(travel.y) <= slop;
     }
 
     public void UpdateLaserPointer(
@@ -549,6 +791,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         return ProcessAxis(GetInteractionSource(laser), pointerId, axis);
     }
 
+    public bool WantsLaserAxis(InteractionLaser laser, int pointerId)
+        => WantsAxis(GetInteractionSource(laser), pointerId);
+
     public bool TriggerLaserSecondary(InteractionLaser laser, int pointerId)
     {
         return TriggerSecondary(GetInteractionSource(laser), pointerId);
@@ -566,7 +811,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     {
         slot = null;
         worldPoint = float3.Zero;
-        if (!TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, UIInteractionSource.Unknown, 0))
+        if (!AcceptsPointerFrom(null) || !TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, UIInteractionSource.Unknown, 0))
         {
             return false;
         }
@@ -589,7 +834,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return null;
         }
 
-        scroll += SlotScrollStep(slot);
+        scroll += SlotHitStep(slot);
         var point = canvasPoint - scroll;
 
         var rect = slot.GetComponent<RectTransform>();
@@ -648,7 +893,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         User? actor = null)
     {
         hit = default;
-        if (!TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, source, pointerId, actor))
+        if (!AcceptsPointerFrom(actor) || !TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, source, pointerId, actor))
         {
             return false;
         }
@@ -669,15 +914,18 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         return true;
     }
 
+    // pressBegan: whether the press went down this frame. Left null, the pointer's hand answers it (see
+    // PressBeganNow); a caller with no hand behind it can say.
     public void UpdatePointer(
         UIInteractionSource source,
         int pointerId,
         float3 rayOrigin,
         float3 rayDirection,
         bool isPressed,
-        User? actor = null)
+        User? actor = null,
+        bool? pressBegan = null)
     {
-        if (!TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, source, pointerId, actor))
+        if (!AcceptsPointerFrom(actor) || !TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, source, pointerId, actor))
         {
             ClearPointer(source, pointerId, actor);
             return;
@@ -694,11 +942,14 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         var hovered = candidate.Interactable;
         int key = PointerKey(source, pointerId);
 
+        bool known = true;
         if (!_pointers.TryGetValue(key, out var state))
         {
+            known = false;
             state = new PointerState();
             _pointers[key] = state;
         }
+        var previousPoint = state.LastContext.LocalPoint;
         state.LastContext = context;
 
         // A finger on this panel owns that hand's press: the laser from the same hand keeps hovering but
@@ -723,30 +974,70 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             CancelLaserPress(CanvasTouchSource.SideOf(pointerId), in context);
         }
 
+        if (state.Hovered != null && !ReferenceEquals(state.Hovered, hovered) && HoldsHover(state.Hovered, hovered, in context))
+            hovered = state.Hovered;
         if (!ReferenceEquals(state.Hovered, hovered))
         {
             state.Hovered?.NotifyHoverExit(in context);
             state.Hovered = hovered;
-            state.Hovered?.NotifyHoverEnter(in context);
+            // Arrived: the pointer was outside it last update. One that turned up under a pointer sitting
+            // still (a ring opening on the hand, a page swap, a list scrolled or rebuilt under the beam)
+            // did not, and does not tick the hand.
+            if (state.Hovered is InteractionElement entered)
+                entered.NotifyHoverEnter(in context, known && !entered.IsPointInside(CanvasPointToLocal(entered.Slot, previousPoint)));
+            else
+                state.Hovered?.NotifyHoverEnter(in context);
         }
         state.Hovered?.NotifyHoverMove(in context);
 
-        if (isPressed && !state.IsPressed)
+        bool deepPress = isPressed && state.IsPressed && pressBegan == null && StepDeepTrigger(state, source, hovered, in context);
+
+        if (isPressed && (!state.IsPressed || deepPress))
         {
-            state.Pressed = hovered;
+            // Buttons act as the press lands, so a press acts only where it went down. One that was already
+            // held when it reached this canvas (a panel opened under the trigger that opened it, a beam swung
+            // in mid-press, a carry let go with the trigger still down) presses nothing until let go. -xlinka
+            bool began = deepPress || (pressBegan ?? PressBeganNow(source, pointerId, null));
+            state.Pressed = began ? hovered : null;
             state.PressPoint = context.LocalPoint;
             state.Transferred = false;
-            state.Pressed?.NotifyPress(in context);
+            state.HandedOff = false;
+            state.DeepRearmed = false;
+            // The canvas hears of the press before the element acts on it: a dash window brought to the front
+            // by the press would otherwise come back up after its own Close or Minimize had put it away.
+            if (began)
+            {
+                TextInput.PressedAt((hovered as Component)?.Slot ?? Slot, actor);
+                PressBegan?.Invoke(hovered, context);
+                state.Pressed?.NotifyPress(in context);
+            }
         }
         else if (isPressed && state.Pressed != null)
         {
+            // An element that stops taking input while held (a button that switches itself off the moment it is
+            // pressed, so the slider under it gets the drag) lets go without a submit, and whatever the pointer is
+            // over now takes the press up from here, held but never acted on. One that was destroyed, or whose
+            // page went away (a press that opened something in its place), drops it. -xlinka
+            if (!state.Pressed.CanInteract && state.Pressed is not Component { IsDestroyed: true })
+            {
+                var lost = state.Pressed;
+                lost.NotifyRelease(in context);
+                bool steppedAside = lost is Component { Slot.IsActive: true };
+                state.Pressed = steppedAside && hovered != null && !ReferenceEquals(hovered, lost) ? hovered : null;
+                state.PressPoint = context.LocalPoint;
+                state.Transferred = true;
+                state.HandedOff = true;
+                state.Pressed?.NotifyPressTakenOver(in context);
+            }
+
             // Arbitration: a pressed child that opts into pass-through (a button/list item) relinquishes the
             // drag to the nearest scrolling ancestor once the pointer has moved past the threshold, so the
             // list scrolls instead of the child swallowing the gesture. A slider passes only cross-axis drags
-            // and keeps its own. Done once per gesture. -xlinka
+            // and keeps its own. Done once per gesture. The travel is scaled so the element's unit threshold
+            // reads as this pointer's slop (see DragSlop). -xlinka
             if (!state.Transferred && state.Pressed is InteractionElement pressedElement)
             {
-                var dragDelta = context.LocalPoint - state.PressPoint;
+                var dragDelta = (context.LocalPoint - state.PressPoint) * (InteractionElement.DragPassThreshold / DragSlop(in context));
                 if (pressedElement.PassDragToParent(in dragDelta))
                 {
                     var scroll = FindScrollAncestor(pressedElement);
@@ -755,7 +1046,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                         pressedElement.NotifyRelease(in context); // give up the press, no submit
                         state.Pressed = scroll;
                         state.Transferred = true;
-                        scroll.NotifyPress(in context);           // re-anchors the scroll at the current point
+                        scroll.NotifyPressTakenOver(in context);  // re-anchors the scroll at the current point
                     }
                 }
             }
@@ -766,15 +1057,74 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             var pressed = state.Pressed;
             pressed?.NotifyRelease(in context);
 
-            if (pressed != null && ReferenceEquals(pressed, hovered))
+            if (pressed != null && !state.HandedOff && (ReferenceEquals(pressed, hovered) || ReleasedInPlace(state, pressed, in context)))
             {
                 pressed.NotifySubmit(in context);
             }
 
             state.Pressed = null;
+            state.DeepRearmed = false;
         }
 
         state.IsPressed = isPressed;
+    }
+
+    // A finger resting the trigger past its press point holds one long press, and a full squeeze from there
+    // crosses no edge, so it clicked nothing. The trigger's deep edges stand in for one, on a press that is
+    // only a click (a button or toggle, a bare element, or nothing at all). Easing off the deep level lets go
+    // of it the way letting go of the trigger would. Going deep again, after easing off or from a still
+    // rest (TriggerLatch decides which), drops whatever is held with no submit and presses what the beam is
+    // on now, wherever it moved meanwhile. A press that became a drag (handed to a scroll, or on a slider, a
+    // window bar or a resize grip) ignores both edges: a drag held at full pull must not drop when the
+    // finger eases off the click. Returns whether a fresh press lands this update. -xlinka
+    private bool StepDeepTrigger(PointerState state, UIInteractionSource source, IUIInteractable? hovered, in UIInteractionContext context)
+    {
+        var (deepPressed, deepReleased) = DeepTriggerEdges(source);
+        if (!deepPressed && !deepReleased)
+            return false;
+        if (!state.DeepRearmed && (state.Transferred || state.HandedOff
+            || state.Pressed != null && state.Pressed is not InteractionElement { PressIsClick: true }))
+            return false;
+        // Going deep from a rest on the element that rest already pressed adds nothing: that press acted (or
+        // acts on release) where it landed, and pressing again would flip a toggle straight back. A second
+        // click on purpose eases off the deep level first, which re-arms. -xlinka
+        if (deepPressed && !state.DeepRearmed && state.Pressed != null && ReferenceEquals(state.Pressed, hovered))
+            return false;
+        ulong update = World?.Time.UpdateIndex ?? 0UL;
+        if (state.DeepUpdate == update)
+            return false;
+        state.DeepUpdate = update;
+
+        var pressed = state.Pressed;
+        state.Pressed = null;
+        pressed?.NotifyRelease(in context);
+        if (deepReleased)
+        {
+            if (pressed != null && (ReferenceEquals(pressed, hovered) || ReleasedInPlace(state, pressed, in context)))
+                pressed.NotifySubmit(in context);
+            state.DeepRearmed = true;
+            return false;
+        }
+        return true;
+    }
+
+    // This frame's deep edges of the trigger behind a headset pointer, read the way PressBeganNow reads the
+    // press. Off for any other pointer, and for a hand whose primary is not bound to the trigger.
+    private static (bool Pressed, bool Released) DeepTriggerEdges(UIInteractionSource source)
+    {
+        var side = source switch
+        {
+            UIInteractionSource.VRLeft => Chirality.Left,
+            UIInteractionSource.VRRight => Chirality.Right,
+            _ => Chirality.None,
+        };
+        if (side == Chirality.None)
+            return default;
+        var actions = Engine.Current?.InputInterface?.Actions;
+        if (actions == null || !actions.HasEvaluated)
+            return default;
+        var primary = actions.Interaction(side).Primary;
+        return (primary.DeepPressed, primary.DeepReleased);
     }
 
     public bool ProcessAxis(UIInteractionSource source, int pointerId, in float2 axis)
@@ -804,6 +1154,19 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         foreach (var state in _pointers.Values)
         {
             if (state.Hovered != null && DispatchAxis(state.Hovered, in state.LastContext, in axis))
+                return true;
+        }
+        return false;
+    }
+
+    // Whether an axis from this pointer would move whatever it hovers.
+    public bool WantsAxis(UIInteractionSource source, int pointerId)
+    {
+        if (!_pointers.TryGetValue(PointerKey(source, pointerId), out var state) || state.Hovered == null)
+            return false;
+        foreach (var receiver in GetInteractionReceivers<IUIAxisActionReceiver>(state.Hovered))
+        {
+            if (receiver.WantsAxis(in state.LastContext))
                 return true;
         }
         return false;
@@ -874,10 +1237,56 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return;
         }
 
-        var context = new UIInteractionContext(this, source, pointerId, float2.Zero, float3.Zero, float3.Zero, float3.Zero, 0f, actor);
+        // Let go where the pointer was last seen, not at the canvas origin: a window bar dragged off the side
+        // of the curved dash ends its drag there. Let go at (0,0), it would land in the middle of the desk.
+        var context = state.LastContext.Canvas != null
+            ? state.LastContext
+            : new UIInteractionContext(this, source, pointerId, float2.Zero, float3.Zero, float3.Zero, float3.Zero, 0f, actor);
         state.Hovered?.NotifyHoverExit(in context);
         state.Pressed?.NotifyRelease(in context);
         _pointers.Remove(key);
+    }
+
+    // A subtree taken off one canvas and hung under another: an app popped out of the dash onto a panel of
+    // its own, and back again, carrying whatever it had open. The old canvas lets go of every pointer, each
+    // rect in the subtree forgets the canvas it was registered with so the one it now sits under takes it in
+    // on its next pass, and both rebuild in full: the old one drops the chunks it can no longer reach, the
+    // new one meshes them. -xlinka
+    public static void Move(Slot subtree, Slot newParent)
+    {
+        if (subtree == null || subtree.IsDestroyed || newParent == null || newParent.IsDestroyed)
+            return;
+        var from = subtree.GetComponentInParents<Canvas>();
+        from?.ReleaseAllPointers();
+        subtree.SetParent(newParent, preserveGlobalTransform: false);
+        Forget(subtree);
+        subtree.GetComponent<RectTransform>()?.MarkChangeDirty();
+        from?.MarkDirty();
+        var to = newParent.GetComponentInParents<Canvas>();
+        if (to != null && !ReferenceEquals(to, from))
+            to.MarkDirty();
+    }
+
+    private static void Forget(Slot slot)
+    {
+        slot.GetComponent<RectTransform>()?.SetRegisteredCanvas(null);
+        foreach (var child in slot.Children)
+            Forget(child);
+        foreach (var child in slot.LocalChildren)
+            Forget(child);
+    }
+
+    // Whether this canvas draws the slot: the first canvas above it is this one.
+    private bool Holds(Slot? slot)
+    {
+        for (var s = slot; s != null; s = s.Parent)
+        {
+            if (ReferenceEquals(s, Slot))
+                return true;
+            if (s.GetComponent<Canvas>() != null)
+                return false;
+        }
+        return false;
     }
 
     // Drop every pointer at once, cancelling any press without a submit. For a canvas that has just been
@@ -889,7 +1298,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return;
         foreach (var pointer in _pointers)
         {
-            var context = new UIInteractionContext(this, UIInteractionSource.Unknown, pointer.Key, float2.Zero, float3.Zero, float3.Zero, float3.Zero, 0f);
+            var context = pointer.Value.LastContext.Canvas != null
+                ? pointer.Value.LastContext
+                : new UIInteractionContext(this, UIInteractionSource.Unknown, pointer.Key, float2.Zero, float3.Zero, float3.Zero, float3.Zero, 0f);
             pointer.Value.Hovered?.NotifyHoverExit(in context);
             pointer.Value.Pressed?.NotifyRelease(in context);
         }
@@ -899,6 +1310,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     private static void CancelPress(PointerState state, in UIInteractionContext context)
     {
         state.PressSuppressed = true;
+        state.DeepRearmed = false;
         if (!state.IsPressed)
             return;
         state.Pressed?.NotifyRelease(in context);
@@ -936,7 +1348,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     public bool IsTouchPressed(Chirality side)
         => _pointers.TryGetValue(PointerKey(UIInteractionSource.Touch, CanvasTouchSource.PointerIdFor(side)), out var touch) && touch.IsPressed;
 
-    bool ITouchSurface.AcceptsPhysicalTouch => AcceptPhysicalTouch.Value;
+    bool ITouchSurface.AcceptsPhysicalTouch => AcceptPhysicalTouch.Value && AcceptsPointerFrom(null);
 
     // The finger line against the z=0 plane, into the readable face (+Z side), inside the root rect. The
     // distance is the ray's own parameter, so the source reads depth off it in metres whatever the panel
@@ -944,13 +1356,16 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     public bool TryTouchProject(in float3 rayOrigin, in float3 rayDirection, float rayLength, out TouchSurfaceHit hit)
     {
         hit = default;
+        if (!AcceptsPointerFrom(null))
+            return false;
         EnsureRoot();
         if (_rootRect == null || Slot == null || !Slot.IsActive)
             return false;
 
         var localOrigin = Slot.GlobalPointToLocal(rayOrigin);
         var localDirection = Slot.GlobalDirectionToLocal(rayDirection);
-        if (localDirection.z >= -0.000001f)
+        bool backward = FaceBackward.Value;
+        if (backward ? localDirection.z <= 0.000001f : localDirection.z >= -0.000001f)
             return false;
 
         float t = -localOrigin.z / localDirection.z;
@@ -958,7 +1373,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return false;
 
         var localPoint3 = localOrigin + localDirection * t;
-        var localPoint = new float2(localPoint3.x, localPoint3.y);
+        var localPoint = LocalToCanvas(localPoint3);
         var face = _rootRect.LocalComputeRect;
         if (face.IsEmpty)
         {
@@ -968,7 +1383,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         if (face.IsEmpty || !face.Contains(localPoint))
             return false;
 
-        float3 normal = Slot.Forward;
+        float3 normal = backward ? -Slot.Forward : Slot.Forward;
         float normalLength = normal.Length;
         normal = normalLength > 0.000001f ? normal / normalLength : float3.Forward;
         hit = new TouchSurfaceHit(t, Slot.LocalPointToGlobal(localPoint3), normal, localPoint);
@@ -983,6 +1398,28 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     public void ClearTouchPointer(int pointerId, User? actor)
     {
         ClearPointer(UIInteractionSource.Touch, pointerId, actor);
+    }
+
+    // Whether the press a pointer reports went down this frame. A laser and the desktop cursor answer from
+    // their hand's primary action, the same one that drives their press. Touch arms itself before it may
+    // press, and a pointer with no hand behind it (or no input at all) is taken at its word.
+    private static bool PressBeganNow(UIInteractionSource source, int pointerId, bool? stated)
+    {
+        if (stated.HasValue)
+            return stated.Value;
+        var side = source switch
+        {
+            UIInteractionSource.VRLeft => Chirality.Left,
+            UIInteractionSource.VRRight => Chirality.Right,
+            UIInteractionSource.Desktop => pointerId == 1 ? Chirality.Left : pointerId == 2 ? Chirality.Right : Chirality.None,
+            _ => Chirality.None,
+        };
+        if (side == Chirality.None)
+            return true;
+        var actions = Engine.Current?.InputInterface?.Actions;
+        if (actions == null || !actions.HasEvaluated)
+            return true;
+        return actions.Interaction(side).Primary.Pressed;
     }
 
     // Nearest scrolling ancestor of a pressed element, for drag pass-through. ScrollRect is an
@@ -1009,7 +1446,38 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         TextUnderlayColor.OnChanged += _ => UpdateTextStyle();
         TextUnderlayOffset.OnChanged += _ => UpdateTextStyle();
         TextUnderlaySoftness.OnChanged += _ => UpdateTextStyle();
+        Culling.OnChanged += _ => MarkDirty();
+        FaceBackward.OnChanged += _ => ApplyFacing();
+        PerMetricPriority.OnChanged += _ => RemeasureAll();
     }
+
+    // Every cached metric was combined under the other rule.
+    private void RemeasureAll()
+    {
+        if (Slot == null)
+            return;
+        foreach (var rect in Slot.GetComponentsInChildren<RectTransform>())
+            rect.MarkChangeDirty();
+        MarkLayoutDirty();
+    }
+
+    // Turned canvases put every chunk half a turn round and read pointers mirrored; the colliders and the
+    // hit bounds move with them.
+    private void ApplyFacing()
+    {
+        _rootChunk?.ApplyFacing();
+        foreach (var pair in _chunkMap)
+            pair.Value.ApplyFacing();
+        _hitBoundsStale = true;
+        UpdateCanvasBounds();
+        _renderRequested = true;
+    }
+
+    // Canvas space to the slot's own and back. The canvas lies in the slot's z = 0 plane; a turned one
+    // (FaceBackward) runs its X the other way.
+    public float3 CanvasToLocal(in float2 point) => new float3(FaceBackward.Value ? -point.x : point.x, point.y, 0f);
+
+    public float2 LocalToCanvas(in float3 local) => new float2(FaceBackward.Value ? -local.x : local.x, local.y);
 
     public override void OnStart()
     {
@@ -1051,10 +1519,22 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         _fullDirty = true;
     }
 
+    // The canvas's own parts are added by the machine that made it. One made elsewhere waits for them to
+    // arrive: a canvas built in the middle of an update is sent as that update ends, a frame before its maker
+    // starts it and adds them, and a viewer adding its own put a second chunk root on somebody else's slot
+    // in an open world and was refused in a frozen one. -xlinka
     public void EnsureRoot()
     {
-        _rootRect ??= Slot.GetComponent<RectTransform>() ?? Slot.AttachComponent<RectTransform>();
-        _chunkRoot ??= Slot.GetComponent<GraphicChunkRoot>() ?? Slot.AttachComponent<GraphicChunkRoot>();
+        if (_rootRect == null || _chunkRoot == null)
+        {
+            bool mayAdd = IsMintedHere;
+            var rect = _rootRect ?? Slot.GetComponent<RectTransform>() ?? (mayAdd ? Slot.AttachComponent<RectTransform>() : null);
+            var chunkRoot = _chunkRoot ?? Slot.GetComponent<GraphicChunkRoot>() ?? (mayAdd ? Slot.AttachComponent<GraphicChunkRoot>() : null);
+            if (rect == null || chunkRoot == null)
+                return;
+            _rootRect = rect;
+            _chunkRoot = chunkRoot;
+        }
         if (_rootChunk == null)
         {
             _rootChunk = new GraphicsChunk(this, _rootRect);
@@ -1062,12 +1542,15 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             _rootChunk.SubmitChanges();
         }
         if (SizeCollider.Value)
-            _uiCollider ??= Slot.GetComponent<BoxCollider>() ?? Slot.AttachComponent<BoxCollider>();
+            _uiCollider ??= Slot.GetComponent<BoxCollider>() ?? (IsMintedHere ? Slot.AttachComponent<BoxCollider>() : null);
     }
 
     public override void OnCommonUpdate()
     {
         base.OnCommonUpdate();
+        Text.PollFonts(World);
+        if (_placementDirty)
+            ApplyPlacements();
         bool dirty = _rootDirty || _fullDirty || _layoutDirty || _dirtyChunks.Count > 0 || _layoutDirtyChunks.Count > 0;
         if (!dirty)
             return;
@@ -1090,6 +1573,94 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         base.OnDestroy();
     }
 
+    private readonly List<GraphicChunkRoot> _relayoutScratch = new();
+
+    private void RelayoutDirtyChunks()
+    {
+        _relayoutScratch.Clear();
+        _relayoutScratch.AddRange(_layoutDirtyChunks);
+        _layoutDirtyChunks.Clear();
+        foreach (var root in _relayoutScratch)
+        {
+            RelayoutChunkSubtree(root);
+            // A scroll's content is its own chunk: re-fitted here, it is placed against its viewport again.
+            ApplyScrollRects(root.Slot);
+        }
+        _relayoutScratch.Clear();
+    }
+
+    // Rects a RectLerp moved during the current layout pass.
+    private readonly List<RectTransform> _blended = new();
+    private readonly List<RectTransform> _blendScratch = new();
+
+    internal void NoteBlended(RectTransform rect) => _blended.Add(rect);
+
+    // A blend reads its target as placed at that moment, and a target placed later in the same pass (a sibling
+    // after it, or one its layout reflowed afterwards) has moved since. Blend those again and place their
+    // children in the new rect; a second round settles a blend toward a rect that is blended itself.
+    private void SettleBlends()
+    {
+        for (int round = 0; round < 2 && _blended.Count > 0; round++)
+        {
+            _blendScratch.Clear();
+            _blendScratch.AddRange(_blended);
+            _blended.Clear();
+            bool moved = false;
+            foreach (var rect in _blendScratch)
+            {
+                if (rect.IsDestroyed || rect.Slot == null || rect.BlendedBy is not { TargetMoved: true })
+                    continue;
+                moved = true;
+                rect.SetLocalComputeRect(rect.PlacedComputeRect);
+                var slot = rect.Slot;
+                if (SlotRunsLayout(slot))
+                {
+                    ApplyLayout(slot, rect);
+                }
+                else
+                {
+                    foreach (var c in slot.Children) ReanchorAndDescend(c, rect);
+                    foreach (var c in slot.LocalChildren) ReanchorAndDescend(c, rect);
+                }
+            }
+            if (!moved)
+                break;
+        }
+        _blended.Clear();
+        _blendScratch.Clear();
+    }
+
+    // Text and wrapping layouts whose laid-out width changed during the current layout pass.
+    private readonly List<RectTransform> _rewrapped = new();
+
+    internal void NoteWidthChanged(RectTransform rect)
+    {
+        if ((rect.Slot?.GetComponent<Text>() is { } text && text.WordWrap.Value)
+            || rect.Slot?.GetComponent<WrapLayout>() != null)
+            _rewrapped.Add(rect);
+    }
+
+    // Marks each of them whose height was measured at another width; true when any was.
+    private bool SettleWrapping()
+    {
+        bool any = false;
+        for (int i = 0; i < _rewrapped.Count; i++)
+        {
+            var rect = _rewrapped[i];
+            if (rect.IsDestroyed || rect.Slot == null)
+                continue;
+            float width = rect.PlacedComputeRect.width;
+            if ((rect.Slot.GetComponent<Text>() is { } text && text.MeasuredAtOtherWidth(width))
+                || (rect.Slot.GetComponent<WrapLayout>() is { } wrap && wrap.MeasuredAtOtherWidth(width)))
+            {
+                rect.MarkInvalidateVerticalLayout();
+                any = true;
+            }
+        }
+        _rewrapped.Clear();
+        return any;
+    }
+
     // MAIN: layout + prepare each dirty chunk (snapshot graphics, rasterize glyphs, queue geometry,
     // discover nested chunks), then hand the geometry build to a worker and submit back on main.
     private void StartRebuildCycle()
@@ -1108,8 +1679,19 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         {
             // MEASURE (bottom-up) before ARRANGE (top-down): cache each rect's metrics so a parent's
             // arrange sees its children's fully-propagated min/preferred/flexible. -xlinka
+            _rewrapped.Clear();
+            _blended.Clear();
             MeasureRects(Slot);
             ComputeRects(Slot, null);
+            // Wrapped content was measured before this pass gave it its width; its height only holds for
+            // the width it had. Measure the ones that moved and lay out once more, which settles them.
+            if (SettleWrapping())
+            {
+                MeasureRects(Slot);
+                ComputeRects(Slot, null);
+                _rewrapped.Clear();
+            }
+            SettleBlends();
             ApplyScrollRects(Slot);
             UpdateCanvasBounds();
             _layoutDirty = false;
@@ -1120,10 +1702,17 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             // Scoped: only the touched chunks' subtrees moved (e.g. a slider handle). Re-lay-out
             // those subtrees against their unchanged chunk-root rect; their chunk is already in
             // _dirtyChunks so the mesh re-renders too. No whole-canvas layout pass.
-            foreach (var root in _layoutDirtyChunks)
-                RelayoutChunkSubtree(root);
-            _layoutDirtyChunks.Clear();
+            _rewrapped.Clear();
+            _blended.Clear();
+            RelayoutDirtyChunks();
             _hitBoundsStale = true;
+            // Moved wrapping content is measured at its new width and laid out again in this cycle.
+            if (SettleWrapping())
+            {
+                RelayoutDirtyChunks();
+                _rewrapped.Clear();
+            }
+            SettleBlends();
         }
 
         // Capture + clear the root/chunk dirt BEFORE the prepare pass (but AFTER the layout branch,
@@ -1316,7 +1905,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         if (_rootChunk == null)
             return;
 
-        int baseOrder = SortingOrder.Value;
+        int baseOrder = Overlay.Value && !DrawsOverlay ? 0 : SortingOrder.Value;
 
         // On a render-root cycle the chunk set / tree order can change, so (re)assign every seen chunk a
         // tree-order SortingOrder: root lowest, then nested chunks in discovery (hierarchy) order. SortingOrder
@@ -1367,9 +1956,57 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         }
 
         if (_cycleRenderRoot)
+        {
             CleanupChunks();
+            ApplyPlacements();
+        }
         else
             DisposeDeadChunks();
+    }
+
+    private void ApplyPlacements()
+    {
+        _placementDirty = false;
+        bool moved = false;
+        if (_rootChunk != null)
+            moved |= _rootChunk.SetPlacement(PlacementOf(Slot, 0, out float rootScale), rootScale);
+        foreach (var pair in _chunkMap)
+        {
+            if (pair.Key.IsDestroyed || pair.Key.Slot == null)
+                continue;
+            moved |= pair.Value.SetPlacement(PlacementOf(pair.Key.Slot, pair.Key.OverlayLevel, out float scale), scale);
+        }
+        if (moved)
+            _renderRequested = true;
+    }
+
+    // Every enabled StackLayer from the chunk's root up to the canvas, composed inner to outer: each scales
+    // what is under it about its pivot, then slides it. A chunk no layer carries is flat, unless it is an
+    // overlay level, which takes OverlayLift.
+    private float3 PlacementOf(Slot? slot, int overlayLevel, out float scale)
+    {
+        float2 offset = float2.Zero;
+        float lift = 0f;
+        bool layered = false;
+        scale = 1f;
+        for (var s = slot; s != null; s = s.Parent)
+        {
+            var layer = s.GetComponent<StackLayer>();
+            if (layer != null && layer.Enabled.Value)
+            {
+                float k = layer.Scale.Value;
+                var pivot = layer.Pivot.Value;
+                offset = layer.Offset.Value + pivot + (offset - pivot) * k;
+                scale *= k;
+                lift += layer.Lift.Value;
+                layered = true;
+            }
+            if (ReferenceEquals(s, Slot))
+                break;
+        }
+        if (!layered && overlayLevel > 0)
+            lift = OverlayLift;
+        return new float3(offset.x, offset.y, lift);
     }
 
     // Chunk slots are filed FLAT under the canvas slot (GraphicsChunk.EnsureSlot), not under the element
@@ -1464,7 +2101,10 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     private float2 CumulativeScrollOffset(GraphicChunkRoot root)
     {
         float2 own = root.ScrollContent ? root.RenderOffset : float2.Zero;
-        return own + ScrollOffsetOf(root.Slot?.Parent);
+        float2 total = own;
+        for (var s = root.Slot?.Parent; s != null && !ReferenceEquals(s, Slot); s = s.Parent)
+            total += SlotScrollStep(s);
+        return total;
     }
 
     // One slot's contribution to the render displacement: a ScrollRect's content chunk is slid by its
@@ -1478,6 +2118,19 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         return cr != null && cr.ScrollContent ? cr.RenderOffset : float2.Zero;
     }
 
+    // What a hit sees of one slot: its scroll, plus the slide of a StackLayer on it. The layer's slide is a
+    // chunk transform on the render side, so it stays out of clip_offset; a pointer still has to undo it.
+    private static float2 SlotHitStep(Slot? slot)
+    {
+        if (slot == null)
+            return float2.Zero;
+        var step = SlotScrollStep(slot);
+        var layer = slot.GetComponent<StackLayer>();
+        if (layer != null && layer.Enabled.Value)
+            step += layer.Offset.Value;
+        return step;
+    }
+
     // gap between a slot's LAYOUT rect and where it actually renders: every ScrollContent chunk root at
     // or above it, summed (nested scrolls compose linearly).
     // THE single source for that number. Rendering (CumulativeScrollOffset -> clip_offset) and every hit path
@@ -1488,7 +2141,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     {
         float2 total = float2.Zero;
         for (var s = slot; s != null && !ReferenceEquals(s, Slot); s = s.Parent)
-            total += SlotScrollStep(s);
+            total += SlotHitStep(s);
         return total;
     }
 
@@ -1537,6 +2190,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         // chunk transform. So the chunk slot stays at the origin; the scroll offset rides on the material's
         // clip_offset via SetClipOffset (after submit, and on each live scroll). The clip rect stays fixed in
         // canvas space, so it isn't in the material key and doesn't re-clone every step. -xlinka
+        chunk.SetPlacement(PlacementOf(root.Slot, root.OverlayLevel, out float placedScale), placedScale);
         chunk.SetComputeOffset(float2.Zero);
 
         chunk.PrepareCompute();
@@ -1546,7 +2200,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         // those at render via the material rect + clip_offset. A window that RIDES with this chunk is the
         // opposite case and IS trimmed at bake - see RenderData.GeometryClipRect. -xlinka
         chunk.ContentRenderData.SuppressGeometryClip = ridesScroll;
+        _partitionFoundChunk = false;
         RenderPartition(chunk.ContentRenderData, root.Slot, clips.Window, clips.Riding, root, stencil);
+        chunk.ContainsChunks = _partitionFoundChunk;
         _chunkRidesScroll = false;
         return true;
     }
@@ -1667,7 +2323,8 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         foreach (var root in _chunkScratch)
         {
             var chunk = _chunkMap[root];
-            bool removed = root.IsDestroyed || root.Slot == null || root.Slot.IsDestroyed;
+            // Gone, or moved under another canvas: either way this canvas has nothing left to draw for it.
+            bool removed = root.IsDestroyed || root.Slot == null || root.Slot.IsDestroyed || !Holds(root.Slot);
             if (removed)
             {
                 chunk.Dispose();
@@ -1846,6 +2503,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
 
         if (rect != null)
         {
+            rect.SetRegisteredCanvas(this);
             // GetMetrics runs each ILayoutElement's EnsureValidMetrics, which now reads the children's
             // cached measured metrics (available post-order) - no live recursion, no flexible decay.
             // PER-AXIS: re-measure only the axis whose cached metric is stale; reuse the clean one. A change
@@ -1887,7 +2545,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             // cached one, the entire subtree is unchanged and its cached rects stay valid. This is what stops
             // a localized change (or a tab switch) from re-laying-out the whole canvas. -xlinka
             bool parentRunsLayout = parent != null && SlotRunsLayout(parent.Slot);
-            if (!parentRunsLayout && !rect.LayoutSubtreeDirty && RectUnchanged(computed, rect.LocalComputeRect))
+            if (!parentRunsLayout && !rect.LayoutSubtreeDirty && RectUnchanged(computed, rect.PlacedComputeRect))
             {
                 return;
             }
@@ -1922,16 +2580,25 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // present + enabled, so fixed-anchor layouts are unaffected. -xlinka
     private void ApplyContentSizeFit(Slot slot, RectTransform rect)
     {
+        if (!FitToContent(slot, rect))
+            return;
+        foreach (var c in slot.Children) ReanchorAndDescend(c, rect);
+        foreach (var c in slot.LocalChildren) ReanchorAndDescend(c, rect);
+    }
+
+    // Sizes the rect to its content metric about its pivot; true when that changed it.
+    private static bool FitToContent(Slot slot, RectTransform rect)
+    {
         var fitter = slot.GetComponent<Helio.UI.Layout.ContentSizeFitter>();
         if (fitter == null || !fitter.Enabled.Value)
-            return;
+            return false;
 
         var hFit = fitter.HorizontalFit.Value;
         var vFit = fitter.VerticalFit.Value;
         if (hFit == SizeFit.Disabled && vFit == SizeFit.Disabled)
-            return;
+            return false;
 
-        var r = rect.LocalComputeRect;
+        var r = rect.PlacedComputeRect;
         var pivot = rect.Pivot.Value;
         float w = r.width;
         float h = r.height;
@@ -1948,15 +2615,13 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         }
 
         if (w == r.width && h == r.height)
-            return;
+            return false;
 
         // Keep the pivot point fixed while the size changes.
         float pivotX = r.xMin + pivot.x * r.width;
         float pivotY = r.yMin + pivot.y * r.height;
         rect.SetLocalComputeRect(new Rect(pivotX - pivot.x * w, pivotY - pivot.y * h, w, h));
-
-        foreach (var c in slot.Children) ReanchorAndDescend(c, rect);
-        foreach (var c in slot.LocalChildren) ReanchorAndDescend(c, rect);
+        return true;
     }
 
     // Aspect-ratio lock: after content-fit, adjust this rect to a target width/height
@@ -1971,7 +2636,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         if (aspect <= 0f)
             return;
 
-        var r = rect.LocalComputeRect;
+        var r = rect.PlacedComputeRect;
         float w = r.width;
         float h = r.height;
 
@@ -2021,14 +2686,21 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         layout.PrepareCompute();
         layout.ArrangeChildren(rect.RectChildren);
 
-        foreach (var child in slot.Children) ReflowAfterParentChanged(child);
-        foreach (var child in slot.LocalChildren) ReflowAfterParentChanged(child);
+        foreach (var child in slot.Children) ReflowAfterParentChanged(child, rect);
+        foreach (var child in slot.LocalChildren) ReflowAfterParentChanged(child, rect);
     }
 
     // a child's rect was just overridden by its parent's layout. re-anchor descendants and re-run inner layout. - xlinka
-    private void ReflowAfterParentChanged(Slot slot)
+    private void ReflowAfterParentChanged(Slot slot, RectTransform parent)
     {
         var rect = slot.GetComponent<RectTransform>();
+        if (rect != null && LayoutSizing.IsIgnored(rect))
+        {
+            // The layout skipped it, so it still holds the rect it was anchored to before the parent was
+            // placed (for a stretched overlay, the whole canvas). Anchor it to where the parent is now.
+            ReanchorAndDescend(slot, parent);
+            return;
+        }
         if (rect != null)
         {
             // Descend the subtree EXACTLY ONCE. If this slot runs a layout, ApplyLayout arranges its children
@@ -2047,8 +2719,8 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         }
         else
         {
-            foreach (var c in slot.Children) ReflowAfterParentChanged(c);
-            foreach (var c in slot.LocalChildren) ReflowAfterParentChanged(c);
+            foreach (var c in slot.Children) ReflowAfterParentChanged(c, parent);
+            foreach (var c in slot.LocalChildren) ReflowAfterParentChanged(c, parent);
         }
     }
 
@@ -2058,6 +2730,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         if (rect != null)
         {
             rect.SetLocalComputeRect(ComputeRect(rect, parent));
+            // Re-anchoring undoes a content fit, which ComputeRects only applies on its own pass: fit again
+            // first, so the children are placed once, in the fitted rect.
+            FitToContent(slot, rect);
             // Descend once: a layout slot arranges + reflows its own children (ApplyLayout); a non-layout
             // slot re-anchors them. Doing both was the O(2^depth) blowup (see ReflowAfterParentChanged). -xlinka
             if (SlotRunsLayout(slot))
@@ -2099,6 +2774,10 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             rect.SetLocalComputeRect(ComputeRect(rect, parent));
             rect.ClearDataModelFlags(RectTransform.DataModelFlag.RectChanged);
         }
+        else if (rect.BlendedBy != null)
+        {
+            rect.SetLocalComputeRect(rect.PlacedComputeRect);
+        }
 
         // Re-measure this subtree's metrics before re-arranging it (scoped path mirror of the full pump).
         MeasureRects(slot);
@@ -2108,8 +2787,13 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             ComputeRects(child, rect);
         foreach (var child in slot.LocalChildren)
             ComputeRects(child, rect);
-        ApplyContentSizeFit(slot, rect);
-        ApplyAspectRatio(slot, rect);
+        // Under a parent's layout the parent owns the root's size, as on the full pass, where the parent's
+        // arrangement runs after the fit and overrides it.
+        if (parent == null || !SlotRunsLayout(parent.Slot))
+        {
+            ApplyContentSizeFit(slot, rect);
+            ApplyAspectRatio(slot, rect);
+        }
         ApplyLayout(slot, rect);
     }
 
@@ -2120,9 +2804,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return;
         }
 
-        foreach (var scroll in slot.GetComponents<ScrollRect>())
+        // By index: a scroll sitting on its own content gives that slot its chunk root on the first pass, which
+        // adds to the very list being walked.
+        var comps = slot.Components;
+        for (int ci = 0; ci < comps.Count; ci++)
         {
-            if (!scroll.Enabled.Value)
+            if (comps[ci] is not ScrollRect scroll || !scroll.Enabled.Value)
             {
                 continue;
             }
@@ -2156,7 +2843,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         if (b.IsEmpty) return;
         // Flat slab in canvas-local space; tiny z keeps the Godot box shape from being degenerate.
         _uiCollider.Size.Value = new float3(b.width, b.height, 0.001f);
-        _uiCollider.Offset.Value = new float3(b.Center.x, b.Center.y, 0f);
+        _uiCollider.Offset.Value = CanvasToLocal(b.Center);
     }
 
     private static Rect ComputeRect(RectTransform rect, RectTransform? parent)
@@ -2172,6 +2859,43 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         var min = parentMin + parentSize * rect.AnchorMin.Value + rect.OffsetMin.Value;
         var max = parentMin + parentSize * rect.AnchorMax.Value + rect.OffsetMax.Value;
         return Rect.FromMinMax(min, max);
+    }
+
+    // A sphere round what the canvas answers for, tested before its plane: a laser asks every canvas in the
+    // world every frame, most of them nowhere near the beam, and the plane test takes the slot's transform
+    // apart twice. An open graph is a canvas a card. -xlinka
+    private bool MightReach(in float3 rayOrigin, in float3 rayDirection, float maxDistance)
+    {
+        EnsureRoot();
+        if (_rootRect == null || Slot == null)
+        {
+            return false;
+        }
+        if (_hitBoundsStale)
+        {
+            RefreshHitBounds();
+        }
+        if (!_hitBoundsValid)
+        {
+            return true;
+        }
+        float length = rayDirection.Length;
+        if (length <= 0.000001f)
+        {
+            return false;
+        }
+        var rect = _hitBounds;
+        var scale = Slot.GlobalScale;
+        float largest = MathF.Max(MathF.Abs(scale.x), MathF.Max(MathF.Abs(scale.y), MathF.Abs(scale.z)));
+        float radius = MathF.Sqrt(rect.width * rect.width + rect.height * rect.height) * 0.5f * largest;
+        var center = Slot.LocalPointToGlobal(CanvasToLocal(rect.Center));
+        var toward = center - rayOrigin;
+        float along = float3.Dot(toward, rayDirection / length);
+        if (along < -radius || along - radius > maxDistance)
+        {
+            return false;
+        }
+        return toward.LengthSquared - along * along <= radius * radius;
     }
 
     private bool TryRayToCanvasPoint(
@@ -2211,7 +2935,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         }
 
         var localPoint3 = localOrigin + localDirection * t;
-        var localPoint = new float2(localPoint3.x, localPoint3.y);
+        var localPoint = LocalToCanvas(localPoint3);
         var worldPoint = Slot.LocalPointToGlobal(localPoint3);
         float distance = (worldPoint - rayOrigin).Length;
 
@@ -2250,7 +2974,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return;
         }
 
-        scroll += SlotScrollStep(slot);
+        scroll += SlotHitStep(slot);
         var point = context.LocalPoint - scroll;
 
         // Index iteration (not foreach) so this per-frame, per-slot scan doesn't allocate an enumerator on
@@ -2534,6 +3258,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         if (childRoot != null && !ReferenceEquals(childRoot, ownRoot) && child.GetComponent<RectTransform>() != null)
         {
             // chunk boundary: register it and skip - it renders into its own mesh
+            _partitionFoundChunk = true;
             EnsureChunk(childRoot);
             if (_seenChunkRoots.Add(childRoot)) _chunkOrder.Add(childRoot);
             return;

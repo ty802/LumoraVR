@@ -307,6 +307,12 @@ public sealed class MaterialCloneCache
         changed |= Set(clone.Rect, clipRect ?? source.Rect.Value);
         changed |= Set(clone.RectClip, clipRect.HasValue || source.RectClip.Value);
         changed |= Set(clone.ClipOffset, source.ClipOffset.Value);
+        changed |= SetTarget(clone.MaskTexture, source.MaskTexture.Target);
+        changed |= Set(clone.MaskScale, source.MaskScale.Value);
+        changed |= Set(clone.MaskOffset, source.MaskOffset.Value);
+        changed |= Set(clone.MaskMode, source.MaskMode.Value);
+        changed |= Set(clone.OffsetFactor, source.OffsetFactor.Value);
+        changed |= Set(clone.OffsetUnits, source.OffsetUnits.Value);
 
         if (changed)
         {

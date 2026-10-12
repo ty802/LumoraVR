@@ -3,6 +3,7 @@
 
 using System;
 using Lumora.Core;
+using Lumora.Core.Math;
 
 namespace Helio.UI;
 
@@ -14,13 +15,24 @@ public sealed class Radio : InteractionElement
     // drives the dot's active state. declared member, so the target replicates and saves.
     public readonly FieldDrive<bool> CheckVisual = new();
 
+    // Picks when the press lets go instead of when it lands. See Button.ActOnRelease.
+    public readonly Sync<bool> ActOnRelease;
+
     public event Action<Radio, bool>? ValueChanged;
 
     public Radio()
     {
         IsChecked = new Sync<bool>(this, false);
         Group = new Sync<string>(this, string.Empty);
+        ActOnRelease = new Sync<bool>(this, false);
     }
+
+    protected override bool ActsOnPress => !ActOnRelease.Value && !InReleaseList();
+    protected override bool IsClickControl => true;
+
+    // A drag that starts here scrolls the list it sits in, the same as from a button.
+    public override bool PassDragToParent(in float2 dragDelta)
+        => System.Math.Abs(dragDelta.x) > DragPassThreshold || System.Math.Abs(dragDelta.y) > DragPassThreshold;
 
     public override void OnStart()
     {

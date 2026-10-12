@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using Helio.UI.Layout;
 using Lumora.Core;
 using Lumora.Core.Math;
 
@@ -23,10 +24,34 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
     // programmatic scrolling are untouched. -xlinka
     public readonly Sync<bool> WheelScrollsHorizontal;
 
+    // A list you drag to scroll is mostly rows, so a drag mostly starts on one. Set this and every button and
+    // toggle in the content acts when its press lets go, not when it lands, and never once the scroll has
+    // taken the drag: starting a scroll on a row does not open, flip or remove it. Rows added later follow.
+    public readonly Sync<bool> RowsActOnRelease;
+
+    // A scroll can also sit on the content it moves: set Viewport to the rect it scrolls inside and leave Content
+    // empty. The content is then placed against the viewport, not left where its layout put it: overflowing, a
+    // scroll of zero shows its top and its right end and the scroll runs the rest of the way; smaller than the
+    // viewport, it sits by the alignment below (Start is left and top). Drags move it with the pointer. -xlinka
+    public readonly SyncRef<RectTransform> Viewport;
+    public readonly Sync<LayoutAlignment> HorizontalAlignment;
+    public readonly Sync<LayoutAlignment> VerticalAlignment;
+
     // A RectTransform sits at its 100x100 default until the canvas runs a layout pass. Applying scroll against
     // that default (excess = content - 100) could shove the content out of the also-stale clip rect. Reject a
     // viewport at/under this floor and wait for a real laid-out rect (the next cycle re-runs ApplyScroll). -xlinka
     private const float UnlaidViewportFloor = 100f;
+
+    // Units one wheel notch moves, on either axis.
+    private const float NotchStep = 24f;
+
+    // Wheel notches and controller axes accumulate a destination; the displayed position follows it.
+    // About 95% of the distance is covered in 120 ms, independent of the frame rate.
+    private const float ScrollFollowRate = 25f;
+    private const float ScrollSnapDistance = 0.1f;
+    private float2 _scrollTarget;
+    private bool _smoothing;
+    private bool _writingScroll;
 
     private float2 _pressPoint;
     private float2 _pressAbsolute;
@@ -52,6 +77,102 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
         Scroll = new Sync<float2>(this, float2.Zero);
         ScrollSensitivity = new Sync<float2>(this, float2.One);
         WheelScrollsHorizontal = new Sync<bool>(this, false);
+        RowsActOnRelease = new Sync<bool>(this, false);
+        Viewport = new SyncRef<RectTransform>(this);
+        HorizontalAlignment = new Sync<LayoutAlignment>(this, LayoutAlignment.Start);
+        VerticalAlignment = new Sync<LayoutAlignment>(this, LayoutAlignment.Start);
+    }
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        Scroll.OnChanged += _ => { if (!_writingScroll) StopScrolling(); };
+        Content.OnChanged += _ => ResetScrollContent();
+        Viewport.OnChanged += _ => ResetScrollContent();
+        Slot.ActiveChanged += OnScrollActiveChanged;
+    }
+
+    public override void OnDestroy()
+    {
+        Slot.ActiveChanged -= OnScrollActiveChanged;
+        base.OnDestroy();
+    }
+
+    public override void OnDisabled()
+    {
+        StopScrolling();
+        base.OnDisabled();
+    }
+
+    private void OnScrollActiveChanged(Slot slot)
+    {
+        if (!slot.IsActive)
+            StopScrolling();
+    }
+
+    private void ResetScrollContent()
+    {
+        StopScrolling();
+        _contentRoot = null;
+        _scrollSetupDone = false;
+    }
+
+    // Direct manipulation (including scrollbar presses) takes over exactly where the content is now.
+    public void StopScrolling() => _smoothing = false;
+
+    public override void OnUpdate(float delta)
+    {
+        base.OnUpdate(delta);
+        if (!_smoothing)
+            return;
+        if (!CanInteract || MovingRect is not { IsDestroyed: false })
+        {
+            StopScrolling();
+            return;
+        }
+        if (!(delta > 0f) || !float.IsFinite(delta))
+            return;
+
+        var excess = ScrollableExcess();
+        var shown = Scroll.Value;
+        // A page that now fits has no animation left on that axis. Keep the current proportional place.
+        if (excess.x <= 0f) _scrollTarget.x = shown.x;
+        if (excess.y <= 0f) _scrollTarget.y = shown.y;
+        float follow = 1f - MathF.Exp(-ScrollFollowRate * delta);
+        var next = shown + (_scrollTarget - shown) * follow;
+        if (MathF.Abs((_scrollTarget.x - next.x) * excess.x) <= ScrollSnapDistance) next.x = _scrollTarget.x;
+        if (MathF.Abs((_scrollTarget.y - next.y) * excess.y) <= ScrollSnapDistance) next.y = _scrollTarget.y;
+        _smoothing = next != _scrollTarget;
+        SetNormalized(next, animated: true);
+    }
+
+    // The rect the scroll frames and the one it moves: this slot's and Content, or Viewport and this slot's.
+    private bool OnContent => Viewport.Target != null;
+    private RectTransform? FrameRect => Viewport.Target ?? RectTransform;
+    private RectTransform? MovingRect => Viewport.Target != null ? RectTransform : Content.Target;
+
+    // How far the moving rect's chunk is slid for a scroll of this many units.
+    private float2 ContentShift(in float2 absolute)
+    {
+        if (Viewport.Target is not { } frame || RectTransform is not { } moving)
+            return new float2(-absolute.x, absolute.y);
+        var view = frame.LocalComputeRect;
+        var content = moving.LocalComputeRect;
+        float spareX = content.width - view.width;
+        float spareY = content.height - view.height;
+        float leadX = spareX > 0f ? spareX : HorizontalAlignment.Value switch
+        {
+            LayoutAlignment.Start => 0f,
+            LayoutAlignment.End => spareX,
+            _ => spareX * 0.5f,
+        };
+        float leadY = spareY > 0f ? spareY : VerticalAlignment.Value switch
+        {
+            LayoutAlignment.Start => spareY,
+            LayoutAlignment.End => 0f,
+            _ => spareY * 0.5f,
+        };
+        return new float2(view.xMin - leadX + absolute.x - content.xMin, view.yMin - leadY + absolute.y - content.yMin);
     }
 
     // normalized 0..1 scroll position (the persisted value), clamped on set
@@ -111,8 +232,8 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
     // nothing could break the deadlock, because a scroll that cannot move dirties no layout. -xlinka
     private float2 ScrollableExcess()
     {
-        var viewport = RectTransform;
-        var content = Content.Target;
+        var viewport = FrameRect;
+        var content = MovingRect;
         if (viewport == null || content == null)
             return _excess;
 
@@ -134,6 +255,8 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
     public override void OnChanges()
     {
         base.OnChanges();
+        if (!CanInteract)
+            StopScrolling();
         ApplyScrollNow();
     }
 
@@ -148,7 +271,7 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
         EnsureScrollSetup();
         // Content slides left/up as you scroll right/down (same sign as the rebuild path in ApplyScroll).
         var absolute = AbsolutePosition;
-        if (_contentRoot != null && canvas.ApplyScrollOffset(_contentRoot, new float2(-absolute.x, absolute.y)))
+        if (_contentRoot != null && canvas.ApplyScrollOffset(_contentRoot, ContentShift(absolute)))
             return;
         canvas.MarkLayoutDirty();
     }
@@ -158,7 +281,7 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
     {
         if (_scrollSetupDone)
             return;
-        var contentSlot = Content.Target?.Slot;
+        var contentSlot = MovingRect?.Slot;
         if (contentSlot == null)
             return;
         _contentRoot = contentSlot.GetComponent<GraphicChunkRoot>() ?? contentSlot.AttachComponent<GraphicChunkRoot>();
@@ -179,53 +302,93 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
 
     protected override void OnPress(in UIInteractionContext context)
     {
+        StopScrolling();
         // Viewport space, not raw canvas space: for a scroll nested in another scroll the outer offset can
         // move mid-gesture (wheel, second pointer), and a raw press anchor would make this drag jump by the
         // outer delta. Same space on both ends, so the delta is pure pointer motion. -xlinka
-        _pressPoint = context.PointIn(Slot);
+        _pressPoint = context.PointIn(DragSpace);
         _pressAbsolute = AbsolutePosition;
     }
 
+    // A scroll that sits on its own content rides its own offset. Measured on this slot, the pointer has
+    // the scroll so far taken back off every frame, and the content flips between the pointer and the
+    // press point. The parent keeps every outer scroll and drops only this one.
+    private Slot? DragSpace => OnContent ? Slot?.Parent ?? Slot : Slot;
+
     protected override void OnDrag(in UIInteractionContext context)
     {
-        var delta = context.PointIn(Slot) - _pressPoint;
+        var delta = context.PointIn(DragSpace) - _pressPoint;
         var sensitivity = ScrollSensitivity.Value;
+        if (OnContent)
+        {
+            AbsolutePosition = new float2(_pressAbsolute.x + delta.x * sensitivity.x, _pressAbsolute.y + delta.y * sensitivity.y);
+            return;
+        }
+        // Canvas y runs up and the scroll runs down the page, so a pointer moving down takes the scroll back
+        // toward the top: the content stays under the pointer.
         AbsolutePosition = new float2(
             _pressAbsolute.x - delta.x * sensitivity.x,
-            _pressAbsolute.y - delta.y * sensitivity.y);
+            _pressAbsolute.y + delta.y * sensitivity.y);
+    }
+
+    public bool WantsAxis(in UIInteractionContext context)
+    {
+        var excess = ScrollableExcess();
+        return excess.x > 0f || excess.y > 0f;
     }
 
     public bool ProcessAxis(in UIInteractionContext context, in float2 axis)
     {
-        if (axis == float2.Zero)
+        if (!CanInteract || axis == float2.Zero || !float.IsFinite(axis.x) || !float.IsFinite(axis.y))
         {
             return false;
         }
 
         var sensitivity = ScrollSensitivity.Value;
-        var abs = AbsolutePosition;
-        var before = Scroll.Value;
-        if (WheelScrollsHorizontal.Value)
+        // Up and right on the axis show what is above and to the right. A scroll on its content counts x from
+        // the right end, so its x runs the other way.
+        float stepX = axis.x * sensitivity.x * NotchStep;
+        float stepY = axis.y * sensitivity.y * NotchStep;
+        float2 offset;
+        if (OnContent)
+            offset = new float2(-stepX, -stepY);
+        else if (WheelScrollsHorizontal.Value)
         {
-            // Same 24-unit notch step as the vertical path, and the same sign, so a wheel-down that would
-            // scroll a list further in scrolls a strip further right.
-            AbsolutePosition = new float2(
-                abs.x - (axis.x * sensitivity.x + axis.y * sensitivity.y * 24f),
-                abs.y);
+            // The same sign as the vertical path, so a wheel-down that would scroll a list further in scrolls
+            // a strip further right.
+            offset = new float2(stepX - stepY, 0f);
         }
         else
-        {
-            AbsolutePosition = new float2(
-                abs.x - axis.x * sensitivity.x,
-                abs.y - axis.y * sensitivity.y * 24f);
-        }
-        return Scroll.Value != before;
+            offset = new float2(stepX, -stepY);
+
+        var excess = ScrollableExcess();
+        var shown = Scroll.Value;
+        var before = _smoothing ? _scrollTarget : shown;
+        _scrollTarget = new float2(
+            AxisTarget(shown.x, before.x, offset.x, excess.x),
+            AxisTarget(shown.y, before.y, offset.y, excess.y));
+        _smoothing = _scrollTarget != shown;
+        // Keep the wheel in this list while it is still approaching the requested edge. Once it lands,
+        // returning false lets a containing scroll handle further movement in that direction.
+        return _scrollTarget != before
+            || offset.x * (_scrollTarget.x - shown.x) > 0f
+            || offset.y * (_scrollTarget.y - shown.y) > 0f;
+    }
+
+    private static float AxisTarget(float shown, float target, float offset, float excess)
+    {
+        if (excess <= 0f)
+            return shown;
+        // Reversing the wheel reverses movement immediately instead of first finishing queued notches.
+        if (offset * (target - shown) < 0f)
+            target = shown;
+        return Clamp01(target + offset / excess);
     }
 
     internal bool ApplyScroll(out RectTransform? content)
     {
-        content = Content.Target;
-        var viewport = RectTransform;
+        content = MovingRect;
+        var viewport = FrameRect;
         if (viewport == null || content == null)
         {
             return false;
@@ -260,7 +423,7 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
         // - the caller never re-lays-out the content for a scroll. -xlinka
         EnsureScrollSetup();
         if (_contentRoot != null)
-            _contentRoot.RenderOffset = new float2(-absolute.x, absolute.y);
+            _contentRoot.RenderOffset = ContentShift(absolute);
         return false;
     }
 
@@ -271,11 +434,21 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
         return value;
     }
 
-    private void SetNormalized(float2 normalized)
+    private void SetNormalized(float2 normalized, bool animated = false)
     {
+        if (!animated)
+            StopScrolling();
         if (Scroll.Value == normalized) return;
 
-        Scroll.Value = normalized;
+        _writingScroll = true;
+        try
+        {
+            Scroll.Value = normalized;
+        }
+        finally
+        {
+            _writingScroll = false;
+        }
         ScrollChanged?.Invoke(this, AbsolutePosition);
         // Move the content chunk (render-offset) or dirty the canvas (rect-mutation fallback).
         ApplyScrollNow();

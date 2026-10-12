@@ -36,8 +36,26 @@ internal static class LayoutSizing
 
     public static bool IsIgnored(RectTransform rect)
     {
-        return rect.Slot.GetComponent<IgnoreLayout>() != null;
+        var ignore = rect.Slot.GetComponent<IgnoreLayout>();
+        return ignore != null && ignore.Enabled.Value;
     }
+
+    // The children a layout places, in order, without the ones that ignore it.
+    public static IReadOnlyList<RectTransform> Arranged(IReadOnlyList<RectTransform> children, List<RectTransform> into)
+    {
+        into.Clear();
+        for (int i = 0; i < children.Count; i++)
+        {
+            if (!IsIgnored(children[i]))
+                into.Add(children[i]);
+        }
+        return into;
+    }
+
+    // How flexible a row is across its own axis, from its children's. Summed by default; a canvas on per-metric
+    // rules averages them, so a row of two flexible children pulls as hard as one.
+    public static float CrossFlexible(RectTransform? rect, float sum, int count)
+        => rect?.Canvas is { PerMetricPriority.Value: true } && count > 0 ? sum / count : sum;
 
     // Measure-time child collection. RectChildren is registered only by the arrange pass
     // (ComputeRects), which runs AFTER measure - so a container built this frame would measure over
@@ -95,6 +113,9 @@ internal static class LayoutSizing
 
     public static LayoutMetrics GetMetrics(RectTransform rect, LayoutDirection direction)
     {
+        if (rect.Canvas is { PerMetricPriority.Value: true })
+            return GetMetricsPerField(rect, direction);
+
         var result = default(LayoutMetrics);
         bool hasAny = false;
         int priority = int.MinValue;
@@ -145,6 +166,67 @@ internal static class LayoutSizing
         }
 
         return result;
+    }
+
+    // Per-metric rules (Canvas.PerMetricPriority): each of min, preferred and flexible comes from the highest
+    // priority element that gives one, elements of the same priority meeting at the larger value, so a
+    // LayoutElement that only sets a preferred height still lets its layout's minimum through. A size fitter
+    // stands over every other element on the axis it fits. A metric nothing gives is the rect's own authored
+    // size. -xlinka
+    private static LayoutMetrics GetMetricsPerField(RectTransform rect, LayoutDirection direction)
+    {
+        float? min = null, preferred = null, flexible = null;
+        int minPriority = int.MinValue, preferredPriority = int.MinValue, flexiblePriority = int.MinValue;
+        bool horizontal = direction == LayoutDirection.Horizontal;
+
+        foreach (var element in rect.Slot.GetComponentsImplementing<ILayoutElement>())
+        {
+            if (element is Component component && !component.Enabled.Value)
+                continue;
+            element.PrepareCompute();
+            element.EnsureValidMetrics(direction);
+            int priority = element.Priority;
+            Take(ref min, ref minPriority, horizontal ? element.MinWidth : element.MinHeight, priority);
+            Take(ref preferred, ref preferredPriority, horizontal ? element.PreferredWidth : element.PreferredHeight, priority);
+            Take(ref flexible, ref flexiblePriority, horizontal ? element.FlexibleWidth : element.FlexibleHeight, priority);
+        }
+
+        float authored = horizontal
+            ? rect.OffsetMax.Value.x - rect.OffsetMin.Value.x
+            : rect.OffsetMax.Value.y - rect.OffsetMin.Value.y;
+        var result = default(LayoutMetrics);
+        result.Min = min ?? authored;
+        result.Preferred = Max(result.Min, preferred ?? authored);
+        result.Flexible = flexible ?? 0f;
+
+        var fitter = rect.Slot.GetComponent<ContentSizeFitter>();
+        if (fitter != null && fitter.Enabled.Value)
+        {
+            var fit = horizontal ? fitter.HorizontalFit.Value : fitter.VerticalFit.Value;
+            if (fit != SizeFit.Disabled)
+            {
+                float size = fit == SizeFit.MinSize ? result.Min : result.Preferred;
+                result.Min = size;
+                result.Preferred = size;
+                result.Flexible = 0f;
+            }
+        }
+        return result;
+    }
+
+    private static void Take(ref float? current, ref int currentPriority, float? value, int priority)
+    {
+        if (!value.HasValue || !float.IsFinite(value.Value))
+            return;
+        if (!current.HasValue || priority > currentPriority)
+        {
+            current = value;
+            currentPriority = priority;
+        }
+        else if (priority == currentPriority)
+        {
+            current = Max(current.Value, value.Value);
+        }
     }
 
     public static void Distribute(float totalSize, float spacing, float offset, IReadOnlyList<LayoutMetrics> metrics,

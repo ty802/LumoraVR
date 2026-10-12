@@ -18,6 +18,7 @@ public sealed class GraphicsChunk
         private const int DefaultLogicalRenderQueue = 3000;
         private const int GodotRenderPriorityMin = -128;
         private const int GodotRenderPriorityMax = 127;
+        private const int OverlayCanvasBandLow = 112;
 
         private readonly Dictionary<MaterialKey, List<PhosTriangleSubmesh>> _requestedMaterials = new();
         private readonly Dictionary<MaterialKey, AssignedMaterial> _assignedMaterials = new();
@@ -40,6 +41,7 @@ public sealed class GraphicsChunk
         private Rect? _clipRect;
         private Rect? _ridingClipRect;
         private StencilRole _stencilRole;
+        private bool _graphicTrims;
         // Latch so the render-priority band-exhaustion warning fires once per RenderData, not every submit. -xlinka
         private bool _loggedBandExhaustion;
 
@@ -117,18 +119,27 @@ public sealed class GraphicsChunk
                 BeginGraphic(bounds);
                 SetClipRect(clip, ridingClip);
                 _stencilRole = stencil;
+                _graphicTrims = graphic.TrimsGeometryToClip;
                 graphic.ComputeGraphic(this);
             }
+            _graphicTrims = false;
         }
 
+        // The clip window a material carries. A graphic that trims its own geometry to the window on a chunk
+        // that does not scroll has nothing left outside it for the shader to cut, so its material leaves the
+        // window out, and graphics clipped by different masks share one material and can share a surface. A
+        // card full of masked labels was a material clone and a draw call per label. Scrolled content keeps
+        // the window: it is baked whole and cut at render. -xlinka
+        private Rect? MaterialClip => _graphicTrims && !SuppressGeometryClip ? null : _clipRect;
+
         public PhosTriangleSubmesh GetSubmesh(IAssetProvider<MaterialAsset>? material)
-            => GetSubmesh(new MaterialKey(material, null, null, _clipRect, _stencilRole));
+            => GetSubmesh(new MaterialKey(material, null, null, MaterialClip, _stencilRole));
 
         public PhosTriangleSubmesh GetSubmesh(IAssetProvider<MaterialAsset>? material, MaterialMapper mapper)
-            => GetSubmesh(new MaterialKey(material, null, mapper, _clipRect, _stencilRole));
+            => GetSubmesh(new MaterialKey(material, null, mapper, MaterialClip, _stencilRole));
 
         public PhosTriangleSubmesh GetSubmesh(IAssetProvider<MaterialAsset>? material, object? key, MaterialMapper? mapper)
-            => GetSubmesh(new MaterialKey(material, key, mapper, _clipRect, _stencilRole));
+            => GetSubmesh(new MaterialKey(material, key, mapper, MaterialClip, _stencilRole));
 
         // Batching rule. A surface is a draw call and surface order is draw order, so the old rule was simply
         // "one surface per graphic per material" - never reach back past another graphic, and order can't
@@ -309,7 +320,8 @@ public sealed class GraphicsChunk
             // their priorities would collapse to whichever value was written last.
             // Coplanar UI quads then fall back to Godot's distance sort, which
             // flips with camera angle and produces the "wash" artifact. - xlinka
-            var perSurfacePriorities = BuildPerSurfacePriorities(materialCount, _chunk.RenderOnTop, _chunk.OverlayLevel);
+            var perSurfacePriorities = BuildPerSurfacePriorities(materialCount, _chunk.RenderOnTop, _chunk.OverlayLevel,
+                _chunk.Canvas?.DrawsOverlay == true, _chunk.ContainsChunks);
             var activeMaterials = new HashSet<MaterialKey>();
             foreach (var request in requests)
             {
@@ -352,15 +364,33 @@ public sealed class GraphicsChunk
         //   normal nested     -> [   0 ..  63]   (above root; chunks don't overlap each other)
         //   overlay level 1   -> [  64 ..  71]   (e.g. a modal's dim/blur backdrop)
         //   overlay level 2   -> [  72 ..  87]   (e.g. the modal panel background)
-        //   overlay level >=3 -> [  88 .. 127]   (modal content/rows, on top)
-        // Within a band, surfaces pack high in submission order (later = drawn on top). - xlinka
-        private int[] BuildPerSurfacePriorities(int materialCount, bool renderOnTop, int overlayLevel)
+        //   overlay level >=3 -> [  88 .. 111]   (modal content/rows, on top)
+        //   overlay canvas    -> [ 112 .. 127]   (the radial menu, the VR keyboard: over every world canvas)
+        // Within a band, surfaces pack high in submission order (later = drawn on top), except a normal nested
+        // chunk that holds other chunks: it packs low, under them. Packed high, a scroll pane's backing took
+        // the top slot and covered every surface of its rows but their last one (a row's label drew under
+        // the 75% pane once the row had two text surfaces). An overlay canvas's
+        // root packs from the bottom of its band and its nested chunks from the top, so the two only meet
+        // past sixteen surfaces. Its depth test is off; without a band of its own a world panel's lifted
+        // header still drew over the menu from a metre behind it. - xlinka
+        private int[] BuildPerSurfacePriorities(int materialCount, bool renderOnTop, int overlayLevel, bool overlayCanvas, bool containsChunks)
         {
             var result = new int[materialCount];
             if (materialCount == 0) return result;
 
+            if (overlayCanvas && !renderOnTop)
+            {
+                for (int i = 0; i < materialCount; i++)
+                    result[i] = System.Math.Min(GodotRenderPriorityMax, OverlayCanvasBandLow + i);
+                return result;
+            }
+
             int lo, hi;
-            if (!renderOnTop)
+            if (overlayCanvas)
+            {
+                lo = OverlayCanvasBandLow; hi = GodotRenderPriorityMax;
+            }
+            else if (!renderOnTop)
             {
                 lo = GodotRenderPriorityMin; hi = -1;          // root chunk
             }
@@ -378,7 +408,7 @@ public sealed class GraphicsChunk
             }
             else
             {
-                lo = 88; hi = GodotRenderPriorityMax;           // overlay content
+                lo = 88; hi = OverlayCanvasBandLow - 1;         // overlay content
             }
 
             // When a chunk has more surfaces than its band is wide, the fill loop below saturates the
@@ -404,7 +434,7 @@ public sealed class GraphicsChunk
                     $"{materialCount}/{bandWidth} in [{lo}..{hi}].");
             }
 
-            int start = hi - materialCount + 1;
+            int start = renderOnTop && !overlayCanvas && overlayLevel <= 0 && containsChunks ? lo : hi - materialCount + 1;
             if (start < lo) start = lo;
             for (int i = 0; i < materialCount; i++)
             {
@@ -730,10 +760,31 @@ public sealed class GraphicsChunk
     // Nested chunks render above the root chunk: their surfaces pack into the top render_priority band. - xlinka
     public bool RenderOnTop { get; set; }
 
+    // Other chunks sit inside this one (a scroll pane and its row chunks), so it is their background.
+    public bool ContainsChunks { get; set; }
+
     // Render-space translation of this chunk's whole mesh, applied on the chunk slot. ScrollRect uses it to
     // slide scrolled content without touching its rect; the canvas counter-translates the clip to keep the
     // viewport window fixed. Canvas pixels, in the chunk's (canvas-local) frame. -xlinka
     public float2 ComputeOffset { get; private set; }
+
+    // Where the StackLayers above this chunk's root put it on top of its baked position: x and y slide it
+    // across the canvas, z lifts it toward the reader. Canvas units; set by Canvas.ApplyPlacements.
+    public float3 Placement { get; private set; }
+
+    // How much the StackLayers above scale this chunk, about the pivots they name; folded into Placement.
+    public float PlacementScale { get; private set; } = 1f;
+
+    internal bool SetPlacement(in float3 placement, float scale = 1f)
+    {
+        if (Placement == placement && PlacementScale == scale)
+            return false;
+        Placement = placement;
+        PlacementScale = scale;
+        if (ChunkSlot != null && !ChunkSlot.IsDestroyed)
+            ApplyFacing();
+        return true;
+    }
 
     public void SetComputeOffset(float2 offset)
     {
@@ -741,8 +792,30 @@ public sealed class GraphicsChunk
             return;
         ComputeOffset = offset;
         SetupComponents();
-        if (ChunkSlot != null && !ChunkSlot.IsDestroyed)
-            ChunkSlot.LocalPosition.Value = new float3(offset.x, offset.y, 0f);
+        ApplyFacing();
+    }
+
+    private static readonly floatQ HalfTurn = floatQ.AxisAngle(float3.Up, System.MathF.PI);
+
+    // A canvas read from its slot's backward side (Canvas.FaceBackward) turns each chunk half a turn about the
+    // slot's up axis; the render offset turns with it.
+    internal void ApplyFacing()
+    {
+        if (ChunkSlot == null || ChunkSlot.IsDestroyed)
+            return;
+        bool backward = Canvas.FaceBackward.Value;
+        var rotation = backward ? HalfTurn : floatQ.Identity;
+        if (ChunkSlot.LocalRotation.Value != rotation)
+            ChunkSlot.LocalRotation.Value = rotation;
+        float k = PlacementScale;
+        var position = Canvas.CanvasToLocal(ComputeOffset * k + new float2(Placement.x, Placement.y));
+        if (Placement.z != 0f)
+            position = new float3(position.x, position.y, backward ? -Placement.z : Placement.z);
+        if (ChunkSlot.LocalPosition.Value != position)
+            ChunkSlot.LocalPosition.Value = position;
+        var size = k == 1f ? float3.One : new float3(k, k, 1f);
+        if (ChunkSlot.LocalScale.Value != size)
+            ChunkSlot.LocalScale.Value = size;
     }
 
     // 0 = normal nested chunk. > 0 = overlay layer: reserves a render-priority band above all
@@ -770,7 +843,11 @@ public sealed class GraphicsChunk
 
     public void SetupComponents()
     {
-        ChunkSlot ??= Canvas.Slot.AddLocalSlot("GraphicsChunk");
+        if (ChunkSlot != null)
+            return;
+        ChunkSlot = Canvas.Slot.AddLocalSlot("GraphicsChunk");
+        if (Canvas.FaceBackward.Value || Placement != default || PlacementScale != 1f)
+            ApplyFacing();
     }
 
     // Pin this chunk's clip window as it slides (render-offset scrolling): pushes the scroll offset into the
@@ -802,14 +879,21 @@ public sealed class GraphicsChunk
 
     public IAssetProvider<MaterialAsset> GetDefaultUIMaterial()
     {
+        if (Canvas.SharesMaterials && Canvas.World is { } world)
+            return SharedUIMaterials.Of(world).Plain(Canvas.DrawsOverlay, Canvas.Culling.Value);
         SetupComponents();
+        if (_defaultMaterial != null && !_defaultMaterial.IsDestroyed && _defaultMaterial.Culling.Value != Canvas.Culling.Value)
+        {
+            _defaultMaterial.Culling.Value = Canvas.Culling.Value;
+            _defaultMaterial.ForceUpdate();
+        }
         if (_defaultMaterial == null)
         {
             _defaultMaterial = ChunkSlot.GetComponent<UIUnlitMaterial>() ?? ChunkSlot.AttachComponent<UIUnlitMaterial>();
-            _defaultMaterial.Culling.Value = Culling.None;
+            _defaultMaterial.Culling.Value = Canvas.Culling.Value;
             _defaultMaterial.ZWrite.Value = ZWrite.Off;
             _defaultMaterial.RenderQueue.Value = 3000;
-            if (Canvas.Overlay.Value)
+            if (Canvas.DrawsOverlay)
                 _defaultMaterial.ZTest.Value = ZTest.Always;
         }
         return _defaultMaterial;
@@ -888,6 +972,8 @@ public sealed class GraphicsChunk
     internal IAssetProvider<MaterialAsset>? GetRenderPriorityMaterial(IAssetProvider<MaterialAsset>? source, int surfaceIndex, int renderPriority)
     {
         if (source == null) return null;
+        if (Canvas.SharesMaterials && Canvas.World is { } world)
+            return SharedUIMaterials.Of(world).Priority(source, renderPriority);
         SetupComponents();
         _materialCloneCache ??= new MaterialCloneCache(ChunkSlot);
         return _materialCloneCache.GetRenderPriorityMaterial(source, surfaceIndex, renderPriority);

@@ -3,6 +3,7 @@
 
 using System;
 using Lumora.Core;
+using Lumora.Core.Math;
 
 namespace Helio.UI;
 
@@ -17,13 +18,24 @@ public sealed class Checkbox : InteractionElement
     // Duplicable change action - see Button.Pressed.
     public readonly SyncDelegate<Action<Checkbox, bool>> ChangeAction;
 
+    // Flips when the press lets go instead of when it lands. See Button.ActOnRelease.
+    public readonly Sync<bool> ActOnRelease;
+
     public event Action<Checkbox, bool>? ValueChanged;
 
     public Checkbox()
     {
         IsChecked = new Sync<bool>(this, false);
         ChangeAction = new SyncDelegate<Action<Checkbox, bool>>(this);
+        ActOnRelease = new Sync<bool>(this, false);
     }
+
+    protected override bool ActsOnPress => !ActOnRelease.Value && !InReleaseList();
+    protected override bool IsClickControl => true;
+
+    // A drag that starts here scrolls the list it sits in, the same as from a button.
+    public override bool PassDragToParent(in float2 dragDelta)
+        => System.Math.Abs(dragDelta.x) > DragPassThreshold || System.Math.Abs(dragDelta.y) > DragPassThreshold;
 
     public void SetAction(Action<Checkbox, bool>? action)
     {

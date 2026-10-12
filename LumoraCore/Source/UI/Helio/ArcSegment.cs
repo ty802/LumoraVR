@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
@@ -13,6 +14,12 @@ namespace Helio.UI;
 // increasing clockwise (same convention as ContextMenuPage.LayoutItems);
 // radii are canvas units measured from the rect center. Hit-testing is
 // polar, so interaction follows the arc shape exactly. - xlinka
+//
+// The shape is one mesh: the rounded outline of the segment is traced once, the fill, the outline band and
+// a soft edge band are strips off that one trace, and neighbouring strips share their seam vertices exactly.
+// Built as separate overlapping bands at different steps, every seam was a T-junction the rasteriser left
+// pixel cracks along, and the 6 degree steps showed as flats up close. Curves are now split finely enough
+// that no chord strays more than a twentieth of a canvas unit off the true circle. -xlinka
 [ComponentCategory("UI/Helio/Graphics")]
 public sealed class ArcSegment : Graphic
 {
@@ -23,9 +30,13 @@ public sealed class ArcSegment : Graphic
     public readonly Sync<color> Tint;
     public readonly Sync<color> OutlineColor;
     public readonly Sync<float> OutlineThickness;
-    // Corner rounding in canvas units. 0 = sharp (the classic 5-band emission). Rounded corners replace
-    // each of the segment's four corners with a quarter-circle fan; the outline follows the contour. -xlinka
+    // Corner rounding in canvas units. Zero keeps corners as sharp as the outline allows.
     public readonly Sync<float> CornerRadius;
+    // Width of the soft band outside the edge, in canvas units: the edge fades out over it instead of
+    // stair-stepping, which is most of what reads as clean at a distance.
+    public readonly Sync<float> EdgeSoftness;
+
+    private const float MaxChordError = 0.05f;
 
     private float _angleStart;
     private float _arcLength;
@@ -35,6 +46,12 @@ public sealed class ArcSegment : Graphic
     private color _outlineColor;
     private float _outlineThickness;
     private float _cornerRadius;
+    private float _edgeSoftness;
+
+    [ThreadStatic] private static List<float2>? _outerChain;
+    [ThreadStatic] private static List<float2>? _outerNormals;
+    [ThreadStatic] private static List<float2>? _innerChain;
+    [ThreadStatic] private static List<float2>? _innerNormals;
 
     public ArcSegment()
     {
@@ -46,6 +63,7 @@ public sealed class ArcSegment : Graphic
         OutlineColor = new Sync<color>(this, new color(0.45f, 0.45f, 0.45f, 1f));
         OutlineThickness = new Sync<float>(this, 3f);
         CornerRadius = new Sync<float>(this, 0f);
+        EdgeSoftness = new Sync<float>(this, 0.75f);
     }
 
     public override bool RequiresPreGraphicsCompute => false;
@@ -65,6 +83,7 @@ public sealed class ArcSegment : Graphic
         _outlineColor = OutlineColor.Value;
         _outlineThickness = OutlineThickness.Value;
         _cornerRadius = CornerRadius.Value;
+        _edgeSoftness = EdgeSoftness.Value;
     }
 
     public override void ComputeGraphic(GraphicsChunk.RenderData renderData)
@@ -79,196 +98,287 @@ public sealed class ArcSegment : Graphic
         var mesh = renderData.Mesh;
         mesh.HasColors = true;
         mesh.SetHasUV(0, true);
-
         var submesh = renderData.GetSubmesh((IAssetProvider<MaterialAsset>?)null);
 
-        float band = _outerRadius - _innerRadius;
-        float thickness = MathF.Min(MathF.Max(_outlineThickness, 0f), band * 0.4f);
+        float innerRadius = MathF.Max(_innerRadius, 0f);
+        float band = _outerRadius - innerRadius;
+        bool outlined = _outlineThickness > 0f && _outlineColor.a > 0f;
+        float thickness = outlined ? MathF.Min(_outlineThickness, band * 0.4f) : 0f;
+        float soft = MathF.Max(_edgeSoftness, 0f);
+        var edgeColor = outlined ? _outlineColor : _tint;
 
-        // Rounded corners only make sense on a segment with ends; a full ring has no corners.
-        float rc = MathF.Min(MathF.Max(_cornerRadius, 0f), band * 0.4f);
-        if (rc > 0.75f && _arcLength < 359.9f)
+        if (_arcLength >= 359.9f)
         {
-            EmitRounded(mesh, submesh, center, rc, thickness);
+            EmitRing(mesh, submesh, center, innerRadius, _outerRadius, thickness, soft, edgeColor);
             return;
         }
 
-        if (thickness <= 0f || _outlineColor.a <= 0f)
+        BuildContour(center, innerRadius, thickness);
+        EmitShape(mesh, submesh, thickness, soft, edgeColor);
+    }
+
+    // The segment's outline as two chains from the middle of its start edge to the middle of its end edge,
+    // one along the outer arc and one along the inner, with the same number of points so the fill can be
+    // strung between them. Every point carries the outward normal there, which places the inset and the
+    // soft edge exactly parallel to it.
+    private void BuildContour(in float2 center, float innerRadius, float thickness)
+    {
+        var outer = _outerChain ??= new List<float2>();
+        var outerNormals = _outerNormals ??= new List<float2>();
+        var inner = _innerChain ??= new List<float2>();
+        var innerNormals = _innerNormals ??= new List<float2>();
+        outer.Clear();
+        outerNormals.Clear();
+        inner.Clear();
+        innerNormals.Clear();
+
+        float a0 = _angleStart;
+        float a1 = _angleStart + _arcLength;
+        float band = _outerRadius - innerRadius;
+
+        // The rounding cannot be tighter than the outline (the inset corner would turn inside out) or wider
+        // than the slice has room for at its inner edge.
+        float radius = MathF.Max(_cornerRadius, thickness);
+        radius = MathF.Min(radius, band * 0.45f);
+        float room = MathF.Sin(MathF.Min(_arcLength * 0.45f, 89f) * (MathF.PI / 180f));
+        float innerRadiusCorner = innerRadius > 0f ? MathF.Min(radius, room * innerRadius / MathF.Max(1f - room, 1e-3f)) : 0f;
+        innerRadiusCorner = MathF.Max(innerRadiusCorner, MathF.Min(thickness, radius));
+        float outerRadiusCorner = radius;
+
+        // Corner centres sit on the circle a corner radius in from each arc, turned in from each edge by
+        // exactly the angle that puts them a corner radius off it.
+        float innerRing = innerRadius + innerRadiusCorner;
+        float outerRing = _outerRadius - outerRadiusCorner;
+        float innerInset = innerRing > 1e-4f ? MathF.Asin(MathF.Min(innerRadiusCorner / innerRing, 1f)) * (180f / MathF.PI) : 0f;
+        float outerInset = outerRing > 1e-4f ? MathF.Asin(MathF.Min(outerRadiusCorner / outerRing, 1f)) * (180f / MathF.PI) : 0f;
+
+        float2 startDir = Direction(a0);
+        float2 endDir = Direction(a1);
+        float2 middleDir = Direction((a0 + a1) * 0.5f);
+        float2 startNormal = OutwardEdgeNormal(startDir, middleDir);
+        float2 endNormal = OutwardEdgeNormal(endDir, middleDir);
+
+        int cornerSteps = Steps(90f, MathF.Max(outerRadiusCorner, innerRadiusCorner));
+        int arcSteps = Steps(_arcLength, _outerRadius);
+        float midRadius = (innerRadius + _outerRadius) * 0.5f;
+
+        // Outer chain: start edge (middle -> corner), corner, outer arc, corner, end edge (corner -> middle).
+        Add(outer, outerNormals, center + startDir * midRadius, startNormal);
+        AddCorner(outer, outerNormals, center, a0 + outerInset, outerRing, outerRadiusCorner, startDir, startNormal, outwardArc: true, cornerSteps, atStart: true);
+        AddArc(outer, outerNormals, center, a0 + outerInset, a1 - outerInset, _outerRadius, outward: true, arcSteps);
+        AddCorner(outer, outerNormals, center, a1 - outerInset, outerRing, outerRadiusCorner, endDir, endNormal, outwardArc: true, cornerSteps, atStart: false);
+        Add(outer, outerNormals, center + endDir * midRadius, endNormal);
+
+        Add(inner, innerNormals, center + startDir * midRadius, startNormal);
+        AddCorner(inner, innerNormals, center, a0 + innerInset, innerRing, innerRadiusCorner, startDir, startNormal, outwardArc: false, cornerSteps, atStart: true);
+        AddArc(inner, innerNormals, center, a0 + innerInset, a1 - innerInset, innerRadius, outward: false, arcSteps);
+        AddCorner(inner, innerNormals, center, a1 - innerInset, innerRing, innerRadiusCorner, endDir, endNormal, outwardArc: false, cornerSteps, atStart: false);
+        Add(inner, innerNormals, center + endDir * midRadius, endNormal);
+    }
+
+    private void EmitShape(PhosMesh mesh, PhosTriangleSubmesh submesh, float thickness, float soft, in color edgeColor)
+    {
+        var outer = _outerChain!;
+        var outerNormals = _outerNormals!;
+        var inner = _innerChain!;
+        var innerNormals = _innerNormals!;
+        int count = outer.Count;
+
+        // Fill between the two inset chains.
+        int fillOuter = AddRow(mesh, outer, outerNormals, -thickness, _tint);
+        int fillInner = AddRow(mesh, inner, innerNormals, -thickness, _tint);
+        for (int i = 0; i < count - 1; i++)
+            AddQuad(mesh, submesh, fillInner + i, fillOuter + i, fillOuter + i + 1, fillInner + i + 1);
+
+        // The closed outline: outer chain forward, inner chain back, as one loop of rings.
+        int loopCount = count * 2;
+        var loop = new float2[loopCount];
+        var loopNormals = new float2[loopCount];
+        for (int i = 0; i < count; i++)
         {
-            EmitBand(mesh, submesh, center, _angleStart, _arcLength, _innerRadius, _outerRadius, _tint);
-            return;
+            loop[i] = outer[i];
+            loopNormals[i] = outerNormals[i];
+            loop[count + i] = inner[count - 1 - i];
+            loopNormals[count + i] = innerNormals[count - 1 - i];
         }
 
-        // Angular width of the end caps so the outline is uniform around the
-        // whole segment. Full circles have no ends, so no caps - they'd cut a
-        // visible notch into the ring.
-        float midRadius = (_innerRadius + _outerRadius) * 0.5f;
-        float capDegrees = _arcLength >= 359.9f
-            ? 0f
-            : MathF.Min(thickness / MathF.Max(midRadius, 1f) * (180f / MathF.PI), _arcLength * 0.25f);
-
-        float fillStart = _angleStart + capDegrees;
-        float fillLength = MathF.Max(_arcLength - capDegrees * 2f, 0.5f);
-
-        // Fill, then the four outline bands: inner ring, outer ring, both caps.
-        EmitBand(mesh, submesh, center, fillStart, fillLength, _innerRadius + thickness, _outerRadius - thickness, _tint);
-        EmitBand(mesh, submesh, center, _angleStart, _arcLength, _innerRadius, _innerRadius + thickness, _outlineColor);
-        EmitBand(mesh, submesh, center, _angleStart, _arcLength, _outerRadius - thickness, _outerRadius, _outlineColor);
-        EmitBand(mesh, submesh, center, _angleStart, capDegrees, _innerRadius + thickness, _outerRadius - thickness, _outlineColor);
-        EmitBand(mesh, submesh, center, _angleStart + _arcLength - capDegrees, capDegrees, _innerRadius + thickness, _outerRadius - thickness, _outlineColor);
+        if (thickness > 0f)
+        {
+            int inset = AddRow(mesh, loop, loopNormals, -thickness, edgeColor);
+            int edge = AddRow(mesh, loop, loopNormals, 0f, edgeColor);
+            AddLoopStrip(mesh, submesh, inset, edge, loopCount);
+        }
+        if (soft > 0f)
+        {
+            int edge = AddRow(mesh, loop, loopNormals, 0f, edgeColor);
+            var clear = new color(edgeColor.r, edgeColor.g, edgeColor.b, 0f);
+            int fade = AddRow(mesh, loop, loopNormals, soft, clear);
+            AddLoopStrip(mesh, submesh, edge, fade, loopCount);
+        }
     }
 
-    // Rounded-corner emission. The fill is the FULL rounded slab; the outline bands + corner rings draw ON
-    // TOP of it in the same submesh (later indices win in draw order), so fill and outline meet with zero
-    // seams and no inset-contour math. Corner circles are tangent to the radial edges, so the angular inset
-    // differs per side (the tighter inner ring eats more degrees than the outer). - xlinka
-    private void EmitRounded(PhosMesh mesh, PhosTriangleSubmesh submesh, in float2 center, float rc, float thickness)
+    // A full ring or a disc: concentric circles on one set of angles.
+    private void EmitRing(PhosMesh mesh, PhosTriangleSubmesh submesh, in float2 center, float innerRadius, float outerRadius,
+        float thickness, float soft, in color edgeColor)
     {
-        const float Rad2Deg = 180f / MathF.PI;
-        float t0 = _angleStart;
-        float t1 = _angleStart + _arcLength;
-        float innerRing = _innerRadius + rc;   // corner-center radius, inner side
-        float outerRing = _outerRadius - rc;   // corner-center radius, outer side
+        int steps = Steps(360f, outerRadius + soft);
+        bool disc = innerRadius <= 1e-3f;
+        var clear = new color(edgeColor.r, edgeColor.g, edgeColor.b, 0f);
 
-        float aIn = rc / MathF.Max(innerRing, 1f) * Rad2Deg;
-        float aOut = rc / MathF.Max(outerRing, 1f) * Rad2Deg;
-        float maxInset = _arcLength * 0.45f;
-        if (aIn > maxInset || aOut > maxInset)
+        int outerFill = AddCircle(mesh, center, outerRadius - thickness, steps, _tint);
+        if (disc)
         {
-            // Not enough angular room for the requested radius on this thin a slice - shrink to fit.
-            rc *= maxInset / MathF.Max(aIn, aOut);
-            innerRing = _innerRadius + rc;
-            outerRing = _outerRadius - rc;
-            aIn = rc / MathF.Max(innerRing, 1f) * Rad2Deg;
-            aOut = rc / MathF.Max(outerRing, 1f) * Rad2Deg;
+            int middle = mesh.VertexCount;
+            mesh.IncreaseVertexCount(1);
+            SetVertex(mesh, middle, center, _tint);
+            for (int i = 0; i < steps; i++)
+                AddTriangle(mesh, submesh, middle, outerFill + i, outerFill + (i + 1) % steps);
+        }
+        else
+        {
+            int innerFill = AddCircle(mesh, center, innerRadius + thickness, steps, _tint);
+            AddRingStrip(mesh, submesh, innerFill, outerFill, steps);
         }
 
-        // Fill: mid band full span, edge slabs angularly inset, and a FULL disc at each corner. The corner
-        // circle is tangent to both edges, so the whole disc sits inside the contour by construction - full
-        // discs cost a little opaque overdraw but cannot leave chord-edged holes the way quarter fans can
-        // when a sweep quadrant is off (that bug shipped: chipped inner corners with the grid showing). -xlinka
-        EmitBand(mesh, submesh, center, t0, _arcLength, innerRing, outerRing, _tint);
-        EmitBand(mesh, submesh, center, t0 + aIn, _arcLength - aIn * 2f, _innerRadius, innerRing, _tint);
-        EmitBand(mesh, submesh, center, t0 + aOut, _arcLength - aOut * 2f, outerRing, _outerRadius, _tint);
-        EmitCornerBand(mesh, submesh, CornerCenter(center, t0 + aIn, innerRing), 360f, 0f, 0f, rc, _tint);
-        EmitCornerBand(mesh, submesh, CornerCenter(center, t0 + aOut, outerRing), 360f, 0f, 0f, rc, _tint);
-        EmitCornerBand(mesh, submesh, CornerCenter(center, t1 - aIn, innerRing), 360f, 0f, 0f, rc, _tint);
-        EmitCornerBand(mesh, submesh, CornerCenter(center, t1 - aOut, outerRing), 360f, 0f, 0f, rc, _tint);
-
-        if (thickness <= 0f || _outlineColor.a <= 0f)
-            return;
-
-        float midRadius = (_innerRadius + _outerRadius) * 0.5f;
-        float capDeg = MathF.Min(thickness / MathF.Max(midRadius, 1f) * Rad2Deg, _arcLength * 0.25f);
-        float rIn = MathF.Max(rc - thickness, 0f);
-
-        // Outline: ring bands between the corners, cap bands along the radial edges, corner rings around
-        // the fans - together they trace the whole rounded contour.
-        EmitBand(mesh, submesh, center, t0 + aIn, _arcLength - aIn * 2f, _innerRadius, _innerRadius + thickness, _outlineColor);
-        EmitBand(mesh, submesh, center, t0 + aOut, _arcLength - aOut * 2f, _outerRadius - thickness, _outerRadius, _outlineColor);
-        EmitBand(mesh, submesh, center, t0, capDeg, innerRing, outerRing, _outlineColor);
-        EmitBand(mesh, submesh, center, t1 - capDeg, capDeg, innerRing, outerRing, _outlineColor);
-        EmitCornerBand(mesh, submesh, CornerCenter(center, t0 + aIn, innerRing), -(t0 + aIn) + 180f, -(t0 + aIn) + 90f, rIn, rc, _outlineColor);
-        EmitCornerBand(mesh, submesh, CornerCenter(center, t0 + aOut, outerRing), -(t0 + aOut) + 90f, -(t0 + aOut), rIn, rc, _outlineColor);
-        EmitCornerBand(mesh, submesh, CornerCenter(center, t1 - aIn, innerRing), -(t1 - aIn) + 270f, -(t1 - aIn) + 180f, rIn, rc, _outlineColor);
-        EmitCornerBand(mesh, submesh, CornerCenter(center, t1 - aOut, outerRing), -(t1 - aOut) + 360f, -(t1 - aOut) + 270f, rIn, rc, _outlineColor);
+        if (thickness > 0f)
+        {
+            AddRingStrip(mesh, submesh, AddCircle(mesh, center, outerRadius - thickness, steps, edgeColor),
+                AddCircle(mesh, center, outerRadius, steps, edgeColor), steps);
+            if (!disc)
+                AddRingStrip(mesh, submesh, AddCircle(mesh, center, innerRadius, steps, edgeColor),
+                    AddCircle(mesh, center, innerRadius + thickness, steps, edgeColor), steps);
+        }
+        if (soft > 0f)
+        {
+            AddRingStrip(mesh, submesh, AddCircle(mesh, center, outerRadius, steps, edgeColor),
+                AddCircle(mesh, center, outerRadius + soft, steps, clear), steps);
+            if (!disc && innerRadius > soft)
+                AddRingStrip(mesh, submesh, AddCircle(mesh, center, innerRadius - soft, steps, clear),
+                    AddCircle(mesh, center, innerRadius, steps, edgeColor), steps);
+        }
     }
 
-    // Corner-circle center for the corner tangent to the radial edge at the given polar angle/ring radius.
-    // Same clockwise screen convention as EmitBand: dir(theta) = (cos, -sin). - xlinka
-    private static float2 CornerCenter(in float2 center, float polarDeg, float ringRadius)
+    // Steps for a turn of `degrees` at `radius` that keep every chord within MaxChordError of the circle.
+    private static int Steps(float degrees, float radius)
     {
-        float rad = polarDeg * (MathF.PI / 180f);
-        return new float2(center.x + MathF.Cos(rad) * ringRadius, center.y - MathF.Sin(rad) * ringRadius);
+        if (radius <= MaxChordError * 2f)
+            return System.Math.Max(2, (int)MathF.Ceiling(degrees / 30f));
+        float stepRadians = 2f * MathF.Acos(1f - MaxChordError / radius);
+        float stepDegrees = MathF.Max(stepRadians * (180f / MathF.PI), 0.5f);
+        return System.Math.Clamp((int)MathF.Ceiling(degrees / stepDegrees), 2, 720);
     }
 
-    // Annular band around an arbitrary point, marching CARTESIAN angle from -> to. Callers pass from > to
-    // (decreasing) because EmitBand's clockwise-polar march also decreases in cartesian angle - same
-    // rotational direction = same triangle winding, or cull_front silently eats the corners. r0 = 0
-    // collapses the inner ring into a fan (fill corners). - xlinka
-    private static void EmitCornerBand(
-        PhosMesh mesh,
-        PhosTriangleSubmesh submesh,
-        in float2 c,
-        float fromDeg,
-        float toDeg,
-        float r0,
-        float r1,
-        in color tint)
+    // Clockwise screen convention: +angle goes down-screen.
+    private static float2 Direction(float degrees)
     {
-        float sweep = fromDeg - toDeg;
-        if (sweep <= 0f || r1 <= 0f)
-            return;
+        float rad = degrees * (MathF.PI / 180f);
+        return new float2(MathF.Cos(rad), -MathF.Sin(rad));
+    }
 
-        int steps = System.Math.Max(2, (int)MathF.Ceiling(sweep / 10f));
-        int v0 = mesh.VertexCount;
-        mesh.IncreaseVertexCount((steps + 1) * 2);
+    private static float2 OutwardEdgeNormal(in float2 edgeDir, in float2 middleDir)
+    {
+        var normal = new float2(-edgeDir.y, edgeDir.x);
+        return normal.x * middleDir.x + normal.y * middleDir.y > 0f ? new float2(-normal.x, -normal.y) : normal;
+    }
+
+    private static void Add(List<float2> points, List<float2> normals, in float2 point, in float2 normal)
+    {
+        points.Add(point);
+        normals.Add(normal);
+    }
+
+    // A corner: from the foot on the edge round to the touch point on the arc (atStart), or back again.
+    // The circle is centred on `ring` at angle `centreAngle`; its outward directions run from the edge's
+    // normal to the arc's own normal, the short way round.
+    private static void AddCorner(List<float2> points, List<float2> normals, in float2 center, float centreAngle, float ring,
+        float radius, in float2 edgeDir, in float2 edgeNormal, bool outwardArc, int steps, bool atStart)
+    {
+        float2 radial = Direction(centreAngle);
+        float2 corner = center + radial * ring;
+        float2 arcNormal = outwardArc ? radial : new float2(-radial.x, -radial.y);
+        float from = MathF.Atan2(edgeNormal.y, edgeNormal.x);
+        float to = MathF.Atan2(arcNormal.y, arcNormal.x);
+        float sweep = to - from;
+        while (sweep > MathF.PI) sweep -= 2f * MathF.PI;
+        while (sweep < -MathF.PI) sweep += 2f * MathF.PI;
 
         for (int i = 0; i <= steps; i++)
         {
-            float rad = (fromDeg - sweep * (i / (float)steps)) * (MathF.PI / 180f);
-            float2 dir = new float2(MathF.Cos(rad), MathF.Sin(rad));
-
-            int vi = v0 + i * 2;
-            mesh.RawPositions[vi] = new float3(c.x + dir.x * r0, c.y + dir.y * r0, 0f);
-            mesh.RawPositions[vi + 1] = new float3(c.x + dir.x * r1, c.y + dir.y * r1, 0f);
-
-            mesh.RawColors[vi] = tint;
-            mesh.RawColors[vi + 1] = tint;
-
-            mesh.SetUV(0, vi, float2.Zero);
-            mesh.SetUV(0, vi + 1, float2.Zero);
-        }
-
-        for (int i = 0; i < steps; i++)
-        {
-            int a = v0 + i * 2;
-            submesh.AddQuadAsTriangles(a, a + 1, a + 3, a + 2);
+            float t = atStart ? i / (float)steps : 1f - i / (float)steps;
+            float angle = from + sweep * t;
+            var normal = new float2(MathF.Cos(angle), MathF.Sin(angle));
+            Add(points, normals, corner + normal * radius, normal);
         }
     }
 
-    private static void EmitBand(
-        PhosMesh mesh,
-        PhosTriangleSubmesh submesh,
-        in float2 center,
-        float angleStartDeg,
-        float arcLengthDeg,
-        float innerRadius,
-        float outerRadius,
-        in color tint)
+    private static void AddArc(List<float2> points, List<float2> normals, in float2 center, float fromDegrees, float toDegrees,
+        float radius, bool outward, int steps)
     {
-        if (arcLengthDeg <= 0f || outerRadius <= innerRadius)
-            return;
-
-        // ~6 degrees per step keeps edges smooth without flooding the chunk.
-        int steps = System.Math.Max(2, (int)MathF.Ceiling(arcLengthDeg / 6f));
-        int v0 = mesh.VertexCount;
-        mesh.IncreaseVertexCount((steps + 1) * 2);
-
-        for (int i = 0; i <= steps; i++)
+        // The end points belong to the corners on either side.
+        for (int i = 1; i < steps; i++)
         {
-            float angleDeg = angleStartDeg + arcLengthDeg * (i / (float)steps);
-            float rad = angleDeg * (MathF.PI / 180f);
-            // Clockwise convention: +angle goes down-screen.
-            float2 dir = new float2(MathF.Cos(rad), -MathF.Sin(rad));
-
-            int vi = v0 + i * 2;
-            mesh.RawPositions[vi] = new float3(center.x + dir.x * innerRadius, center.y + dir.y * innerRadius, 0f);
-            mesh.RawPositions[vi + 1] = new float3(center.x + dir.x * outerRadius, center.y + dir.y * outerRadius, 0f);
-
-            mesh.RawColors[vi] = tint;
-            mesh.RawColors[vi + 1] = tint;
-
-            mesh.SetUV(0, vi, float2.Zero);
-            mesh.SetUV(0, vi + 1, float2.Zero);
+            var dir = Direction(fromDegrees + (toDegrees - fromDegrees) * (i / (float)steps));
+            Add(points, normals, center + dir * radius, outward ? dir : new float2(-dir.x, -dir.y));
         }
+    }
 
+    private static int AddRow(PhosMesh mesh, IReadOnlyList<float2> points, IReadOnlyList<float2> normals, float offset, in color tint)
+    {
+        int first = mesh.VertexCount;
+        mesh.IncreaseVertexCount(points.Count);
+        for (int i = 0; i < points.Count; i++)
+            SetVertex(mesh, first + i, points[i] + normals[i] * offset, tint);
+        return first;
+    }
+
+    private static int AddCircle(PhosMesh mesh, in float2 center, float radius, int steps, in color tint)
+    {
+        int first = mesh.VertexCount;
+        mesh.IncreaseVertexCount(steps);
         for (int i = 0; i < steps; i++)
+            SetVertex(mesh, first + i, center + Direction(360f * i / steps) * radius, tint);
+        return first;
+    }
+
+    private static void SetVertex(PhosMesh mesh, int index, in float2 position, in color tint)
+    {
+        mesh.RawPositions[index] = new float3(position.x, position.y, 0f);
+        mesh.RawColors[index] = tint;
+        mesh.SetUV(0, index, float2.Zero);
+    }
+
+    private static void AddLoopStrip(PhosMesh mesh, PhosTriangleSubmesh submesh, int a, int b, int count)
+    {
+        for (int i = 0; i < count; i++)
         {
-            int a = v0 + i * 2;
-            // Two triangles per band quad: inner[i], outer[i], outer[i+1], inner[i+1]
-            submesh.AddQuadAsTriangles(a, a + 1, a + 3, a + 2);
+            int next = (i + 1) % count;
+            AddQuad(mesh, submesh, a + i, b + i, b + next, a + next);
         }
+    }
+
+    private static void AddRingStrip(PhosMesh mesh, PhosTriangleSubmesh submesh, int a, int b, int steps)
+        => AddLoopStrip(mesh, submesh, a, b, steps);
+
+    private static void AddQuad(PhosMesh mesh, PhosTriangleSubmesh submesh, int a, int b, int c, int d)
+    {
+        AddTriangle(mesh, submesh, a, b, c);
+        AddTriangle(mesh, submesh, a, c, d);
+    }
+
+    // Every triangle wound counter-clockwise in canvas space, the way the canvas faces; a culled canvas drops
+    // the other way round. A collapsed triangle (two chains meeting at an edge's middle) is dropped.
+    private static void AddTriangle(PhosMesh mesh, PhosTriangleSubmesh submesh, int a, int b, int c)
+    {
+        var pa = mesh.RawPositions[a];
+        var pb = mesh.RawPositions[b];
+        var pc = mesh.RawPositions[c];
+        float cross = (pb.x - pa.x) * (pc.y - pa.y) - (pb.y - pa.y) * (pc.x - pa.x);
+        if (MathF.Abs(cross) < 1e-7f)
+            return;
+        if (cross > 0f)
+            submesh.AddTriangle(a, b, c);
+        else
+            submesh.AddTriangle(a, c, b);
     }
 
     public override bool IsPointInside(in float2 point)

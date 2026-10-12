@@ -17,6 +17,8 @@ public interface IUIInteractable
     void NotifyHoverEnter(in UIInteractionContext context);
     void NotifyHoverExit(in UIInteractionContext context);
     void NotifyPress(in UIInteractionContext context);
+    // A press handed on from elsewhere: held like any press, never acted on.
+    void NotifyPressTakenOver(in UIInteractionContext context) => NotifyPress(in context);
     void NotifyDrag(in UIInteractionContext context);
     void NotifyRelease(in UIInteractionContext context);
     void NotifySubmit(in UIInteractionContext context);
@@ -51,9 +53,14 @@ public interface IUIGrabReceiver
     bool TryReceive(IReadOnlyList<IGrabbable> items, in UIInteractionContext context);
 }
 
+// The axis arrives in wheel notches: a mouse wheel click is one, and a stick is turned into notches over
+// time by the laser before it gets here.
 public interface IUIAxisActionReceiver
 {
     bool ProcessAxis(in UIInteractionContext context, in float2 axis);
+
+    // Whether an axis here would move anything, so the hand's stick can be kept off turning and walking.
+    bool WantsAxis(in UIInteractionContext context) => true;
 }
 
 public interface IUISecondaryActionReceiver

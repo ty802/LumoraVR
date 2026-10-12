@@ -14,7 +14,7 @@ namespace Helio.UI;
 
 // emits one textured quad per glyph laid out within the RectTransform rect.
 // Rich text (inline tags) is supported via RichTextParser when RichText is set.
-// TODO - xlinka: overflow modes, kerning beyond pair table
+// TODO - xlinka: kerning beyond pair table
 [ComponentCategory("UI/Helio/Graphics")]
 public class Text : Graphic, ILayoutElement
 {
@@ -48,6 +48,26 @@ public class Text : Graphic, ILayoutElement
     // Opt-in for clipped editors: pan the shaped text to keep its active caret inside this rect.
     // Rendering only; it never changes layout, text, selection indices or the wrapping width.
     public readonly Sync<bool> KeepCaretVisible;
+    // Trims what it draws to its own rect, as a Mask on a slot around it would, without that slot: a label
+    // that runs long is cut at its edge.
+    public readonly Sync<bool> ClipToRect;
+    // Off: never hit-tested, so a press on it passes through to whatever lies under it.
+    public readonly Sync<bool> InteractionTarget;
+    // Shown while Content is null and nobody is editing it: the hint an empty field shows.
+    public readonly Sync<string> NullContent;
+    // Lines measured by each font's full line height, its line gap included, and as tall as the tallest font the
+    // line's glyphs came from, the difference above the baseline: a line carrying a tall fallback symbol grows.
+    // Off, every line takes the first font's ascent plus descent.
+    public readonly Sync<bool> FullLineHeight;
+    // The block the vertical alignment lines up: the lines' boxes, the glyphs drawn, or one line height above
+    // the first baseline down to the last (TextBlockMeasure).
+    public readonly Sync<TextBlockMeasure> BlockMeasure;
+    // How a justified line fills the rect's width (TextJustification).
+    public readonly Sync<TextJustification> Justification;
+    // A line that runs past the rect is cut at the last glyph that fits and ends in an ellipsis; wrapped, the
+    // lines past the rect's height go and the last one kept is cut the same way. Only what is drawn changes:
+    // layout still measures the whole text, so a row with the room shows all of it. Never while editing.
+    public readonly Sync<bool> Ellipsis;
 
     private string _content = string.Empty;
     private IAssetProvider<FontSet>? _font;
@@ -67,6 +87,17 @@ public class Text : Graphic, ILayoutElement
     private bool _autoV;
     private float _autoMin;
     private bool _keepCaretVisible;
+    private bool _clipToRect;
+    private bool _ellipsis;
+    // The last cut, keyed by what it was worked out for, so an unchanged label reshapes the cut text straight
+    // from the shaper's cache instead of shaping the whole text and cutting it again on every re-mesh.
+    private string? _cutFor;
+    private string? _cutText;
+    private float _cutSize;
+    private float _cutWidth;
+    private float _cutHeight;
+    private bool _cutWrap;
+    private int _cutGeneration;
     private float2 _editOffset;
     // Text actually fed to the shaper: the raw Content, or the tag-stripped text in rich mode.
     private string _shapedText = string.Empty;
@@ -95,14 +126,20 @@ public class Text : Graphic, ILayoutElement
     private readonly StringBuilder _richTextBuilder = new();
     private float _layoutPreferredWidth;
     private float _layoutPreferredHeight;
+    private float _layoutMinHeight;
     // Font metrics snapshotted on the main thread (PreGraphicsCompute). The worker positions
     // glyphs from these instead of calling the font hook, which hits Godot's font server. - xlinka
     private float _ascent;
     private float _lineHeight;
     private float _rawLineHeight; // font line height WITHOUT _lineSpacing, for <line-height> overrides
+    private bool _perFontLines;
+    private TextBlockMeasure _blockMeasure;
+    private TextJustification _justification;
 
     // Shared shaping engine with built-in result caching (see TextShaper).
     private readonly TextShaper _shaper = new();
+    // Unwrapped shaping for the natural width (per-metric canvases only).
+    private TextShaper? _naturalShaper;
 
     public Text()
     {
@@ -126,6 +163,13 @@ public class Text : Graphic, ILayoutElement
         AutoSizeVertical = new Sync<bool>(this, false);
         AutoSizeMin = new Sync<float>(this, 6f);
         KeepCaretVisible = new Sync<bool>(this, false);
+        ClipToRect = new Sync<bool>(this, false);
+        InteractionTarget = new Sync<bool>(this, true);
+        NullContent = new Sync<string>(this, string.Empty);
+        FullLineHeight = new Sync<bool>(this, false);
+        BlockMeasure = new Sync<TextBlockMeasure>(this, TextBlockMeasure.LineBoxes);
+        Justification = new Sync<TextJustification>(this, TextJustification.WordGaps);
+        Ellipsis = new Sync<bool>(this, false);
     }
 
     public override bool RequiresPreGraphicsCompute => true;
@@ -137,12 +181,19 @@ public class Text : Graphic, ILayoutElement
     public float? MinWidth => 0f;
     public float? PreferredWidth => _layoutPreferredWidth;
     public float? FlexibleWidth => 0f;
-    public float? MinHeight => _layoutPreferredHeight;
+    public float? MinHeight => _layoutMinHeight;
     public float? PreferredHeight => _layoutPreferredHeight;
     public float? FlexibleHeight => 0f;
     public float? Area => null;
     public int Priority => 0;
     public LayoutMetric ChangedMetrics { get; private set; }
+
+    // The width the wrapped height above was measured at. A layout pass that hands the text another width has
+    // placed it with a height for the old one; the canvas measures it again and lays out once more.
+    private float _measuredWrapWidth = -1f;
+
+    internal bool MeasuredAtOtherWidth(float width)
+        => _wrap && _layoutPreferredHeight > 0f && System.MathF.Abs((width > 0f ? width : 0f) - _measuredWrapWidth) > 0.5f;
 
     // Signature of the LAYOUT-affecting fields at the last flag, so a pure color change (selection
     // highlight, hover tint) re-meshes the glyphs in place instead of triggering a full relayout.
@@ -152,6 +203,7 @@ public class Text : Graphic, ILayoutElement
     {
         var hash = new System.HashCode();
         hash.Add(Content.Value);
+        hash.Add(Content.Value == null ? NullContent.Value : null);
         hash.Add(Size.Value);
         hash.Add(HorizontalAlignment.Value);
         hash.Add(VerticalAlignment.Value);
@@ -161,6 +213,10 @@ public class Text : Graphic, ILayoutElement
         hash.Add(AutoSizeHorizontal.Value);
         hash.Add(AutoSizeVertical.Value);
         hash.Add(AutoSizeMin.Value);
+        hash.Add(FullLineHeight.Value);
+        hash.Add(BlockMeasure.Value);
+        hash.Add(Justification.Value);
+        hash.Add(Ellipsis.Value);
         hash.Add(CaretPosition.Value);
         hash.Add(SelectionStart.Value);
         hash.Add(Font.Target);
@@ -181,15 +237,122 @@ public class Text : Graphic, ILayoutElement
     // chunk latched built). The arm re-drives ONCE when the asset turns valid. - xlinka
     private bool _fontRedriveArmed;
 
-    public override void OnUpdate(float delta)
+    // Which texts of a world wait on a font. The world's canvases look at each font's generation once a
+    // frame and wake only the texts on a font that moved, or armed for one that has not loaded. Every text
+    // was a component update a frame to read that number itself: a thousand open graph cards are six
+    // thousand texts, and the reads cost a few milliseconds a frame for a number that moves only when a
+    // glyph lands. -xlinka
+    private sealed class FontGroup
     {
-        base.OnUpdate(delta);
+        public int Generation;
+        public readonly HashSet<Text> Texts = new();
+    }
+
+    private sealed class FontWatch
+    {
+        public ulong Frame = ulong.MaxValue;
+        public readonly Dictionary<FontSet, FontGroup> Groups = new();
+        public readonly HashSet<Text> Armed = new();
+        public readonly List<Text> Due = new();
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<World, FontWatch> Watches = new();
+    private FontSet? _watchedFont;
+    private bool _armedWatched;
+
+    // From each canvas's update; the first one of a world's frame does the looking.
+    internal static void PollFonts(World? world)
+    {
+        if (world == null || !Watches.TryGetValue(world, out var watch))
+            return;
+        ulong frame = world.Time.UpdateIndex;
+        if (watch.Frame == frame)
+            return;
+        watch.Frame = frame;
+        watch.Due.Clear();
+        foreach (var (font, group) in watch.Groups)
+        {
+            int generation = font.CacheGeneration;
+            if (generation == group.Generation)
+                continue;
+            group.Generation = generation;
+            watch.Due.AddRange(group.Texts);
+        }
+        watch.Due.AddRange(watch.Armed);
+        foreach (var text in watch.Due)
+        {
+            if (text.IsDestroyed)
+                text.Unwatch();
+            else
+                text.PollFont();
+        }
+        watch.Due.Clear();
+    }
+
+    private void WatchFont(FontSet font)
+    {
+        if (ReferenceEquals(_watchedFont, font) || World is not { } world)
+            return;
+        var watch = Watches.GetValue(world, static _ => new FontWatch());
+        LeaveGroup(watch);
+        if (!watch.Groups.TryGetValue(font, out var group))
+        {
+            group = new FontGroup { Generation = font.CacheGeneration };
+            watch.Groups[font] = group;
+        }
+        group.Texts.Add(this);
+        _watchedFont = font;
+    }
+
+    private void WatchArmed(bool armed)
+    {
+        if (_armedWatched == armed || World is not { } world)
+            return;
+        var watch = Watches.GetValue(world, static _ => new FontWatch());
+        if (armed)
+            watch.Armed.Add(this);
+        else
+            watch.Armed.Remove(this);
+        _armedWatched = armed;
+    }
+
+    private void LeaveGroup(FontWatch watch)
+    {
+        if (_watchedFont == null)
+            return;
+        if (watch.Groups.TryGetValue(_watchedFont, out var group))
+        {
+            group.Texts.Remove(this);
+            if (group.Texts.Count == 0)
+                watch.Groups.Remove(_watchedFont);
+        }
+        _watchedFont = null;
+    }
+
+    private void Unwatch()
+    {
+        if (World is not { } world || !Watches.TryGetValue(world, out var watch))
+            return;
+        LeaveGroup(watch);
+        watch.Armed.Remove(this);
+        _armedWatched = false;
+    }
+
+    public override void OnDestroying()
+    {
+        Unwatch();
+        base.OnDestroying();
+    }
+
+    private void PollFont()
+    {
         if (_fontRedriveArmed)
         {
             var pending = Font.Asset;
             if (pending == null || !pending.IsValid)
                 return;
             _fontRedriveArmed = false;
+            WatchArmed(false);
             ChangedMetrics = LayoutMetric.MinWidth | LayoutMetric.PreferredWidth | LayoutMetric.MinHeight | LayoutMetric.PreferredHeight;
             RectTransform?.MarkChangeDirty();
             return;
@@ -222,7 +385,7 @@ public class Text : Graphic, ILayoutElement
 
     public override void PrepareCompute()
     {
-        _content = Content.Value ?? string.Empty;
+        _content = Content.Value ?? (CaretPosition.Value < 0 ? NullContent.Value : null) ?? string.Empty;
         _font = Font.Target;
         _spriteSet = Sprites.Target; // snapshot on the main thread; ComputeGraphic runs on the worker
         _fontGroup = Fonts.Target;
@@ -241,7 +404,12 @@ public class Text : Graphic, ILayoutElement
         _autoH = AutoSizeHorizontal.Value;
         _autoV = AutoSizeVertical.Value;
         _autoMin = AutoSizeMin.Value;
+        _perFontLines = FullLineHeight.Value;
+        _blockMeasure = BlockMeasure.Value;
+        _justification = Justification.Value;
         _keepCaretVisible = KeepCaretVisible.Value;
+        _clipToRect = ClipToRect.Value;
+        _ellipsis = Ellipsis.Value;
 
         // Strip inline tags into _shapedText (+ per-char _colors) so shaping/layout is
         // identical to plain text; plain mode shapes Content directly.
@@ -276,15 +444,17 @@ public class Text : Graphic, ILayoutElement
         var fontSet = _font?.Asset;
         if (fontSet == null || !fontSet.IsValid)
         {
-            // Baking with no font emits nothing; arm the OnUpdate re-drive so the asset landing
-            // later re-measures and re-meshes this text instead of leaving it invisible.
+            // Baking with no font emits nothing; arm the re-drive so the asset landing later
+            // re-measures and re-meshes this text instead of leaving it invisible.
             _fontRedriveArmed = true;
+            WatchArmed(true);
             _ascent = _size * 0.8f;
             _lineHeight = _size;
             _rawLineHeight = _size;
             return default;
         }
         _fontRedriveArmed = false;
+        WatchArmed(false);
 
         var rect = RectTransform?.LocalComputeRect ?? default;
 
@@ -296,6 +466,7 @@ public class Text : Graphic, ILayoutElement
 
         // request rasterization for every codepoint we're about to draw - xlinka
         _appliedFontGeneration = fontSet.CacheGeneration;
+        WatchFont(fontSet);
         TextShaper.RequestGlyphs(fontSet, _shapedText, _size, _fontMarksArg);
 
         // Shape and read font metrics HERE, on the main thread, and do NOT move this to the worker no
@@ -306,6 +477,9 @@ public class Text : Graphic, ILayoutElement
         // only positions the already-shaped glyphs. - xlinka
         float wrapWidth = _wrap && rect.width > 0f ? rect.width : 0f;
         _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg, _nobrArg, _fontMarksArg, _spriteAspectsArg);
+        if (_ellipsis && _caretPos < 0)
+            ApplyEllipsis(fontSet, rect, wrapWidth);
+        MeasureLineFonts(fontSet, _size);
 
         _ascent = fontSet.GetAscent(_size);
         _rawLineHeight = fontSet.GetLineHeight(_size);
@@ -318,6 +492,111 @@ public class Text : Graphic, ILayoutElement
         UpdateCaretViewport(rect);
 
         return default;
+    }
+
+    private const char EllipsisChar = '\u2026';
+
+    private void ApplyEllipsis(FontSet fontSet, in Rect rect, float wrapWidth)
+    {
+        string source = _shapedText;
+        int generation = fontSet.CacheGeneration;
+        if (_cutFor == source && _cutSize == _size && _cutWidth == rect.width && _cutHeight == rect.height
+            && _cutWrap == _wrap && _cutGeneration == generation)
+        {
+            if (_cutText != null)
+                ShapeCut(fontSet, _cutText, wrapWidth);
+            return;
+        }
+        _cutFor = source;
+        _cutSize = _size;
+        _cutWidth = rect.width;
+        _cutHeight = rect.height;
+        _cutWrap = _wrap;
+        _cutGeneration = generation;
+        _cutText = null;
+        // The parser adds an entry for every character; only non-null entries are sprites.
+        // A sprite sits on a character of its own, and the ellipsis would take its place.
+        if (_richText && _sprites.Exists(static sprite => sprite != null))
+            return;
+
+        float lineHeight = fontSet.GetLineHeight(_size) * _lineSpacing;
+        if (lineHeight <= 0f)
+            lineHeight = _size;
+        string current = source;
+        for (int pass = 0; pass < 6; pass++)
+        {
+            var lines = _shaper.Lines;
+            int over = -1;
+            bool dropRest = false;
+            float height = 0f;
+            for (int i = 0; i < lines.Count; i++)
+            {
+                height += lineHeight * lines[i].MaxSizeScale;
+                if (_wrap && i > 0 && height > rect.height + 0.5f)
+                {
+                    over = i - 1;
+                    dropRest = true;
+                    break;
+                }
+                if (lines[i].Width > rect.width + 0.5f)
+                {
+                    over = i;
+                    dropRest = _wrap;
+                    break;
+                }
+            }
+            if (over < 0)
+                break;
+
+            var line = lines[over];
+            float reserve = _size;
+            int end = line.Glyphs.Count;
+            if (end > 0 && line.Glyphs[end - 1].Codepoint == EllipsisChar)
+            {
+                reserve = line.Glyphs[end - 1].Metrics.Advance;
+                end--;
+            }
+            float budget = rect.width - reserve;
+            // Not even the ellipsis fits: a rect squeezed to nothing draws nothing, not the whole text.
+            if (budget < 0f)
+            {
+                current = string.Empty;
+                ShapeCut(fontSet, current, wrapWidth);
+                break;
+            }
+            int keep = 0;
+            while (keep < end && line.Glyphs[keep].X + line.Glyphs[keep].Metrics.Advance <= budget)
+                keep++;
+            int cut;
+            if (keep < end)
+                cut = line.Glyphs[keep].SourceIndex;
+            else if (end > 0)
+                cut = line.Glyphs[end - 1].SourceIndex + (line.Glyphs[end - 1].Codepoint > 0xFFFF ? 2 : 1);
+            else
+                cut = line.Glyphs.Count > 0 ? line.Glyphs[0].SourceIndex : 0;
+            cut = System.Math.Clamp(cut, 0, current.Length);
+
+            string next = current.Substring(0, cut).TrimEnd() + EllipsisChar;
+            if (!dropRest && !_richText)
+            {
+                int newline = current.IndexOf('\n', cut);
+                if (newline >= 0)
+                    next += current.Substring(newline);
+            }
+            if (next == current)
+                break;
+            current = next;
+            ShapeCut(fontSet, current, wrapWidth);
+        }
+        if (!ReferenceEquals(current, source))
+            _cutText = current;
+    }
+
+    // The cut text is only ever shaped, never kept as the text: layout keeps measuring the whole of it.
+    private void ShapeCut(FontSet fontSet, string text, float wrapWidth)
+    {
+        TextShaper.RequestGlyphs(fontSet, text, _size, _fontMarksArg);
+        _shaper.Shape(fontSet, text, _size, _wrap, wrapWidth, _sizeArg, _nobrArg, _fontMarksArg, _spriteAspectsArg);
     }
 
     private void UpdateCaretViewport(in Rect rect)
@@ -333,15 +612,7 @@ public class Text : Graphic, ILayoutElement
         if (x > rect.xMax - 2f) _editOffset.x -= x - (rect.xMax - 2f);
         else if (x < rect.xMin) _editOffset.x += rect.xMin - x;
 
-        float blockHeight = 0f;
-        for (int i = 0; i < lines.Count; i++)
-            blockHeight += LineHeightFor(lines[i]) * lines[i].MaxSizeScale;
-        float top = _vAlign switch
-        {
-            TextVerticalAlignment.Middle => rect.yMin + (rect.height + blockHeight) * 0.5f,
-            TextVerticalAlignment.Bottom => rect.yMin + blockHeight,
-            _ => rect.yMax,
-        };
+        float top = FirstLineTop(rect, lines);
         for (int i = 0; i < lineIndex; i++)
             top -= LineHeightFor(lines[i]) * lines[i].MaxSizeScale;
         top += _editOffset.y;
@@ -374,12 +645,7 @@ public class Text : Graphic, ILayoutElement
         for (int i = 0; i < lines.Count; i++)
             blockHeight += LineHeightFor(lines[i]) * lines[i].MaxSizeScale;
 
-        float top = _vAlign switch
-        {
-            TextVerticalAlignment.Middle => rect.yMin + (rect.height + blockHeight) * 0.5f,
-            TextVerticalAlignment.Bottom => rect.yMin + blockHeight,
-            _ => rect.yMax,
-        };
+        float top = FirstLineTop(rect, lines);
 
         // Start from the rect horizontally (justify spreads to both its edges) and from the text block
         // vertically, which is the part that can sit well inside a tall row or hang out of a short one.
@@ -394,13 +660,13 @@ public class Text : Graphic, ILayoutElement
             if (penX < xMin) xMin = penX;
             if (penX + line.Width > xMax) xMax = penX + line.Width;
 
-            float penY = top - _ascent * line.MaxSizeScale;
+            float penY = top - _ascent * line.MaxSizeScale - ExtraLineHeight(line);
             for (int i = 0; i < line.Glyphs.Count; i++)
             {
                 var glyph = line.Glyphs[i];
                 var metrics = glyph.Metrics;
                 // Sprites sit on the baseline as-is; only real glyphs get the sub/superscript shift.
-                float baseline = glyph.Codepoint == TextShaper.SpriteGlyph ? 0f : GlyphBaseline(GlyphStyle(glyph));
+                float baseline = GlyphBaseline(glyph);
                 float gx = penX + glyph.X + metrics.Offset.x;
                 float gy = penY + baseline + metrics.Offset.y;
                 if (gx < xMin) xMin = gx;
@@ -436,7 +702,7 @@ public class Text : Graphic, ILayoutElement
     }
 
     public override bool IsPointInside(in float2 point)
-        => RectTransform?.LocalComputeRect.Contains(point) ?? false;
+        => InteractionTarget.Value && (RectTransform?.LocalComputeRect.Contains(point) ?? false);
 
     public void ClearChangedMetrics()
     {
@@ -448,14 +714,25 @@ public class Text : Graphic, ILayoutElement
         var fontSet = _font?.Asset;
         if (fontSet == null || !fontSet.IsValid || string.IsNullOrEmpty(_shapedText))
         {
+            // Measured before its font landed: the landing measures it again. Drawing arms the same thing, but
+            // a text sized from these zeros gets an empty rect, is never drawn, and would stay zero for good.
+            if (_font != null && (fontSet == null || !fontSet.IsValid))
+            {
+                _fontRedriveArmed = true;
+                WatchArmed(true);
+            }
             _layoutPreferredWidth = 0f;
             _layoutPreferredHeight = 0f;
+            _layoutMinHeight = 0f;
             return;
         }
 
-        var rect = RectTransform?.LocalComputeRect ?? default;
+        // Measured at the width its layout gives it; a RectLerp only moves where it draws.
+        var rect = RectTransform?.PlacedComputeRect ?? default;
         float wrapWidth = _wrap && rect.width > 0f ? rect.width : 0f;
         _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg, _nobrArg, _fontMarksArg, _spriteAspectsArg);
+        MeasureLineFonts(fontSet, _size);
+        _measuredWrapWidth = wrapWidth;
 
         float lineHeight = fontSet.GetLineHeight(_size) * _lineSpacing;
         if (lineHeight <= 0f)
@@ -466,12 +743,28 @@ public class Text : Graphic, ILayoutElement
         float totalHeight = 0f;
         var measuredLines = _shaper.Lines;
         for (int i = 0; i < measuredLines.Count; i++)
-            totalHeight += lineHeight * measuredLines[i].MaxSizeScale;
+            totalHeight += lineHeight * measuredLines[i].MaxSizeScale * measuredLines[i].FontHeightScale;
 
         // An auto-sized axis adapts to whatever rect it's given, so it reports no preferred size to layout
         // (driving the natural size would fight the fit).
-        _layoutPreferredWidth = _autoH ? 0f : _shaper.MaxLineWidth;
+        if (RectTransform?.Canvas is { PerMetricPriority.Value: true })
+        {
+            // Per-metric rules: the width the text would take unwrapped, which a row sizing to its content needs
+            // (measuring at the width it already has only ever confirms that width).
+            _naturalShaper ??= new TextShaper();
+            _naturalShaper.Shape(fontSet, _shapedText, _size, false, 0f, _sizeArg, _nobrArg, _fontMarksArg, _spriteAspectsArg);
+            _layoutPreferredWidth = _naturalShaper.MaxLineWidth;
+        }
+        else
+        {
+            _layoutPreferredWidth = _autoH ? 0f : _shaper.MaxLineWidth;
+        }
         _layoutPreferredHeight = _autoV ? 0f : totalHeight;
+        _layoutMinHeight = _layoutPreferredHeight;
+        // Per-metric rules: a text that fits itself vertically asks for no minimum but still prefers its full
+        // height, so a row sized to its content keeps room for it.
+        if (_autoV && RectTransform?.Canvas is { PerMetricPriority.Value: true })
+            _layoutPreferredHeight = totalHeight;
     }
 
     // Largest size in [AutoSizeMin, Size] whose shaped text fits the rect on the enabled axis/axes. Shapes
@@ -489,6 +782,7 @@ public class Text : Graphic, ILayoutElement
         {
             float wrapW = _wrap && availW > 0f ? availW : 0f;
             _shaper.Shape(fontSet, _shapedText, size, _wrap, wrapW, _sizeArg, _nobrArg, _fontMarksArg);
+            MeasureLineFonts(fontSet, size);
 
             float textW = _shaper.MaxLineWidth;
             float lh = fontSet.GetLineHeight(size) * _lineSpacing;
@@ -497,7 +791,7 @@ public class Text : Graphic, ILayoutElement
             float textH = 0f;
             var lines = _shaper.Lines;
             for (int i = 0; i < lines.Count; i++)
-                textH += lh * lines[i].MaxSizeScale;
+                textH += lh * lines[i].MaxSizeScale * lines[i].FontHeightScale;
 
             float ratio = 1f;
             if (_autoH && availW > 0f && textW > availW)
@@ -533,28 +827,27 @@ public class Text : Graphic, ILayoutElement
     {
     }
 
+    // The window glyphs are trimmed to: the masks above, and this text's own rect when it clips to it.
+    private Rect? ClipWindow(GraphicsChunk.RenderData renderData)
+    {
+        var clip = renderData.GeometryClipRect;
+        if (!_clipToRect || RectTransform == null)
+            return clip;
+        var own = RectTransform.LocalComputeRect;
+        return clip.HasValue ? clip.Value.Intersection(own) : own;
+    }
+
     private void LayoutAndEmit(GraphicsChunk.RenderData renderData, PhosMesh mesh)
     {
         var rect = RenderRect(RectTransform!.LocalComputeRect);
+        var clip = ClipWindow(renderData);
         // Shaping + metrics were done on the main thread in PreGraphicsCompute; the worker only
         // positions the already-shaped glyphs (no font-server calls off-main). - xlinka
         var lines = _shaper.Lines;
         if (lines.Count == 0) return;
 
         float ascent = _ascent;
-
-        // Lines can differ in height when rich-text <size> is used (line height scales with the tallest glyph),
-        // or when a <line-height> override is active on the line; uniform text has MaxSizeScale == 1. -xlinka
-        float blockHeight = 0f;
-        for (int i = 0; i < lines.Count; i++)
-            blockHeight += LineHeightFor(lines[i]) * lines[i].MaxSizeScale;
-
-        float blockTop = _vAlign switch
-        {
-            TextVerticalAlignment.Middle => rect.yMin + (rect.height + blockHeight) * 0.5f,
-            TextVerticalAlignment.Bottom => rect.yMin + blockHeight,
-            _ => rect.yMax,
-        };
+        float blockTop = FirstLineTop(rect, lines);
 
         // Highlight backgrounds behind marked runs (rich-text <mark>), under everything else.
         if (_richText)
@@ -571,12 +864,19 @@ public class Text : Graphic, ILayoutElement
             float lineH = LineHeightFor(line) * line.MaxSizeScale;
             var lineAlign = LineAlign(line);
             float penX = AlignLineStart(rect, line.Width, lineAlign);
-            float penY = yCursor - ascent * line.MaxSizeScale;
+            float penY = yCursor - ascent * line.MaxSizeScale - ExtraLineHeight(line);
 
             // Justify spreads the leftover width across word gaps on every line except the last (and never the
-            // line that ends a paragraph). justifyOffset accumulates as we cross each gap. -xlinka
+            // line that ends a paragraph). justifyOffset accumulates as we cross each gap. Justified by glyphs, a
+            // line two thirds full or more stretches every glyph's place along it by the same factor. -xlinka
             float justifyPerGap = 0f;
-            if (lineAlign == TextHorizontalAlignment.Justify && _wrap && lineIndex < lines.Count - 1 && !line.HardBreak)
+            float stretch = 1f;
+            if (lineAlign == TextHorizontalAlignment.Justify && _justification == TextJustification.Glyphs)
+            {
+                if (line.Width > 0f && rect.width < line.Width * 1.5f)
+                    stretch = rect.width / line.Width;
+            }
+            else if (lineAlign == TextHorizontalAlignment.Justify && _wrap && lineIndex < lines.Count - 1 && !line.HardBreak)
             {
                 int gaps = CountWordGaps(line);
                 float extra = rect.width - line.Width;
@@ -590,11 +890,13 @@ public class Text : Graphic, ILayoutElement
                 var glyph = line.Glyphs[i];
                 if (justifyPerGap > 0f && i > 0 && IsWordGap(line, i))
                     justifyOffset += justifyPerGap;
+                if (stretch != 1f)
+                    justifyOffset = glyph.X * (stretch - 1f);
 
                 // Inline sprite placeholder: draw the sprite texture instead of a font glyph.
                 if (glyph.Codepoint == TextShaper.SpriteGlyph)
                 {
-                    EmitSprite(renderData, glyph, penX + glyph.X + justifyOffset, penY, renderData.GeometryClipRect);
+                    EmitSprite(renderData, glyph, penX + glyph.X + justifyOffset, penY, clip);
                     continue;
                 }
 
@@ -611,7 +913,10 @@ public class Text : Graphic, ILayoutElement
                     submesh = renderData.GetSubmesh(null, atlas, GraphicsChunk.RenderData.TextAtlas);
                 }
                 byte style = GlyphStyle(glyph);
-                EmitGlyph(renderData, submesh, mesh, penX + glyph.X + justifyOffset, penY + GlyphBaseline(style), glyph.Metrics, glyph.UV, GlyphColor(glyph), style, renderData.GeometryClipRect);
+                float bold = _material == null && (style & RichTextParser.StyleBold) != 0 && glyph.Font.AtlasTexture is { IsMSDF: true } boldAtlas
+                    ? 0.5f / System.Math.Max(boldAtlas.MsdfPixelRange, 1)
+                    : 0f;
+                EmitGlyph(renderData, submesh, mesh, penX + glyph.X + justifyOffset, penY + GlyphBaseline(glyph), glyph.Metrics, glyph.UV, GlyphColor(glyph), style, GlyphSize(glyph), bold, clip);
             }
 
             yCursor -= lineH;
@@ -649,12 +954,109 @@ public class Text : Graphic, ILayoutElement
     private float LineHeightFor(TextShaper.Line line)
     {
         if (_lineHeightMarks.Count == 0)
-            return _lineHeight;
+            return _lineHeight * line.FontHeightScale;
         int idx = LineFirstSourceIndex(line);
         float h = 0f;
         for (int i = 0; i < _lineHeightMarks.Count && _lineHeightMarks[i].Index <= idx; i++)
             h = _lineHeightMarks[i].Height;
-        return h > 0f ? _rawLineHeight * h : _lineHeight;
+        return (h > 0f ? _rawLineHeight * h : _lineHeight) * line.FontHeightScale;
+    }
+
+    // What a taller font added to this line, which sits above its baseline.
+    private float ExtraLineHeight(TextShaper.Line line)
+        => line.FontHeightScale > 1f ? LineHeightFor(line) * line.MaxSizeScale * (1f - 1f / line.FontHeightScale) : 0f;
+
+    // Where the first line's top goes for the vertical alignment. Lines differ in height with rich-text <size>
+    // (a line is as tall as its tallest glyph), a <line-height> override or a taller fallback font. The block
+    // lined up with the rect is the lines' boxes, the glyphs drawn (a line with none counts from three quarters
+    // of a line above its baseline) or one line height above the first baseline down to the last baseline. -xlinka
+    private float FirstLineTop(in Rect rect, System.Collections.Generic.IReadOnlyList<TextShaper.Line> lines)
+    {
+        // The block's top and bottom, measured from the first line's top.
+        float top = 0f, bottom = 0f, lineTop = 0f;
+        for (int i = 0; i < lines.Count; i++)
+        {
+            var line = lines[i];
+            float lineHeight = LineHeightFor(line) * line.MaxSizeScale;
+            float baseline = lineTop - _ascent * line.MaxSizeScale - ExtraLineHeight(line);
+            bool first = i == 0, last = i == lines.Count - 1;
+            if (_blockMeasure == TextBlockMeasure.Baselines)
+            {
+                if (first) top = baseline + lineHeight;
+                if (last) bottom = baseline;
+            }
+            else if (_blockMeasure == TextBlockMeasure.Glyphs && (first || last))
+            {
+                float high = float.NegativeInfinity, low = float.PositiveInfinity;
+                for (int g = 0; g < line.Glyphs.Count; g++)
+                {
+                    var glyph = line.Glyphs[g];
+                    if (glyph.Metrics.Size.y <= 0f)
+                        continue;
+                    float y = baseline + GlyphBaseline(glyph) + glyph.Metrics.Offset.y;
+                    high = System.MathF.Max(high, y + glyph.Metrics.Size.y);
+                    low = System.MathF.Min(low, y);
+                }
+                bool drawn = high > low;
+                if (first) top = drawn ? high : baseline + lineHeight * 0.75f;
+                if (last) bottom = drawn ? low : baseline;
+            }
+            lineTop -= lineHeight;
+        }
+        if (_blockMeasure == TextBlockMeasure.LineBoxes)
+            bottom = lineTop;
+
+        return _vAlign switch
+        {
+            TextVerticalAlignment.Middle => (rect.yMin + rect.yMax - top - bottom) * 0.5f,
+            TextVerticalAlignment.Bottom => rect.yMin - bottom,
+            _ => rect.yMax - top,
+        };
+    }
+
+    // Main thread, after shaping: each line's tallest full font height against the first font's ascent plus
+    // descent; a line with no glyph of its own takes the first font's. Fonts are asked once per run of glyphs
+    // from the same font.
+    private void MeasureLineFonts(FontSet fontSet, float size)
+    {
+        var lines = _shaper.Lines;
+        float first = _perFontLines ? fontSet.GetLineHeight(size) : 0f;
+        if (first <= 0f || fontSet.Fonts.Count == 0)
+        {
+            for (int l = 0; l < lines.Count; l++)
+                lines[l].FontHeightScale = 1f;
+            return;
+        }
+        float firstRatio = FullHeight(fontSet.Fonts[0], size) / first;
+        FontAsset? last = null;
+        float ratio = 1f;
+        for (int l = 0; l < lines.Count; l++)
+        {
+            var line = lines[l];
+            float scale = 0f;
+            for (int i = 0; i < line.Glyphs.Count; i++)
+            {
+                var font = line.Glyphs[i].Font;
+                if (font == null || line.Glyphs[i].Codepoint == TextShaper.SpriteGlyph)
+                    continue;
+                if (!ReferenceEquals(font, last))
+                {
+                    last = font;
+                    float height = FullHeight(font, size);
+                    ratio = height > 0f ? height / first : 1f;
+                }
+                if (ratio > scale)
+                    scale = ratio;
+            }
+            line.FontHeightScale = scale > 0f ? scale : firstRatio > 0f ? firstRatio : 1f;
+        }
+    }
+
+    private static float FullHeight(FontAsset font, float size)
+    {
+        var url = font.AssetURL;
+        float gap = url != null && url.IsFile ? FontLineGap.PerEm(url.LocalPath) * size : 0f;
+        return font.GetLineHeight(size) + gap;
     }
 
     // A word gap sits before glyph i when there's visible whitespace between it and the previous glyph - the
@@ -722,15 +1124,23 @@ public class Text : Graphic, ILayoutElement
     }
 
     // Vertical offset (canvas Y-up) for sub/superscript glyphs: superscript rides above the baseline,
-    // subscript drops below it. Fraction of the base size so it scales with the text. -xlinka
-    private float GlyphBaseline(byte style)
+    // subscript drops below it, by a share of the size of the text around them. Sprites sit on the baseline.
+    private float GlyphBaseline(in TextShaper.PositionedGlyph glyph)
     {
-        if ((style & RichTextParser.StyleSup) != 0) return _size * 0.34f;
-        if ((style & RichTextParser.StyleSub) != 0) return _size * -0.14f;
-        return 0f;
+        if (glyph.Codepoint == TextShaper.SpriteGlyph)
+            return 0f;
+        byte style = GlyphStyle(glyph);
+        if ((style & (RichTextParser.StyleSup | RichTextParser.StyleSub)) == 0)
+            return 0f;
+        float around = GlyphSize(glyph) / RichTextParser.SubSupScale;
+        return (style & RichTextParser.StyleSup) != 0 ? around * RichTextParser.SupRise : -around * RichTextParser.SubDrop;
     }
 
-    private void EmitGlyph(GraphicsChunk.RenderData renderData, PhosTriangleSubmesh submesh, PhosMesh mesh, float penX, float penY, in GlyphMetrics metrics, in Rect uv, in color glyphColor, byte style, Rect? clipRect)
+    // The size a glyph is drawn at, its rich-text size included.
+    private float GlyphSize(in TextShaper.PositionedGlyph glyph)
+        => _richText && glyph.SourceIndex >= 0 && glyph.SourceIndex < _sizes.Count ? _size * _sizes[glyph.SourceIndex] : _size;
+
+    private void EmitGlyph(GraphicsChunk.RenderData renderData, PhosTriangleSubmesh submesh, PhosMesh mesh, float penX, float penY, in GlyphMetrics metrics, in Rect uv, in color glyphColor, byte style, float glyphSize, float boldDilate, Rect? clipRect)
     {
         float xMin = penX + metrics.Offset.x;
         float yMin = penY + metrics.Offset.y;
@@ -802,30 +1212,34 @@ public class Text : Graphic, ILayoutElement
             mesh.SetUV(0, v0 + 2, new float2(uMax, vMax));
             mesh.SetUV(0, v0 + 3, new float2(uMin, vMax));
 
+            if (boldDilate > 0f || mesh.UVChannelCount > 1)
+            {
+                var dilate = new float2(boldDilate, 0f);
+                for (int k = 0; k < 4; k++)
+                    mesh.SetUV(1, v0 + k, dilate);
+            }
+
             submesh.AddQuadAsTriangles(v0, v0 + 1, v0 + 2, v0 + 3);
         }
 
         WriteQuad(0f);
-        // Faux bold (coverage atlas can't SDF-dilate): a second slightly-offset emit.
-        if ((style & RichTextParser.StyleBold) != 0)
-            WriteQuad(_size * 0.04f);
+        // Bold on a distance-field atlas thickens in place: UV1.x pushes the glyph edge out in the shader,
+        // half an atlas texel, and the advance stays. A coverage atlas has no distance to push, so it
+        // draws a second, offset copy instead. -xlinka
+        if ((style & RichTextParser.StyleBold) != 0 && boldDilate <= 0f)
+            WriteQuad(glyphSize * 0.04f);
 
-        // Underline / strikethrough as solid quads spanning the glyph advance.
+        // Underline and strikethrough as solid quads spanning the glyph advance: an underline a tenth of the size
+        // under the baseline, 0.075 thick; a strike 0.3 above it, 0.1 thick.
         if ((style & (RichTextParser.StyleUnderline | RichTextParser.StyleStrike)) != 0)
         {
             float adv = metrics.Advance > 0f ? metrics.Advance : metrics.Size.x;
             float x0 = penX;
             float x1 = penX + adv;
             if ((style & RichTextParser.StyleUnderline) != 0)
-            {
-                float y = penY - _size * 0.10f;
-                EmitSolidQuad(renderData, x0, y - _size * 0.05f, x1, y, glyphColor, clipRect);
-            }
+                EmitSolidQuad(renderData, x0, penY - glyphSize * 0.1375f, x1, penY - glyphSize * 0.0625f, glyphColor, clipRect);
             if ((style & RichTextParser.StyleStrike) != 0)
-            {
-                float y = penY + _size * 0.26f;
-                EmitSolidQuad(renderData, x0, y, x1, y + _size * 0.05f, glyphColor, clipRect);
-            }
+                EmitSolidQuad(renderData, x0, penY + glyphSize * 0.25f, x1, penY + glyphSize * 0.35f, glyphColor, clipRect);
         }
     }
 
@@ -836,7 +1250,7 @@ public class Text : Graphic, ILayoutElement
         in Rect rect, System.Collections.Generic.IReadOnlyList<TextShaper.Line> lines, float blockTop)
     {
         if (lines.Count == 0 || _marks.Count == 0) return;
-        var clip = renderData.GeometryClipRect;
+        var clip = ClipWindow(renderData);
         float top = blockTop;
         for (int li = 0; li < lines.Count; li++)
         {
@@ -873,7 +1287,7 @@ public class Text : Graphic, ILayoutElement
         in Rect rect, System.Collections.Generic.IReadOnlyList<TextShaper.Line> lines, float blockTop)
     {
         if (lines.Count == 0) return;
-        var clip = renderData.GeometryClipRect;
+        var clip = ClipWindow(renderData);
 
         if (_selStart >= 0 && _selStart != _caretPos)
         {

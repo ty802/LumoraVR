@@ -34,6 +34,9 @@ public class RectTransform : Component
     public readonly Sync<float2> Pivot;
 
     private Rect _localComputeRect;
+    // Where anchors or the parent's layout put this rect, before a RectLerp on the slot moved it.
+    private Rect _placedComputeRect;
+    private RectLerp? _blend;
     // Aggregated bounds: the union of this rect with every active descendant's bounds, computed bottom-up by
     // the canvas AFTER the layout pass (see UpdateBounds). Used to size an optional canvas collider and to
     // cheaply reject rays that miss all content. -xlinka
@@ -70,6 +73,22 @@ public class RectTransform : Component
     }
 
     public Rect LocalComputeRect => _localComputeRect;
+    public Rect PlacedComputeRect => _placedComputeRect;
+    internal RectLerp? BlendedBy => _blend;
+
+    internal void SetBlend(RectLerp lerp)
+    {
+        if (ReferenceEquals(_blend, lerp))
+            return;
+        _blend = lerp;
+        MarkChangeDirty();
+    }
+
+    internal void ClearBlend(RectLerp lerp)
+    {
+        if (ReferenceEquals(_blend, lerp))
+            _blend = null;
+    }
     public Rect BoundingRect => _boundingRect;
     public Canvas? Canvas => _registeredCanvas;
     public RectTransform? RectParent => _rectParent;
@@ -326,12 +345,22 @@ public class RectTransform : Component
     // until an unrelated dirty rebuilds it (the render-only-after-hover bug - ChunkMoved only
     // watches the chunk ROOT's rect, so inner moves were invisible). Equality-gated so idle passes
     // and scrolling (a render offset, never a rect write) cost nothing. -xlinka
-    internal void SetLocalComputeRect(in Rect rect)
+    internal void SetLocalComputeRect(in Rect placed)
     {
+        _placedComputeRect = placed;
+        var rect = placed;
+        if (_blend != null)
+        {
+            rect = _blend.Blend(placed);
+            _registeredCanvas?.NoteBlended(this);
+        }
         if (_localComputeRect.Equals(rect))
             return;
+        bool widthChanged = _localComputeRect.width != rect.width;
         _localComputeRect = rect;
         _registeredCanvas?.MarkDirty(this);
+        if (widthChanged)
+            _registeredCanvas?.NoteWidthChanged(this);
     }
     internal void SetRegisteredCanvas(Canvas? canvas) => _registeredCanvas = canvas;
     internal void SetRectParent(RectTransform? parent) => _rectParent = parent;

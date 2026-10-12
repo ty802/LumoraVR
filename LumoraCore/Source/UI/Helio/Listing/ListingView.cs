@@ -129,6 +129,8 @@ public sealed class ListingView : Component
             host.AttachComponent<Mask>();
         var scroll = host.GetComponent<ScrollRect>() ?? host.AttachComponent<ScrollRect>();
         scroll.ScrollSensitivity.Value = new float2(1f, 1f);
+        // Rows act as the press lands, as every other control does. A drag that starts on a row still hands
+        // the scroll over once it travels; a list where a stray press costs more turns RowsActOnRelease on.
 
         var contentSlot = host.AddSlot("Content");
         var contentRect = contentSlot.AttachComponent<RectTransform>();

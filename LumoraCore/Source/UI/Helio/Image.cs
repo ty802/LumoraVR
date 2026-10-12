@@ -1,10 +1,12 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
 using Lumora.Core.Phos;
+using SizingKind = Helio.UI.BorderSizing;
 
 namespace Helio.UI;
 
@@ -23,6 +25,10 @@ public sealed class Image : Graphic
     public readonly Sync<bool> FlipVertical;
     // Untextured control backgrounds share RoundedPanel's geometry while retaining tint bindings. -xlinka
     public readonly Sync<float> CornerRadius;
+    // How wide a nine-sliced sprite's frame draws; see BorderSizing.
+    public readonly Sync<SizingKind> BorderSizing;
+    // Off: never hit-tested, so a press on it passes through to whatever lies under it.
+    public readonly Sync<bool> InteractionTarget;
 
     private IAssetProvider<TextureAsset>? _texture;
     private IAssetProvider<MaterialAsset>? _material;
@@ -34,6 +40,10 @@ public sealed class Image : Graphic
     private bool _flipH;
     private bool _flipV;
     private float _cornerRadius;
+    private bool _fractional;
+    private float _borderScale = 1f;
+    private float _fixedBorder;
+    private SizingKind _sizing;
 
     public Image()
     {
@@ -48,6 +58,8 @@ public sealed class Image : Graphic
         FlipHorizontal = new Sync<bool>(this, false);
         FlipVertical = new Sync<bool>(this, false);
         CornerRadius = new Sync<float>(this, 0f);
+        BorderSizing = new Sync<SizingKind>(this, SizingKind.Texels);
+        InteractionTarget = new Sync<bool>(this, true);
     }
 
     public override bool RequiresPreGraphicsCompute => false;
@@ -77,6 +89,10 @@ public sealed class Image : Graphic
         _flipH = FlipHorizontal.Value;
         _flipV = FlipVertical.Value;
         _cornerRadius = CornerRadius.Value;
+        _fractional = sprite != null && sprite.FractionalBorders.Value;
+        _borderScale = sprite != null ? sprite.BorderScale.Value : 1f;
+        _fixedBorder = sprite != null ? sprite.FixedBorderSize.Value : 0f;
+        _sizing = BorderSizing.Value;
     }
 
     public override void ComputeGraphic(GraphicsChunk.RenderData renderData)
@@ -113,7 +129,10 @@ public sealed class Image : Graphic
 
         if (_nineSlice)
         {
-            WriteNineSlice(submesh, rect, clipRect);
+            if (_fractional || _sizing != SizingKind.Texels || _borderScale != 1f)
+                WriteSizedNineSlice(submesh, rect, clipRect);
+            else
+                WriteNineSlice(submesh, rect, clipRect);
             return;
         }
 
@@ -122,7 +141,7 @@ public sealed class Image : Graphic
 
     public override bool IsPointInside(in float2 point)
     {
-        return RectTransform?.LocalComputeRect.Contains(point) ?? false;
+        return InteractionTarget.Value && (RectTransform?.LocalComputeRect.Contains(point) ?? false);
     }
 
     private void WriteNineSlice(PhosTriangleSubmesh submesh, in Rect rect, Rect? clipRect)
@@ -186,6 +205,64 @@ public sealed class Image : Graphic
                     new float2(us[x + 1], vs[y]));
 
                 RawImage.GenerateImage(mesh, submesh, cellRect, cellUv, _texture?.Asset, false, in _tint, clipRect);
+            }
+        }
+    }
+
+    // The frame measured the sprite's way: each border as a share of the sprite's region, drawn as wide as the
+    // sizing says, and both sides of an axis shrunk together when they cannot fit, so a round corner stays
+    // round rather than being cut. Bottom pairs with bottom: V runs down the atlas, so the frame's bottom row
+    // is the largest V. -xlinka
+    private void WriteSizedNineSlice(PhosTriangleSubmesh submesh, in Rect rect, Rect? clipRect)
+    {
+        var texture = _texture?.Asset;
+        float texelsX = texture != null && texture.Width > 0 ? texture.Width * _uvRect.width : 0f;
+        float texelsY = texture != null && texture.Height > 0 ? texture.Height * _uvRect.height : 0f;
+        float4 share = _fractional ? _borders
+            : texelsX > 0f && texelsY > 0f
+                ? new float4(_borders.x / texelsX, _borders.y / texelsY, _borders.z / texelsX, _borders.w / texelsY)
+                : float4.Zero;
+        float4 drawn = _sizing switch
+        {
+            SizingKind.FixedSize => share * _fixedBorder,
+            SizingKind.RectWidth => share * rect.width,
+            SizingKind.RectHeight => share * rect.height,
+            _ => new float4(share.x * texelsX, share.y * texelsY, share.z * texelsX, share.w * texelsY),
+        } * (float.IsFinite(_borderScale) ? MathF.Max(_borderScale, 0f) : 1f);
+
+        float across = drawn.x + drawn.z;
+        if (across > rect.width && across > 0f)
+        {
+            float fit = rect.width / across;
+            drawn = new float4(drawn.x * fit, drawn.y, drawn.z * fit, drawn.w);
+        }
+        float up = drawn.y + drawn.w;
+        if (up > rect.height && up > 0f)
+        {
+            float fit = rect.height / up;
+            drawn = new float4(drawn.x, drawn.y * fit, drawn.z, drawn.w * fit);
+        }
+
+        Span<float> xs = stackalloc float[] { rect.xMin, rect.xMin + drawn.x, rect.xMax - drawn.z, rect.xMax };
+        Span<float> ys = stackalloc float[] { rect.yMin, rect.yMin + drawn.y, rect.yMax - drawn.w, rect.yMax };
+        Span<float> us = stackalloc float[]
+        {
+            _uvRect.xMin, _uvRect.xMin + share.x * _uvRect.width, _uvRect.xMax - share.z * _uvRect.width, _uvRect.xMax,
+        };
+        Span<float> vs = stackalloc float[]
+        {
+            _uvRect.yMax, _uvRect.yMax - share.y * _uvRect.height, _uvRect.yMin + share.w * _uvRect.height, _uvRect.yMin,
+        };
+
+        for (int y = 0; y < 3; y++)
+        {
+            for (int x = 0; x < 3; x++)
+            {
+                var cellRect = Rect.FromMinMax(new float2(xs[x], ys[y]), new float2(xs[x + 1], ys[y + 1]));
+                if (cellRect.IsEmpty)
+                    continue;
+                var cellUv = Rect.FromMinMax(new float2(us[x], vs[y + 1]), new float2(us[x + 1], vs[y]));
+                RawImage.GenerateImage(submesh.Mesh, submesh, cellRect, cellUv, texture, false, in _tint, clipRect);
             }
         }
     }

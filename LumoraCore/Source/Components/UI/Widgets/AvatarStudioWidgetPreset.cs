@@ -16,6 +16,9 @@ public sealed class AvatarStudioWidgetPreset : ActionWidgetPreset
     protected override string? Icon => "avatar";
     protected override color IconTint => DashTheme.IconBlue;
 
+    // The second press throws away the studio and the work in it.
+    protected override bool CardActsOnRelease => true;
+
     // The studio opens with or without a model in the world: finding the model is what it is for.
     // The only thing that can stop it is a world that refuses spawning at all, and that says so.
     protected override string? Unavailable
@@ -60,6 +63,7 @@ public sealed class AvatarStudioWidgetPreset : ActionWidgetPreset
             rotation = floatQ.Identity;
         }
 
+        using var own = world.EnterSpawnAllocation();
         var slot = world.RootSlot.AddSlot("Avatar Studio");
         slot.GlobalPosition = position;
         slot.GlobalRotation = rotation;

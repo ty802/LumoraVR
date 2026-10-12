@@ -14,6 +14,7 @@ namespace Lumora.Core.Components.UI;
 // dragged off the grid onto its own world panel, and there nobody hands it a font or a corner sprite -
 // so everything it needs is resolved from the local dashboard instead of being passed in. A Text with a
 // null font renders nothing at all, which is what a popped-out widget used to look like. -xlinka
+[UserspaceOnly]
 public abstract class HomeWidgetPreset : WidgetPreset
 {
     protected const float Pad = 14f;
@@ -25,11 +26,24 @@ public abstract class HomeWidgetPreset : WidgetPreset
     // Left edge of the title on a card that carries a tile, so every card lines its words up.
     protected const float IconTitleLeft = Pad - 6f + IconTile + IconTitleGap;
 
+    // The glyph of a widget shown as an icon alone.
+    protected const float IconOnlyGlyph = 18f;
+
     private float _pollTimer;
+
+    // Set before it builds by a host that shows this widget as an icon alone (the dash's top bar): the title
+    // and the hint go, the tile stands in the middle, and the name moves to the tip.
+    public bool IconOnly { get; set; }
+
+    // What the tip says over this widget while it is an icon.
+    public virtual string Tip => string.Empty;
+
+    // The glyph an icon-only widget is drawn as.
+    public Image? IconGlyph { get; private set; }
 
     protected HomeWidgetPreset()
     {
-        Background.Value = DashTheme.Surface;
+        Background.Value = DashTheme.GlassCard;
         BorderColor.Value = DashTheme.Outline;
         CornerRadius.Value = DashTheme.RadiusCard;
         // Two cells is what the built-in header pills get, and a widget dropped back onto the top bar is
@@ -96,6 +110,64 @@ public abstract class HomeWidgetPreset : WidgetPreset
         image.Texture.Target = picture;
         image.Tint.Value = color.White;
         return tile;
+    }
+
+    // An icon-only widget is a line glyph in the text colour, centred on the card: no tile and no hue of its
+    // own, so a row of them reads as one calm strip.
+    protected Image IconOnlyGlyphAt(Slot root, string icon)
+    {
+        var slot = SettingsUI.Child(root, "Glyph", new float2(0.5f, 0.5f), new float2(0.5f, 0.5f),
+            new float2(-IconOnlyGlyph * 0.5f, -IconOnlyGlyph * 0.5f), new float2(IconOnlyGlyph * 0.5f, IconOnlyGlyph * 0.5f));
+        var picture = slot.AttachComponent<Lumora.Core.Assets.ImageProvider>();
+        picture.GenerateMipmaps.Value = false;
+        picture.URL.Value = new System.Uri("res://Assets/Textures/Icons/" + icon + ".svg");
+        var image = slot.AttachComponent<Image>();
+        image.Texture.Target = picture;
+        image.PreserveAspect.Value = true;
+        image.InteractionTarget.Value = false;
+        image.Tint.Value = DashTheme.TextDim;
+        IconGlyph = image;
+        return image;
+    }
+
+    // Clear at rest and glass under the pointer; on, a faint accent under an accent glyph; unable to run, a
+    // faded glyph that does not light.
+    protected void PaintIcon(ColorDriver? driver, bool on, bool available)
+    {
+        if (!available)
+            SetCardRamp(driver, color.Transparent, color.Transparent, color.Transparent);
+        else if (on)
+            SetCardRamp(driver, DashTheme.AccentSoft, DashTheme.Accent.WithAlpha(0.26f), DashTheme.Accent.WithAlpha(0.34f));
+        else
+            SetCardRamp(driver, color.Transparent, DashTheme.GlassCardHover, DashTheme.GlassCardPressed);
+        var ink = !available ? DashTheme.TextMuted.WithAlpha(0.5f) : on ? DashTheme.Accent : DashTheme.TextDim;
+        if (IconGlyph != null && !IconGlyph.IsDestroyed && !IconGlyph.Tint.Value.Equals(ink))
+            IconGlyph.Tint.Value = ink;
+    }
+
+    // A card whose height follows what it shows: the rows that height takes on the grid it stands on, written
+    // with its bottom edge kept where it is, so it grows and shrinks from the top. Nothing is written while the
+    // grid has no size to count rows from, or on a grid too short to hold it. -xlinka
+    protected void FitRows(float height)
+    {
+        var widget = Slot.GetComponent<Widget>();
+        var grid = Slot.GetComponentInParents<WidgetGrid>();
+        if (widget == null || grid == null)
+            return;
+        var rect = grid.RectTransform?.LocalComputeRect;
+        float pitch = grid.Pitch.y;
+        if (rect == null || rect.Value.height <= 0f || pitch <= 1f)
+            return;
+        int rows = System.Math.Max(1, (int)MathF.Ceiling((height + grid.Spacing.Value.y) / pitch - 0.001f));
+        int gridRows = grid.GridSize.rows;
+        if (gridRows > 0 && gridRows < rows)
+            return;
+        int bottom = widget.GridY.Value + widget.GridHeight.Value;
+        int y = System.Math.Max(0, bottom - rows);
+        if (widget.GridHeight.Value != rows)
+            widget.GridHeight.Value = rows;
+        if (widget.GridY.Value != y)
+            widget.GridY.Value = y;
     }
 
     protected void Repaint()

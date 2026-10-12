@@ -26,11 +26,21 @@ public abstract class ToggleWidgetPreset : HomeWidgetPreset
     protected virtual string? Icon => null;
     protected virtual color IconTint => DashTheme.Accent;
 
+    // Under this width the card is a tile: the title on one line and the state under it, instead of
+    // "Title: State" squeezed onto one.
+    private const float CompactWidth = 210f;
+
     private Text? _title;
+    private Text? _state;
     private Button? _cardButton;
     private ColorDriver? _driver;
     private bool _last;
     private bool _known;
+    private bool _compact;
+    private bool _layoutKnown;
+    private float _titleLeft = Pad;
+
+    public override string Tip => Title + ": " + StateFor(Value);
 
     protected ToggleWidgetPreset()
     {
@@ -41,6 +51,15 @@ public abstract class ToggleWidgetPreset : HomeWidgetPreset
 
     protected override void Build(Widget widget, Slot root)
     {
+        if (IconOnly)
+        {
+            IconOnlyGlyphAt(root, Icon ?? "plus");
+            _cardButton = AddCardButton(Flip);
+            _driver = DriveCard(_cardButton, color.Transparent, DashTheme.GlassCardHover, DashTheme.GlassCardPressed);
+            _known = false;
+            Refresh();
+            return;
+        }
         float titleLeft = Pad;
         string? icon = Icon;
         if (icon != null)
@@ -48,12 +67,19 @@ public abstract class ToggleWidgetPreset : HomeWidgetPreset
             IconTileAt(root, icon, IconTint, Pad - 6f, IconTile);
             titleLeft = IconTitleLeft;
         }
+        _titleLeft = titleLeft;
         _title = Label(root, "Title", TitleFor(Value), DashTheme.FontBody, DashTheme.Text,
             TextHorizontalAlignment.Left, new float2(0f, 0f), new float2(1f, 1f),
             new float2(titleLeft, 0f), new float2(-Pad, 0f), SemiboldFont);
+        _title.AutoSizeHorizontal.Value = true;
+        _title.AutoSizeMin.Value = 11f;
+        _state = Label(root, "State", StateFor(Value), DashTheme.FontSmall, DashTheme.TextDim,
+            TextHorizontalAlignment.Left, new float2(0f, 0f), new float2(1f, 0.5f),
+            new float2(titleLeft, 4f), new float2(-Pad, 0f));
+        _state.Slot.ActiveSelf.Value = false;
 
         _cardButton = AddCardButton(Flip);
-        _driver = DriveCard(_cardButton, DashTheme.Surface, DashTheme.SurfaceHover, DashTheme.SurfacePressed);
+        _driver = DriveCard(_cardButton, DashTheme.GlassCard, DashTheme.GlassCardHover, DashTheme.GlassCardPressed);
         _known = false;
         Refresh();
     }
@@ -62,8 +88,27 @@ public abstract class ToggleWidgetPreset : HomeWidgetPreset
     {
         if (_cardButton == null || _cardButton.IsDestroyed)
             return;
+        ApplyCompact();
         Refresh();
         ListingStyle.SetInteractable(_cardButton, LiveInEditMode || !WidgetPanel.EditMode);
+    }
+
+    private void ApplyCompact()
+    {
+        float width = Slot.GetComponent<RectTransform>()?.LocalComputeRect.width ?? 0f;
+        if (width <= 1f || _title == null || _title.IsDestroyed)
+            return;
+        bool compact = width < CompactWidth;
+        if (_layoutKnown && _compact == compact)
+            return;
+        _layoutKnown = true;
+        _compact = compact;
+        _known = false;
+        var rect = SettingsUI.Rect(_title.Slot);
+        SettingsUI.SetAnchors(rect, new float2(0f, compact ? 0.45f : 0f), float2.One);
+        SettingsUI.SetOffsets(rect, new float2(_titleLeft, 0f), new float2(-Pad, compact ? -4f : 0f));
+        if (_state != null && !_state.IsDestroyed)
+            SetActive(_state.Slot, compact);
     }
 
     private void Flip()
@@ -80,18 +125,32 @@ public abstract class ToggleWidgetPreset : HomeWidgetPreset
         _known = true;
         _last = on;
 
-        color fill = on ? DashTheme.Accent : DashTheme.Surface;
+        if (IconOnly)
+        {
+            PaintIcon(_driver, on, true);
+            Repaint();
+            return;
+        }
+
+        color fill = on ? DashTheme.Accent : DashTheme.GlassCard;
         SetCardRamp(_driver, fill,
-            on ? DashTheme.AccentHover : DashTheme.SurfaceHover,
-            on ? DashTheme.AccentPressed : DashTheme.SurfacePressed);
+            on ? DashTheme.AccentHover : DashTheme.GlassCardHover,
+            on ? DashTheme.AccentPressed : DashTheme.GlassCardPressed);
         if (_title != null && !_title.IsDestroyed)
         {
-            ListingStyle.SetText(_title, TitleFor(on));
+            ListingStyle.SetText(_title, _compact ? Title : TitleFor(on));
             ListingStyle.SetTextColor(_title, WidgetScreen.OnFill(fill));
+        }
+        if (_state != null && !_state.IsDestroyed)
+        {
+            ListingStyle.SetText(_state, StateFor(on));
+            ListingStyle.SetTextColor(_state, on ? WidgetScreen.OnFill(fill) : DashTheme.TextDim);
         }
         Repaint();
     }
 
-    private string TitleFor(bool on)
-        => Title + ": " + (on ? "Widget.Toggle.On".AsLocale("On") : "Widget.Toggle.Off".AsLocale("Off")).Resolve();
+    private string TitleFor(bool on) => Title + ": " + StateFor(on);
+
+    private static string StateFor(bool on)
+        => (on ? "Widget.Toggle.On".AsLocale("On") : "Widget.Toggle.Off".AsLocale("Off")).Resolve();
 }

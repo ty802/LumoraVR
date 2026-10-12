@@ -9,6 +9,7 @@ using Lumora.Core.Math;
 namespace Lumora.Core.Components.UI;
 
 [ComponentCategory("Hidden")]
+[UserspaceOnly]
 public sealed class ConnectionWidgetPreset : WidgetPreset
 {
     public readonly AssetRef<FontSet> Font;
@@ -74,6 +75,10 @@ public sealed class ConnectionWidgetPreset : WidgetPreset
         RefreshStatus();
     }
 
+    // What the label last showed: -1 offline, 0 solo, -2 a guest, N hosting N others. The label is only
+    // rebuilt when that moves, not formatted every frame.
+    private int _shownState = int.MinValue;
+
     // Reflect the real network state of the active session (mirrors DebugScreen.BuildNetworkInfo:
     // reads Engine.Current.ActiveSessionTransferer.Session). No session = offline; a session with
     // only the local user = solo; otherwise connected with a peer count.
@@ -83,33 +88,39 @@ public sealed class ConnectionWidgetPreset : WidgetPreset
             return;
 
         var session = Engine.Current?.ActiveSessionTransferer?.Session;
-        string label;
-        color dot;
-
+        int state;
         if (session == null || session.IsDisposed)
         {
-            label = "Offline";
-            dot = OfflineDot;
+            state = -1;
         }
         else
         {
             var world = session.World;
             int users = world?.UserCount ?? 1;
             bool host = world?.IsAuthority ?? true;
-            if (users <= 1)
-            {
-                // A session exists but nobody else is in it: solo (your own hosted/home world).
-                label = "Solo";
-                dot = SoloDot;
-            }
-            else
-            {
-                int others = users - 1;
-                label = host
-                    ? $"Hosting ({others})"
-                    : "Connected";
-                dot = ConnectedDot;
-            }
+            state = users <= 1 ? 0 : host ? users - 1 : -2;
+        }
+        if (state == _shownState)
+            return;
+        _shownState = state;
+
+        string label;
+        color dot;
+        if (state == -1)
+        {
+            label = "Offline";
+            dot = OfflineDot;
+        }
+        else if (state == 0)
+        {
+            // A session exists but nobody else is in it: solo (your own hosted/home world).
+            label = "Solo";
+            dot = SoloDot;
+        }
+        else
+        {
+            label = state > 0 ? $"Hosting ({state})" : "Connected";
+            dot = ConnectedDot;
         }
 
         if (StatusText.Value != label)

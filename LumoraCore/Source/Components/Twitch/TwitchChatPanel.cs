@@ -9,6 +9,7 @@ using Helio.UI.Layout;
 using Lumora.Core.Assets;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.Import;
+using Lumora.Core.Components.Media;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Components.UI;
 using Lumora.Core.Localization;
@@ -216,6 +217,21 @@ public sealed class TwitchChatPanel : Component
         _status.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         _status.WordWrap.Value = false;
 
+        var closeUi = new UIBuilder(header);
+        closeUi.Font(_titleFont);
+        closeUi.PushStyle().MinWidth(32f).PreferredWidth(32f).FlexibleWidth(0f);
+        var close = closeUi.Button("×", OnClosePressed, DashTheme.Field);
+        closeUi.PopStyle();
+        close.Slot.Name.Value = "Close";
+        foreach (var driver in close.ColorDrivers)
+        {
+            if (driver == null || driver.IsDestroyed)
+                continue;
+            driver.HighlightColor.Value = DashTheme.Negative;
+            driver.PressedColor.Value = DashTheme.SurfacePressed;
+            driver.Apply();
+        }
+
         var body = content.AddSlot("Body");
         body.AttachComponent<RectTransform>();
         Metrics(body, 0f, 0f, 1f, 0f, 0f, 1f);
@@ -252,6 +268,26 @@ public sealed class TwitchChatPanel : Component
         // time a message needs it and kept for the life of the panel.
         _spriteRoot = _root.AddSlot("Sprites");
         _spriteSet = _spriteRoot.AttachComponent<SpriteSet>();
+    }
+
+    // A video player's chat goes back behind the player's Chat button. A chat standing on its own (put in the
+    // world from the camera, or popped out next to you) is removed. The canvas is local, so this runs on the
+    // machine of whoever pressed it; a press on something they may not change does nothing.
+    public void OnClosePressed(Button button, UIInteractionContext context)
+    {
+        if (Slot is not { IsDestroyed: false } slot)
+            return;
+        try
+        {
+            var part = slot.GetComponent<VideoPlayerPart>();
+            if (part != null && part.Tracked)
+                part.Player!.ClosePart(VideoPlayerPartKind.Chat);
+            else
+                slot.Destroy();
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     // BINDING

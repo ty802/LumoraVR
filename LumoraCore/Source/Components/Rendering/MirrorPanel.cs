@@ -11,7 +11,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-/// <summary>A framed mirror with local controls over the glass. Attach Mirror for a bare surface.</summary>
+// Mirror alone is the bare surface.
 [ComponentCategory("Rendering")]
 public sealed class MirrorPanel : Component, IInspectorActionHandler
 {
@@ -19,10 +19,12 @@ public sealed class MirrorPanel : Component, IInspectorActionHandler
     public readonly SyncRef<Mirror> Portal;
     private const float FrameMargin = 0.02f;
     private const float CanvasWidth = 560f;
-    private const float CanvasHeight = 396f;
+    private const float CanvasHeight = 560f;
     private Slot? _frameSlot, _controlsSlot, _contentSlot;
     private FontProvider? _font;
     private bool _settingsOpen, _refreshControls;
+    private Text? _resolutionStatus;
+    private string? _lastResolutionStatus;
 
     public MirrorPanel()
     {
@@ -91,6 +93,7 @@ public sealed class MirrorPanel : Component, IInspectorActionHandler
     public override void OnUpdate(float deltaTime)
     {
         base.OnUpdate(deltaTime);
+        UpdateResolutionStatus();
         if (!_refreshControls) return;
         _refreshControls = false;
         RebuildContent();
@@ -138,6 +141,8 @@ public sealed class MirrorPanel : Component, IInspectorActionHandler
     {
         if (_contentSlot == null || _contentSlot.IsDestroyed || Portal.Target is not { } mirror) return;
         _contentSlot.DestroyChildren();
+        _resolutionStatus = null;
+        _lastResolutionStatus = null;
         var toolbar = _contentSlot.AddSlot("Toolbar");
         BottomCentreRect(toolbar, 300f, 72f, 0f);
         var ui = Builder(toolbar);
@@ -164,7 +169,7 @@ public sealed class MirrorPanel : Component, IInspectorActionHandler
         if (!_settingsOpen) return;
 
         var popup = _contentSlot.AddSlot("Settings popover");
-        BottomCentreRect(popup, CanvasWidth, 312f, 84f);
+        BottomCentreRect(popup, CanvasWidth, 476f, 84f);
         var background = popup.AttachComponent<RoundedPanel>();
         background.Color.Value = DashTheme.GlassBackdrop;
         background.CornerRadius.Value = DashTheme.RadiusPanel;
@@ -180,7 +185,7 @@ public sealed class MirrorPanel : Component, IInspectorActionHandler
         FillRect(ui.Current);
         int pixels = mirror.LocalResolution > 0 ? mirror.LocalResolution : mirror.Resolution.Value;
         float distance = mirror.LocalRenderDistance ?? mirror.OverrideFarClip.Value ?? 40f;
-        Label(ui, "Max resolution");
+        Label(ui, "Resolution (longest side, per eye)");
         ui.PushStyle().MinHeight(56f).PreferredHeight(56f);
         ui.HorizontalLayout(8f);
         Choice(ui, "1K", OnQualityBalanced, pixels <= 1024);
@@ -189,6 +194,10 @@ public sealed class MirrorPanel : Component, IInspectorActionHandler
         Choice(ui, "8K", OnQualityMaximum, pixels > 4096);
         ui.NestOut();
         ui.PopStyle();
+        ui.PushStyle().FontSize(18f).TextColor(DashTheme.TextDim).MinHeight(24f).PreferredHeight(24f);
+        _resolutionStatus = ui.Text(string.Empty);
+        ui.PopStyle();
+        UpdateResolutionStatus();
         Label(ui, "Distance");
         ui.PushStyle().MinHeight(56f).PreferredHeight(56f);
         ui.HorizontalLayout(8f);
@@ -205,6 +214,28 @@ public sealed class MirrorPanel : Component, IInspectorActionHandler
         Choice(ui, "4:3", OnAspectStandard, MathF.Abs(ratio - 4f / 3f) < .01f);
         Choice(ui, "16:9", OnAspectWide, MathF.Abs(ratio - 16f / 9f) < .01f);
         Choice(ui, "9:16", OnAspectPortrait, MathF.Abs(ratio - 9f / 16f) < .01f);
+        ui.NestOut();
+        ui.PopStyle();
+        Label(ui, "Reflection (Lite renders users only)");
+        ui.PushStyle().MinHeight(56f).PreferredHeight(56f);
+        ui.HorizontalLayout(8f);
+        Choice(ui, mirror.ShadowsDisabled ? "Shadows: Off" : "Shadows: On", OnShadowsPressed, !mirror.ShadowsDisabled);
+        Choice(ui, mirror.LightsDisabled ? "Lights: Off" : "Lights: On", OnLightsPressed, !mirror.LightsDisabled);
+        Choice(ui, mirror.LocalUsersOnly ? "Lite: On" : "Lite: Off", OnUsersOnlyPressed, mirror.LocalUsersOnly);
+        ui.NestOut();
+        ui.PopStyle();
+    }
+
+    private void UpdateResolutionStatus()
+    {
+        if (_resolutionStatus == null || _resolutionStatus.IsDestroyed || Portal.Target is not { } mirror) return;
+        var size = mirror.LocalRenderedResolution;
+        string status = mirror.LocalRenderedViews > 0
+            ? $"Rendering {size.x} x {size.y}" + (mirror.LocalRenderedViews > 1 ? " per eye" : string.Empty)
+            : "Reflection paused";
+        if (status == _lastResolutionStatus) return;
+        _lastResolutionStatus = status;
+        _resolutionStatus.Content.Value = status;
     }
 
     private UIBuilder Builder(Slot slot)
@@ -238,6 +269,24 @@ public sealed class MirrorPanel : Component, IInspectorActionHandler
     public void OnPowerPressed(Button button, UIInteractionContext context)
     {
         if (Portal.Target is { } mirror) mirror.LocalRenderingEnabled = !mirror.LocalRenderingEnabled;
+        _refreshControls = true;
+    }
+
+    public void OnShadowsPressed(Button button, UIInteractionContext context)
+    {
+        if (Portal.Target is { } mirror) mirror.LocalDisableShadows = !mirror.ShadowsDisabled;
+        _refreshControls = true;
+    }
+
+    public void OnLightsPressed(Button button, UIInteractionContext context)
+    {
+        if (Portal.Target is { } mirror) mirror.LocalDisableLights = !mirror.LightsDisabled;
+        _refreshControls = true;
+    }
+
+    public void OnUsersOnlyPressed(Button button, UIInteractionContext context)
+    {
+        if (Portal.Target is { } mirror) mirror.LocalUsersOnly = !mirror.LocalUsersOnly;
         _refreshControls = true;
     }
 
@@ -282,6 +331,9 @@ public sealed class MirrorPanel : Component, IInspectorActionHandler
         if (string.IsNullOrEmpty(argument)) return;
         if (argument == "power") OnPowerPressed(null!, default);
         else if (argument == "settings") OnSettingsPressed(null!, default);
+        else if (argument == "shadows") OnShadowsPressed(null!, default);
+        else if (argument == "lights") OnLightsPressed(null!, default);
+        else if (argument == "users") OnUsersOnlyPressed(null!, default);
         else if (argument[0] == 'q' && int.TryParse(argument.AsSpan(1), out int pixels)) SetResolution(pixels);
         else if (argument[0] == 'd' && int.TryParse(argument.AsSpan(1), out int metres)) SetDistance(metres);
     }

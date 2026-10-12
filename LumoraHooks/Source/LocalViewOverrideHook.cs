@@ -61,7 +61,7 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
     public override void Initialize()
     {
         base.Initialize();
-        LumoraLogger.Log($"LocalViewOverrideHook: Initialized on '{Owner.Slot.SlotName.Value}'");
+        LumoraLogger.Debug($"LocalViewOverrideHook: Initialized on '{Owner.Slot.SlotName.Value}'");
     }
 
     public override void ApplyChanges()

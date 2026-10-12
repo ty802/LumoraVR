@@ -11,30 +11,25 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks;
 
-// Each eye renders through the mirror's physical rectangle using an off-axis frustum.
-// This keeps the clip plane on the glass and fills a fixed-resolution texture at every distance.
-// Older CameraPortal surfaces retain the screen-space sampling path below.
+// Rectangular mirrors use a glass-aligned off-axis frustum for each eye and surface UVs.
+// Generic CameraPortal surfaces retain screen projection and oblique clipping.
 [ImplementableHook(typeof(CameraPortal), typeof(Lumora.Core.Components.Mirror))]
 public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
 {
     private const int MaxViews = 2;
-    private const int MinEyeHeight = 64;
-    private const int MaxEyeHeight = Lumora.Core.Components.Mirror.MaximumResolution;
-    // Fraction of the exact plane depth the near plane is placed at: everything closer is clipped,
-    // and the plane itself keeps a margin so its own edge pixels are never cut.
-    private const float NearPlaneFraction = 0.97f;
+    private const int MinSide = 16;
+    // The surface is pulled this far toward the capture camera, so geometry resting on the glass is
+    // reflected whole rather than cut along the line it touches.
+    private const float ClipSlack = 0.0005f;
     private const int ShadowAtlas = 1024;
-    // Texture pixels per screen pixel the glass is rendered at. A little over one so the bilinear
-    // resample of the reflection never softens it below the eye's own sharpness.
-    private const float MirrorDensity = 1.25f;
-    // Render targets are reallocated on every size change, so sizes move in steps and shrink late.
-    private const int SizeStep = 64;
-    private const int ShrinkHysteresis = 128;
 
     private PortalProcessNode _processNode = null!;
     private readonly SubViewport?[] _viewports = new SubViewport?[MaxViews];
     private readonly Camera3D?[] _cameras = new Camera3D?[MaxViews];
-    private readonly int[] _settled = new int[MaxViews];
+    // One projection per capture, handed to the renderer every frame; a Godot array made per call was a
+    // finalizer job per eye per frame.
+    private readonly global::Godot.Collections.Array<Projection>?[] _projections = new global::Godot.Collections.Array<Projection>?[MaxViews];
+    private static readonly global::Godot.Collections.Array<Transform3D> NoOffset = new() { Transform3D.Identity };
     private static readonly List<SubViewport> _liveViewports = new();
     private static readonly object _liveViewportLock = new();
     public static void CollectLiveViewports(List<SubViewport> into)
@@ -63,6 +58,10 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
     private global::Godot.Environment? _sourceEnvironment;
     private global::Godot.Environment? _captureEnvironment;
     private bool _environmentDirty = true;
+    private bool _usersOnlyEnvironment;
+    private MirrorCaptureScene? _captureScene;
+    private readonly List<User> _captureUsers = new();
+    private readonly List<Node3D> _captureUserRoots = new();
 
     public override void Initialize()
     {
@@ -86,6 +85,7 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
                     viewport.QueueFree();
                 _viewports[i] = null;
                 _cameras[i] = null;
+                _projections[i] = null;
             }
             _clearEnvironment?.Dispose();
             _clearEnvironment = null;
@@ -96,6 +96,8 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
             _captureEnvironment = null;
             _offTexture?.Dispose();
             _offTexture = null;
+            _captureScene?.Dispose();
+            _captureScene = null;
             if (_processNode != null && GodotObject.IsInstanceValid(_processNode))
                 _processNode.QueueFree();
         }
@@ -152,11 +154,13 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
         var localNormal = owner.PlaneNormal.Value;
         if (localNormal.LengthSquared < 1e-8f)
             localNormal = Lumora.Core.Math.float3.Backward;
-        var planeNormal = (portalXf.Basis * new Vector3(localNormal.x, localNormal.y, localNormal.z)).Normalized();
+        var planeNormal = (portalXf.Basis.Inverse().Transposed()
+            * new Vector3(localNormal.x, localNormal.y, localNormal.z)).Normalized();
         var planePos = portalXf.Origin + planeNormal * owner.PlaneOffset.Value;
         var glassPos = planePos;
 
         bool portal = owner.RenderMode.Value == CameraPortal.Mode.Portal;
+        bool rectangularMirror = !portal && owner is Lumora.Core.Components.Mirror;
         var portalMap = Transform3D.Identity;
         if (portal)
         {
@@ -179,7 +183,7 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
 
         var viewerPos = viewer.GlobalTransform.Origin;
         if (owner.ActivationDistance.Value > 0f
-            && viewerPos.DistanceTo(planePos) > owner.ActivationDistance.Value)
+            && viewerPos.DistanceTo(portal ? glassPos : planePos) > owner.ActivationDistance.Value)
         {
             Park();
             return;
@@ -191,16 +195,6 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
             return;
         }
 
-        var xr = XRServer.PrimaryInterface;
-        bool stereo = viewerViewport.UseXR && xr != null && xr.IsInitialized() && xr.GetViewCount() >= 2;
-        int views = stereo ? 2 : 1;
-        bool surfaceMirror = !portal && owner.SurfaceSize.Value.x > 0f && owner.SurfaceSize.Value.y > 0f;
-
-        // Per-view transforms are relative to the XR origin, which is the camera's parent.
-        var originXf = viewer.GetParent() is Node3D origin ? origin.GlobalTransform : Transform3D.Identity;
-        var viewerSize = viewerViewport.GetVisibleRect().Size;
-        float viewerAspect = viewerSize.Y > 0f ? viewerSize.X / viewerSize.Y : 1f;
-
         var host = WorldManagerHook.Instance?.Root;
         if (host == null || !GodotObject.IsInstanceValid(host))
         {
@@ -208,26 +202,71 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
             return;
         }
 
+        var xr = XRServer.PrimaryInterface;
+        bool stereo = viewerViewport.UseXR && xr != null && xr.IsInitialized() && xr.GetViewCount() >= 2;
+        int views = stereo ? 2 : 1;
+
+        // Match XRCamera3D's tracker and camera transform, including recentering and user scale.
+        // The deprecated GetTransformForView reconstructs a different head pose in newer XR drivers.
+        var originXf = viewer.GetParent() is Node3D origin ? origin.GlobalTransform : Transform3D.Identity;
+        var viewerSize = ViewerPixels(viewerViewport);
+        float viewerAspect = viewerSize.Y > 0f ? viewerSize.X / viewerSize.Y : 1f;
+
+        // Mirrors allocate the selected longest side. Generic screen-projected portals retain a
+        // ceiling on the eye's pixel dimensions.
         var asset = owner.ReflectionTexture.Target?.Asset;
-        // The authored resolution is a CEILING. What renders is what the glass covers on screen, at
-        // MirrorDensity texture pixels per screen pixel: a mirror across the room costs a few hundred
-        // pixels a side, one you stand in front of gets the full preset, and either way the reflection
-        // is as sharp as the eye looking at it. A portal shows the eye's own view through the surface,
-        // so it is pinned to the eye's size and only gains the off-screen skip. -xlinka
         int ceiling = System.Math.Clamp(
             owner.LocalResolution > 0 ? owner.LocalResolution
                 : owner is Lumora.Core.Components.Mirror mirrorOwner ? mirrorOwner.Resolution.Value
-                : asset?.RenderHeight ?? 1024,
-            MinEyeHeight, MaxEyeHeight);
-        int assetWidthCap = System.Math.Max(MinEyeHeight, (asset?.RenderWidth ?? 2048) / views);
+                : System.Math.Max(asset?.RenderWidth ?? 2048, asset?.RenderHeight ?? 2048),
+            Lumora.Core.Components.Mirror.MinimumResolution, Lumora.Core.Components.Mirror.MaximumResolution);
         float renderScale = viewerViewport.Scaling3DScale > 0f && float.IsFinite(viewerViewport.Scaling3DScale)
             ? viewerViewport.Scaling3DScale : 1f;
         Vector2 eyePixels = (stereo ? xr!.GetRenderTargetSize() : viewerSize) * renderScale;
-        if (!(eyePixels.X >= 1f) || !(eyePixels.Y >= 1f))
-            eyePixels = new Vector2(1024f, 1024f);
+        var surfacePixels = new Vector2(owner.SurfaceSize.Value.x * portalXf.Basis.X.Length(),
+            owner.SurfaceSize.Value.y * portalXf.Basis.Y.Length());
+        var size = rectangularMirror ? MirrorCaptureMath.TextureSize(surfacePixels, ceiling)
+            : FitResolution(eyePixels, ceiling);
+
+        float near = System.Math.Max(0.001f, owner.OverrideNearClip.Value ?? viewer.Near);
+        float far = System.Math.Max(near + 0.01f, owner.LocalRenderDistance ?? owner.OverrideFarClip.Value ?? viewer.Far);
         var glassSize = owner.SurfaceSize.Value;
-        var glass = new Transform3D(portalXf.Basis, glassPos);
         bool hasGlass = glassSize.x > 0f && glassSize.y > 0f;
+        var glass = new Transform3D(portalXf.Basis, glassPos);
+        // A mirror keeps what is in front of its glass; a portal keeps what lies beyond its target.
+        var keepNormal = portal ? -planeNormal : planeNormal;
+
+        var eyeOffsets = stereo && viewer is XRCamera3D xrCamera
+            ? XRServer.GetCameraOffsets(xrCamera.Tracker) : null;
+        var eyeProjections = stereo && viewer is XRCamera3D xrLens
+            ? XRServer.GetCameraProjections(xrLens.Tracker, viewerAspect, near, far) : null;
+
+        var captureWorld = host.GetWorld3D();
+        if (owner.ShadowsDisabled || owner.LightsDisabled || owner.LocalUsersOnly)
+        {
+            _captureScene ??= new MirrorCaptureScene();
+            _captureUserRoots.Clear();
+            if (owner.LocalUsersOnly)
+            {
+                owner.World.GetAllUsers(_captureUsers);
+                foreach (var user in _captureUsers)
+                    if (user.Root?.Slot?.Hook is SlotHook hook && hook.GeneratedNode3D is { } root)
+                        _captureUserRoots.Add(root);
+            }
+            _captureScene.Update((owner.World.Hook as WorldHook)?.WorldRoot ?? host, _captureUserRoots,
+                owner.LocalUsersOnly, owner.ShadowsDisabled || owner.LightsDisabled, owner.LightsDisabled);
+            captureWorld = _captureScene.World;
+        }
+        else if (_captureScene != null)
+        {
+            // Detach both eyes before releasing the private scenario.
+            foreach (var oldViewport in _viewports)
+                if (oldViewport != null && GodotObject.IsInstanceValid(oldViewport)) oldViewport.World3D = captureWorld;
+            _captureScene.Dispose();
+            _captureScene = null;
+        }
+
+        int renderedViews = 0;
 
         for (int v = 0; v < views; v++)
         {
@@ -235,142 +274,182 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
             Projection projection;
             if (stereo)
             {
-                float requestNear = owner.OverrideNearClip.Value ?? viewer.Near;
-                float requestFar = owner.OverrideFarClip.Value ?? viewer.Far;
-                eye = xr!.GetTransformForView((uint)v, originXf);
-                projection = xr.GetProjectionForView((uint)v, viewerAspect, requestNear, requestFar);
+                if (eyeOffsets?.Count >= views && eyeProjections?.Count >= views)
+                {
+                    eye = viewer.GetCameraTransform() * eyeOffsets[v];
+                    projection = eyeProjections[v];
+                }
+                else
+                {
+#pragma warning disable CS0618 // Fallback for XR interfaces without camera-tracker support.
+                    eye = xr!.GetTransformForView((uint)v, originXf);
+                    projection = xr.GetProjectionForView((uint)v, viewerAspect, near, far);
+#pragma warning restore CS0618
+                }
             }
             else
             {
-                eye = viewer.GlobalTransform;
-                projection = viewer.GetCameraProjection();
+                eye = viewer.GetCameraTransform();
+                projection = WithDepthRange(viewer.GetCameraProjection(), near, far);
             }
 
-            Vector2 edgePixels = eyePixels;
-            if (hasGlass && !ProjectSurface(eye, projection, glass, new Vector2(glassSize.x, glassSize.y), eyePixels, out edgePixels))
+            if (hasGlass && !SurfaceInView(eye, projection, glass, new Vector2(glassSize.x, glassSize.y)))
             {
                 // None of the glass is in this eye's view: keep the last picture, skip the render.
                 SuspendView(v);
                 continue;
             }
 
-            if (surfaceMirror)
-            {
-                var surface = new Transform3D(portalXf.Basis, planePos);
-                float worldWidth = glassSize.x * portalXf.Basis.X.Length();
-                float worldHeight = glassSize.y * portalXf.Basis.Y.Length();
-                float aspect = worldHeight > 1e-6f ? worldWidth / worldHeight : 1f;
-                // The texture's long side follows the surface's long side; ask for enough that both
-                // axes reach MirrorDensity over the length they occupy on screen.
-                float needX = edgePixels.X * MirrorDensity;
-                float needY = edgePixels.Y * MirrorDensity;
-                float longSide = aspect >= 1f
-                    ? System.MathF.Max(needX, needY * aspect)
-                    : System.MathF.Max(needY, needX / aspect);
-                int resolution = Settle(v, longSide, ceiling);
-                if (!MirrorView.TryCreate(surface, new Vector2(glassSize.x, glassSize.y), eye.Origin, resolution,
-                    owner.LocalRenderDistance ?? owner.OverrideFarClip.Value ?? 40f, out var mirrorView))
-                {
-                    Park();
-                    return;
-                }
-                var mirrorViewport = EnsureViewport(v, host);
-                var mirrorCamera = _cameras[v]!;
-                mirrorView.Apply(mirrorCamera, mirrorViewport);
-                ConfigureCapture(mirrorCamera, mirrorViewport, owner);
-                continue;
-            }
-
-            // The near-plane rectangle this projection describes, and its centre. For a frustum matrix
-            // P, P[0][0] = 2n/(r-l) and P[2][0] = (r+l)/(r-l), so width = 2n/P00 and the centre is
-            // P20 * width / 2; the same down the other axis.
-            float zn = (float)projection.GetZNear();
-            float zf = (float)projection.GetZFar();
-            if (zn <= 0f || projection.X.X == 0f || projection.Y.Y == 0f)
-                continue;
-            float width = 2f * zn / projection.X.X;
-            float height = 2f * zn / projection.Y.Y;
-            float centreX = projection.Z.X * width * 0.5f;
-            float centreY = projection.Z.Y * height * 0.5f;
-            float eyeAspect = width / height;
-
             Transform3D cam;
-            if (portal)
+            if (rectangularMirror)
+            {
+                if (!MirrorCaptureMath.TryFrame(eye.Origin, glass, new Vector2(glassSize.x, glassSize.y),
+                    far, out cam, out projection))
+                {
+                    SuspendView(v);
+                    continue;
+                }
+            }
+            else if (portal)
             {
                 cam = portalMap * eye;
             }
             else
             {
+                // A camera cannot carry a reflection (its basis would be left-handed), so it is turned
+                // round instead and its projection mirrored left to right; the material flips the
+                // picture back when it samples it.
                 var pos = ReflectPoint(eye.Origin, planeNormal, planePos);
                 var forward = ReflectDirection(-eye.Basis.Z, planeNormal);
                 var up = ReflectDirection(eye.Basis.Y, planeNormal);
                 cam = new Transform3D(Basis.LookingAt(forward, up), pos);
-                centreX = -centreX;
+                projection = MirrorProjection(projection);
             }
 
-            float near = owner.OverrideNearClip.Value ?? zn;
-            float far = owner.OverrideFarClip.Value ?? zf;
-            near = System.Math.Max(0.001f, near);
-            far = System.Math.Max(near + 0.01f, far);
-
-            // Push the near plane out to the plane's nearest visible depth. The rectangle scales with
-            // the near distance to keep the same field of view.
-            float planeDepth = NearestPlaneDepth(cam, planeNormal, planePos, width, height, centreX, centreY, zn);
-            if (planeDepth > near)
-                near = System.Math.Min(planeDepth * NearPlaneFraction, far - 0.01f);
-            float scale = near / zn;
+            // The surface in this camera's view space, facing away from it. A camera on the kept side of
+            // its own plane is looking at the back of the glass and has nothing to show.
+            if (!rectangularMirror)
+            {
+                var toView = cam.AffineInverse();
+                var clipNormal = (toView.Basis * keepNormal).Normalized();
+                float clipDistance = clipNormal.Dot(toView * planePos) - ClipSlack;
+                if (!(clipDistance > 1e-5f) || !clipNormal.IsFinite())
+                {
+                    SuspendView(v);
+                    continue;
+                }
+                projection = ObliqueNearPlane(projection, clipNormal, clipDistance);
+            }
+            if (!IsFinite(projection))
+            {
+                SuspendView(v);
+                continue;
+            }
 
             var viewport = EnsureViewport(v, host);
             var camera = _cameras[v]!;
-
-            int eyeHeight = Settle(v, eyePixels.Y * MirrorDensity, ceiling);
-            int widthCap = System.Math.Min(assetWidthCap,
-                System.Math.Max(MinEyeHeight, (int)System.MathF.Ceiling(eyePixels.X * MirrorDensity)));
-            int eyeWidth = (int)System.MathF.Round(eyeHeight * eyeAspect);
-            int useHeight = eyeHeight;
-            if (eyeWidth > widthCap)
-            {
-                eyeWidth = widthCap;
-                useHeight = System.Math.Max(MinEyeHeight, (int)System.MathF.Round(widthCap / eyeAspect));
-            }
-            var wanted = new Vector2I(System.Math.Max(1, eyeWidth), System.Math.Max(1, useHeight));
-            if (viewport.Size != wanted)
-                viewport.Size = wanted;
-
-            // A frustum with no height (the viewer in the plane of the surface, or a surface scaled to
-            // nothing) is a projection the renderer cannot intersect; this view sits the frame out.
-            float frustumHeight = height * scale;
-            if (!float.IsFinite(frustumHeight) || frustumHeight <= 1e-5f
-                || !float.IsFinite(centreX * scale) || !float.IsFinite(centreY * scale))
-            {
-                viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
-                continue;
-            }
-            camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
-            camera.SetFrustum(frustumHeight, new Vector2(centreX * scale, centreY * scale), near, far);
+            if (!ReferenceEquals(viewport.World3D, captureWorld)) viewport.World3D = captureWorld;
+            if (viewport.Size != size)
+                viewport.Size = size;
+            ConfigureCapture(camera, viewport, owner, viewerViewport);
             camera.GlobalTransform = cam;
-            ConfigureCapture(camera, viewport, owner);
+            // Last: a change to the camera's own lens settings resets the projection to the node's.
+            var projections = _projections[v] ??= new global::Godot.Collections.Array<Projection> { Projection.Identity };
+            projections[0] = projection;
+            RenderingServer.CameraSetXRProjections(camera.GetCameraRid(), projections, NoOffset);
+            renderedViews++;
         }
 
         // An eye that is not in use this frame stops rendering rather than showing a stale picture.
         for (int v = views; v < MaxViews; v++)
-        {
-            var spare = _viewports[v];
-            if (spare != null && GodotObject.IsInstanceValid(spare))
-                spare.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
-        }
+            SuspendView(v);
 
         _parked = false;
-        Publish(views, asset);
+        owner.LocalRenderedResolution = renderedViews > 0 ? new Lumora.Core.Math.int2(size.X, size.Y) : default;
+        owner.LocalRenderedViews = renderedViews;
+        Publish(views);
     }
 
-    private void ConfigureCapture(Camera3D camera, SubViewport viewport, CameraPortal owner)
+    // The viewer's real pixels. Under canvas stretch the visible rect is the design size, so a mirror
+    // sized from it came out 1152 wide on any window and was stretched onto the glass. -xlinka
+    private static Vector2 ViewerPixels(Viewport viewport) => viewport switch
     {
+        Window window => new Vector2(window.Size.X, window.Size.Y),
+        SubViewport sub => new Vector2(sub.Size.X, sub.Size.Y),
+        _ => viewport.GetVisibleRect().Size,
+    };
+
+    private static Vector2I FitResolution(Vector2 eyePixels, int ceiling)
+    {
+        if (!(eyePixels.X >= 1f) || !(eyePixels.Y >= 1f) || !eyePixels.IsFinite())
+            eyePixels = new Vector2(1024f, 1024f);
+        float longSide = System.MathF.Max(eyePixels.X, eyePixels.Y);
+        float scale = longSide > ceiling ? ceiling / longSide : 1f;
+        return new Vector2I(
+            System.Math.Max(MinSide, (int)System.MathF.Round(eyePixels.X * scale)),
+            System.Math.Max(MinSide, (int)System.MathF.Round(eyePixels.Y * scale)));
+    }
+
+    // The viewer's perspective with its depth range swapped. The near plane is replaced by the surface
+    // later; the far plane is where the reflection stops.
+    private static Projection WithDepthRange(Projection projection, float near, float far)
+    {
+        float depth = far - near;
+        projection.Z.Z = -(far + near) / depth;
+        projection.W.Z = -2f * near * far / depth;
+        return projection;
+    }
+
+    // The projection seen in a mirror: x in and x out both negated, which keeps every off-axis and skew
+    // term of a headset's eye frustum and only swaps its left and right.
+    private static Projection MirrorProjection(Projection p)
+    {
+        p.Y.X = -p.Y.X;
+        p.Z.X = -p.Z.X;
+        p.W.X = -p.W.X;
+        p.X.Y = -p.X.Y;
+        p.X.Z = -p.X.Z;
+        p.X.W = -p.X.W;
+        return p;
+    }
+
+    // Replaces the near plane of a perspective projection with an arbitrary plane in view space (normal
+    // facing the kept side, camera behind it), keeping the far plane as close to where it was as the
+    // tilt allows: the clip-space corner opposite the plane stays on the far plane.
+    private static Projection ObliqueNearPlane(Projection p, Vector3 normal, float distance)
+    {
+        var plane = new Vector4(normal.X, normal.Y, normal.Z, -distance);
+        var corner = new Vector4(
+            (System.MathF.Sign(plane.X) + p.Z.X) / p.X.X,
+            (System.MathF.Sign(plane.Y) + p.Z.Y) / p.Y.Y,
+            -1f,
+            (1f + p.Z.Z) / p.W.Z);
+        var scaled = plane * (2f / plane.Dot(corner));
+        p.X.Z = scaled.X;
+        p.Y.Z = scaled.Y;
+        p.Z.Z = scaled.Z + 1f;
+        p.W.Z = scaled.W;
+        return p;
+    }
+
+    private static bool IsFinite(in Projection p)
+        => p.X.IsFinite() && p.Y.IsFinite() && p.Z.IsFinite() && p.W.IsFinite();
+
+    private void ConfigureCapture(Camera3D camera, SubViewport viewport, CameraPortal owner, Viewport viewerViewport)
+    {
+        // Make the capture a render dependency of the eye viewport, including after a VR mode switch.
+        // Otherwise sibling viewport ordering can make the glass sample the previous frame.
+        RenderingServer.ViewportSetParentViewport(viewport.GetViewportRid(), viewerViewport.GetViewportRid());
         camera.CullMask = unchecked((uint)(RenderHelper.PUBLIC_RENDER_MASK
             & ~RenderHelper.FREECAM_INDICATOR_LAYER & ~RenderHelper.MIRROR_LAYER));
         var viewer = RenderHelper.ViewerCamera?.Invoke();
         var source = owner.OverrideClear.Value ? ClearEnvironment(owner)
-            : viewer?.Environment ?? camera.GetWorld3D()?.Environment;
+            : viewer?.Environment ?? viewer?.GetWorld3D()?.Environment;
+        if (_usersOnlyEnvironment != owner.LocalUsersOnly)
+        {
+            _usersOnlyEnvironment = owner.LocalUsersOnly;
+            _environmentDirty = true;
+        }
         if (!ReferenceEquals(source, _sourceEnvironment))
         {
             if (_sourceEnvironment != null && GodotObject.IsInstanceValid(_sourceEnvironment))
@@ -390,43 +469,34 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
             _captureEnvironment.GlowEnabled = false;
             _captureEnvironment.AdjustmentEnabled = false;
             _captureEnvironment.SsrEnabled = false;
+            if (owner.LocalUsersOnly)
+            {
+                _captureEnvironment.BackgroundMode = global::Godot.Environment.BGMode.Color;
+                _captureEnvironment.BackgroundColor = new Color(0.018f, 0.025f, 0.04f);
+                _captureEnvironment.FogEnabled = false;
+                _captureEnvironment.VolumetricFogEnabled = false;
+                _captureEnvironment.SsaoEnabled = false;
+                _captureEnvironment.SsilEnabled = false;
+                _captureEnvironment.SdfgiEnabled = false;
+            }
             _environmentDirty = false;
         }
-        camera.Environment = _captureEnvironment;
+        if (!ReferenceEquals(camera.Environment, _captureEnvironment))
+            camera.Environment = _captureEnvironment;
+        if (_captureScene != null && !ReferenceEquals(_captureScene.World.Environment, _captureEnvironment))
+            _captureScene.World.Environment = _captureEnvironment;
+        // Match the viewer's edge antialiasing; the reflection shader filters surface minification.
+        if (viewport.Msaa3D != viewerViewport.Msaa3D)
+            viewport.Msaa3D = viewerViewport.Msaa3D;
         viewport.MeshLodThreshold = EngineSettings.MeshLodThreshold;
-        viewport.PositionalShadowAtlasSize = owner.DisableShadows.Value ? 0 : ShadowAtlas;
+        viewport.PositionalShadowAtlasSize = owner.ShadowsDisabled || owner.LightsDisabled ? 0 : ShadowAtlas;
+        viewport.DebugDraw = owner.LightsDisabled ? Viewport.DebugDrawEnum.Unshaded : Viewport.DebugDrawEnum.Disabled;
         viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        // This view shows the wearer's own body, so the lights have to reach it this frame.
+        ShadowBudget.FilmLocalHead();
     }
 
     private void EnvironmentChanged() => _environmentDirty = true;
-
-    // The exact nearest depth of the plane over the frustum: the quotient (r.v)/(r.n) is minimised at a
-    // corner, so the four corner rays are the whole answer. Zero when the plane is not in front.
-    private static float NearestPlaneDepth(in Transform3D cam, Vector3 planeNormal, Vector3 planePos,
-        float width, float height, float centreX, float centreY, float zn)
-    {
-        var camPos = cam.Origin;
-        float perpendicular = (planePos - camPos).Dot(planeNormal);
-        if (perpendicular <= 0f)
-            return 0f;
-
-        var basis = cam.Basis;
-        var forward = -basis.Z;
-        float best = float.MaxValue;
-        for (int corner = 0; corner < 4; corner++)
-        {
-            float x = centreX + ((corner & 1) == 0 ? -width : width) * 0.5f;
-            float y = centreY + ((corner & 2) == 0 ? -height : height) * 0.5f;
-            var ray = (basis.X * x + basis.Y * y + forward * zn).Normalized();
-            float rn = ray.Dot(planeNormal);
-            if (rn <= 1e-5f)
-                return 0f;
-            float depth = perpendicular / rn * ray.Dot(forward);
-            if (depth < best)
-                best = depth;
-        }
-        return best == float.MaxValue ? 0f : best;
-    }
 
     private static Vector3 ReflectPoint(Vector3 point, Vector3 normal, Vector3 planePoint)
         => point - normal * (2f * (point - planePoint).Dot(normal));
@@ -448,9 +518,8 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
             OwnWorld3D = false,
             HandleInputLocally = false,
             Disable3D = false,
-            // A fixed full-detail capture: the reflected camera's changing frustum must not
-            // trigger mesh LOD pops or a distance-dependent resolution/AA preset.
-            Msaa3D = Viewport.Msaa.Msaa2X,
+            // The reflected camera's frustum changes with every step the viewer takes; mesh detail must
+            // not pop with it.
             MeshLodThreshold = EngineSettings.MeshLodThreshold,
             Scaling3DScale = 1f,
             UseTaa = false,
@@ -479,17 +548,11 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
         return viewport;
     }
 
-    // The pictures reach the material through the render texture asset, which every material bound
-    // through the ordinary path. Re-notifying it is what rebinds them, and that only has to happen when
-    // the set of pictures changes, not every frame. -xlinka
-    // The glass as one eye sees it: the longest projected edge along each surface axis, in that eye's
-    // pixels, and whether any of it lies inside the view. A corner behind the eye counts as covering
-    // the view twice over; that close, the ceiling is the right answer and clipping is not worth the risk.
-    private static bool ProjectSurface(in Transform3D eye, in Projection projection, in Transform3D surface,
-        Vector2 size, Vector2 viewPixels, out Vector2 edgePixels)
+    // Whether any of the glass lies inside this eye's view. A corner behind the eye counts as in view:
+    // that close, rendering is the safe answer.
+    private static bool SurfaceInView(in Transform3D eye, in Projection projection, in Transform3D surface, Vector2 size)
     {
         var toView = eye.AffineInverse();
-        Span<Vector2> corners = stackalloc Vector2[4];
         float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
         for (int i = 0; i < 4; i++)
         {
@@ -499,39 +562,17 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
             var view = toView * corner;
             var clip = projection * new Vector4(view.X, view.Y, view.Z, 1f);
             if (!(clip.W > 1e-5f))
-            {
-                edgePixels = viewPixels * 2f;
                 return true;
-            }
             float nx = clip.X / clip.W;
             float ny = clip.Y / clip.W;
             if (!float.IsFinite(nx) || !float.IsFinite(ny))
-            {
-                edgePixels = viewPixels * 2f;
                 return true;
-            }
-            corners[i] = new Vector2(nx * 0.5f * viewPixels.X, ny * 0.5f * viewPixels.Y);
             minX = System.MathF.Min(minX, nx);
             maxX = System.MathF.Max(maxX, nx);
             minY = System.MathF.Min(minY, ny);
             maxY = System.MathF.Max(maxY, ny);
         }
-        float edgeX = System.MathF.Max(corners[1].DistanceTo(corners[0]), corners[3].DistanceTo(corners[2]));
-        float edgeY = System.MathF.Max(corners[2].DistanceTo(corners[0]), corners[3].DistanceTo(corners[1]));
-        edgePixels = new Vector2(edgeX, edgeY);
         return maxX >= -1f && minX <= 1f && maxY >= -1f && minY <= 1f;
-    }
-
-    // Sizes move in SizeStep pixel steps, grow at once and shrink only once they are clearly smaller,
-    // so a viewer swaying in place does not reallocate render targets every frame.
-    private int Settle(int view, float needed, int ceiling)
-    {
-        int quantised = (int)System.MathF.Ceiling(System.Math.Max(1f, needed) / SizeStep) * SizeStep;
-        quantised = System.Math.Clamp(quantised, MinEyeHeight, ceiling);
-        int current = _settled[view];
-        if (current <= 0 || quantised > current || quantised <= current - ShrinkHysteresis || current > ceiling)
-            _settled[view] = quantised;
-        return _settled[view];
     }
 
     private void SuspendView(int view)
@@ -541,7 +582,10 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
             viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
     }
 
-    private void Publish(int views, Lumora.Core.Assets.RenderTexture? asset)
+    // The pictures reach the material through the render texture asset, which every material bound
+    // through the ordinary path. Re-notifying it is what rebinds them, and that only has to happen when
+    // the set of pictures changes, not every frame. -xlinka
+    private void Publish(int views)
     {
         if (_boundTexture == null || _publishedViews == views)
             return;
@@ -551,7 +595,7 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
             left != null && GodotObject.IsInstanceValid(left) ? left.GetTexture() : null,
             right != null && GodotObject.IsInstanceValid(right) ? right.GetTexture() : null);
         _publishedViews = views;
-        asset?.NotifyBackingReady();
+        _boundAsset?.NotifyBackingReady();
     }
 
     private global::Godot.Environment ClearEnvironment(CameraPortal owner)
@@ -579,6 +623,11 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
 
     private void Park()
     {
+        if (Owner != null)
+        {
+            Owner.LocalRenderedResolution = default;
+            Owner.LocalRenderedViews = 0;
+        }
         if (_parked)
             return;
         _parked = true;
@@ -595,11 +644,7 @@ public sealed partial class CameraPortalHook : ComponentHook<CameraPortal>
             _publishedViews = -1;
         }
         for (int i = 0; i < MaxViews; i++)
-        {
-            var viewport = _viewports[i];
-            if (viewport != null && GodotObject.IsInstanceValid(viewport))
-                viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
-        }
+            SuspendView(i);
     }
 
     private void ReleaseTexture()

@@ -10,7 +10,7 @@ namespace Lumora.Core.Components;
 //
 // It owns no picture of its own. Every frame it takes the viewer's eye, reflects it across this slot's
 // plane (Mirror) or carries it through to PortalTarget's space (Portal), renders the world from there
-// into ReflectionTexture, and the ReflectionMaterial on Renderer draws that texture in screen
+// into ReflectionTexture. Rectangular Mirrors use surface UVs; generic portals use screen
 // projection. In VR that is two renders, one per eye, which is what makes a mirror have depth instead
 // of looking like a photograph of one.
 //
@@ -18,8 +18,8 @@ namespace Lumora.Core.Components;
 // never sits exactly on the surface it is reflecting and z-fights with it. Backward, because that is
 // the way a QuadMesh faces, so a mirror is a quad with this on it and nothing to line up.
 //
-// Resolution is not here. It lives on the RenderTextureProvider this points at: the texture is the
-// thing with a size. -xlinka
+// Mirror.Resolution sets the capture's longest side; other portals use their render texture's size
+// as a ceiling. LocalResolution overrides either for this viewer.
 [ComponentCategory("Rendering")]
 public class CameraPortal : ImplementableComponent
 {
@@ -49,17 +49,15 @@ public class CameraPortal : ImplementableComponent
     public readonly Sync<ClearMode> Clear;
     public readonly Sync<color> ClearColor;
 
-    // Kept for imports. The renderer has no per-viewport light switch, so this changes nothing here;
-    // DisableShadows does.
+    // Authored defaults; panel overrides below are local to each viewer.
     public readonly Sync<bool> DisablePerPixelLights;
     public readonly Sync<bool> DisableShadows;
 
     public readonly Sync<float?> OverrideFarClip;
     public readonly Sync<float?> OverrideNearClip;
 
-    // A rectangular mirror can align its capture camera with the surface. This gives an exact
-    // clipping plane even at grazing angles, and spends the texture on the glass instead of the screen.
-    // Zero retains screen projection for arbitrary imported portal surfaces.
+    // The glass rectangle, for knowing when it is out of view and skipping the render. Zero for a surface
+    // of any other shape, which renders whenever it is active and in range.
     public readonly Sync<float2> SurfaceSize;
     public readonly Sync<float> ActivationDistance;
 
@@ -67,6 +65,14 @@ public class CameraPortal : ImplementableComponent
     public bool LocalRenderingEnabled { get; set; } = true;
     public int LocalResolution { get; set; }
     public float? LocalRenderDistance { get; set; }
+    public bool? LocalDisableShadows { get; set; }
+    public bool? LocalDisableLights { get; set; }
+    public bool LocalUsersOnly { get; set; }
+    public bool ShadowsDisabled => LocalDisableShadows ?? DisableShadows.Value;
+    public bool LightsDisabled => LocalDisableLights ?? DisablePerPixelLights.Value;
+    // Actual backing dimensions, reported by the renderer (zero while stopped).
+    public int2 LocalRenderedResolution { get; set; }
+    public int LocalRenderedViews { get; set; }
 
     public CameraPortal()
     {
@@ -104,9 +110,8 @@ public class CameraPortal : ImplementableComponent
         KeepMaterialSamplingInStep();
     }
 
-    // A mirror's picture is rendered with a proper camera and un-mirrored on sampling; a portal's must
-    // not be. The material is the only thing that can act on that, and it does not know our mode, so
-    // this keeps it told. See ReflectionMaterial.MirrorSampling. -xlinka
+    // Glass-aligned captures already match the quad's UVs. Screen-projected mirror captures need
+    // horizontal reversal; portals do not. Apply this to restored materials as well as new ones.
     private void KeepMaterialSamplingInStep()
     {
         var renderer = Renderer.Target;
@@ -114,15 +119,15 @@ public class CameraPortal : ImplementableComponent
             return;
 
         bool mirror = RenderMode.Value == Mode.Mirror;
+        bool surfaceSampling = mirror && this is Mirror;
         for (int i = 0; i < renderer.Materials.Count; i++)
         {
             if (renderer.Materials.GetElement(i).Target is ReflectionMaterial material)
             {
-                bool surface = mirror && SurfaceSize.Value.x > 0f && SurfaceSize.Value.y > 0f;
-                if (material.MirrorSampling.Value != (mirror && !surface))
-                    material.MirrorSampling.Value = mirror && !surface;
-                if (material.SurfaceUVSampling.Value != surface)
-                    material.SurfaceUVSampling.Value = surface;
+                if (material.MirrorSampling.Value != (mirror && !surfaceSampling))
+                    material.MirrorSampling.Value = mirror && !surfaceSampling;
+                if (material.SurfaceUVSampling.Value != surfaceSampling)
+                    material.SurfaceUVSampling.Value = surfaceSampling;
             }
         }
     }

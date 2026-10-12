@@ -11,6 +11,7 @@ namespace Lumora.Core.Components.Interaction;
 // last pose, which is what keeps the dash pointable through that gap. Desktop doesn't depend on any
 // of this: its pointer aims off the flat free-cursor ray and ignores the rig pose entirely. -xlinka
 [ComponentCategory("Interaction")]
+[UserspaceOnly]
 public sealed class UserspaceViewMirror : Component
 {
     public override void OnLateUpdate(float delta)

@@ -32,6 +32,47 @@ public static class DashGlass
         return material;
     }
 
+    // A capture made on a clear background, shown over the world it floats in: what the capture leaves
+    // uncovered is the world behind it, blurred and darkened. Past the depth buffer like any userspace
+    // surface, so nothing in the room covers it.
+    public const string CompositeShader = "res://Shaders/DashComposite.gdshader";
+
+    public static CustomShaderMaterial AttachComposite(Slot slot, IAssetProvider<TextureAsset> capture, int renderQueue)
+    {
+        var material = slot.GetComponent<CustomShaderMaterial>() ?? slot.AttachComponent<CustomShaderMaterial>();
+        material.ShaderPath.Value = CompositeShader;
+        material.BlendMode.Value = BlendMode.Alpha;
+        material.Culling.Value = Culling.None;
+        material.RenderQueue.Value = renderQueue;
+        ShaderUniformParam? texture = null;
+        foreach (var param in material.Parameters)
+        {
+            if (param.Name.Value == "dash_tex")
+                texture = param;
+        }
+        if (texture == null)
+        {
+            texture = material.Parameters.Add();
+            texture.Name.Value = "dash_tex";
+            texture.Type.Value = ShaderUniformType.Texture2D;
+        }
+        texture.Texture.Target = capture;
+        return material;
+    }
+
+    // The texture a composite material shows, for code that has to follow it.
+    public static IAssetProvider<TextureAsset>? CompositeCapture(CustomShaderMaterial? material)
+    {
+        if (material == null)
+            return null;
+        foreach (var param in material.Parameters)
+        {
+            if (param.Name.Value == "dash_tex")
+                return param.Texture.Target;
+        }
+        return null;
+    }
+
     private static void AddColor(CustomShaderMaterial material, string name, colorHDR value)
     {
         var param = material.Parameters.Add();

@@ -12,7 +12,7 @@ using Lumora.Core.Math;
 namespace Lumora.Core.Components.UI;
 
 [ComponentCategory("Hidden")]
-public class DashSurfacePortal : Component, ILaserPointerTarget, ITouchSurface
+public class DashSurfacePortal : Component, ILaserPointerTarget, ILaserAxisTarget, ITouchSurface
 {
     private UserspaceDashboard? _dash;
 
@@ -22,7 +22,7 @@ public class DashSurfacePortal : Component, ILaserPointerTarget, ITouchSurface
     {
         return new InteractionDescription
         {
-            Name = "Dashboard",
+            Name = Dash()?.HoveredTip(laser) ?? "Dashboard",
             Cursor = LaserCursor.Default,
         };
     }
@@ -51,7 +51,7 @@ public class DashSurfacePortal : Component, ILaserPointerTarget, ITouchSurface
         if (dash == null)
             return;
 
-        if (!TryProject(rayOrigin, rayDirection, out var local, out _))
+        if (!TryProject(rayOrigin, rayDirection, out var local, out var world))
         {
             dash.ClearVrPointer(laser, pointerId);
             return;
@@ -60,13 +60,26 @@ public class DashSurfacePortal : Component, ILaserPointerTarget, ITouchSurface
         var size = SurfaceSize();
         float u = local.x / size.x + 0.5f;
         float v = 0.5f - local.y / size.y;
-        dash.UpdateVrPointer(laser, pointerId, new float2(u, v), isPressed);
+        dash.UpdateVrPointer(laser, pointerId, new float2(u, v), isPressed, (world - rayOrigin).Length);
     }
 
     public void ClearLaserPointer(InteractionLaser laser, int pointerId)
     {
         Dash()?.ClearVrPointer(laser, pointerId);
     }
+
+    public bool TryGetLaserDragPoint(InteractionLaser laser, in float3 rayOrigin, in float3 rayDirection, out float3 point)
+        => TryProject(rayOrigin, rayDirection, out _, out point);
+
+    // Headset only: on a monitor the window's own wheel feed already reaches the dash, and taking the
+    // laser's wheel here as well would scroll every notch twice.
+    public bool ProcessLaserAxis(InteractionLaser laser, int pointerId, in float2 axis)
+        => InHeadset && Dash()?.ProcessVrAxis(laser, pointerId, axis) == true;
+
+    public bool WantsLaserAxis(InteractionLaser laser, int pointerId)
+        => InHeadset && Dash()?.WantsVrAxis(laser, pointerId) == true;
+
+    private static bool InHeadset => Engine.Current?.InputInterface?.IsVRActive == true;
 
     // The grab and the release of a laser pointing at the surface, forwarded to the dash canvas under
     // the same pointer id its hover runs on: a widget lifts off a grid, a carried widget lands on one.

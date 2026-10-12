@@ -28,6 +28,10 @@ internal sealed class DashScrollbar
     private const float MinHandleHeight = 30f;
     private const float HandleInset = 2f;
     private const int MaxRetries = 30;
+    // A held handle eases toward where the pointer puts it, per second. The handle is geared to the content
+    // (ten pages of list move ten pages per handle length), so the shake of a hand held still would shake the
+    // list by rows; eased, a held handle reads still and a moving one still keeps up.
+    private const float HandleFollowRate = 18f;
 
     private readonly Slot _track;
     private readonly RectTransform _handle;
@@ -39,6 +43,8 @@ internal sealed class DashScrollbar
     private Action? _moved;
     private float _pressY;
     private float _pressScroll;
+    private float _dragTarget;
+    private bool _dragging;
     private int _retries;
     private bool _retryQueued;
 
@@ -82,16 +88,29 @@ internal sealed class DashScrollbar
         handle.AnchorMax.Value = new float2(1f, 1f);
         handle.OffsetMin.Value = new float2(HandleInset, -(MinHandleHeight * 2f));
         handle.OffsetMax.Value = new float2(-HandleInset, 0f);
-        SettingsUI.Panel(handleSlot, DashTheme.Accent, color.Transparent, DashTheme.RadiusControl);
+        var handlePanel = SettingsUI.Panel(handleSlot, DashTheme.Accent, color.Transparent, DashTheme.RadiusControl);
 
         var bar = new DashScrollbar(track, handle);
 
         // The handle is the draggable element (classic scrollbar feel); the viewport's own ScrollRect
         // already takes drag-on-content and the wheel.
-        var interaction = handleSlot.AttachComponent<InteractionElement>();
+        var interaction = CreateHandleInteraction(handleSlot, handlePanel.Color);
         interaction.Pressed += bar.OnPress;
         interaction.Dragged += bar.OnDrag;
+        interaction.Released += bar.OnRelease;
         return bar;
+    }
+
+    // The vertical and horizontal bars use the same feedback while keeping their normal handle color.
+    internal static InteractionElement CreateHandleInteraction(Slot handle, IField<color> tint)
+    {
+        var interaction = handle.AttachComponent<InteractionElement>();
+        var driver = interaction.AddColorDriver(tint, tint.Value, InteractionColorMode.Direct);
+        driver.HighlightColor.Value = DashTheme.AccentHover;
+        driver.PressedColor.Value = DashTheme.AccentPressed;
+        driver.DisabledColor.Value = DashTheme.TextMuted;
+        driver.Apply(interaction);
+        return interaction;
     }
 
     // Point at the scroll this bar drives. moved runs after the bar itself changes the scroll, for the
@@ -116,8 +135,11 @@ internal sealed class DashScrollbar
 
     private void OnPress(UIInteractionContext context)
     {
+        _scroll?.StopScrolling();
         _pressY = context.LocalPoint.y;
         _pressScroll = _scroll?.AbsolutePosition.y ?? 0f;
+        _dragTarget = _pressScroll;
+        _dragging = false;
     }
 
     private void OnDrag(UIInteractionContext context)
@@ -134,9 +156,36 @@ internal sealed class DashScrollbar
         // Dragging the handle down (local Y decreases) scrolls the content down.
         float deltaY = context.LocalPoint.y - _pressY;
         float scrolled = _pressScroll - deltaY * (maxScroll / travel);
-        _scroll!.AbsolutePosition = new float2(0f, System.Math.Clamp(scrolled, 0f, maxScroll));
+        _dragTarget = System.Math.Clamp(scrolled, 0f, maxScroll);
+        _dragging = true;
+        float shown = Follow(_scroll!.AbsolutePosition.y, _dragTarget, _scroll.World);
+        _scroll.AbsolutePosition = new float2(0f, System.Math.Clamp(shown, 0f, maxScroll));
         Refresh();
         _moved?.Invoke();
+    }
+
+    // Let go, the list lands where the last drag frame put the handle; the release point itself carries the
+    // jolt of letting go.
+    private void OnRelease(UIInteractionContext context)
+    {
+        if (!_dragging)
+            return;
+        _dragging = false;
+        if (_scroll == null || _scroll.IsDestroyed || !Measure(out float viewportHeight, out float contentHeight))
+            return;
+        float maxScroll = MathF.Max(0f, contentHeight - viewportHeight);
+        _scroll.AbsolutePosition = new float2(0f, System.Math.Clamp(_dragTarget, 0f, maxScroll));
+        Refresh();
+        _moved?.Invoke();
+    }
+
+    // One step of the held handle's easing toward its target. A mouse holds still; only a headset eases.
+    internal static float Follow(float shown, float target, World? world)
+    {
+        float dt = world?.Time.Delta ?? 0f;
+        if (dt <= 0f || Engine.Current?.InputInterface?.IsVRActive != true)
+            return target;
+        return shown + (target - shown) * (1f - MathF.Exp(-HandleFollowRate * dt));
     }
 
     // Size and place the handle for whatever the content is now. Safe to call every frame and cheap when

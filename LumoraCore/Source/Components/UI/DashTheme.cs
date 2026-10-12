@@ -45,6 +45,20 @@ public static class DashTheme
     public static readonly color SurfacePressed = S(0.235f, 0.224f, 0.325f, 1f);
     public static readonly color Field = S(0.086f, 0.082f, 0.125f, 1f);
 
+    // Glass. The dash is captured onto a clear background and laid over a blurred, darkened view of the
+    // world, so whatever these leave uncovered is the world behind the dash. The veil is the dash body, thin
+    // enough that the empty desk is plainly the room; windows carry the most colour because they carry the
+    // most text; the chrome sits between; cards on the desk let a little more through than a window. The
+    // composite darkens the room under each in step with how much it covers. -xlinka
+    public static readonly color Veil = new color(Backdrop.r, Backdrop.g, Backdrop.b, 0.15f);
+    public static readonly color GlassWindow = new color(Panel.r, Panel.g, Panel.b, 0.84f);
+    public static readonly color GlassChrome = new color(Panel.r, Panel.g, Panel.b, 0.74f);
+    public static readonly color GlassCard = new color(Surface.r, Surface.g, Surface.b, 0.66f);
+    public static readonly color GlassCardHover = new color(SurfaceHover.r, SurfaceHover.g, SurfaceHover.b, 0.78f);
+    public static readonly color GlassCardPressed = new color(SurfacePressed.r, SurfacePressed.g, SurfacePressed.b, 0.86f);
+    // A modal only darkens the UI behind it; a coloured fill can brighten the darkest surfaces.
+    public static readonly color ModalScrim = new color(0f, 0f, 0f, 0.62f);
+
     // Edges are hairlines of white, never a second colored border around a colored panel. The alphas
     // are lower than a design tool would show because S() only fixes the color channels: the blend
     // itself happens in linear, where 7% white over a near-black surface lands at sRGB 0.32, not the

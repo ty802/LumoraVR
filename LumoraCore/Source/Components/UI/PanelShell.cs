@@ -50,6 +50,22 @@ public class PanelShell : UIComponent
     private Slot? _glassSlot;
     private const float GlassMargin = 12f;
     private const float GlassDepth = 6f;
+    // A hand closing near the panel takes it: a thin trigger box behind the face, the size of the glass. It
+    // sits clear of the face so a fingertip reaching for a button meets the canvas first, and it is a trigger
+    // with raycasts off, so it is never a wall to walk into and no beam stops on it. Its own peer builds it
+    // on a local slot; nothing about it is saved or sent. In panel units, about a centimetre at the usual
+    // panel scale. -xlinka
+    private const float GrabVolumeGap = 2f;
+    private const float GrabVolumeDepth = 12f;
+    // Below a prop's default, so a grip with a prop and a panel both in reach takes the prop alone.
+    private const int PanelGrabPriority = -1;
+    private Slot? _grabVolumeSlot;
+    private BoxCollider? _grabVolume;
+    // The glass draws GlassMargin past the canvas on every side; this stops the beam on that rim the way the
+    // backing stops it on the face. First under the canvas, so everything drawn after it still takes the
+    // pointer inside the face.
+    private Slot? _rimSlot;
+    private RectTransform? _rimRect;
     // Nested chunks all pack into the top of one render-priority band, so a chunk with more surfaces
     // reaches further down it - and the title-bar row, sitting on the header's own background chunk, had
     // every image and clipped label drawn UNDER that background: only one text surface won the tie. The
@@ -222,7 +238,17 @@ public class PanelShell : UIComponent
         // find-or-create: a fresh panel builds the structure; after a load these reconnect to the
         // already-deserialized children/components instead of duplicating them.
         _rootRect = RectTransform ?? Slot.GetOrAttachComponent<RectTransform>();
-        _grabbable = Slot.GetOrAttachComponent<Grabbable>();
+        _grabbable = Slot.GetComponent<Grabbable>();
+        if (_grabbable == null)
+        {
+            _grabbable = Slot.AttachComponent<Grabbable>();
+            _grabbable.GrabPriority.Value = PanelGrabPriority;
+        }
+        // A panel saved before it had a grab volume still has the default priority, which ties with props.
+        else if (World?.IsAuthority == true && _grabbable.GrabPriority.Value == 0)
+        {
+            _grabbable.GrabPriority.Value = PanelGrabPriority;
+        }
         if (Font.Target == null)
         {
             var theme = Slot.GetComponentInParent<UITheme>() ?? Slot.GetOrAttachComponent<UITheme>();
@@ -264,6 +290,19 @@ public class PanelShell : UIComponent
         glassMaterial.RenderQueue.Value = 2872;
         glassRenderer.Material.Target = glassMaterial;
         glassRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
+
+        _grabVolumeSlot = Slot.AddLocalSlot("PanelGrabVolume");
+        _grabVolume = _grabVolumeSlot.AttachComponent<BoxCollider>();
+        _grabVolume.Type.Value = Lumora.Core.Physics.ColliderType.Trigger;
+        _grabVolume.IgnoreRaycasts.Value = true;
+        _grabVolume.CharacterCollider.Value = false;
+        _grabVolume.Offset.Value = new float3(0f, 0f, -(GrabVolumeGap + GrabVolumeDepth * 0.5f));
+
+        _rimSlot = canvasSlot.FindChildOrAdd("Rim");
+        _rimRect = _rimSlot.GetOrAttachComponent<RectTransform>();
+        _rimSlot.GetOrAttachComponent<InteractionBlock>();
+        if (canvasSlot.Children.Count > 0 && !ReferenceEquals(canvasSlot.Children[0], _rimSlot))
+            canvasSlot.MoveChildToIndex(_rimSlot, 0);
 
         _headerSlot = canvasSlot.FindChildOrAdd("Header");
         _headerRect = _headerSlot.GetOrAttachComponent<RectTransform>();
@@ -324,6 +363,14 @@ public class PanelShell : UIComponent
         float headerHeight = ShowHeader.Value ? headerSize : 0f;
         bool canGrab = AllowGrab.Value;
 
+        if (_grabVolume != null && !_grabVolume.IsDestroyed)
+        {
+            Set(_grabVolume.Size, new float3(Size.Value.x + GlassMargin * 2f, Size.Value.y + GlassMargin * 2f, GrabVolumeDepth));
+            Set(_grabVolume.Enabled, canGrab);
+        }
+        if (_rimRect != null && !_rimRect.IsDestroyed)
+            Stretch(_rimRect, new float2(-GlassMargin, -GlassMargin), new float2(GlassMargin, GlassMargin));
+
         if (_grabbable != null && !_grabbable.IsDestroyed)
         {
             Set(_grabbable.AllowGrab, canGrab);
@@ -380,9 +427,7 @@ public class PanelShell : UIComponent
         if (_titleRect != null && !_titleRect.IsDestroyed)
         {
             float closeWidth = ShowCloseButton.Value ? headerSize : 0f;
-            Fill(_titleRect);
-            Set(_titleRect.OffsetMin, new float2(Padding.Value, 0f));
-            Set(_titleRect.OffsetMax, new float2(ShowCloseButton.Value ? -closeWidth : -Padding.Value, 0f));
+            Stretch(_titleRect, new float2(Padding.Value, 0f), new float2(ShowCloseButton.Value ? -closeWidth : -Padding.Value, 0f));
         }
 
         // A peer that did not build the panel can receive the row after start.
@@ -429,9 +474,7 @@ public class PanelShell : UIComponent
 
         if (_contentRect != null && !_contentRect.IsDestroyed)
         {
-            Fill(_contentRect);
-            Set(_contentRect.OffsetMin, new float2(Padding.Value, Padding.Value));
-            Set(_contentRect.OffsetMax, new float2(-Padding.Value, -headerHeight - Padding.Value));
+            Stretch(_contentRect, new float2(Padding.Value, Padding.Value), new float2(-Padding.Value, -headerHeight - Padding.Value));
         }
     }
 
@@ -543,6 +586,8 @@ public class PanelShell : UIComponent
     {
         if (_glassSlot != null && !_glassSlot.IsDestroyed)
             _glassSlot.Destroy();
+        if (_grabVolumeSlot != null && !_grabVolumeSlot.IsDestroyed)
+            _grabVolumeSlot.Destroy();
         base.OnDestroy();
     }
 
@@ -554,12 +599,16 @@ public class PanelShell : UIComponent
         Set(rect.OffsetMax, new float2(size.x * 0.5f, size.y * 0.5f));
     }
 
-    private static void Fill(RectTransform rect)
+    private static void Fill(RectTransform rect) => Stretch(rect, float2.Zero, float2.Zero);
+
+    // Stretched to the parent and inset by the offsets, each field written once and only when it differs:
+    // on a machine that did not build the panel the values already match, and nothing is written there.
+    private static void Stretch(RectTransform rect, in float2 offsetMin, in float2 offsetMax)
     {
         Set(rect.AnchorMin, float2.Zero);
         Set(rect.AnchorMax, float2.One);
-        Set(rect.OffsetMin, float2.Zero);
-        Set(rect.OffsetMax, float2.Zero);
+        Set(rect.OffsetMin, offsetMin);
+        Set(rect.OffsetMax, offsetMax);
     }
 
     private static void Set<T>(Sync<T> field, T value)

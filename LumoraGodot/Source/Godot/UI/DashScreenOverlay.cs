@@ -26,6 +26,7 @@ public partial class DashScreenOverlay : CanvasLayer
 {
     // Over the 3D view and the world-loading indicator (99), under the desktop cursor layer (101).
     private const int OverlayLayer = 100;
+    private const string CompositeShader = "res://Shaders/DashCompositeScreen.gdshader";
 
     private TextureRect _view = null!;
     private Texture2D? _boundTexture;
@@ -46,6 +47,8 @@ public partial class DashScreenOverlay : CanvasLayer
             StretchMode = TextureRect.StretchModeEnum.Scale,
             ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
             MouseFilter = Control.MouseFilterEnum.Ignore,
+            // The capture is drawn on a clear background: this lays it over the frame under it, blurred.
+            Material = new ShaderMaterial { Shader = GD.Load<Shader>(CompositeShader) },
         };
         _view.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         AddChild(_view);

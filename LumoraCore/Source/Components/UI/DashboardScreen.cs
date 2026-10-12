@@ -8,6 +8,7 @@ using Lumora.Core.Math;
 namespace Lumora.Core.Components.UI;
 
 [ComponentCategory("Hidden")]
+[UserspaceOnly]
 public class DashboardScreen : UIComponent
 {
     public readonly Sync<string> Label;
@@ -115,6 +116,7 @@ public class DashboardScreen : UIComponent
 
     private void EnsureContent()
     {
+        ComponentExecutionPolicy.Demand(GetType(), World);
         if (_built) return;
         _built = true;
 

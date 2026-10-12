@@ -46,6 +46,9 @@ public partial class DashboardToggle : Node
 				else if (mouseBtn.ButtonIndex == MouseButton.WheelDown) delta = -1f;
 				if (delta != 0f)
 				{
+					// A carried window slides on the wheel, so it must reach the mouse driver unhandled.
+					if (Lumora.Core.Components.UserInputState.FocusedScrollWheelCaptured)
+						return;
 					if (dashboard.FeedAxis(new Lumora.Core.Math.float2(0f, delta)))
 						GetViewport()?.SetInputAsHandled();
 					return;
@@ -56,12 +59,17 @@ public partial class DashboardToggle : Node
 		if (@event is not InputEventKey key || !key.Pressed)
 			return;
 
+		// Helio fields consume the keyboard driver themselves. Feeding the dashboard as well
+		// would edit its search box behind the focused field or swallow that field's typed text.
+		if (Helio.UI.TextInput.Focused is { IsDestroyed: false })
+			return;
+
 		if (key.Keycode == Key.Escape)
 		{
 			// Escape inside an open dash backs out of whatever screen is up. Only that part is
 			// handled here; the open/close toggle itself is an action, polled in _Process, so it can
 			// be rebound and so a pad's Start button reaches it too.
-			if (TryGetDashboard(out var escDash) && escDash.IsOpen.Value && escDash.FeedEscape())
+			if (TryGetDashboard(out var escDash) && (escDash.IsOpen.Value || escDash.PanelTakesKeys) && escDash.FeedEscape())
 			{
 				_escapeConsumedByScreen = true;
 				_escapeConsumedAge = 0.0;
@@ -73,9 +81,22 @@ public partial class DashboardToggle : Node
 
 		// Everything below is the dash search box TYPING, not controls: characters, backspace and
 		// enter belong to whatever field has focus, the same way a text field owns the keyboard
-		// while it is focused. Nothing here is rebindable and nothing here should be.
-		if (TryGetDashboard(out var dash) && dash.IsOpen.Value)
+		// while it is focused. Nothing here is rebindable and nothing here should be. An app out in
+		// the room with a field waiting takes them with the dash closed too.
+		if (TryGetDashboard(out var dash) && (dash.IsOpen.Value || dash.PanelTakesKeys))
 		{
+			// Ctrl+V and Ctrl+C are the keyboard's Paste and Copy keys here. A field typed into directly reads
+			// them itself. Ctrl with Alt is AltGr on many layouts and still types its character. -xlinka
+			bool shortcut = (key.CtrlPressed || key.MetaPressed) && !key.AltPressed && key.Keycode >= Key.A && key.Keycode <= Key.Z;
+			if (shortcut)
+			{
+				if (!key.Echo && (key.Keycode == Key.V || key.Keycode == Key.C))
+				{
+					dash.FeedKey(key.Keycode == Key.V ? DashboardKey.Paste : DashboardKey.Copy);
+					GetViewport()?.SetInputAsHandled();
+				}
+				return;
+			}
 			if (key.Keycode == Key.Backspace)
 			{
 				dash.FeedSearchBackspace();
@@ -89,9 +110,10 @@ public partial class DashboardToggle : Node
 				return;
 			}
 			long ch = key.Unicode;
-			if (ch >= 32 && ch < 0x10000)
+			if (ch >= 32 && ch != 127 && System.Text.Rune.IsValid((int)ch))
 			{
-				dash.FeedSearchChar((char)ch);
+				foreach (char c in char.ConvertFromUtf32((int)ch))
+					dash.FeedSearchChar(c);
 				GetViewport()?.SetInputAsHandled();
 			}
 		}
@@ -158,7 +180,7 @@ public partial class DashboardToggle : Node
 		}
 
 		IsDashboardVisible = false;
-		global::Godot.Input.MouseMode = global::Godot.Input.MouseModeEnum.Captured;
+		// No capture here: the mouse driver takes the mouse back next frame, and only for a focused window.
 	}
 
 	private bool TryGetDashboard(out UserspaceDashboard dashboard)

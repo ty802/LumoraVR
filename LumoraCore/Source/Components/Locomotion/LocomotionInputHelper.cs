@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 
@@ -43,6 +44,28 @@ public static class LocomotionInputHelper
     public static bool ReadSprint(InputInterface input)
         => input?.Actions?.Locomotion.Sprint.Held == true;
 
+    public static bool ReadSlowWalk(InputInterface input)
+        => input?.Actions?.Locomotion.SlowWalk.Held == true;
+
+    // A tenth of the stick's travel is noise, and pace goes with the square of the rest.
+    public const float DefaultDeadzone = 0.1f;
+    public const float DefaultExponent = 2f;
+
+    // How far the stick is pushed sets the pace. The deadzone is cut out and what is left stretched back
+    // over the full range, then raised to exponent, so a light push is a slow walk and only the last of the
+    // travel picks up to full speed. Never longer than one; a key is always a full push.
+    public static float2 ShapeMovement(float2 axis, float deadzone = DefaultDeadzone, float exponent = DefaultExponent)
+    {
+        float magnitude = axis.Length;
+        if (magnitude <= deadzone || magnitude < 1e-6f)
+            return float2.Zero;
+        float span = 1f - deadzone;
+        float shaped = span > 1e-4f ? MathF.Min(1f, (magnitude - deadzone) / span) : 1f;
+        if (exponent > 0f && exponent != 1f)
+            shaped = MathF.Pow(shaped, exponent);
+        return axis * (shaped / magnitude);
+    }
+
     // Lock the input vector to its dominant axis. Exclusive mode prevents
     // diagonal drift on cheap thumbsticks. - xlinka
     public static float2 SnapToDominantAxis(float2 axis)
@@ -52,10 +75,4 @@ public static class LocomotionInputHelper
         return absY > absX ? new float2(0f, axis.y) : new float2(axis.x, 0f);
     }
 
-    public static float2 ApplyDeadzone(float2 axis, float deadzone)
-    {
-        if (axis.LengthSquared < deadzone * deadzone) return float2.Zero;
-        if (axis.LengthSquared > 1f) return axis.Normalized;
-        return axis;
-    }
 }

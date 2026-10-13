@@ -46,8 +46,18 @@ public class LocomotionContextActions : ContextMenuItemSource
                 Label = module.DisplayName,
                 IsToggle = true,
                 IsToggled = isActive,
+                KeepsOpen = true,
                 FillColor = new[] { 0.13f, 0.16f, 0.24f, 0.92f },
                 OnPressed = _ => locomotion.ActivateModule(captured),
+                // The picks are one choice: the one pressed lights up and the one it replaced goes dark.
+                Refresh = item =>
+                {
+                    bool active = !locomotion.IsDestroyed && ReferenceEquals(locomotion.ActiveModule, captured);
+                    if (item.IsToggled == active)
+                        return false;
+                    item.IsToggled = active;
+                    return true;
+                },
             });
         }
 

@@ -15,7 +15,9 @@ public abstract class SmoothLocomotionBase : LocomotionModule
 
     // Settings forwarded by the input helper. Override on subclasses if a mode
     // wants different defaults (e.g. noclip = larger deadzone).
-    public float MovementDeadzone { get; set; } = 0.1f;
+    public float MovementDeadzone { get; set; } = LocomotionInputHelper.DefaultDeadzone;
+    // Pace goes with the push raised to this; 1 is a straight line.
+    public float MovementExponent { get; set; } = LocomotionInputHelper.DefaultExponent;
     public bool ExclusiveAxisMode { get; set; } = false;
 
     protected InputInterface InputInterface { get; private set; } = null!;

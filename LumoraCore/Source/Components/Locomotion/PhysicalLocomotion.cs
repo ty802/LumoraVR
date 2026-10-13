@@ -14,7 +14,14 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Users/Locomotion")]
 public class PhysicalLocomotion : SmoothLocomotionBase
 {
-    public override string DisplayName => "Walk";
+    protected override string StockName => "Walk";
+
+    // An installed walk's own pace, metres a second; zero keeps the user's own. Put on while it is active and
+    // taken off again when another locomotion takes over.
+    public readonly Sync<float> Speed = new();
+    public readonly Sync<float> AirSpeed = new();
+    public readonly Sync<float> JumpSpeed = new();
+    private (float Speed, float Air, float Jump)? _ownPace;
     public override LocomotionKind Kind => LocomotionKind.Walk;
     public override bool CanActivate() => true;
 
@@ -27,13 +34,23 @@ public class PhysicalLocomotion : SmoothLocomotionBase
     {
         base.OnActivated();
         _characterController = Owner?.CharacterController!;
+        if (_characterController != null && (Speed.Value > 0f || AirSpeed.Value > 0f || JumpSpeed.Value > 0f))
+        {
+            _ownPace = (_characterController.Speed, _characterController.AirSpeed, _characterController.JumpSpeed);
+            if (Speed.Value > 0f)
+                _characterController.Speed = Speed.Value;
+            if (AirSpeed.Value > 0f)
+                _characterController.AirSpeed = AirSpeed.Value;
+            if (JumpSpeed.Value > 0f)
+                _characterController.JumpSpeed = JumpSpeed.Value;
+        }
         _wasJumpPressed = false;
         _isCrouching = false;
         _isSprinting = false;
 
         // Resume gravity/collision in case a non-physical module (noclip) left
-        // it suspended.
-        _characterController?.SetSimulationEnabled(true);
+        // it suspended. Not while a seat has the user: the seat parked it.
+        Owner?.ResumeCharacter();
 
         // Desktop look needs mouse capture; in VR the headset drives view.
         if (!IsVRActive())
@@ -42,6 +59,9 @@ public class PhysicalLocomotion : SmoothLocomotionBase
 
     protected override void OnDeactivated()
     {
+        if (_ownPace is { } own && _characterController != null)
+            (_characterController.Speed, _characterController.AirSpeed, _characterController.JumpSpeed) = own;
+        _ownPace = null;
         _characterController = null!;
         base.OnDeactivated();
     }
@@ -82,13 +102,18 @@ public class PhysicalLocomotion : SmoothLocomotionBase
         var rawAxis = LocomotionInputHelper.ReadMovementAxis(InputInterface);
         if (ExclusiveAxisMode)
             rawAxis = LocomotionInputHelper.SnapToDominantAxis(rawAxis);
-        var axis = LocomotionInputHelper.ApplyDeadzone(rawAxis, MovementDeadzone);
+        var axis = LocomotionInputHelper.ShapeMovement(rawAxis, MovementDeadzone, MovementExponent);
 
         float3 moveDir = float3.Zero;
-        if (axis.LengthSquared > 0.001f)
+        if (axis.LengthSquared > 1e-6f)
         {
+            // Left at its length: the controller walks that fraction of its pace, so the stick sets the speed.
             Owner.GetMovementBasis(out var forward, out var right);
-            moveDir = (forward * axis.y + right * axis.x).Normalized;
+            moveDir = forward * axis.y + right * axis.x;
+            if (moveDir.LengthSquared > 1f)
+                moveDir = moveDir.Normalized;
+            if (Owner.SlowWalk)
+                moveDir *= LocomotionController.SlowWalkPace;
         }
         _characterController.SetMovementDirection(moveDir);
     }

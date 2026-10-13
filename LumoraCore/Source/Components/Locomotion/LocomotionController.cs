@@ -54,12 +54,14 @@ public class LocomotionController : Component
     private InputInterface _inputInterface = null!;
     private readonly System.Collections.Generic.List<LocomotionModule> _modules = new();
     private LocomotionModule _activeModule = null!;
+    private bool _moduleSuspended;
     private LocomotionPermissions _permissions = null!;
 
     private float _pitch = 0.0f;
     private float _yaw = 0.0f;
     private float _crouchBlend = 1.0f;   // smoothed eye-height fraction (1 standing .. CrouchHeight/StandingHeight)
     private bool _mouseCaptured = false;
+    private bool _userReleased;
     private bool _initialized = false;
     private bool _loggedMissingUserRoot = false;
     private bool _loggedActiveUserState = false;
@@ -67,6 +69,10 @@ public class LocomotionController : Component
     public UserInputState InputState => _inputState;
     public LocomotionModule ActiveModule => _activeModule;
     public System.Collections.Generic.IReadOnlyList<LocomotionModule> Modules => _modules;
+
+    // Where installed locomotions live, beside the user's own: a slot of that name on the root.
+    public const string ModulesRootName = "Locomotion Modules";
+    private double _nextModuleLook;
 
     // Modules are kept in registration order (Walk, Noclip, ...); switching is
     // by list position, not priority (an ordered module list + active index).
@@ -82,7 +88,8 @@ public class LocomotionController : Component
         if (module == null) return;
         if (_activeModule == module)
         {
-            _activeModule.DeactivateInternal();
+            if (!_moduleSuspended)
+                _activeModule.DeactivateInternal();
             _activeModule = null!;
         }
         _modules.Remove(module);
@@ -99,7 +106,7 @@ public class LocomotionController : Component
         // log a "RefID allocation during OnAwake" warning - dozens of lines per avatar. The first OnUpdate
         // calls it anyway (outside the block), one frame later, with no functional difference. Matches how
         // SessionJoinIndicator builds its children in OnInit rather than OnAwake. -xlinka
-        LumoraLogger.Log($"LocomotionController: OnAwake started");
+        LumoraLogger.Debug($"LocomotionController: OnAwake started");
     }
 
     private void CaptureMouse()
@@ -110,9 +117,30 @@ public class LocomotionController : Component
 
     // UPDATE
 
+    internal void SuspendInput()
+    {
+        if (_moduleSuspended || _activeModule == null)
+            return;
+        using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
+        _activeModule.DeactivateInternal();
+        _moduleSuspended = true;
+        _characterController?.SetMovementDirection(float3.Zero);
+        _characterController?.SetSimulationEnabled(false);
+        _characterController?.SetCrouching(false);
+        _characterController?.SetSprinting(false);
+    }
+
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+
+        // Each open world has a local avatar, but only the focused one owns hardware input.
+        // Suspend the module as well so a pending blink/turn cannot commit on returning here.
+        if (World?.IsFocused != true)
+        {
+            SuspendInput();
+            return;
+        }
 
         // Late-bind InputInterface if it was not ready during Awake
         if (_inputInterface == null && Lumora.Core.Engine.Current?.InputInterface != null)
@@ -135,6 +163,15 @@ public class LocomotionController : Component
         // window and you can't move/turn right after joining. -xlinka
         using var permBypass = World?.DataModelPermissions?.EnterSystemBypass();
 
+        if (_moduleSuspended)
+        {
+            _moduleSuspended = false;
+            ResumeCharacter();
+            if (_activeModule is { IsDestroyed: false })
+                _activeModule.ActivateInternal(this);
+        }
+
+        RefreshModules();
         EnsurePlatformModule();
 
         // Always handle mouse look (updates head rotation)
@@ -144,8 +181,56 @@ public class LocomotionController : Component
         UpdateHead();
 
         HandleDesktopScaling();
+        UpdateSlowWalk();
 
         _activeModule?.OnModuleUpdate(delta);
+        WatchHeldSticks(delta);
+    }
+
+    // Z toggles a slow walk at a quarter of the pace, and sprinting turns it back off. Kept here rather than
+    // in a module so it carries over a switch between walking and flying.
+    public const float SlowWalkPace = 0.25f;
+
+    public bool SlowWalk { get; private set; }
+
+    private bool _slowWalkHeld;
+
+    private void UpdateSlowWalk()
+    {
+        bool held = LocomotionInputHelper.ReadSlowWalk(_inputInterface);
+        if (held && !_slowWalkHeld)
+            SlowWalk = !SlowWalk;
+        _slowWalkHeld = held;
+        if (SlowWalk && LocomotionInputHelper.ReadSprint(_inputInterface))
+            SlowWalk = false;
+    }
+
+    // A stick pushed for a while into locomotion something is holding off: say who, once a hold. Something
+    // that keeps its hold after it is gone then shows up by name instead of as "I can't turn". -xlinka
+    private float _heldPush;
+    private bool _heldReported;
+
+    private void WatchHeldSticks(float delta)
+    {
+        var state = _inputState;
+        if (state == null || _inputInterface == null || !(state.FreeCamActive || state.DesktopInputSuppressed))
+        {
+            _heldPush = 0f;
+            _heldReported = false;
+            return;
+        }
+        float turn = MathF.Abs(LocomotionInputHelper.ReadTurnAxis(_inputInterface));
+        float move = LocomotionInputHelper.ReadMovementAxis(_inputInterface).Length;
+        if (turn < 0.5f && move < 0.5f)
+        {
+            _heldPush = 0f;
+            return;
+        }
+        _heldPush += delta;
+        if (_heldPush < 1.5f || _heldReported)
+            return;
+        _heldReported = true;
+        LumoraLogger.Log($"[Locomotion] stick pushed {_heldPush:0.0} s while locomotion is held off by: {state.DescribeHolds()}");
     }
 
     // Desktop user scaling: ctrl + scroll wheel. Crouch lives on C so ctrl
@@ -179,7 +264,10 @@ public class LocomotionController : Component
             return;
 
         float factor = MathF.Pow(1.12f, scroll);
+        // Feet held, so the scale and its undo land in the same spot.
+        var feet = _userRoot.FeetPosition;
         _userRoot.GlobalScale = ClampUserScale(_userRoot.GlobalScale * factor);
+        _userRoot.ShiftBy(feet - _userRoot.FeetPosition);
     }
 
     private bool TryInitializeLocalUser()
@@ -203,7 +291,7 @@ public class LocomotionController : Component
 
         if (!_loggedActiveUserState)
         {
-            LumoraLogger.Log($"LocomotionController: UserRoot.ActiveUser={_userRoot.ActiveUser?.UserName?.Value ?? "(null)"}, World.LocalUser={World?.LocalUser?.UserName?.Value ?? "(null)"}");
+            LumoraLogger.Debug($"LocomotionController: UserRoot.ActiveUser={_userRoot.ActiveUser?.UserName?.Value ?? "(null)"}, World.LocalUser={World?.LocalUser?.UserName?.Value ?? "(null)"}");
             _loggedActiveUserState = true;
         }
 
@@ -225,7 +313,7 @@ public class LocomotionController : Component
         {
             _mouse = _inputInterface.Mouse;
             _keyboardDriver = _inputInterface.GetKeyboardDriver();
-            LumoraLogger.Log($"LocomotionController: Input bound - Mouse={_mouse != null}, Keyboard={_keyboardDriver != null}");
+            LumoraLogger.Debug($"LocomotionController: Input bound - Mouse={_mouse != null}, Keyboard={_keyboardDriver != null}");
         }
         else
         {
@@ -238,7 +326,7 @@ public class LocomotionController : Component
         if (!IsVRActive())
             _inputState.SetMouseCaptureRequested(true);
 
-        LumoraLogger.Log($"LocomotionController: Initialized for user '{_userRoot.ActiveUser?.UserName?.Value}' (VR={IsVRActive()}, Module={_activeModule?.DisplayName})");
+        LumoraLogger.Debug($"LocomotionController: Initialized for user '{_userRoot.ActiveUser?.UserName?.Value}' (VR={IsVRActive()}, Module={_activeModule?.DisplayName})");
         _initialized = true;
         return true;
     }
@@ -257,14 +345,75 @@ public class LocomotionController : Component
         Slot.GetOrAttachComponent<NullLocomotionModule>();
 
         _modules.Clear();
+        CollectModules(_modules);
+    }
+
+    // The user's own locomotions, then every one installed under the modules slot, in order. Not the whole
+    // root: an avatar hangs there too, and what it carries is installed or nothing.
+    private void CollectModules(System.Collections.Generic.List<LocomotionModule> into)
+    {
         foreach (var m in Slot.GetComponents<LocomotionModule>())
-            _modules.Add(m);
+        {
+            if (!m.IsDestroyed)
+                into.Add(m);
+        }
+        if (Slot.FindChild(ModulesRootName) is { IsDestroyed: false } installed)
+        {
+            foreach (var m in installed.GetComponentsInChildren<LocomotionModule>())
+            {
+                if (!m.IsDestroyed && m.Enabled.Value)
+                    into.Add(m);
+            }
+        }
+    }
+
+    // Installed ones come and go; looked for again once a second. The active one going falls back.
+    private void RefreshModules()
+    {
+        double now = World?.Time.TotalTime ?? 0.0;
+        if (now < _nextModuleLook)
+            return;
+        _nextModuleLook = now + 1.0;
+        var found = new System.Collections.Generic.List<LocomotionModule>();
+        CollectModules(found);
+        if (found.Count == _modules.Count && found.TrueForAll(_modules.Contains))
+            return;
+        _modules.Clear();
+        _modules.AddRange(found);
+        if (_activeModule != null && (_activeModule.IsDestroyed || !_modules.Contains(_activeModule)))
+        {
+            _activeModule = null!;
+            ActivateDefaultModule();
+        }
+    }
+
+    // Copies a set of locomotions in under the modules slot, the old ones cleared first when asked, and says
+    // how many came in. Only on the machine this user is at.
+    public int Install(Slot templates, bool clearExisting)
+    {
+        if (templates == null || templates.IsDestroyed || !(_userRoot?.IsLocalUserRoot ?? false))
+            return 0;
+        using var engine = World?.DataModelPermissions?.EnterSystemBypass();
+        var root = Slot.FindChildOrAdd(ModulesRootName);
+        if (clearExisting)
+        {
+            var old = new System.Collections.Generic.List<Slot>(root.Children);
+            foreach (var child in old)
+                child.Destroy();
+        }
+        var copy = templates.Duplicate(root);
+        int count = 0;
+        foreach (var _ in copy.GetComponentsInChildren<LocomotionModule>())
+            count++;
+        _nextModuleLook = 0;
+        RefreshModules();
+        return count;
     }
 
     // Whether a module is both internally eligible (CanActivate) and permitted right now (world-mode
     // gate). Public so UI (the Settings locomotion picker) can grey out a denied module without
     // duplicating the permission check ActivateModule itself enforces.
-    public bool IsModuleUsable(LocomotionModule module) => module != null && module.CanActivate() && Permissions.CanUseLocomotion(module);
+    public bool IsModuleUsable(LocomotionModule module) => module != null && !module.IsDestroyed && module.CanActivate() && Permissions.CanUseLocomotion(module);
 
     // First module in list order that is usable. Mirrors the gate ActivateModule enforces, so a denied
     // module (e.g. noclip in a locked world) is never picked. -xlinka
@@ -322,7 +471,7 @@ public class LocomotionController : Component
                 ActivateModule(pick);
         }
 
-        if (!IsVRActive() && !_mouseCaptured)
+        if (!IsVRActive() && !_mouseCaptured && !_userReleased)
             CaptureMouse();
     }
 
@@ -341,10 +490,15 @@ public class LocomotionController : Component
     {
         // Release/recapture the cursor. The action's own edge replaces the local was-pressed latch,
         // and because it lives in the locomotion set it stays quiet while the dashboard is up - the
-        // same key closes the dash there instead of also unlocking the mouse behind it.
-        if (_inputInterface?.Actions?.Locomotion.ToggleMouseCapture.Pressed == true)
+        // same key closes the dash there instead of also unlocking the mouse behind it. With the dash
+        // closed the default key opens it, so a press that also toggles the dash is the dash's. A
+        // release stays until the same action takes the mouse back; the platform check above used to
+        // recapture on the very next frame. -xlinka
+        var actions = _inputInterface?.Actions;
+        if (actions?.Locomotion.ToggleMouseCapture.Pressed == true && actions.Menu.ToggleDashboard.Pressed != true)
         {
             _mouseCaptured = !_mouseCaptured;
+            _userReleased = !_mouseCaptured;
             _inputState?.SetMouseCaptureRequested(_mouseCaptured);
             Lumora.Core.Logging.Logger.Debug($"[LocomotionController] Mouse capture toggled: {_mouseCaptured}");
         }
@@ -359,7 +513,6 @@ public class LocomotionController : Component
         // Use Mouse.DirectDelta - now populated via GodotMouseDriver.HandleInputEvent
         float2 mouseDelta = _mouse.DirectDelta.Value;
 
-        // Update yaw/pitch
         _yaw -= mouseDelta.x * MouseSensitivity;
         _pitch -= mouseDelta.y * MouseSensitivity;
         float maxPitchRad = MaxPitch * (float)System.Math.PI / 180f;
@@ -444,15 +597,12 @@ public class LocomotionController : Component
         if (_inputState.FreeCamActive || _inputState.DesktopInputSuppressed || _inputState.MovementSuppressed)
             return float3.Zero;
 
-        var axis = LocomotionInputHelper.ReadMovementAxis(_inputInterface);
-        float push = axis.Length;
-        if (push <= 0.001f)
+        var axis = LocomotionInputHelper.ShapeMovement(LocomotionInputHelper.ReadMovementAxis(_inputInterface));
+        if (axis.LengthSquared <= 1e-6f)
             return float3.Zero;
-        if (push > 1f)
-            axis /= push;
 
         GetMovementBasis(out var forward, out var right);
-        float speed = _characterController?.GetCurrentSpeed() ?? 0f;
+        float speed = (_characterController?.GetCurrentSpeed() ?? 0f) * (SlowWalk ? SlowWalkPace : 1f);
         return (forward * axis.y + right * axis.x) * (speed * dt);
     }
 
@@ -534,6 +684,8 @@ public class LocomotionController : Component
         float headHeight = (userHeight - InputInterface.EYE_HEAD_OFFSET) * _crouchBlend;
         var newHeadPos = new float3(0, headHeight, 0);
 
+        AdoptOutsideTurn();
+
         // The drive runs between mouse look and the body turn: it needs this frame's look, and in third
         // person the body turn below takes its heading from the drive's face.
         StepHeadDrive(dt);
@@ -543,6 +695,7 @@ public class LocomotionController : Component
         float bodyDot = floatQ.Dot(newBodyRot, currentBodyRot);
         if (1.0f - (bodyDot < 0 ? -bodyDot : bodyDot) > ROT_THRESHOLD)
             SetRootRotationAroundHead(newBodyRot);
+        NoteRootTurn();
 
         // After the root has turned, so the head lands in the parent frame the root now has.
         _headDrive?.ApplyToHead(_userRoot.HeadSlot, newHeadPos);
@@ -693,12 +846,10 @@ public class LocomotionController : Component
         _yaw += deltaYaw;
 
         if (_userRoot != null)
-        {
             _userRoot.RotateYawAroundHead(deltaYaw);
-            return;
-        }
-
-        SetRootRotation((floatQ.AxisAngle(float3.Up, deltaYaw) * Slot.GlobalRotation).Normalized);
+        else
+            SetRootRotation((floatQ.AxisAngle(float3.Up, deltaYaw) * Slot.GlobalRotation).Normalized);
+        NoteRootTurn();
     }
 
     // Take the heading the root is ACTUALLY carrying as the new accumulator value.
@@ -711,6 +862,103 @@ public class LocomotionController : Component
     public void SyncYawFromRoot()
     {
         _yaw = Slot.GlobalRotation.ToEuler().y;
+        NoteRootTurn();
+    }
+
+    // A turn of the root that this controller did not write joins the look heading: the space a carrier hangs
+    // the user from turning under them, a script or a seat facing them somewhere. Otherwise the next body write
+    // would turn them straight back. Only the turn about up is taken; a screen user stays upright. -xlinka
+    private floatQ _lastRootRotation = floatQ.Identity;
+    private bool _rootTurnKnown;
+
+    private void NoteRootTurn()
+    {
+        _lastRootRotation = Slot.GlobalRotation;
+        _rootTurnKnown = true;
+    }
+
+    private void AdoptOutsideTurn()
+    {
+        var now = Slot.GlobalRotation;
+        if (_rootTurnKnown)
+        {
+            float dot = floatQ.Dot(now, _lastRootRotation);
+            if (1.0f - (dot < 0 ? -dot : dot) > ROT_THRESHOLD)
+            {
+                float turn = Heading(now) - Heading(_lastRootRotation);
+                if (turn > MathF.PI)
+                    turn -= 2f * MathF.PI;
+                else if (turn < -MathF.PI)
+                    turn += 2f * MathF.PI;
+                if (float.IsFinite(turn))
+                    _yaw += turn;
+            }
+        }
+        _lastRootRotation = now;
+        _rootTurnKnown = true;
+    }
+
+    // The angle about up of a rotation's forward (-Z), the same angle FromEuler takes for its yaw.
+    private static float Heading(floatQ rotation)
+    {
+        var forward = rotation * float3.Backward;
+        return MathF.Atan2(-forward.x, -forward.z);
+    }
+
+    // SPACES
+    //
+    // What the root hung from before each space it was carried into, the last entered last. A carrier hangs the
+    // root from its space when the person steps in and asks for it back when they step out: the root goes back
+    // to what it hung from before, or, when it has since moved somewhere else, that space is only forgotten, so
+    // stepping off the stage while still in the cart keeps the cart. A space already held is not entered twice.
+    // Local to this machine: only the owner moves the root, and its parent replicates like any other. -xlinka
+    private readonly System.Collections.Generic.List<Slot> _spaces = new();
+
+    public void EnterSpace(Slot space)
+    {
+        if (space == null || space.IsDestroyed || Slot == null || ReferenceEquals(Slot.Parent, space)
+            || ReferenceEquals(space, Slot) || space.IsDescendantOf(Slot))
+            return;
+        for (int i = 0; i < _spaces.Count; i++)
+        {
+            if (ReferenceEquals(_spaces[i], space))
+                return;
+        }
+        _spaces.Add(Slot.Parent ?? World.RootSlot);
+        HangFrom(space);
+    }
+
+    public void LeaveSpace(Slot space)
+    {
+        if (space == null || Slot == null)
+            return;
+        if (!ReferenceEquals(Slot.Parent, space))
+        {
+            for (int i = _spaces.Count - 1; i >= 0; i--)
+            {
+                if (ReferenceEquals(_spaces[i], space))
+                    _spaces.RemoveAt(i);
+            }
+            return;
+        }
+        Slot? back = null;
+        while (back == null && _spaces.Count > 0)
+        {
+            var last = _spaces[_spaces.Count - 1];
+            _spaces.RemoveAt(_spaces.Count - 1);
+            if (last is { IsDestroyed: false })
+                back = last;
+        }
+        HangFrom(back ?? World.RootSlot);
+    }
+
+    // The owner moving their own root, the way a step of the character does.
+    private void HangFrom(Slot parent)
+    {
+        if (parent == null || parent.IsDestroyed)
+            return;
+        using (World?.DataModelPermissions?.EnterSystemBypass())
+            Slot.SetParent(parent, preserveGlobalTransform: true);
     }
 
     public void GetMovementBasis(out float3 forward, out float3 right)
@@ -749,6 +997,105 @@ public class LocomotionController : Component
         if (right.LengthSquared < 1e-4f)
             right = float3.Right;
         right = right.Normalized;
+
+        // Set to follow the hand, the hand only steers forward. Strafe stays on the head, so a stick pushed
+        // sideways still steps square to where you look whichever way the hand is turned. A hand pointing
+        // at the floor has no heading left once flattened and gives the choice back to the head. -xlinka
+        if (TryGetHandMoveDirection(out var handForward))
+        {
+            handForward.y = 0f;
+            if (handForward.LengthSquared >= 1e-4f)
+                forward = handForward.Normalized;
+        }
+    }
+
+    // In VR with movement set to follow the hand: where the hand that drives Move points, not flattened, so
+    // a flight can climb along it. The laser slot first (it rides the tool tip, unsmoothed), else the hand
+    // slot. False leaves it to the head: desktop, third person, an untracked controller, or Move on no
+    // hand's stick.
+    public bool TryGetHandMoveDirection(out float3 direction)
+    {
+        direction = float3.Zero;
+        if (EngineSettings.MovementDirection != MovementDirection.Hand || IsThirdPerson || !IsVRActive())
+            return false;
+
+        var side = ResolveMoveHand();
+        if (side == Chirality.None)
+            return false;
+
+        var device = side == Chirality.Left ? _inputInterface.LeftController : _inputInterface.RightController;
+        if (device?.IsTracked != true)
+            return false;
+
+        Slot? source = ResolveHandLaser(side)?.Slot;
+        if (source == null || source.IsDestroyed)
+            source = side == Chirality.Left ? _userRoot?.LeftHandSlot : _userRoot?.RightHandSlot;
+        if (source == null || source.IsDestroyed)
+            return false;
+
+        direction = source.GlobalRotation * float3.Backward;
+        if (direction.LengthSquared < 1e-6f)
+            return false;
+        direction = direction.Normalized;
+        return true;
+    }
+
+    // The hand Move is bound to in VR, read off its bindings. Never picked by which stick is pushed hardest:
+    // the right stick also turns and flies, and turning while walking must not hand the heading to the
+    // other hand. Bound to both, it is the one whose raw stick reads what Move reads. -xlinka
+    private Chirality ResolveMoveHand()
+    {
+        var actions = _inputInterface?.Actions;
+        if (actions == null)
+            return Chirality.None;
+
+        var loco = actions.Locomotion;
+        bool left = false;
+        bool right = false;
+        var bindings = loco.Move.Bindings;
+        for (int i = 0; i < bindings.Count; i++)
+        {
+            var control = bindings[i].Control;
+            if (control.Device != Input.Actions.InputDeviceKind.VRController)
+                continue;
+            if (control.Side == Chirality.Left)
+                left = true;
+            else if (control.Side == Chirality.Right)
+                right = true;
+        }
+
+        if (left && right)
+        {
+            var move = loco.Move.Value;
+            var fromLeft = loco.LeftStick.Value - move;
+            var fromRight = loco.RightStick.Value - move;
+            return fromLeft.LengthSquared <= fromRight.LengthSquared ? Chirality.Left : Chirality.Right;
+        }
+        return left ? Chirality.Left : right ? Chirality.Right : Chirality.None;
+    }
+
+    private Interaction.InteractionLaser? _leftLaserCache;
+
+    private Interaction.InteractionLaser? ResolveHandLaser(Chirality side)
+    {
+        Interaction.InteractionLaser? laser;
+        if (side == Chirality.Right)
+        {
+            laser = ResolveRightLaser(ResolveControllerSlot(ref _rightControllerSlot, Input.BodyNode.RightController));
+        }
+        else
+        {
+            var controller = ResolveControllerSlot(ref _leftControllerSlot, Input.BodyNode.LeftController);
+            if (controller == null || controller.IsDestroyed)
+                return null;
+            if (_leftLaserCache == null || _leftLaserCache.IsDestroyed)
+                _leftLaserCache = controller.GetComponentInChildren<Interaction.InteractionLaser>();
+            laser = _leftLaserCache;
+        }
+
+        if (laser == null || laser.IsDestroyed || !laser.Enabled.Value || laser.ControllerSide.Value != side)
+            return null;
+        return laser;
     }
 
     // Locomotion permissions need the World (for the world's edit mode), which isn't set when the field
@@ -762,14 +1109,28 @@ public class LocomotionController : Component
         if (ReferenceEquals(module, _activeModule))
             return;
 
-        _activeModule?.DeactivateInternal();
+        if (!_moduleSuspended)
+            _activeModule?.DeactivateInternal();
         _activeModule = module;
-        _activeModule.ActivateInternal(this);
+        _moduleSuspended = World?.IsFocused != true;
+        if (!_moduleSuspended)
+            _activeModule.ActivateInternal(this);
         using (World?.DataModelPermissions?.EnterSystemBypass())
             CurrentModule.Target = module;
     }
 
     public CharacterController CharacterController => _characterController;
+
+    // A seat parks the character on sit and only hands it back on release. Refocusing this world or a module
+    // switching on must not put gravity back under a rig that is still parented to the chair: the user drops
+    // out of the pose while the seat still counts them as seated. -xlinka
+    public bool SeatHoldsCharacter => _inputState?.IsMovementSuppressedBy<Avatar.Seat>() == true;
+
+    public void ResumeCharacter()
+    {
+        if (!SeatHoldsCharacter)
+            _characterController?.SetSimulationEnabled(true);
+    }
 
     // noclip flight bypasses the character controller and moves the rig directly
     public UserRoot UserRoot => _userRoot;

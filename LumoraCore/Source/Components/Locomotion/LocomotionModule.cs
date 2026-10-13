@@ -18,8 +18,9 @@ public abstract class LocomotionModule : Component
 
     // Two different silences, and a module has to tell them apart.
     //
-    // InputBlocked is the loud one: free-cam, an open context menu, a text field with the keyboard. The
-    // user is not driving their body at all, so a module does nothing whatsoever.
+    // InputBlocked is the loud one: free-cam, an open context menu, body calibration. The user is not
+    // driving their body at all, so a module does nothing whatsoever. A focused text field is not one of
+    // them: it takes the keyboard alone, so a stick still walks and turns while somebody types.
     //
     // MovementBlocked adds the narrow one: a seat. Translation is off, but the user is still sitting there
     // looking around, so turn keeps being serviced and blink still gets to aim (it stands them up when the
@@ -39,7 +40,14 @@ public abstract class LocomotionModule : Component
     // or permission-gated). The controller skips modules that return false.
     public virtual bool CanActivate() => true;
 
-    public virtual string DisplayName => GetType().Name;
+    // What the menus call it: its label, else, installed from somewhere, its slot's name, else its stock name.
+    public readonly Sync<string> Label = new();
+    public string DisplayName => !string.IsNullOrEmpty(Label.Value) ? Label.Value!
+        : IsInstalled && !string.IsNullOrEmpty(Slot?.Name.Value) ? Slot!.Name.Value! : StockName;
+    protected virtual string StockName => GetType().Name;
+
+    // Installed from a set of locomotions rather than one of the user's own: it sits on a slot of its own.
+    public bool IsInstalled => Slot != null && Slot.GetComponent<UserRoot>() == null;
 
     public virtual LocomotionKind Kind => LocomotionKind.Other;
 

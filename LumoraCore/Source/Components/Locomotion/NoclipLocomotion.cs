@@ -12,7 +12,7 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Users/Locomotion")]
 public class NoclipLocomotion : SmoothLocomotionBase
 {
-    public override string DisplayName => "Noclip";
+    protected override string StockName => "Noclip";
     public override LocomotionKind Kind => LocomotionKind.Noclip;
     public override bool CanActivate() => true;
 
@@ -32,7 +32,7 @@ public class NoclipLocomotion : SmoothLocomotionBase
 
     protected override void OnDeactivated()
     {
-        Owner?.CharacterController?.SetSimulationEnabled(true);
+        Owner?.ResumeCharacter();
         base.OnDeactivated();
     }
 
@@ -53,17 +53,21 @@ public class NoclipLocomotion : SmoothLocomotionBase
         }
 
         var rawAxis = LocomotionInputHelper.ReadMovementAxis(InputInterface);
-        var axis = LocomotionInputHelper.ApplyDeadzone(rawAxis, MovementDeadzone);
+        var axis = LocomotionInputHelper.ShapeMovement(rawAxis, MovementDeadzone, MovementExponent);
         float vertical = LocomotionInputHelper.ReadVerticalAxis(InputInterface);
 
         // Full view direction (includes pitch), so looking up flies up - the
         // horizontal+pitch half of the 3-axis move.
-        float3 forward = userRoot.HeadFacingRotation * float3.Backward;
-        if (forward.LengthSquared < 1e-6f)
-            forward = float3.Backward;
-        forward = forward.Normalized;
+        float3 headForward = userRoot.HeadFacingRotation * float3.Backward;
+        if (headForward.LengthSquared < 1e-6f)
+            headForward = float3.Backward;
+        headForward = headForward.Normalized;
 
-        float3 right = float3.Cross(forward, float3.Up);
+        // Set to follow the hand, the hand on the move stick aims the flight, pitch and all. Strafe stays
+        // on the head either way.
+        float3 forward = Owner.TryGetHandMoveDirection(out var handForward) ? handForward : headForward;
+
+        float3 right = float3.Cross(headForward, float3.Up);
         if (right.LengthSquared < 1e-4f)
             right = float3.Right;
         right = right.Normalized;
@@ -83,6 +87,8 @@ public class NoclipLocomotion : SmoothLocomotionBase
         float speed = EngineSettings.NoclipSpeed;
         if (LocomotionInputHelper.ReadSprint(InputInterface))
             speed *= SprintMultiplier;
+        else if (Owner.SlowWalk)
+            speed *= LocomotionController.SlowWalkPace;
 
         // Scale flight speed with the user's own scale so it feels consistent
         // when shrunk or grown.

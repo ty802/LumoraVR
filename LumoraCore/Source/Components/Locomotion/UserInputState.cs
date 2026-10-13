@@ -69,6 +69,27 @@ public class UserInputState : Component
         }
     }
 
+    // Who is holding input down right now, for a log line.
+    public string DescribeHolds()
+    {
+        var parts = new List<string>();
+        if (FreeCamActive)
+            parts.Add("free camera");
+        lock (_suppressionLock)
+        {
+            foreach (var requester in _suppressionRequests)
+            {
+                parts.Add(requester switch
+                {
+                    UI.ContextMenuSystem menu => $"context menu ({(menu.IsDestroyed ? "destroyed" : menu.IsShown ? "up" : "not up")})",
+                    Component component => $"{component.GetType().Name} on '{component.Slot?.SlotName.Value}'{(component.IsDestroyed ? " (destroyed)" : "")}",
+                    _ => requester.GetType().Name,
+                });
+            }
+        }
+        return parts.Count == 0 ? "nothing" : string.Join(", ", parts);
+    }
+
     public void SetDesktopInputSuppressed(object requester, bool value)
     {
         if (requester == null)
@@ -114,6 +135,21 @@ public class UserInputState : Component
                     return requester;
                 return null;
             }
+        }
+    }
+
+    // Whether a requester of this kind is among the holders, whoever came first. A seat parks the
+    // character, and anything resuming it has to know the chair still has the user.
+    public bool IsMovementSuppressedBy<T>() where T : Component
+    {
+        lock (_movementLock)
+        {
+            foreach (var requester in _movementRequests)
+            {
+                if (requester is T holder && !holder.IsDestroyed)
+                    return true;
+            }
+            return false;
         }
     }
 
@@ -189,6 +225,35 @@ public class UserInputState : Component
         }
     }
 
+    // The primary trigger belongs to whoever holds this, not to the lasers. Body calibration confirms on a
+    // pull of both triggers while the beams point sideways at whatever is beside the user; the hand tools
+    // read it and press nothing in the world, except through a context menu the hand has open. -xlinka
+    private readonly object _triggerCaptureLock = new();
+    private readonly HashSet<object> _triggerCaptureRequests = new();
+
+    public bool TriggerCaptured
+    {
+        get
+        {
+            lock (_triggerCaptureLock)
+                return _triggerCaptureRequests.Count > 0;
+        }
+    }
+
+    public void SetTriggerCaptured(object requester, bool value)
+    {
+        if (requester == null)
+            return;
+
+        lock (_triggerCaptureLock)
+        {
+            if (value)
+                _triggerCaptureRequests.Add(requester);
+            else
+                _triggerCaptureRequests.Remove(requester);
+        }
+    }
+
     public override void OnDestroy()
     {
         lock (_suppressionLock)
@@ -199,6 +264,8 @@ public class UserInputState : Component
             _wheelCaptureRequests.Clear();
         lock (_stickPressCaptureLock)
             _stickPressCaptureRequests.Clear();
+        lock (_triggerCaptureLock)
+            _triggerCaptureRequests.Clear();
 
         MouseCaptureRequested = false;
         FreeCamActive = false;

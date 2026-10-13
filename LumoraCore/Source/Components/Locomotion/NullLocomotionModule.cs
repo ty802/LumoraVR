@@ -8,7 +8,7 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Users/Locomotion")]
 public class NullLocomotionModule : LocomotionModule
 {
-    public override string DisplayName => "None";
+    protected override string StockName => "None";
     public override LocomotionKind Kind => LocomotionKind.None;
     public override void OnModuleUpdate(float delta) { }
 }

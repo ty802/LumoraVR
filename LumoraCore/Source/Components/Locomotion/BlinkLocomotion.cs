@@ -123,7 +123,7 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
         InvalidColor = new Sync<colorHDR>(this, new colorHDR(1.00f, 0.25f, 0.25f, 0.9f));
     }
 
-    public override string DisplayName => "Blink";
+    protected override string StockName => "Blink";
     public override LocomotionKind Kind => LocomotionKind.Teleport;
 
     public override bool CanActivate() => true;
@@ -163,7 +163,7 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
         // Blink still falls: the character keeps simulating between hops, so gravity, steps and wall
         // collision all behave exactly as they do while walking. Only the horizontal input is gone.
         var character = Owner?.CharacterController;
-        character?.SetSimulationEnabled(true);
+        Owner?.ResumeCharacter();
         character?.SetMovementDirection(float3.Zero);
 
         if (!IsVRActive())
@@ -218,9 +218,26 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
 
         if (_aiming)
         {
-            CommitHop();
+            if (!AimStickHeldElsewhere())
+                CommitHop();
             EndAim();
         }
+    }
+
+    // Locomotion reads the aiming stick as centred while a set above it holds that stick (the laser scrolling
+    // whatever is under the beam). The thumb never let go, so the aim is dropped, not thrown. -xlinka
+    private bool AimStickHeldElsewhere()
+    {
+        if (_aimSide == Chirality.None)
+            return false;
+        var map = InputInterface?.Actions;
+        if (map == null)
+            return false;
+        var control = Input.Actions.ControlRef.VR(_aimSide, Input.Actions.InputControlCatalog.VRStick);
+        var source = map.Resolve(control);
+        if (source == null || !source.IsAvailable)
+            return false;
+        return source.ReadAnalog2D(control).y > ReleaseThreshold.Value;
     }
 
     // INPUT
@@ -315,10 +332,15 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
         return false;
     }
 
+    // Full range is reached short of the rim. Near full force the launch changes by tens of m/s per unit of
+    // stick Y, so a thumb sliding round the rim (a percent or two of Y) would swing a far landing by a metre.
+    // Past this point the stick is simply at maximum. -xlinka
+    private const float TiltFullScale = 0.9f;
+
     private float NormalizeTilt(float stickY)
     {
-        float floor = System.Math.Clamp(ReleaseThreshold.Value, 0f, 0.95f);
-        float t = (stickY - floor) / MathF.Max(1f - floor, 0.05f);
+        float floor = System.Math.Clamp(ReleaseThreshold.Value, 0f, 0.85f);
+        float t = (stickY - floor) / MathF.Max(TiltFullScale - floor, 0.05f);
         return System.Math.Clamp(t, 0f, 1f);
     }
 
@@ -343,11 +365,13 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
         {
             _landingValid = false;
             _result = ArcResult.Missed;
+            _heldLanding = false;
             HideVisuals();
             return;
         }
 
         TraceArc(origin, direction);
+        SettleLanding();
         UpdateVisuals();
     }
 
@@ -361,7 +385,57 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
         _result = ArcResult.Missed;
         _arcRange = 0f;
         _arcPoints.Clear();
+        _heldLanding = false;
+        _pendingFrames = 0;
         HideVisuals();
+    }
+
+    // A landing of a new kind (floor, wall back-off, refused, nothing) has to hold for this many frames in a
+    // row before the ring goes there. A single frame of wall back-off or a pass-through flicker otherwise
+    // throws the ring half a metre and back. A new point of the same kind is taken at once. -xlinka
+    private const int LandingSettleFrames = 2;
+
+    private bool _heldLanding;
+    private ArcResult _heldResult;
+    private bool _heldValid;
+    private float3 _heldPoint;
+    private float3 _heldNormal;
+    private float _heldRange;
+    private ArcResult _pendingResult;
+    private bool _pendingValid;
+    private int _pendingFrames;
+
+    private void SettleLanding()
+    {
+        if (_heldLanding && (_result != _heldResult || _landingValid != _heldValid))
+        {
+            if (_pendingFrames > 0 && _result == _pendingResult && _landingValid == _pendingValid)
+                _pendingFrames++;
+            else
+            {
+                _pendingResult = _result;
+                _pendingValid = _landingValid;
+                _pendingFrames = 1;
+            }
+
+            if (_pendingFrames < LandingSettleFrames)
+            {
+                _result = _heldResult;
+                _landingValid = _heldValid;
+                _landingPoint = _heldPoint;
+                _landingNormal = _heldNormal;
+                _arcRange = _heldRange;
+                return;
+            }
+        }
+
+        _pendingFrames = 0;
+        _heldLanding = true;
+        _heldResult = _result;
+        _heldValid = _landingValid;
+        _heldPoint = _landingPoint;
+        _heldNormal = _landingNormal;
+        _heldRange = _arcRange;
     }
 
     // The laser already resolves the pose the user is actually pointing with - on desktop that is the
@@ -373,6 +447,22 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
         direction = float3.Backward;
 
         var laser = ResolveLaser(_aimSide);
+
+        // In VR the beam leaves the laser slot exactly, along its aim, and that slot already carries this
+        // frame's tracking and any turn just applied. The laser's stored ray is last frame's: this runs
+        // before the hand casts, so a snap turn flashed the arc one frame down the old heading. -xlinka
+        var laserSlot = laser?.Slot;
+        if (laserSlot != null && !laserSlot.IsDestroyed && IsVRActive())
+        {
+            origin = laserSlot.GlobalPosition;
+            direction = laserSlot.GlobalRotation * float3.Backward;
+            if (direction.LengthSquared > 1e-6f)
+            {
+                direction = direction.Normalized;
+                return true;
+            }
+        }
+
         if (laser != null)
         {
             origin = laser.RayOrigin;
@@ -463,6 +553,7 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
         BuildRayExclude();
         float3 position = origin;
         _arcPoints.Add(position);
+        bool ended = false;
 
         for (int step = 0; step < budget; step++)
         {
@@ -475,7 +566,10 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
             float3 segment = position - stepStart;
             float length = segment.Length;
             if (length < 1e-5f)
+            {
+                ended = true;
                 break;
+            }
             float3 segmentDir = segment / length;
 
             // Slight overshoot on the segment length so a hit exactly on a step boundary is not lost
@@ -485,10 +579,22 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
                 _arcPoints.Add(hit.Point);
                 _result = result;
                 ResolveLanding(in hit, segmentDir, scale);
+                ended = true;
                 break;
             }
 
             _arcPoints.Add(position);
+        }
+
+        // Out of steps while still in the air: drop straight down from where the arc got to. Aiming higher
+        // than the steps can follow then still lands under the end of the arc, and the landing slides on
+        // smoothly past that angle instead of the ring vanishing. Straight down, not along the final
+        // velocity: that would leap the landing outward at the same angle. -xlinka
+        if (!ended && CastSegment(position, -_up, ArcDropDistance * scale, scale, out var dropHit, out var dropResult))
+        {
+            _arcPoints.Add(dropHit.Point);
+            _result = dropResult;
+            ResolveLanding(in dropHit, -_up, scale);
         }
 
         if (_landingValid)
@@ -500,6 +606,9 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
     }
 
     private static float Lerp(float a, float b, float t) => a + (b - a) * t;
+
+    // metres at unit user scale
+    private const float ArcDropDistance = 200f;
 
     // The platform ray returns the FIRST hit only, so anything classified as pass-through has to be
     // stepped past and re-cast. Bounded, or a stack of ignored colliders spins the frame. - xlinka

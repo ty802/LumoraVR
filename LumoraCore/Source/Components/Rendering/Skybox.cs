@@ -8,7 +8,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-// The world's sky, drawn from a cubemap asset.
+// The world's sky, drawn from a sky material (a gradient sky, a 360 picture) or else from a cubemap asset.
 //
 // A world has exactly one sky, but nothing stops someone attaching several of these - a loaded item
 // brings its own, or two people each add one. Rather than letting whichever hook ran last win (which
@@ -22,6 +22,9 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Rendering")]
 public class Skybox : ImplementableComponent, ICustomInspectorUI
 {
+    // A sky material wins over Cubemap; any other kind of material is ignored and the cubemap shows.
+    public readonly AssetRef<MaterialAsset> Material;
+
     // nothing renders until it is set and loaded
     public readonly AssetRef<CubemapAsset> Cubemap;
 
@@ -62,8 +65,12 @@ public class Skybox : ImplementableComponent, ICustomInspectorUI
 
     public bool IsActiveSkybox => _isActive;
 
+    // The sky material showing, if Material holds one.
+    public ISkyboxMaterial? SkyMaterial => Material.Target as ISkyboxMaterial;
+
     public Skybox()
     {
+        Material = new AssetRef<MaterialAsset>(this);
         Cubemap = new AssetRef<CubemapAsset>(this);
         Rotation = new Sync<float>(this, 0f);
         Exposure = new Sync<float>(this, 1f);
@@ -201,6 +208,8 @@ public class Skybox : ImplementableComponent, ICustomInspectorUI
     public void BuildInspectorBody(UIBuilder ui)
     {
         InspectorStats.AddRow(ui, "Active sky", _isActive ? "yes" : "no, another Skybox outranks it");
+        InspectorStats.AddRow(ui, "Material", Material.Target == null ? "none, the cubemap shows"
+            : SkyMaterial != null ? Material.Target.GetType().Name : "not a sky material, the cubemap shows");
 
         var asset = Cubemap.Asset;
         InspectorStats.AddRow(ui, "Cubemap", Cubemap.Target == null

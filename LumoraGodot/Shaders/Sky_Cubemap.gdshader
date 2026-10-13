@@ -5,6 +5,8 @@ shader_type sky;
 uniform samplerCube sky_cubemap : source_color, filter_linear_mipmap;
 uniform float sky_rotation = 0.0;
 uniform float sky_exposure : hint_range(0.0, 8.0) = 1.0;
+// A 360 sky material's tint; white for a plain cubemap.
+uniform vec4 sky_tint : source_color = vec4(1.0);
 
 void sky() {
     vec3 dir = normalize(EYEDIR);
@@ -13,5 +15,5 @@ void sky() {
     float c = cos(sky_rotation);
     dir = vec3(c * dir.x - s * dir.z, dir.y, s * dir.x + c * dir.z);
 
-    COLOR = texture(sky_cubemap, dir).rgb * sky_exposure;
+    COLOR = texture(sky_cubemap, dir).rgb * sky_tint.rgb * sky_exposure;
 }

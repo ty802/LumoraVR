@@ -36,7 +36,8 @@ public static class WorldStorage
             if (!string.IsNullOrEmpty(directory))
                 Directory.CreateDirectory(directory);
 
-            var bytes = Serialize(world);
+            var tree = world.SaveWorld();
+            var bytes = DataTreeConverter.SaveToBytes(tree);
             if (encrypt)
                 bytes = LocalEncryption.Encrypt(bytes);
 
@@ -44,6 +45,7 @@ public static class WorldStorage
             var temp = path + ".tmp";
             File.WriteAllBytes(temp, bytes);
             File.Move(temp, path, overwrite: true);
+            CloudAssetPacker.KeepLocalFiles(tree, Engine.Current?.LocalDB);
             WriteThumbnailSidecar(path);
             return true;
         }
@@ -103,6 +105,24 @@ public static class WorldStorage
             LumoraLogger.Error($"WorldStorage: failed to load from '{path}': {ex.Message}");
             return null;
         }
+    }
+
+    // IntegrateTree for a world held before it runs: the tree goes back a slot at a time over the next frames,
+    // pumped by the deferred session start. whenDone hears whether it all went back, false straight away
+    // when there is no tree. -xlinka
+    public static void IntegrateTreeStaged(World world, DataTreeDictionary? tree, string path, Action<bool>? whenDone = null)
+    {
+        if (tree == null)
+        {
+            whenDone?.Invoke(false);
+            return;
+        }
+        world.BeginStagedLoad(tree, whole =>
+        {
+            if (!whole)
+                LumoraLogger.Error($"WorldStorage: failed to load from '{path}'");
+            whenDone?.Invoke(whole);
+        });
     }
 
     // Integration half: everything that touches the world. Must run on the world's own thread.

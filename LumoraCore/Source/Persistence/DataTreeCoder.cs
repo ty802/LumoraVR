@@ -68,6 +68,21 @@ public static class DataTreeCoder
         Reg(v => Components(((int4)v).x, ((int4)v).y, ((int4)v).z, ((int4)v).w),
             n => { var l = List(n); return new int4(I(l, 0), I(l, 1), I(l, 2), I(l, 3)); });
 
+        // Nine floats, column by column, as float3x3 stores them.
+        Reg(v =>
+            {
+                var m = (float3x3)v;
+                return Components(m.c0.x, m.c0.y, m.c0.z, m.c1.x, m.c1.y, m.c1.z, m.c2.x, m.c2.y, m.c2.z);
+            },
+            n =>
+            {
+                var l = List(n);
+                return new float3x3(
+                    new float3(F(l, 0), F(l, 1), F(l, 2)),
+                    new float3(F(l, 3), F(l, 4), F(l, 5)),
+                    new float3(F(l, 6), F(l, 7), F(l, 8)));
+            });
+
         // Nullable float saves as the plain value or a null leaf (Encode already writes null for a
         // null box, so only the decode side needs to know). An avatar's optional clip planes ride on
         // this; without it Sync<float?> replicated fine and threw the moment the avatar was saved.

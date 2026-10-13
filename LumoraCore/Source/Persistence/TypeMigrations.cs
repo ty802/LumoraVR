@@ -173,6 +173,36 @@ public static class TypeMigrations
             minVersion: 0,
             maxVersion: 0,
             transformData: MigrateLoosePlayback);
+
+        // CAPSULE HEIGHT. A capsule mesh's Height measured the straight part alone, so it drew two radii longer
+        // than a capsule collider given the same numbers. It runs tip to tip now; an older save gets the two
+        // radii added, so it keeps the shape it had.
+        Register(
+            "Lumora.Core.Components.Meshes.CapsuleMesh",
+            replacementTypeName: null,
+            minVersion: 0,
+            maxVersion: 0,
+            transformData: MigrateCapsuleHeight);
+    }
+
+    private static DataTreeNode MigrateCapsuleHeight(DataTreeNode node)
+    {
+        if (node is not DataTreeDictionary dictionary)
+            return node;
+
+        // The old defaults, for a save that left either out.
+        float radius = dictionary.TryGetNode("Radius") is DataTreeValue { IsNull: false } r ? r.Extract<float>() : 0.25f;
+        float straight = dictionary.TryGetNode("Height") is DataTreeValue { IsNull: false } h ? h.Extract<float>() : 0.5f;
+        float tipToTip = System.MathF.Max(0f, straight) + 2f * System.MathF.Max(0f, radius);
+
+        var migrated = new DataTreeDictionary();
+        foreach (var (key, child) in dictionary.Children)
+        {
+            if (key != "Height")
+                migrated.Add(key, child);
+        }
+        migrated.Add("Height", tipToTip);
+        return migrated;
     }
 
     private const string PlaybackMember = "Playback";

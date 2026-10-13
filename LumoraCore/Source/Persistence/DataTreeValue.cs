@@ -6,11 +6,8 @@ using System.Collections.Generic;
 
 namespace Lumora.Core.Persistence;
 
-/// <summary>
-/// A leaf node holding a single primitive value (number, bool, string, enum, URL, etc.).
-/// URLs are stored prefixed with '@' so asset references can be found when bundling a save;
-/// raw strings that happen to start with '@' are escaped to '@@'.
-/// </summary>
+// URLs are stored with a leading '@' so asset references can be found when bundling a save;
+// raw strings that happen to start with '@' are escaped to '@@'.
 public sealed class DataTreeValue : DataTreeNode
 {
     public override DataTreeNodeType NodeType => DataTreeNodeType.Value;
@@ -19,13 +16,7 @@ public sealed class DataTreeValue : DataTreeNode
 
     public bool IsNull => Value == null;
 
-    /// <summary>True when this value holds a URL (single leading '@').</summary>
     public bool IsUrl => Value is string { Length: > 1 } s && s[0] == '@' && s[1] != '@';
-
-    public override IEnumerable<DataTreeNode> EnumerateTree()
-    {
-        yield return this;
-    }
 
     private DataTreeValue() { }
 
@@ -36,7 +27,7 @@ public sealed class DataTreeValue : DataTreeNode
     // As written, never ToString: that lowercases the host, and a local:// machine id is case-sensitive.
     public DataTreeValue(Uri? url) => Value = url == null ? null : "@" + url.OriginalString;
 
-    /// <summary>Store a string verbatim, bypassing the '@' URL-escaping (use only when intended).</summary>
+    // Skips the '@' escaping: a leading '@' then reads back as a URL.
     public static DataTreeValue RawString(string? value) => new() { Value = value };
 
     public static DataTreeValue FromEnum<E>(E value) where E : struct, Enum => new(value.ToString());
@@ -71,7 +62,6 @@ public sealed class DataTreeValue : DataTreeNode
         return (T)Value.ToType(type, null);
     }
 
-    /// <summary>The URL this value holds, or null if it isn't a URL.</summary>
     public Uri? ExtractUrl()
     {
         if (!IsUrl)

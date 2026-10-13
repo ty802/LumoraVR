@@ -116,15 +116,10 @@ public sealed class SaveControl
                 // costs no registry lookup.
                 Reserve(syncRef.Value);
                 break;
-            case ISyncList list:
-                foreach (var element in list.Elements)
-                {
-                    if (element is ISyncMember child)
-                        ReserveMemberIdentities(child);
-                }
-                break;
-            case ISyncObject syncObject:
-                foreach (var child in syncObject.SyncMembers)
+            default:
+                // Lists, sync objects and composite entries: a texture on a material's property is a
+                // reference inside a list element.
+                foreach (var (_, child) in Worker.InnerMembers(member))
                     ReserveMemberIdentities(child);
                 break;
         }

@@ -6,10 +6,6 @@ using System.Collections.Generic;
 
 namespace Lumora.Core.Persistence;
 
-/// <summary>
-/// A keyed map of child nodes - the workhorse of the format. A component serializes its members
-/// into one of these (member name -> value/sub-tree); a world serializes its sections likewise.
-/// </summary>
 public sealed class DataTreeDictionary : DataTreeNode
 {
     public override DataTreeNodeType NodeType => DataTreeNodeType.Dictionary;
@@ -27,10 +23,8 @@ public sealed class DataTreeDictionary : DataTreeNode
 
     // ADD
 
-    /// <summary>Add a child node under <paramref name="key"/>.</summary>
     public void Add(string key, DataTreeNode node) => Children.Add(key, node);
 
-    /// <summary>Add a primitive value under <paramref name="key"/> (wrapped in a <see cref="DataTreeValue"/>).</summary>
     public void Add<T>(string key, T value) => Children.Add(key, MakeValue(value));
 
     public void AddOrUpdate(string key, DataTreeNode node)
@@ -88,14 +82,6 @@ public sealed class DataTreeDictionary : DataTreeNode
         if (node is DataTreeValue value)
             return value.Extract<T>();
         throw new InvalidOperationException($"Node is a {node.NodeType}, not a primitive value.");
-    }
-
-    public override IEnumerable<DataTreeNode> EnumerateTree()
-    {
-        yield return this;
-        foreach (var child in Children.Values)
-            foreach (var node in child.EnumerateTree())
-                yield return node;
     }
 
     public override string ToString() => $"DataTreeDictionary ({Children.Count})";

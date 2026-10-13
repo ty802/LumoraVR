@@ -57,9 +57,13 @@ public static class AudioStreamSpawner
             rotation = floatQ.Identity;
         }
 
+        using var own = world.EnterSpawnAllocation();
         var slot = world.RootSlot.AddSlot("Audio Stream");
         slot.GlobalPosition = position;
         slot.GlobalRotation = rotation;
+        // A live feed off one person's machine: it means nothing in a saved world, and it goes when they do.
+        slot.Persistent.Value = false;
+        slot.AttachComponent<Lumora.Core.Components.Utility.DestroyWhenUserLeaves>().TargetUser.Target = localUser;
 
         // An item, like everything else somebody puts in a room: it has a root, it has a name, and a
         // hand can take hold of it and move it. It had none of that, so it sat wherever it spawned and

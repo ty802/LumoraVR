@@ -43,19 +43,8 @@ public class StreamGroupManager
 
     public void AssignToGroup(IStream stream, ushort? oldGroupIndex)
     {
-        if (oldGroupIndex.HasValue && _groups.TryGetValue(oldGroupIndex.Value, out var oldGroup))
-        {
-            oldGroup.RemoveStream(stream);
-            if (oldGroup.StreamCount == 0)
-            {
-                _groups.Remove(oldGroupIndex.Value);
-                if (User?.IsLocal == true)
-                {
-                    _nameToIndex.Remove(_indexToName[oldGroupIndex.Value]);
-                    _indexToName.Remove(oldGroupIndex.Value);
-                }
-            }
-        }
+        if (oldGroupIndex.HasValue)
+            RemoveFromGroup(stream, oldGroupIndex.Value);
 
         if (!_groups.TryGetValue(stream.GroupIndex, out var newGroup))
         {
@@ -63,6 +52,20 @@ public class StreamGroupManager
             _groups[stream.GroupIndex] = newGroup;
         }
         newGroup.AssignStream(stream);
+    }
+
+    public void RemoveStream(IStream stream) => RemoveFromGroup(stream, stream.GroupIndex);
+
+    private void RemoveFromGroup(IStream stream, ushort groupIndex)
+    {
+        if (!_groups.TryGetValue(groupIndex, out var group))
+            return;
+        group.RemoveStream(stream);
+        if (group.StreamCount != 0)
+            return;
+        _groups.Remove(groupIndex);
+        if (User?.IsLocal == true && _indexToName.Remove(groupIndex, out var name))
+            _nameToIndex.Remove(name);
     }
 
     public void StreamModified(IStream stream)

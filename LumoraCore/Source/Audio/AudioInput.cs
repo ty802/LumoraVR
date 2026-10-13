@@ -18,7 +18,10 @@ public struct VoiceFilterSettings
     public float GateAttack;
     public float GateHold;
     public float GateRelease;
-    public float NormalizationTarget;
+    // Voiced speech level the leveller steers toward, RMS in dBFS.
+    public float TargetLevel;
+    // Fixed gain on the microphone ahead of the gate and the leveller, dB.
+    public float MicrophoneGain;
 
     public static VoiceFilterSettings Default => new VoiceFilterSettings
     {
@@ -28,16 +31,17 @@ public struct VoiceFilterSettings
         GateAttack = 0.01f,
         GateHold = 0.2f,
         GateRelease = 0.2f,
-        NormalizationTarget = 0.1f,
+        TargetLevel = -18.5f,
+        MicrophoneGain = 0f,
     };
 }
 
 // A capture device as the engine sees it: samples come in at whatever the platform runs at and leave
-// as two 48 kHz stereo streams, one untouched and one filtered.
+// as 48 kHz stereo streams: untouched, high passed only, and filtered.
 //
 // SamplesCaptured only copies the samples into a backlog and wakes the chain thread, because the
 // platform calls it from wherever it polls (Godot polls on the main thread) and the noise suppressor is
-// a neural network: a frame of it there is a frame of VR budget. Both events fire on the chain thread.
+// a neural network: a frame of it there is a frame of VR budget. Every event fires on the chain thread.
 // The chain allocates on the first frame and on a frame larger than any before it, and never again:
 // the scratch buffers are fields, the filter state is fields, and the settings are plain values pushed
 // in from the world thread. No datamodel, no engine locks, nothing that can block behind a world update.
@@ -52,15 +56,33 @@ public sealed class AudioInput : IDisposable
 
     private const float HighPassHz = 80f;
 
-    // Below this a frame is silence as far as the normalizer is concerned; letting it chase a target
-    // through a silent frame is how a noise floor becomes a roar.
-    private const float NormalizationFloor = 0.001f;
+    // THE LEVELLER. A peak target makes a sharp-edged voice quiet and a soft one loud, and moves on
+    // every frame over the gate, breaths included. This measures speech the way a listener hears it:
+    // power over 10 ms frames that carry voice and sit within 20 dB of the running estimate, averaged
+    // over a second and a half. The gain walks toward whatever puts that at the target, up slowly so a
+    // pause never swells, down faster so a shout is caught, and only while the gate is open, so a pause
+    // holds the gain where the last word left it. The -1 dBFS limiter after it takes the peaks the gain
+    // pushes past full scale. -xlinka
+    private const float LevelSeconds = 1.5f;
+    private const float LevelWindowDb = 20f;
+    private const float MinLevellerGainDb = -12f;
+    private const float MaxLevellerGainDb = 24f;
+    private const float RiseDbPerSecond = 6f;
+    private const float FallDbPerSecond = 20f;
 
-    // How fast the normalizer walks toward its new gain, in seconds to cover most of the distance.
-    private const float NormalizationTimeConstant = 0.75f;
+    // A frame this quiet is not speech whatever the VAD says.
+    private const float LevelFloorDb = -70f;
 
-    private const float MaxNormalizationGain = 4f;
-    private const float MinNormalizationGain = 0.1f;
+    // Voiced frames held out by the window for this long mean the microphone got quieter for good (a
+    // different device, a capsule turned away), so the next one is let in and the estimate follows.
+    private const float WindowEscapeSeconds = 2f;
+
+    // RNNoise's VAD at or above this is speech.
+    private const float VoiceThreshold = 0.5f;
+
+    // Seconds of speech before the leveller's gain is worth remembering for the device.
+    private const float SettleSeconds = 3f;
+    private const float SettleToleranceDb = 1f;
 
     // RNNoise, and it runs BEFORE the gate for a reason: the gate decides whether the frame is voice,
     // and it decides better when the fan has already been taken out from under it. A quiet talker in a
@@ -69,11 +91,15 @@ public sealed class AudioInput : IDisposable
     // well under a millisecond of this thread per 10 ms frame. -xlinka
     private readonly VoiceDenoiser _noiseSuppressor = new();
 
+    // 5 ms of lookahead, which is 5 ms more latency on every voice.
+    private readonly LimiterFilter _limiter = new(AudioSimulator.DefaultSampleRate, LimiterSettings.Default);
+
     private readonly IAudioDeviceInput _device;
     private readonly object _sync = new object();
 
     private AudioSamplesHandler? _raw;
     private AudioSamplesHandler? _filtered;
+    private Action<AudioInput, StereoSample[], int>? _highPassed;
     private int _subscribers;
     private volatile bool _disposed;
 
@@ -90,7 +116,23 @@ public sealed class AudioInput : IDisposable
 
     private float _gateGain;
     private float _gateHoldRemaining;
-    private float _normalizationGain = 1f;
+    private bool _gateOpen;
+
+    private float _levellerGainDb;
+    // Mean square of voiced speech after the microphone gain; 0 until a voiced frame has been heard.
+    private double _speechPower;
+    private double _framePower;
+    private int _frameFill;
+    private bool _frameVoiced;
+    private float _voicedSeconds;
+    private float _windowHeldOut;
+    private volatile float _settledGainDb = float.NaN;
+    private volatile float _voiceProbability;
+
+    // The leveller's gain this device settled at last time, for the next open to start from. Written on
+    // the subscribing thread before the reset it is read in; NaN for a device never heard before.
+    private volatile float _gainSeedDb = float.NaN;
+    private string? _seedDeviceId;
 
     private VoiceFilterSettings _settings = VoiceFilterSettings.Default;
 
@@ -116,9 +158,16 @@ public sealed class AudioInput : IDisposable
 
     public bool IsSystemDefault => _device.IsSystemDefault;
 
-    // Microphone, system audio or virtual cable, worked out from the name because that is all the
-    // platform gives us. See AudioInputTypes. Cached: the name does not change under a device.
-    public AudioInputType InputType => _inputType ??= AudioInputTypes.Classify(_device.Name);
+    // Set when the platform enumerated this as an endpoint and so knows what it carries. Null for the one
+    // device the engine's own audio layer captures from, which is only ever a name.
+    public AudioEndpointKind? EndpointKind => (_device as IAudioEndpointInput)?.Kind;
+
+    // Microphone, system audio or virtual cable. An endpoint says which; anything else is worked out
+    // from the name, because that is all there is. See AudioInputTypes. Cached: neither changes under
+    // a device.
+    public AudioInputType InputType => _inputType ??= EndpointKind is AudioEndpointKind.OutputLoopback or AudioEndpointKind.SystemLoopback
+        ? AudioInputType.Loopback
+        : AudioInputTypes.Classify(_device.Name);
     private AudioInputType? _inputType;
 
     public bool IsLoopback => AudioInputTypes.IsLoopback(InputType);
@@ -191,6 +240,49 @@ public sealed class AudioInput : IDisposable
         }
     }
 
+    // The microphone past the high pass and BEFORE the suppressor, on the chain thread, on the same
+    // blocks the chain runs: (input, buffer, count). The buffer is the chain's own scratch, so read it
+    // during the call and leave it as it is. A subscriber keeps the whole chain running, so
+    // VoiceProbability stays live for it. -xlinka
+    public event Action<AudioInput, StereoSample[], int>? HighPassedSamples
+    {
+        add
+        {
+            if (value == null) return;
+            lock (_sync)
+            {
+                _highPassed += value;
+                _subscribers++;
+                ApplyCaptureState();
+            }
+        }
+        remove
+        {
+            if (value == null) return;
+            lock (_sync)
+            {
+                var before = _highPassed;
+                _highPassed -= value;
+                if (ReferenceEquals(before, _highPassed))
+                    return;
+                _subscribers--;
+                ApplyCaptureState();
+            }
+        }
+    }
+
+    // RNNoise's latest read of the microphone, 0 for noise and 1 for a voice. With suppression off
+    // there is no VAD, so it is 1 while the gate is open and 0 while it is shut. 0 while the device
+    // is closed.
+    public float VoiceProbability => _voiceProbability;
+
+    // Whether this machine may capture a voice for user in world right now: not with the microphone
+    // muted here, not for a user who muted themselves or whom the host silenced, and not into a world
+    // that is not the one being looked at. World thread.
+    public static bool IsVoiceCaptureAllowed(User? user, World? world)
+        => user != null && world != null && world.IsFocused
+           && !EngineSettings.MicrophoneMuted && !user.IsMuted.Value && !user.IsSilenced.Value;
+
     // A level meter wants the device open without wanting the samples, and an event handler that does
     // nothing would still be invoked once a frame per capture buffer. These count on the same edge the
     // events count on, so the device starts and stops the same way. Balanced calls only: a stray
@@ -227,7 +319,8 @@ public sealed class AudioInput : IDisposable
         _settings.GateAttack = Sanitize(settings.GateAttack, 0.001f, 1f, 0.01f);
         _settings.GateHold = Sanitize(settings.GateHold, 0f, 5f, 0.2f);
         _settings.GateRelease = Sanitize(settings.GateRelease, 0.001f, 5f, 0.2f);
-        _settings.NormalizationTarget = Sanitize(settings.NormalizationTarget, 0.01f, 1f, 0.1f);
+        _settings.TargetLevel = Sanitize(settings.TargetLevel, SettingsCatalog.VoiceTargetLevel.Min, SettingsCatalog.VoiceTargetLevel.Max, -18.5f);
+        _settings.MicrophoneGain = Sanitize(settings.MicrophoneGain, SettingsCatalog.MicrophoneGain.Min, SettingsCatalog.MicrophoneGain.Max, 0f);
     }
 
     // PLATFORM THREAD
@@ -333,22 +426,37 @@ public sealed class AudioInput : IDisposable
             var work = _filterScratch.AsSpan(0, atTargetRate.Length);
             atTargetRate.CopyTo(work);
 
+            HighPass(work, rate);
+
             var filtered = _filtered;
-            if (filtered == null)
+            var highPassed = _highPassed;
+            if (filtered == null && highPassed == null)
             {
                 // Nobody wants the filtered stream, but a meter still wants a number. The peak is taken
-                // where the filter would take it, past the high pass, so the bar reads the same whether
-                // or not a voice stream is running. -xlinka
-                HighPass(work, rate);
-                LastPeak = Peak(work);
+                // where the filter would take it, past the high pass and the microphone gain, so the bar
+                // reads the same whether or not a voice stream is running. -xlinka
+                LastPeak = Peak(work) * DbToGain(_settings.MicrophoneGain);
+                _voiceProbability = 0f;
                 return;
+            }
+
+            if (highPassed != null)
+            {
+                try
+                {
+                    highPassed.Invoke(this, _filterScratch, work.Length);
+                }
+                catch
+                {
+                    // A tap that throws loses its own block, not the voice.
+                }
             }
 
             // The suppressor buffers, so what comes back is not the length that went in and the rest
             // of the chain has to run on what it actually produced.
             int filteredLength = Filter(work, rate);
             if (filteredLength > 0)
-                filtered.Invoke(work.Slice(0, filteredLength));
+                filtered?.Invoke(work.Slice(0, filteredLength));
         }
         catch
         {
@@ -391,16 +499,15 @@ public sealed class AudioInput : IDisposable
         return produced;
     }
 
-    // Peak of the last captured frame before the gate, for a level meter. Written on the audio
-    // thread, read anywhere; a torn read of one float is not a thing.
+    // Peak of the last captured frame past the microphone gain and before the gate, for a level meter.
+    // Written on the audio thread, read anywhere; a torn read of one float is not a thing.
     public float LastPeak { get; private set; }
 
     // Returns how many samples of buffer are valid on the way out, which is not always how many went
-    // in: the suppressor works in whole 10 ms frames and runs behind.
+    // in: the suppressor works in whole 10 ms frames and runs behind. The high pass has already run.
     private int Filter(Span<StereoSample> buffer, int sampleRate)
     {
-        HighPass(buffer, sampleRate);
-
+        bool voiceActivity = false;
         if (_settings.NoiseSuppression)
         {
             int produced = _noiseSuppressor.Process(buffer, sampleRate);
@@ -411,53 +518,114 @@ public sealed class AudioInput : IDisposable
                 return 0;
             }
             buffer = buffer.Slice(0, produced);
+            voiceActivity = _noiseSuppressor.OutputRunCount > 0;
         }
 
-        float peak = Peak(buffer);
-        LastPeak = peak;
+        float trim = DbToGain(_settings.MicrophoneGain);
+        LastPeak = Peak(buffer) * trim;
 
-        float frameSeconds = buffer.Length / (float)sampleRate;
+        // The gate and the leveller step in 10 ms frames. With the suppressor running those are its own
+        // frames, each with the VAD it gave.
+        int frameSize = System.Math.Max(1, sampleRate / 100);
+        int runs = voiceActivity ? _noiseSuppressor.OutputRunCount : 0;
+        int run = 0;
+        int at = 0;
+        while (at < buffer.Length)
+        {
+            int length;
+            float voice;
+            if (run < runs)
+            {
+                length = _noiseSuppressor.OutputRunLength(run);
+                voice = _noiseSuppressor.OutputRunVoiceProbability(run);
+                run++;
+            }
+            else
+            {
+                length = System.Math.Max(1, frameSize - _frameFill);
+                voice = -1f;
+            }
+            length = System.Math.Min(length, buffer.Length - at);
+            Level(buffer.Slice(at, length), sampleRate, frameSize, trim, voice);
+            at += length;
+        }
 
-        // GATE. Measured on the frame's peak, held open for a while after the last loud frame so a
-        // pause between words is not a hole in the sentence, then ramped per sample so the open and
-        // the close are slopes rather than steps.
-        float threshold = _settings.GateThreshold;
-        bool loud = peak >= threshold;
-        if (loud)
+        _voiceProbability = voiceActivity ? _noiseSuppressor.VoiceProbability : (_gateOpen ? 1f : 0f);
+        _limiter.Process(buffer, sampleRate);
+        return buffer.Length;
+    }
+
+    // One frame, or the part of one a call boundary left, through the gate and the leveller. voice is
+    // that frame's VAD, negative when nothing measured one.
+    private void Level(Span<StereoSample> segment, int sampleRate, int frameSize, float trim, float voice)
+    {
+        float seconds = segment.Length / (float)sampleRate;
+
+        double power = 0.0;
+        float peak = 0f;
+        for (int i = 0; i < segment.Length; i++)
+        {
+            float left = segment[i].left * trim;
+            float right = segment[i].right * trim;
+            power += (left * left + right * right) * 0.5;
+            float amplitude = MathF.Max(MathF.Abs(left), MathF.Abs(right));
+            if (amplitude > peak)
+                peak = amplitude;
+        }
+
+        // GATE. Opens on the VAD when the suppressor gives one, or on the peak AFTER all the gain, so a
+        // quiet microphone the leveller brings up is judged by how it will sound and not shut out by a
+        // threshold that was only ever right for a loud one. Held open for a while after the last voiced
+        // frame so a pause between words is not a hole in the sentence, then ramped per sample so the
+        // open and the close are slopes rather than steps. -xlinka
+        bool voiced = voice >= VoiceThreshold;
+        bool loud = peak * DbToGain(_levellerGainDb) >= _settings.GateThreshold;
+        if (voiced || loud)
             _gateHoldRemaining = _settings.GateHold;
         else
-            _gateHoldRemaining -= frameSeconds;
+            _gateHoldRemaining -= seconds;
+        bool open = voiced || loud || _gateHoldRemaining > 0f;
+        _gateOpen = open;
 
-        bool open = loud || _gateHoldRemaining > 0f;
+        // A frame counts toward the speech level when the VAD calls it voice, or when the gate is open
+        // if there is no VAD.
+        _framePower += power;
+        _frameFill += segment.Length;
+        if (voice >= 0f ? voiced : open)
+            _frameVoiced = true;
+        if (_frameFill >= frameSize)
+        {
+            if (_frameVoiced)
+                MeasureSpeech(_framePower / _frameFill, _frameFill / (float)sampleRate);
+            _framePower = 0.0;
+            _frameFill = 0;
+            _frameVoiced = false;
+        }
+
+        float from = _levellerGainDb;
+        float to = from;
+        if (!_settings.Normalization)
+        {
+            to = 0f;
+        }
+        else if (open && _speechPower > 0.0)
+        {
+            float want = System.Math.Clamp(_settings.TargetLevel - PowerToDb(_speechPower), MinLevellerGainDb, MaxLevellerGainDb);
+            to = want > from
+                ? MathF.Min(want, from + RiseDbPerSecond * seconds)
+                : MathF.Max(want, from - FallDbPerSecond * seconds);
+            if (_voicedSeconds >= SettleSeconds && MathF.Abs(want - to) <= SettleToleranceDb)
+                _settledGainDb = to;
+        }
+        _levellerGainDb = to;
+
         float gateTarget = open ? 1f : 0f;
         float rampSeconds = open ? _settings.GateAttack : _settings.GateRelease;
         float gateStep = rampSeconds <= 0f ? 1f : 1f / (rampSeconds * sampleRate);
-
-        // NORMALIZATION. Only a frame that is actually carrying voice moves the target, and the walk
-        // toward it is slow enough that a shout does not duck the next word.
-        float normalizationFrom = _normalizationGain;
-        float normalizationTo = _normalizationGain;
-        if (_settings.Normalization)
-        {
-            if (peak >= NormalizationFloor && peak >= threshold)
-            {
-                float desired = _settings.NormalizationTarget / peak;
-                if (desired > MaxNormalizationGain) desired = MaxNormalizationGain;
-                if (desired < MinNormalizationGain) desired = MinNormalizationGain;
-
-                float blend = frameSeconds / NormalizationTimeConstant;
-                if (blend > 1f) blend = 1f;
-                normalizationTo = _normalizationGain + (desired - _normalizationGain) * blend;
-            }
-        }
-        else
-        {
-            normalizationTo = 1f;
-            normalizationFrom = _normalizationGain;
-        }
-
-        float inverseLength = buffer.Length > 0 ? 1f / buffer.Length : 0f;
-        for (int i = 0; i < buffer.Length; i++)
+        float gainFrom = trim * DbToGain(from);
+        float gainTo = trim * DbToGain(to);
+        float inverseLength = 1f / segment.Length;
+        for (int i = 0; i < segment.Length; i++)
         {
             if (_gateGain < gateTarget)
             {
@@ -470,13 +638,43 @@ public sealed class AudioInput : IDisposable
                 if (_gateGain < gateTarget) _gateGain = gateTarget;
             }
 
-            float normalization = normalizationFrom + (normalizationTo - normalizationFrom) * (i * inverseLength);
-            buffer[i] = buffer[i].Multiply(_gateGain * normalization);
+            float gain = gainFrom + (gainTo - gainFrom) * (i * inverseLength);
+            segment[i] = segment[i].Multiply(_gateGain * gain);
+        }
+    }
+
+    // A voiced frame's mean square into the speech level. One far under the level is a breath or a
+    // trailing consonant and is left out, until enough of them in a row say the level itself is stale.
+    private void MeasureSpeech(double meanSquare, float seconds)
+    {
+        if (!(meanSquare > 0.0) || PowerToDb(meanSquare) < LevelFloorDb)
+            return;
+
+        if (_speechPower <= 0.0)
+        {
+            _speechPower = meanSquare;
+        }
+        else if (PowerToDb(meanSquare) < PowerToDb(_speechPower) - LevelWindowDb)
+        {
+            _windowHeldOut += seconds;
+            if (_windowHeldOut < WindowEscapeSeconds)
+                return;
+            _speechPower = meanSquare;
+        }
+        else
+        {
+            _speechPower += (meanSquare - _speechPower) * System.Math.Min(1.0, seconds / LevelSeconds);
         }
 
-        _normalizationGain = normalizationTo;
-        return buffer.Length;
+        _windowHeldOut = 0f;
+        _voicedSeconds += seconds;
     }
+
+    private static float DbToGain(float db) => MathF.Pow(10f, db / 20f);
+
+    private static float PowerToDb(double power) => 10f * (float)System.Math.Log10(power);
+
+    private static double DbToPower(float db) => System.Math.Pow(10.0, db / 10.0);
 
     private static float Peak(ReadOnlySpan<StereoSample> buffer)
     {
@@ -527,6 +725,9 @@ public sealed class AudioInput : IDisposable
                 {
                     lock (_handoff)
                         _backlogCount = 0;
+                    _seedDeviceId = DeviceId;
+                    _gainSeedDb = EngineSettings.MicrophoneGainSeed(_seedDeviceId);
+                    _settledGainDb = float.NaN;
                     _resetPending = true;
                     _device.Start();
                 }
@@ -536,12 +737,25 @@ public sealed class AudioInput : IDisposable
                 _device.Stop();
                 // Otherwise the last frame before the close stays on every meter reading this. -xlinka
                 LastPeak = 0f;
+                _voiceProbability = 0f;
+                KeepGainSeed();
             }
         }
         catch (Exception ex)
         {
             Logging.Logger.Warn($"AudioInput: '{Name}' refused a capture state change: {ex.Message}");
         }
+    }
+
+    // What the leveller settled at goes back under the device it was opened on. A device switched under
+    // a running capture keeps no seed from this run, since the gain may still be the old one's.
+    private void KeepGainSeed()
+    {
+        float settled = _settledGainDb;
+        string? device = _seedDeviceId;
+        if (!float.IsFinite(settled) || string.IsNullOrEmpty(device) || !string.Equals(device, DeviceId, StringComparison.Ordinal))
+            return;
+        EngineSettings.SetMicrophoneGainSeed(device, settled);
     }
 
     private void ResetFilterState()
@@ -554,7 +768,22 @@ public sealed class AudioInput : IDisposable
         _highPassLastOutRight = 0f;
         _gateGain = 0f;
         _gateHoldRemaining = 0f;
-        _normalizationGain = 1f;
+        _gateOpen = false;
+
+        // A device heard before starts at the gain it settled at, with the speech level that gain was
+        // settled for, so the first words are not left at unity while the leveller climbs.
+        float seed = _gainSeedDb;
+        bool seeded = float.IsFinite(seed);
+        _levellerGainDb = seeded ? System.Math.Clamp(seed, MinLevellerGainDb, MaxLevellerGainDb) : 0f;
+        _speechPower = seeded ? DbToPower(_settings.TargetLevel - _levellerGainDb) : 0.0;
+        _framePower = 0.0;
+        _frameFill = 0;
+        _frameVoiced = false;
+        _voicedSeconds = 0f;
+        _windowHeldOut = 0f;
+        _settledGainDb = float.NaN;
+        _voiceProbability = 0f;
+        _limiter.Reset();
         // A new device is a new room. The network's recurrent state carries the old one over and
         // suppresses the wrong noise until it re-learns, which sounds like the new microphone is broken.
         _noiseSuppressor.Reset();
@@ -594,6 +823,7 @@ public sealed class AudioInput : IDisposable
         {
             _raw = null;
             _filtered = null;
+            _highPassed = null;
             _subscribers = 0;
         }
 
@@ -601,7 +831,10 @@ public sealed class AudioInput : IDisposable
         {
             _device.SamplesCaptured -= OnSamplesCaptured;
             if (_device.IsCapturing)
+            {
                 _device.Stop();
+                KeepGainSeed();
+            }
         }
         catch
         {

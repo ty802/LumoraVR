@@ -65,6 +65,10 @@ public class UserAudioStream : Component, IWorldAudioDataSource
         set => _preferredInput = value;
     }
 
+    // The input this stream captures from, so anything else listening to the same voice (the mouth)
+    // taps the same device.
+    public AudioInput? CaptureInput => _preferredInput ?? Engine.Current?.AudioSystem?.DefaultAudioInput;
+
     public User? TargetUser => Stream.Target?.Owner ?? Slot?.ActiveUserRoot?.ActiveUser;
 
     // True while this machine is not sending anything for this user. Only ever meaningful for the
@@ -130,10 +134,9 @@ public class UserAudioStream : Component, IWorldAudioDataSource
     private void ApplyCaptureState(AudioStream stream, User owner)
     {
         bool voice = IsVoiceCapture.Value;
-        bool muted = World?.IsFocused != true
-            || !Enabled.Value
+        bool muted = !Enabled.Value
             || Slot?.IsActive != true
-            || (voice && (EngineSettings.MicrophoneMuted || owner.IsSilenced.Value || owner.IsMuted.Value));
+            || (voice ? !AudioInput.IsVoiceCaptureAllowed(owner, World) : World?.IsFocused != true);
 
         if (muted)
         {
@@ -148,7 +151,7 @@ public class UserAudioStream : Component, IWorldAudioDataSource
             return;
         }
 
-        var input = _preferredInput ?? Engine.Current?.AudioSystem?.DefaultAudioInput;
+        var input = CaptureInput;
         bool filtered = UseFilteredData.Value;
         if (!ReferenceEquals(input, _subscribedInput) || filtered != _subscribedFiltered)
         {

@@ -22,9 +22,24 @@ public sealed class GodotAudioDeviceOutput : IAudioDeviceOutput
 {
     private const int MixRate = 48000;
 
-    // Two tenths of a second of slack between a render and the hardware. Less and a hitched frame
-    // is audible; more and a volume change takes a noticeable moment to land.
-    private const float BufferSeconds = 0.2f;
+    // Headroom, not latency: Godot rounds this up to a power of two (8192 frames) and the mixer only
+    // fills the ring to the target below.
+    private const float BufferSeconds = 0.1f;
+
+    // FILL TARGET. Godot's mix takes 512 frames at a time, so the queue swings between target - 512 and
+    // target, and every frame in it is time between a render and the ear; a full ring would be a third
+    // of a second of it. Start low; when the mix finds the queue short and plays silence (a skip) the
+    // target goes up, and after 20 s without one it creeps back down. Mobile mixes in bigger bursts and
+    // starts higher. Counts are frames at MixRate. -xlinka
+    private const int DesktopTarget = 1536;
+    private const int MobileTarget = 3072;
+    private const int TargetFloor = 1024;
+    private const int TargetCeiling = 4096;
+    private const int TargetRaise = 512;
+    private const int TargetLower = 256;
+    private const long LowerAfterMs = 20_000;
+    // A fresh playback is mixed empty until the first write lands; those skips are not starvation.
+    private const long SkipGraceMs = 250;
 
     private volatile AudioStreamPlayer? _player;
     private volatile AudioStreamGeneratorPlayback? _playback;
@@ -35,15 +50,32 @@ public sealed class GodotAudioDeviceOutput : IAudioDeviceOutput
     private int _resumePending;
     private int _restarts;
 
+    // The mixer thread's, except what Start and a fresh open set on the main thread before the playback
+    // is published.
+    private volatile int _capacity;
+    private volatile int _target;
+    private volatile int _queued;
+    private int _skipsSeen;
+    private int _underruns;
+    private long _openedAt;
+    private long _lastStarvedAt;
+
     public int SampleRate => MixRate;
 
-    // The mixer keeps the generator full, so its whole length is in front of every frame written,
-    // and the platform's own output latency sits behind that.
-    public double LatencySeconds => BufferSeconds + _outputLatency;
+    // As of the mixer's last poll, a millisecond ago at most.
+    public int FramesQueued => _started && _playback != null ? _queued : 0;
+
+    // What is queued in the generator now, and the platform's own output latency behind it.
+    public double LatencySeconds => (double)FramesQueued / MixRate + _outputLatency;
+
+    public int Underruns => Volatile.Read(ref _underruns);
 
     private volatile float _outputLatency;
 
     public int Restarts => Volatile.Read(ref _restarts);
+
+    private const long LiveCheckMs = 50;
+    private long _liveCheckedAt;
 
     public int FramesWritable
     {
@@ -56,20 +88,34 @@ public sealed class GodotAudioDeviceOutput : IAudioDeviceOutput
 
             try
             {
-                var player = _player;
-                if (player == null || !GodotObject.IsInstanceValid(player) || !player.Playing)
+                // Whether the player still plays is asked a few times a second, not on every poll. The
+                // pump polls every millisecond, and each ask took the audio server's lock, which Godot's
+                // own mixing thread holds while it mixes, plus the object table's lock that every object
+                // made or freed anywhere takes: a third of this thread's time went to waiting on them. A
+                // player that stops is noticed within a check, and the skip count rides the same one. -xlinka
+                long now = System.Environment.TickCount64;
+                if (now - _liveCheckedAt >= LiveCheckMs)
                 {
-                    RequestResume();
-                    return 0;
+                    var player = _player;
+                    if (player == null || !GodotObject.IsInstanceValid(player) || !player.Playing
+                        || !GodotObject.IsInstanceValid(playback))
+                    {
+                        RequestResume();
+                        return 0;
+                    }
+                    _liveCheckedAt = now;
+                    CheckSkips(playback, now);
                 }
 
-                if (!GodotObject.IsInstanceValid(playback))
-                {
-                    RequestResume();
-                    return 0;
-                }
-
-                return playback.GetFramesAvailable();
+                int available = playback.GetFramesAvailable();
+                int capacity = _capacity;
+                // Nothing can have more room than the whole ring, so a larger answer corrects the size.
+                if (available > capacity)
+                    _capacity = capacity = available;
+                int queued = capacity - available;
+                _queued = queued;
+                int target = Math.Min(_target, capacity);
+                return Math.Max(0, target - queued);
             }
             catch
             {
@@ -98,6 +144,7 @@ public sealed class GodotAudioDeviceOutput : IAudioDeviceOutput
             // A stereo sample is two sequential floats and so is the vector the ring wants, so the
             // whole block goes across as a view of the mixer's own buffer.
             playback.PushBuffer(MemoryMarshal.Cast<StereoSample, Vector2>(frames));
+            _queued += frames.Length;
         }
         catch
         {
@@ -107,6 +154,11 @@ public sealed class GodotAudioDeviceOutput : IAudioDeviceOutput
 
     public void Start()
     {
+        if (_target == 0)
+        {
+            _target = Lumora.Core.Engine.IsMobilePlatform ? MobileTarget : DesktopTarget;
+            Volatile.Write(ref _lastStarvedAt, System.Environment.TickCount64);
+        }
         _started = true;
         if (IsMainThread())
             OpenOnMainThread();
@@ -156,7 +208,8 @@ public sealed class GodotAudioDeviceOutput : IAudioDeviceOutput
             if (player.GetParent() == null)
                 tree.Root.AddChild(player);
 
-            if (!player.Playing)
+            bool fresh = !player.Playing;
+            if (fresh)
                 player.Play();
 
             try { _outputLatency = (float)AudioServer.GetOutputLatency(); }
@@ -164,11 +217,22 @@ public sealed class GodotAudioDeviceOutput : IAudioDeviceOutput
 
             // The playback only exists while the player is playing and a fresh one comes with every
             // Play, so it is fetched here rather than cached at build time.
-            _playback = player.HasStreamPlayback()
+            var playback = player.HasStreamPlayback()
                 ? player.GetStreamPlayback() as AudioStreamGeneratorPlayback
                 : null;
 
-            if (_playback == null)
+            if (playback != null && fresh)
+            {
+                // A fresh ring is empty and the mixer cannot reach it until it is published below, so
+                // its room right now is the size Godot really gave it.
+                _capacity = playback.GetFramesAvailable();
+                _queued = 0;
+                Volatile.Write(ref _openedAt, System.Environment.TickCount64);
+            }
+
+            _playback = playback;
+
+            if (playback == null)
                 LumoraLogger.Warn("GodotAudioDeviceOutput: the output stream gave no playback; nothing will be heard");
         }
         catch (Exception ex)
@@ -221,5 +285,28 @@ public sealed class GodotAudioDeviceOutput : IAudioDeviceOutput
             LumoraLogger.Log($"GodotAudioDeviceOutput: generator starved, restarted the player (restart {Restarts})");
 
         OpenOnMainThread();
+    }
+
+    // Mixer thread, from the live check. Every Play starts the count again at zero, so a count that went
+    // down only sets the baseline.
+    private void CheckSkips(AudioStreamGeneratorPlayback playback, long now)
+    {
+        int skips = playback.GetSkips();
+        int seen = _skipsSeen;
+        _skipsSeen = skips;
+        if (skips < seen || now - Volatile.Read(ref _openedAt) < SkipGraceMs)
+            return;
+
+        if (skips > seen)
+        {
+            Interlocked.Add(ref _underruns, skips - seen);
+            _target = Math.Min(TargetCeiling, _target + TargetRaise);
+            Volatile.Write(ref _lastStarvedAt, now);
+        }
+        else if (now - Volatile.Read(ref _lastStarvedAt) >= LowerAfterMs && _target > TargetFloor)
+        {
+            _target = Math.Max(TargetFloor, _target - TargetLower);
+            Volatile.Write(ref _lastStarvedAt, now);
+        }
     }
 }

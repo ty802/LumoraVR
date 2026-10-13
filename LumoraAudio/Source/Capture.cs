@@ -23,3 +23,17 @@ public interface IAudioDeviceInput
     void Start();
     void Stop();
 }
+
+// What an enumerated endpoint carries, known from the platform rather than guessed from its name: a
+// microphone, an output device read back, or everything the machine plays except this program.
+public enum AudioEndpointKind
+{
+    Capture,
+    OutputLoopback,
+    SystemLoopback,
+}
+
+public interface IAudioEndpointInput : IAudioDeviceInput
+{
+    AudioEndpointKind Kind { get; }
+}

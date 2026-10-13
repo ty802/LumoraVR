@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using Lumora.Audio;
 using Lumora.Core.Audio;
 using Lumora.Core.Math;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Components.Audio;
 
@@ -70,10 +71,28 @@ public class AvatarAudioOutputManager : Component
         MaxScaleDrive = new FieldDrive<float>(this) { LocalValueOnly = true };
     }
 
-    public override void OnAwake()
+    // The presets are seeded on the machine that MADE the component: everyone else gets the values with it.
+    // Seeding in OnAwake ran on every machine that decoded one, so each joiner wrote the presets over the
+    // owner's voice settings, refused, and would have wiped any retuning had it been let through. -xlinka
+    public override void OnInit()
     {
-        base.OnAwake();
-        SeedPresets();
+        base.OnInit();
+        if (IsMintedHere)
+            SeedPresets();
+    }
+
+    // A save written before a mode existed leaves it at the plain field defaults; that mode gets its preset.
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        base.Load(node, control);
+        if (!Whisper.ValueCameFromData)
+            Whisper.ApplyPreset(VoiceMode.Whisper);
+        if (!Normal.ValueCameFromData)
+            Normal.ApplyPreset(VoiceMode.Normal);
+        if (!Shout.ValueCameFromData)
+            Shout.ApplyPreset(VoiceMode.Shout);
+        if (!Broadcast.ValueCameFromData)
+            Broadcast.ApplyPreset(VoiceMode.Broadcast);
     }
 
     private void SeedPresets()

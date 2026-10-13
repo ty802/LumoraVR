@@ -6,11 +6,10 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using Godot;
 using Lumora.Core.External.Audio.GenericOutputMixer;
-using Lumora.Core.External.Audio.Godot;
 #nullable enable
 namespace Lumora.Source.Godot;
 
-public partial class AudioMixer : IAudioCaputreProvider
+public partial class AudioMixer
 {
     private static readonly AudioMixer _instance = new();
     public static AudioMixer GetMixer() => _instance;
@@ -92,33 +91,4 @@ public partial class AudioMixer : IAudioCaputreProvider
             return true;
         }
     }
-    internal bool TryGetCaptureInfo([NotNullWhen(true)] out AudioEffectCapture? captureEffect, [NotNullWhen(true)] out int? busindex)
-    {
-        captureEffect = null;
-        busindex = null;
-        if (!TryGetValidBusNoLock("Voice", out var busobject))
-            return false;
-        busindex = busobject.BusId;
-        int effects = AudioServer.GetBusEffectCount(busindex.Value);
-        for (int i = 0; i < effects; i++)
-        {
-            var effect = AudioServer.GetBusEffect(busindex.Value, i);
-            if (effect is AudioEffectCapture capture)
-            {
-                captureEffect = capture;
-                break;
-            }
-        }
-        if (captureEffect is null)
-        {
-            captureEffect = new AudioEffectCapture();
-            if (captureEffect is null) return false;
-            AudioServer.AddBusEffect(busindex.Value, captureEffect);
-        }
-        return true;
-    }
-
-    int IAudioCaputreProvider.GetSampleRate()
-    => Convert.ToInt32(AudioServer.GetInputMixRate());
 }
-

@@ -18,6 +18,8 @@ internal static class Spatializer
 
     private const float PanEpsilon = 1e-5f;
     private const float BehindAttenuation = 0.85f;
+    // -12 dB: the far ear of a sound hard to one side.
+    private const float FarEarFloor = 0.25118864f;
 
     public static float ShapeGain(in AudioShape shape, float distance)
     {
@@ -77,10 +79,13 @@ internal static class Spatializer
         float3 local = listener.Rotation.Inverse * delta;
         float horizontal = MathF.Sqrt(local.x * local.x + local.z * local.z);
         float pan = LuminaMath.Clamp(local.x / (horizontal + PanEpsilon), -1f, 1f);
-        float angle = (pan + 1f) * (LuminaMath.PI * 0.25f);
-        float panLeft = MathF.Cos(angle);
-        float panRight = MathF.Sin(angle);
-        if (local.z < 0f)
+        // The near ear and dead centre stay at full level and only the far ear falls away, so a talker
+        // straight ahead is as loud as an unpositioned one and a talker to the side is never silent in
+        // one ear.
+        float panLeft = pan > 0f ? 1f + (FarEarFloor - 1f) * pan : 1f;
+        float panRight = pan < 0f ? 1f - (FarEarFloor - 1f) * pan : 1f;
+        // The head looks along -Z, so behind it is positive local z.
+        if (local.z > 0f)
         {
             panLeft *= BehindAttenuation;
             panRight *= BehindAttenuation;
@@ -117,26 +122,31 @@ internal static class Spatializer
         return LuminaMath.Clamp(1f + output.DopplerLevel * (closing / SpeedOfSound), 0.5f, 2f);
     }
 
-    // Linear below the knee, asymptotic above it. A hard clamp would square off the waveform and
-    // spray harmonics across the whole band the moment two loud sources land on the same frame.
-    public static float SoftClip(float sample)
-    {
-        const float knee = 0.7f;
-        float magnitude = MathF.Abs(sample);
-        if (!(magnitude > knee))
-            return float.IsNaN(sample) ? 0f : sample;
-        float shaped = knee + (1f - knee) * MathF.Tanh((magnitude - knee) / (1f - knee));
-        return sample < 0f ? -shaped : shaped;
-    }
-
-    public static void ApplyMaster(Span<StereoSample> buffer, float volume)
+    public static void ApplyVolume(Span<StereoSample> buffer, float volume)
     {
         if (!float.IsFinite(volume))
             volume = 0f;
         for (int i = 0; i < buffer.Length; i++)
+            buffer[i] = buffer[i].Multiply(volume);
+    }
+
+    // Last guard on the way to a device. The master limiter in front of it already holds -1 dBFS; this
+    // is for the day it does not.
+    public static void ClampFullScale(Span<StereoSample> buffer)
+    {
+        for (int i = 0; i < buffer.Length; i++)
         {
             StereoSample sample = buffer[i];
-            buffer[i] = new StereoSample(SoftClip(sample.left * volume), SoftClip(sample.right * volume));
+            buffer[i] = new StereoSample(ClampFullScale(sample.left), ClampFullScale(sample.right));
         }
+    }
+
+    private static float ClampFullScale(float sample)
+    {
+        if (sample > 1f)
+            return 1f;
+        if (sample < -1f)
+            return -1f;
+        return float.IsNaN(sample) ? 0f : sample;
     }
 }

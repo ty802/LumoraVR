@@ -17,18 +17,41 @@ namespace Lumora.Core.Networking.Streams;
 //   - sync thread: Encode and Decode (in the encoded subclasses).
 //   - audio thread: Read, IsActive.
 //
-// Playback does not start the instant a sample arrives. It waits for MinimumBufferDelay worth to pile
-// up first, because a network that delivers a frame late once will do it again, and a buffer with no
-// slack turns every one of those into a click. Running dry drops straight back to waiting rather than
-// stuttering a sample at a time. -xlinka
+// Playback does not start the instant a sample arrives. It waits for the target: how late frames have
+// been landing over the last two seconds (95th percentile) plus one mixer block, 20 to 120 ms, never
+// under MinimumBufferDelay. A fixed small buffer holes on the first bad second and a fixed big one is
+// latency forever. Running dry conceals a frame or two first, because a late frame is usually a few
+// milliseconds away, and only then goes back to waiting, for the target and nothing more. A ring that
+// sits well above the target plays a few percent fast until it is back. -xlinka
 public abstract class AudioStream : Stream, IWorldAudioDataSource
 {
     public const int DefaultBufferSize = 12000;
     public const int MinBufferSize = 2048;
     public const int MaxBufferSize = 192000;
 
-    public const float DefaultMinimumBufferDelay = 0.05f;
+    public const float DefaultMinimumBufferDelay = 0.02f;
     public const float MaxMinimumBufferDelay = 2f;
+
+    public const int MaxUnderrunConcealFrames = 2;
+
+    // Seconds.
+    private const double MinTargetDelay = 0.02;
+    private const double MaxTargetDelay = 0.12;
+    private const float InitialTargetDelay = 0.04f;
+    private const double TargetMargin = 0.01;
+    private const double JitterWindow = 2.0;
+    private const int JitterHistory = 256;
+    private const int MinJitterSamples = 10;
+    // Two messages whose sender clock moved this much further than the audio they carry had a pause
+    // between them, not a slow network: silence is never sent.
+    private const double SenderPause = 0.05;
+    private const double SameBurst = 0.002;
+    private const double CatchUpExcess = 0.03;
+    private const double CatchUpHold = 0.2;
+    // Speed-up per second of excess: 2% at 40 ms over the target, 5% from 100 ms.
+    private const double CatchUpGain = 0.5;
+    private const double MinCatchUpSpeed = 0.02;
+    private const double MaxCatchUpSpeed = 0.05;
 
     public readonly Sync<int> BufferSize = new();
     public readonly Sync<float> MinimumBufferDelay = new();
@@ -41,10 +64,39 @@ public abstract class AudioStream : Stream, IWorldAudioDataSource
     private bool _buffering = true;
     private bool _receivedData;
 
+    // Audio thread, under the buffer lock.
+    private bool _catchingUp;
+    private int _aboveTargetSamples;
+    private double _readFraction;
+    private StereoSample _readCarry;
+    private long _playbackIndex;
+
     // Mirrors of the sync members above, for the threads that are not allowed to touch them.
     private volatile int _capacity = DefaultBufferSize;
     private volatile float _minimumDelaySeconds = DefaultMinimumBufferDelay;
     private volatile float _lastPeak;
+    private volatile int _sampleRate = AudioSimulator.DefaultSampleRate;
+    private volatile float _targetDelaySeconds = InitialTargetDelay;
+
+    // Decode thread only.
+    private double[]? _arrivalTimes;
+    private double[]? _arrivalDelays;
+    private int[]? _arrivalRuns;
+    private bool[]? _arrivalCounted;
+    private double[]? _jitterScratch;
+    private int _arrivalHead;
+    private int _arrivalCount;
+    private int _arrivalRun;
+    private double _lastSenderLead;
+    private double _lastArrival;
+
+    // Receiver side. Raised right after decoded or concealed samples land in the ring; firstIndex is the
+    // ring's global index of samples[0]. Usually on the sync thread, but concealing a late frame runs it
+    // on the mixer thread. Calls never overlap and indices only grow. The span is scratch: copy what is
+    // kept, and never block in here. -xlinka
+    public delegate void DecodedAudioHandler(AudioStream stream, ReadOnlySpan<StereoSample> samples, long firstIndex);
+
+    public event DecodedAudioHandler? SamplesDecoded;
 
     public override bool HasValidData => _receivedData || IsLocal;
 
@@ -100,6 +152,12 @@ public abstract class AudioStream : Stream, IWorldAudioDataSource
         }
     }
 
+    // Ring global index the mixer reads next. Any thread.
+    public long PlaybackIndex => System.Threading.Interlocked.Read(ref _playbackIndex);
+
+    // Rate the ring plays at, mirrored from the mixer; ring indices are samples at this rate.
+    public int SampleRate => _sampleRate;
+
     // AUDIO THREAD. Locks, but only around a memcpy-shaped loop the other three threads also hold
     // briefly; nothing under this lock waits on anything else.
     public bool IsActive
@@ -122,40 +180,20 @@ public abstract class AudioStream : Stream, IWorldAudioDataSource
 
         try
         {
-            lock (_bufferLock)
+            int rate = simulator != null ? simulator.SampleRate : AudioSimulator.DefaultSampleRate;
+            _sampleRate = rate;
+
+            int filled = ReadBuffered(target, rate);
+            // Outside the buffer lock: concealing raises SamplesDecoded.
+            for (int i = 0; filled >= 0 && filled < target.Length && i < MaxUnderrunConcealFrames; i++)
             {
-                var buffer = _buffer;
-                if (buffer == null)
-                {
-                    target.Clear();
-                    return;
-                }
-
-                if (_readPosition < buffer.StartGlobalIndex)
-                    _readPosition = buffer.StartGlobalIndex;
-
-                if (_buffering)
-                {
-                    int rate = simulator != null ? simulator.SampleRate : AudioSimulator.DefaultSampleRate;
-                    int wanted = (int)(_minimumDelaySeconds * rate) + target.Length;
-                    if (buffer.AvailableSamples(_readPosition) < wanted)
-                    {
-                        target.Clear();
-                        return;
-                    }
-                    _buffering = false;
-                }
-
-                int read = buffer.Read(target, ref _readPosition);
-                if (read < target.Length)
-                {
-                    target.Slice(read).Clear();
-                    _missedSamples += target.Length - read;
-                    // Sooner or later a late frame lands; going back to waiting rebuilds the slack that
-                    // stops the next one being another hole.
-                    _buffering = true;
-                }
+                if (ConcealUnderrun() <= 0)
+                    break;
+                filled = ReadMore(target, filled);
             }
+
+            if (filled >= 0 && filled < target.Length)
+                EndUnderrun(target, filled);
         }
         catch
         {
@@ -163,13 +201,134 @@ public abstract class AudioStream : Stream, IWorldAudioDataSource
         }
     }
 
+    // Samples read, or -1 while waiting for the target (target cleared).
+    private int ReadBuffered(Span<StereoSample> target, int rate)
+    {
+        lock (_bufferLock)
+        {
+            var buffer = _buffer;
+            if (buffer == null)
+            {
+                target.Clear();
+                return -1;
+            }
+
+            if (_readPosition < buffer.StartGlobalIndex)
+                _readPosition = buffer.StartGlobalIndex;
+
+            int available = buffer.AvailableSamples(_readPosition);
+            int wanted = System.Math.Max((int)(_targetDelaySeconds * rate), (int)(_minimumDelaySeconds * rate));
+            if (_buffering)
+            {
+                if (available < wanted)
+                {
+                    target.Clear();
+                    PublishPlaybackIndex();
+                    return -1;
+                }
+                _buffering = false;
+                _catchingUp = false;
+                _aboveTargetSamples = 0;
+            }
+
+            double speed = CatchUpSpeed(available, wanted, target.Length, rate);
+            int read = speed > 0.0
+                ? buffer.Read(target, ref _readPosition, 1.0 + speed, ref _readFraction, ref _readCarry)
+                : buffer.Read(target, ref _readPosition);
+
+            PublishPlaybackIndex();
+            return read;
+        }
+    }
+
+    // A ring that has sat well above the target is latency nobody asked for. Playing it a few percent
+    // fast moves the pitch by the same few percent, which nobody notices; a jump, everybody does. -xlinka
+    private double CatchUpSpeed(int available, int wanted, int block, int rate)
+    {
+        double excess = (available - wanted) / (double)rate;
+        if (_catchingUp)
+        {
+            if (excess > 0.0)
+                return System.Math.Clamp(excess * CatchUpGain, MinCatchUpSpeed, MaxCatchUpSpeed);
+            _catchingUp = false;
+            _aboveTargetSamples = 0;
+            _readFraction = 0.0;
+            return 0.0;
+        }
+
+        if (excess <= CatchUpExcess)
+        {
+            _aboveTargetSamples = 0;
+            return 0.0;
+        }
+
+        _aboveTargetSamples += block;
+        if (_aboveTargetSamples < CatchUpHold * rate)
+            return 0.0;
+
+        _catchingUp = true;
+        _readFraction = 0.0;
+        return System.Math.Clamp(excess * CatchUpGain, MinCatchUpSpeed, MaxCatchUpSpeed);
+    }
+
+    private int ReadMore(Span<StereoSample> target, int filled)
+    {
+        lock (_bufferLock)
+        {
+            var buffer = _buffer;
+            if (buffer == null)
+                return filled;
+            filled += buffer.Read(target.Slice(filled), ref _readPosition);
+            PublishPlaybackIndex();
+            return filled;
+        }
+    }
+
+    private void EndUnderrun(Span<StereoSample> target, int filled)
+    {
+        target.Slice(filled).Clear();
+        lock (_bufferLock)
+        {
+            _missedSamples += target.Length - filled;
+            _buffering = true;
+            _catchingUp = false;
+            _aboveTargetSamples = 0;
+            _readFraction = 0.0;
+        }
+    }
+
+    private void PublishPlaybackIndex() => System.Threading.Interlocked.Exchange(ref _playbackIndex, _readPosition);
+
+    // AUDIO THREAD, no locks held. A receiver that can make up a late frame puts it in the ring and
+    // returns how many samples it put; it must not wait for anything.
+    protected virtual int ConcealUnderrun() => 0;
+
     // CAPTURE THREAD. The local owner's filtered microphone samples land here.
     public virtual void Write(ReadOnlySpan<StereoSample> samples) => PutSamples(samples);
 
-    protected void PutSamples(ReadOnlySpan<StereoSample> samples)
+    protected void PutSamples(ReadOnlySpan<StereoSample> samples) => PutAt(samples);
+
+    // Decoded or concealed receiver audio. The caller holds whatever keeps these calls from overlapping.
+    protected void PutDecoded(ReadOnlySpan<StereoSample> samples)
+    {
+        long first = PutAt(samples);
+        if (first < 0)
+            return;
+        try
+        {
+            SamplesDecoded?.Invoke(this, samples, first);
+        }
+        catch
+        {
+            // A listener that throws loses its own copy, not everybody's audio.
+        }
+    }
+
+    // Ring global index of samples[0], or -1 when nothing was written.
+    private long PutAt(ReadOnlySpan<StereoSample> samples)
     {
         if (samples.IsEmpty || IsDestroyed)
-            return;
+            return -1;
 
         float peak = 0f;
         for (int i = 0; i < samples.Length; i++)
@@ -183,9 +342,94 @@ public abstract class AudioStream : Stream, IWorldAudioDataSource
         lock (_bufferLock)
         {
             var buffer = EnsureBufferLocked();
+            long first = buffer.GlobalIndex;
             buffer.Put(samples);
             _receivedData = true;
+            return first;
         }
+    }
+
+    // DECODE THREAD, once per received message that carried audio. mediaStart is where its first sample
+    // sits in the sender's timeline (lost frames counted, nothing made up here counted); senderTime is the
+    // sender's clock when it went out. Wall clock on purpose: this measures the network, not the audio.
+    //
+    // Lateness is arrival minus media time, relative to the earliest message of its run. A run ends where
+    // the sender's clock jumped past its audio, which is a pause (or a sender hitch, which is not this
+    // network's fault either), so a pause never reads as one long late frame. -xlinka
+    protected void NoteArrival(double senderTime, long mediaStart)
+    {
+        double now = System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
+        double media = mediaStart / (double)_sampleRate;
+        double senderLead = senderTime - media;
+
+        var times = _arrivalTimes ??= new double[JitterHistory];
+        var delays = _arrivalDelays ??= new double[JitterHistory];
+        var runs = _arrivalRuns ??= new int[JitterHistory];
+        var counted = _arrivalCounted ??= new bool[JitterHistory];
+        var scratch = _jitterScratch ??= new double[JitterHistory];
+
+        if (_arrivalCount > 0 && senderLead - _lastSenderLead > SenderPause)
+            _arrivalRun++;
+        _lastSenderLead = senderLead;
+
+        // Messages decoded back to back arrived as one burst, after a stall here or on the way: one late
+        // event, not several. The rest of the burst still sets how early a message can be.
+        bool burstTail = _arrivalCount > 0 && now - _lastArrival < SameBurst;
+        _lastArrival = now;
+
+        times[_arrivalHead] = now;
+        delays[_arrivalHead] = now - media;
+        runs[_arrivalHead] = _arrivalRun;
+        counted[_arrivalHead] = !burstTail;
+        _arrivalHead = _arrivalHead + 1 == JitterHistory ? 0 : _arrivalHead + 1;
+        if (_arrivalCount < JitterHistory)
+            _arrivalCount++;
+        if (burstTail)
+            return;
+
+        double since = now - JitterWindow;
+        int oldest = _arrivalHead - _arrivalCount;
+        if (oldest < 0)
+            oldest += JitterHistory;
+
+        int n = 0;
+        int runStart = 0;
+        int run = int.MinValue;
+        double earliest = 0.0;
+        for (int k = 0; k < _arrivalCount; k++)
+        {
+            int i = oldest + k;
+            if (i >= JitterHistory)
+                i -= JitterHistory;
+            if (times[i] < since)
+                continue;
+            if (runs[i] != run)
+            {
+                for (int j = runStart; j < n; j++)
+                    scratch[j] -= earliest;
+                run = runs[i];
+                runStart = n;
+                earliest = delays[i];
+            }
+            if (counted[i])
+                scratch[n++] = delays[i];
+            if (delays[i] < earliest)
+                earliest = delays[i];
+        }
+        for (int j = runStart; j < n; j++)
+            scratch[j] -= earliest;
+
+        // Too little recent evidence: a target set high by a stall long ago falls back to the start value.
+        if (n < MinJitterSamples)
+        {
+            if (_targetDelaySeconds > InitialTargetDelay)
+                _targetDelaySeconds = InitialTargetDelay;
+            return;
+        }
+
+        Array.Sort(scratch, 0, n);
+        double late = scratch[(int)(0.95 * (n - 1) + 0.5)];
+        _targetDelaySeconds = (float)System.Math.Clamp(late + TargetMargin, MinTargetDelay, MaxTargetDelay);
     }
 
     // Loudest sample of the last batch written, whichever thread wrote it (capture for the owner, the
@@ -265,6 +509,10 @@ public abstract class AudioStream : Stream, IWorldAudioDataSource
             _buffer?.Clear();
             _readPosition = 0L;
             _buffering = true;
+            _catchingUp = false;
+            _aboveTargetSamples = 0;
+            _readFraction = 0.0;
+            PublishPlaybackIndex();
         }
     }
 
@@ -289,7 +537,9 @@ public abstract class AudioStream : Stream, IWorldAudioDataSource
             _buffer = null;
             _readPosition = 0L;
             _buffering = true;
+            PublishPlaybackIndex();
         }
+        SamplesDecoded = null;
         base.Dispose();
     }
 }

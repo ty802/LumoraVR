@@ -42,9 +42,16 @@ public interface IAudioDeviceOutput
     // How many stereo frames Write can accept right now without blocking or dropping.
     int FramesWritable { get; }
 
-    // Seconds between a frame being written and it reaching the ear: the device's own buffer plus
-    // whatever the platform adds after it. Anything that has to line up with a picture reads this.
+    // Frames written and not yet played, as of now. Any thread may read it; a device that cannot tell
+    // says nothing is queued.
+    int FramesQueued => 0;
+
+    // Seconds between a frame being written and it reaching the ear: FramesQueued plus whatever the
+    // platform adds after it, live. Anything that has to line up with a picture reads this.
     double LatencySeconds { get; }
+
+    // Times the device ran dry and played silence it was never given, since it was made.
+    int Underruns => 0;
 
     void Write(ReadOnlySpan<StereoSample> frames);
     void Start();

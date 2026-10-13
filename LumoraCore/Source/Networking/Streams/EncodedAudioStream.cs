@@ -29,7 +29,9 @@ public abstract class EncodedAudioStream : AudioStream
     public const int MaxConcealedFrames = 16;
 
     // A tick that produced more than this is a stall somewhere upstream, not speech. Encoding the
-    // whole backlog would just push the latency it created onto everybody listening.
+    // whole backlog would just push the latency it created onto everybody listening. Not lower:
+    // capture arrives once per frame, so a 10 fps frame already brings five, and what does get
+    // through is played a few percent fast on the other end until it is gone.
     public const int MaxFramesPerEncode = 8;
 
     // What a single message is allowed to claim it carries, so a hostile or corrupt frame cannot make
@@ -84,15 +86,29 @@ public abstract class EncodedAudioStream : AudioStream
     // Receiver side.
     private int _expectedIndex;
     private bool _hasExpectedIndex;
+    // Sender timeline in samples: decoded audio plus lost frames, never concealment made up here.
+    private long _mediaSamples;
+    // Frames the mixer concealed since the last decoded one. Under CodecLock.
+    private int _concealedAhead;
+    private volatile bool _receiving;
 
     private byte[] _packetScratch = Array.Empty<byte>();
     private StereoSample[] _frameScratch = Array.Empty<StereoSample>();
     // Owned by the encode worker alone, which is why it is not the one above.
     private StereoSample[] _encodeFrameScratch = Array.Empty<StereoSample>();
     private StereoSample[] _decodeScratch = Array.Empty<StereoSample>();
+    // The mixer's, sized on the sync thread so the audio thread never sizes it.
+    private StereoSample[] _concealScratch = Array.Empty<StereoSample>();
 
     // Mirror of MinimumVolume, because the gate is applied on the capture thread.
     private volatile float _minimumVolume = DefaultMinimumVolume;
+
+    // Quiet blocks still go out for this long after the last loud one, so a dip inside a word is not
+    // cut out of it. Seconds.
+    private const float SilenceHangover = 0.1f;
+
+    // Capture thread. Starts past the hangover: an open microphone sends nothing until something is said.
+    private int _quietSamples = int.MaxValue / 2;
 
     // Samples per channel in one codec frame. Plain, not a sync read: both the capture thread and the
     // sync thread need it. The subclass mirrors it from its own settings on the world thread.
@@ -100,16 +116,19 @@ public abstract class EncodedAudioStream : AudioStream
 
     protected abstract int MaxPacketBytes { get; }
 
-    // All four run on the sync thread only.
+    // All four are called under CodecLock: encode on the pool thread, decode on the sync thread,
+    // concealment on the sync thread or the mixer's.
     protected abstract int EncodeFrame(ReadOnlySpan<StereoSample> frame, Span<byte> packet);
     protected abstract int DecodeFrame(ReadOnlySpan<byte> packet, Span<StereoSample> samples);
     protected abstract int ConcealFrame(int frameSize, Span<StereoSample> samples);
     protected abstract void ResetCodecs();
 
     // CAPTURE THREAD. Silence is dropped before it reaches the ring, so it is never encoded and never
-    // sent. A part-built frame is the exception: dropping the tail of a frame already half captured
-    // would leave it stuck in the ring until the next word, arriving as a stale fragment of the last
-    // one, so the remainder is let through to finish it.
+    // sent. It is decided by level: once nothing has reached MinimumVolume for the hangover, the
+    // part-built frame is finished from the head of the block and the rest goes nowhere. Finishing it
+    // matters, or its first half would sit in the ring until the next word and arrive as a stale fragment
+    // of the last one. Waiting for a write to land exactly on a frame boundary instead kept silence going
+    // out for seconds whenever capture blocks were not frame multiples. -xlinka
     public override void Write(ReadOnlySpan<StereoSample> samples)
     {
         if (samples.IsEmpty)
@@ -123,8 +142,23 @@ public abstract class EncodedAudioStream : AudioStream
                 peak = amplitude;
         }
 
-        if (peak < _minimumVolume && !HasPartialFrame)
-            return;
+        if (peak >= _minimumVolume)
+        {
+            _quietSamples = 0;
+        }
+        else
+        {
+            bool hangover = _quietSamples < SilenceHangover * SampleRate;
+            _quietSamples = (int)System.Math.Min(int.MaxValue / 2, (long)_quietSamples + samples.Length);
+            if (!hangover)
+            {
+                int owed = SamplesToFinishFrame;
+                if (owed <= 0)
+                    return;
+                if (owed < samples.Length)
+                    samples = samples.Slice(0, owed);
+            }
+        }
 
         PutSamples(samples);
 
@@ -238,15 +272,19 @@ public abstract class EncodedAudioStream : AudioStream
             _bufferPool.Enqueue(buffer);
     }
 
-    private bool HasPartialFrame
+    // Samples the part-built frame still needs; 0 when the ring ends on a frame boundary.
+    private int SamplesToFinishFrame
     {
         get
         {
             int frameSize = FrameSizeSamples;
             if (frameSize <= 0 || !_encodePositionValid)
-                return false;
+                return 0;
             long pending = WriteHead - _encodePosition;
-            return pending > 0 && pending % frameSize != 0;
+            if (pending <= 0)
+                return 0;
+            int part = (int)(pending % frameSize);
+            return part == 0 ? 0 : frameSize - part;
         }
     }
 
@@ -256,6 +294,7 @@ public abstract class EncodedAudioStream : AudioStream
     {
         _encodePosition = WriteHead;
         _encodePositionValid = true;
+        _quietSamples = int.MaxValue / 2;
         // Whatever was encoded and not yet sent is the tail of what was being said when the voice
         // went off, and sending it after the fact is the bug this exists to prevent.
         while (_ready.TryDequeue(out var stale))
@@ -354,6 +393,7 @@ public abstract class EncodedAudioStream : AudioStream
         int frameSize = FrameSizeSamples;
         EnsureCapacity(ref _decodeScratch, OpusVoiceDecoder.MaxFrameSize);
         EnsureCapacity(ref _packetScratch, MaxPacketBytes);
+        long mediaStart = -1;
 
         for (int i = 0; i < count; i++)
         {
@@ -371,25 +411,45 @@ public abstract class EncodedAudioStream : AudioStream
             if (IsLocal)
                 continue;
 
-            ConcealGap(index, frameSize);
-            _expectedIndex = index + 1;
-            _hasExpectedIndex = true;
-
-            if (read == 0)
-                continue;
-
-            try
+            // The mixer conceals under the same lock, and decoder state is one timeline.
+            lock (CodecLock)
             {
-                int produced = DecodeFrame(_packetScratch.AsSpan(0, read), _decodeScratch);
+                EnsureCapacity(ref _concealScratch, OpusVoiceDecoder.MaxFrameSize);
+                ConcealGap(index, frameSize);
+                _expectedIndex = index + 1;
+                _hasExpectedIndex = true;
+
+                if (read == 0)
+                {
+                    _mediaSamples += frameSize;
+                    continue;
+                }
+
+                if (mediaStart < 0)
+                    mediaStart = _mediaSamples;
+
+                int produced = 0;
+                try
+                {
+                    produced = System.Math.Min(DecodeFrame(_packetScratch.AsSpan(0, read), _decodeScratch), _decodeScratch.Length);
+                }
+                catch (Exception ex)
+                {
+                    Logging.Logger.Warn($"EncodedAudioStream: decode failed, dropping a packet: {ex.Message}");
+                    ResetCodecs();
+                }
+
                 if (produced > 0)
-                    PutSamples(_decodeScratch.AsSpan(0, System.Math.Min(produced, _decodeScratch.Length)));
-            }
-            catch (Exception ex)
-            {
-                Logging.Logger.Warn($"EncodedAudioStream: decode failed, dropping a packet: {ex.Message}");
-                ResetCodecs();
+                {
+                    _mediaSamples += produced;
+                    _concealedAhead = 0;
+                    PutDecoded(_decodeScratch.AsSpan(0, produced));
+                }
             }
         }
+
+        if (mediaStart >= 0)
+            NoteArrival(message != null ? message.StreamTime : double.NaN, mediaStart);
     }
 
     private void ConcealGap(int index, int frameSize)
@@ -409,25 +469,64 @@ public abstract class EncodedAudioStream : AudioStream
             return;
         }
 
+        // Lost frames are the sender's time whoever fills them in.
+        _mediaSamples += (long)gap * frameSize;
+
         if (gap > MaxConcealedFrames)
         {
             ResetCodecs();
             return;
         }
 
-        for (int i = 0; i < gap; i++)
+        // The mixer may already have covered some of them while it waited.
+        for (int i = _concealedAhead; i < gap; i++)
         {
+            int produced;
             try
             {
-                int produced = ConcealFrame(frameSize, _decodeScratch);
-                if (produced > 0)
-                    PutSamples(_decodeScratch.AsSpan(0, System.Math.Min(produced, _decodeScratch.Length)));
+                produced = System.Math.Min(ConcealFrame(frameSize, _decodeScratch), _decodeScratch.Length);
             }
             catch
             {
                 // Concealment that will not run is one more frame of silence, not a failed decode.
                 return;
             }
+            if (produced > 0)
+                PutDecoded(_decodeScratch.AsSpan(0, produced));
+        }
+    }
+
+    // AUDIO THREAD. Never waits for the codec: if the sync thread has it, the frame being waited for is
+    // being decoded right now. A sender only stops after a stretch under MinimumVolume, so running dry
+    // right after a quiet frame is the end of a sentence, not a late frame, and is left alone (2x for
+    // codec noise).
+    protected override int ConcealUnderrun()
+    {
+        if (!_receiving || LastPeak < _minimumVolume * 2f || !System.Threading.Monitor.TryEnter(CodecLock))
+            return 0;
+
+        try
+        {
+            var scratch = _concealScratch;
+            int frameSize = FrameSizeSamples;
+            if (_concealedAhead >= MaxUnderrunConcealFrames || frameSize <= 0 || scratch.Length < frameSize)
+                return 0;
+
+            int produced = System.Math.Min(ConcealFrame(frameSize, scratch), scratch.Length);
+            if (produced <= 0)
+                return 0;
+
+            _concealedAhead++;
+            PutDecoded(scratch.AsSpan(0, produced));
+            return produced;
+        }
+        catch
+        {
+            return 0;
+        }
+        finally
+        {
+            System.Threading.Monitor.Exit(CodecLock);
         }
     }
 
@@ -437,6 +536,7 @@ public abstract class EncodedAudioStream : AudioStream
 
         float minimum = MinimumVolume.Value;
         _minimumVolume = float.IsNaN(minimum) || minimum < 0f ? 0f : System.Math.Min(minimum, 1f);
+        _receiving = !IsLocal;
     }
 
     protected override void OnInit()

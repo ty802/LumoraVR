@@ -25,10 +25,18 @@ public class AudioListener : Component
     // entry that is off or gone is skipped until it is back.
     public readonly SyncRefList<AudioEffect> Effects;
 
+    // Sends what it hears to the stream device instead of the speakers, and takes the stream over from
+    // the machine's own ears while it does. A camera's ear. -xlinka
+    public readonly Sync<bool> Streaming;
+
+    // Kept quiet on this machine alone, while something else hears for this user (a camera's ears).
+    public bool SuspendedHere { get; set; }
+
     internal AudioListenerVoice? Voice;
     internal float3 LastPosition;
     internal bool HasLastPosition;
     internal bool BoundToDevice;
+    internal bool BoundToStream;
     internal bool InManager;
 
     // What the voice was last handed, and the zone reverbs this ear is carrying. This machine's own.
@@ -39,6 +47,7 @@ public class AudioListener : Component
     {
         ActiveUser = new SyncRef<User>(this);
         Effects = new SyncRefList<AudioEffect>(this);
+        Streaming = new Sync<bool>(this, false);
     }
 
     public bool IsLocalUserOutput
@@ -54,7 +63,7 @@ public class AudioListener : Component
     {
         get
         {
-            if (IsDestroyed || !Enabled.Value || Slot == null || !Slot.IsActive)
+            if (IsDestroyed || !Enabled.Value || SuspendedHere || Slot == null || !Slot.IsActive)
                 return false;
             // No user: an ear that belongs to nobody in particular, active everywhere it exists.
             return ActiveUser.Target == null || IsLocalUserOutput;

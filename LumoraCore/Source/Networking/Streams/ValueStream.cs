@@ -325,11 +325,12 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
             {
                 _trailingTime = CurrentTime;
                 _timeTransition = 0f;
-                _leadingTime = time.AddSeconds(-InterpolationOffset);
+                _leadingTime = Earlier(time, InterpolationOffset);
                 if (_leadingTime < _trailingTime) _leadingTime = _trailingTime;
             }
             else
             {
+                _value = value;
                 _trailingTime = _leadingTime = time;
                 _timeTransition = 1f;
             }
@@ -344,6 +345,12 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
     {
         return lerp < 0.5f ? a : b;
     }
+
+    // A sample's time is the sender's seconds since its world began, so in a world's first moments it sits
+    // closer to the start of the calendar than the interpolation offset, and stepping back by the offset
+    // ran off it: every such sample threw, and the decode dropped the rest of its message. -xlinka
+    private static DateTime Earlier(DateTime time, float seconds)
+        => new DateTime(System.Math.Max(0L, time.Ticks - (long)(seconds * TimeSpan.TicksPerSecond)));
 
     private static DateTime Lerp(DateTime a, DateTime b, float t)
     {

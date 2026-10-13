@@ -67,7 +67,8 @@ public sealed class VoiceModeConfig : SyncElement
                     spatialize: false, blend: 0f, ignoreEffects: false, allowLocalIgnore: false);
                 break;
             default:
-                Set(1f, 1f, 500f, AudioRolloffCurve.LogarithmicFadeOff, AudioDistanceSpace.Local,
+                // Full level out to 2 m, the width of a conversation; past it the log falloff takes over.
+                Set(1f, 2f, 500f, AudioRolloffCurve.LogarithmicFadeOff, AudioDistanceSpace.Local,
                     spatialize: true, blend: 1f, ignoreEffects: false, allowLocalIgnore: false);
                 break;
         }

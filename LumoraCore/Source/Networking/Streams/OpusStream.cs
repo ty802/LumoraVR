@@ -95,11 +95,15 @@ public class OpusStream : EncodedAudioStream
 
         FrameSizeSamples = _frameDuration.FrameSize();
 
-        lock (CodecLock)
+        // Only the owner has an encoder; a receiver's codec lock belongs to the decoder and the mixer.
+        if (_encoder != null)
         {
-            var encoder = _encoder;
-            if (encoder != null)
-                encoder.Bitrate = _bitRate;
+            lock (CodecLock)
+            {
+                var encoder = _encoder;
+                if (encoder != null)
+                    encoder.Bitrate = _bitRate;
+            }
         }
     }
 
@@ -144,9 +148,11 @@ public class OpusStream : EncodedAudioStream
         return Spread(produced, samples, decoder.Channels);
     }
 
+    // Never builds a decoder: one that has decoded nothing conceals silence, and this also runs on the
+    // audio thread.
     protected override int ConcealFrame(int frameSize, Span<StereoSample> samples)
     {
-        var decoder = EnsureDecoder();
+        var decoder = _decoder;
         if (decoder == null || frameSize <= 0)
             return 0;
 

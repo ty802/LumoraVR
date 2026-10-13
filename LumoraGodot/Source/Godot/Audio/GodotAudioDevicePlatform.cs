@@ -18,7 +18,7 @@ namespace Lumora.Source.Godot;
 // system default rather than leaving the engine aimed at a device that is not there.
 //
 // Applying restarts the device it belongs to. The audio driver reinitialises under a device change
-// on its own, but the capture player and the generator playback are ours and both are attached to
+// on its own, but the input stream and the generator playback are ours and both are attached to
 // the stream that was running before it, so they come back new. -xlinka
 public sealed class GodotAudioDevicePlatform : IAudioDevicePlatform
 {
@@ -73,7 +73,7 @@ public sealed class GodotAudioDevicePlatform : IAudioDevicePlatform
                     input.Start();
                 }
 
-                LumoraLogger.Log($"Audio: input device -> {Describe(target)}");
+                LumoraLogger.Debug($"Audio: input device -> {Describe(target)}");
             }
             catch (Exception ex)
             {
@@ -100,7 +100,7 @@ public sealed class GodotAudioDevicePlatform : IAudioDevicePlatform
                     output.Start();
                 }
 
-                LumoraLogger.Log($"Audio: output device -> {Describe(target)}");
+                LumoraLogger.Debug($"Audio: output device -> {Describe(target)}");
             }
             catch (Exception ex)
             {

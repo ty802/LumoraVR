@@ -4,43 +4,59 @@
 using System;
 using Lumora.Audio;
 using Lumora.Core;
+using Lumora.Core.Components.Audio;
 using Lumora.Core.Networking.Streams;
 using AudioInput = Lumora.Core.Audio.AudioInput;
 
 namespace Lumora.Core.Components.Avatar;
 
-// Per-viseme weights from the owning user's voice. Consumed by VisemeWeightDriver.
+// Per-viseme weights from the wearer's voice. Consumed by VisemeWeightDriver and the animator, which
+// is why it updates ahead of both: they read this frame's mouth, not the last one.
 //
-// ANALYSE ONCE, SEND THE ANSWER. The machine that owns the voice runs the analysis on its own
-// captured audio, before the codec, and puts the fifteen weights on a stream. Every other machine
-// reads that stream. The alternative - each peer analysing the audio it decoded - is the same work
-// repeated once per listener per speaker, on a signal that has already lost detail to the codec, and
-// it drifts apart the moment one peer loses a packet. Fifteen quantized floats at twenty a second is
-// a few hundred bytes a second per speaker, which is less than the audio it describes by two orders
-// of magnitude.
-//
-// The capture tap is the FILTERED stream, the same one the voice codec gets, so the mouth moves for
-// exactly the audio the room hears: gated frames move nothing, and a suppressed fan moves nothing
-// either. -xlinka
+// EVERY MACHINE ANALYSES THE VOICE IT HEARS. The wearer's own machine taps the microphone straight
+// after the high pass, ahead of the suppressor and the level control, because the suppressor alone
+// runs 20 ms behind; that tap is measured against the voice's own running level, and the
+// suppressor's voice probability closes the mouth on steady noise. Everybody else analyses the voice
+// as it is decoded, stamps each window with its place in the stream, and shows the window for the
+// sample coming out of the speakers right now. A mouth timed off a separate stream of weights ran
+// ahead of the voice by whatever sat in the jitter buffer and the device, and was eased twice on the
+// way; timed off the playback cursor it lands with the sound whatever those buffers do. A muted or
+// silenced talker sends nothing, nothing is decoded, and the mouth closes by itself. -xlinka
 [ComponentCategory("Users/Avatar")]
+[DefaultUpdateOrder(-200)]
 public sealed class LipSyncAnalyzer : Component
 {
-    private const string StreamName = "Visemes";
-
-    // Twenty frames a second. Faster buys nothing a mouth can show; the smoothing on either end
-    // carries the shape between them.
-    private const uint StreamPeriod = 3;
+    // Mouth shut once nothing new has come off the microphone for this long.
+    private const float CaptureIdleSeconds = 0.25f;
 
     // How strong the mouth gets overall. A per-avatar trim for rigs whose shapes are authored hot.
     public readonly Sync<float> Strength;
 
+    // Shown on the world thread.
     private readonly VisemeAnalysis _analysis = new();
     private readonly float[] _scratch = new float[VisemeAnalysis.Count];
 
-    private FloatArrayValueStream? _stream;
+    // Fed on the voice chain thread or the sync thread, always under _feedLock. Built on first use so
+    // an avatar sitting in an inventory carries no window buffers.
+    private readonly object _feedLock = new();
+    private VisemeAnalysis? _source;
+    private VisemeFrames? _frames;
     private AudioInput? _tapped;
-    private bool _subscribed;
+    private AudioStream? _remote;
+    private bool _hasDecoded;
+    private long _nextDecoded;
+
+    private readonly VisemeClock _clock = new();
+    private bool _hasShown;
+    private long _shownStamp;
+    private float _sinceCapture;
+
     private User? _user;
+    private readonly AvatarFaceWearer _wearer = new();
+
+    // Whose mouth this is follows who wears the avatar, never whose hierarchy it sits in, so only the wearer's
+    // own machine taps a microphone.
+    private bool IsWornLocally => _user != null && ReferenceEquals(_user, World?.LocalUser);
 
     public LipSyncAnalyzer()
     {
@@ -49,6 +65,29 @@ public sealed class LipSyncAnalyzer : Component
 
     // Silence weight (1 = no speech). Drivers use it to suppress mouth tracking.
     public float Silence => _analysis[VisemeAnalysis.Silence];
+
+    // How loud the voice is this frame, 0..1: everything the mouth is doing that is not silence, which the
+    // analysis already scales by loudness. A jaw that only opens and shuts follows this.
+    public float Level => System.Math.Clamp((1f - _analysis[VisemeAnalysis.Silence]) * System.Math.Max(Strength.Value, 0f), 0f, 1f);
+
+    // The viseme the mouth is closest to this frame, 0 (silence) to 14, in viseme order.
+    public int Dominant
+    {
+        get
+        {
+            int dominant = VisemeAnalysis.Silence;
+            float highest = _analysis[VisemeAnalysis.Silence];
+            for (int i = 1; i < VisemeAnalysis.Count; i++)
+            {
+                if (_analysis[i] > highest)
+                {
+                    highest = _analysis[i];
+                    dominant = i;
+                }
+            }
+            return dominant;
+        }
+    }
 
     public float this[Viseme viseme]
     {
@@ -61,121 +100,251 @@ public sealed class LipSyncAnalyzer : Component
         }
     }
 
-    public override void OnStart()
+    public override void OnAwake()
     {
-        base.OnStart();
-        EnsureStream();
+        base.OnAwake();
+        if (Slot != null)
+            Slot.ActiveChanged += OnSlotActiveChanged;
+    }
+
+    // Switched off, it lets go of the microphone and the stream now rather than when it next updates.
+    private void OnSlotActiveChanged(Slot slot)
+    {
+        if (Slot == null || Slot.IsActive)
+            return;
+        StopFeeds();
+        _user = null;
+        _analysis.Reset();
     }
 
     public override void OnDestroy()
     {
-        Untap();
+        if (Slot != null)
+            Slot.ActiveChanged -= OnSlotActiveChanged;
+        StopFeeds();
         base.OnDestroy();
-    }
-
-    private void EnsureStream()
-    {
-        if (_stream != null && !_stream.IsDestroyed)
-            return;
-
-        _user = Slot?.ActiveUserRoot?.ActiveUser;
-        if (_user == null)
-            return;
-
-        if (IsUnderLocalUser)
-        {
-            _stream = _user.GetStreamOrAdd<FloatArrayValueStream>(StreamName, s =>
-            {
-                s.Count = VisemeAnalysis.Count;
-                s.Encoding = ValueEncoding.Quantized;
-                // Ten bits per weight. A mouth shape has nowhere near a thousand distinguishable
-                // positions, so anything finer is bandwidth spent on numbers nobody can see.
-                s.FullFrameBits = 10;
-                s.FullFrameMin = 0f;
-                s.FullFrameMax = 1f;
-                s.SetInterpolation();
-                s.SetUpdatePeriod(StreamPeriod, 0);
-            });
-        }
-        else
-        {
-            _stream = _user.GetStream<FloatArrayValueStream>(s => s.Name == StreamName);
-        }
-    }
-
-    // The local capture, tapped after the gate and the suppressor. Re-resolved rather than cached
-    // forever because the device can change under us when somebody picks another microphone.
-    private void EnsureTap()
-    {
-        var input = Engine.Current?.AudioSystem?.DefaultAudioInput;
-        if (ReferenceEquals(input, _tapped) && _subscribed)
-            return;
-
-        Untap();
-        if (input == null)
-            return;
-
-        _tapped = input;
-        _tapped.NewFilteredSamples += OnFilteredSamples;
-        _subscribed = true;
-        _analysis.Reset();
-    }
-
-    private void Untap()
-    {
-        if (_subscribed && _tapped != null)
-            _tapped.NewFilteredSamples -= OnFilteredSamples;
-        _subscribed = false;
-        _tapped = null;
-    }
-
-    // CAPTURE THREAD. The analysis owns its own buffers and touches nothing in the datamodel; the
-    // weights are read back on the world thread, where a torn read of a float is not a thing.
-    private void OnFilteredSamples(ReadOnlySpan<StereoSample> samples)
-    {
-        try
-        {
-            _analysis.Write(samples, _tapped?.TargetSampleRate ?? 48000);
-        }
-        catch
-        {
-            // A throw here rides up into the platform's capture callback. A bad frame is a bad frame.
-        }
     }
 
     public override void OnCommonUpdate()
     {
         base.OnCommonUpdate();
 
-        EnsureStream();
+        // A new wearer, or none: let go of the last one's microphone and stream and start from silence.
+        if (_wearer.Update(Slot))
+        {
+            StopFeeds();
+            _user = null;
+            _analysis.Reset();
+        }
+        var wearer = _wearer.Current;
+        if (wearer == null)
+            return;
+        _user = wearer.ActiveUser;
+        if (_user == null)
+            return;
 
         float delta = World?.Time.Delta ?? 0f;
 
-        if (IsUnderLocalUser)
+        if (IsWornLocally)
         {
-            EnsureTap();
-            _analysis.Advance(delta);
-
-            var stream = _stream;
-            if (stream != null && !stream.IsDestroyed)
+            StopListening();
+            // The voice stream's own rule: muted, silenced or looking at another world, the microphone
+            // is let go and the mouth stays shut.
+            if (AudioInput.IsVoiceCaptureAllowed(_user, World))
             {
-                _analysis.CopyTo(_scratch);
-                for (int i = 0; i < _scratch.Length; i++)
-                    stream[i] = _scratch[i];
+                EnsureTap(wearer);
+                ShowCaptured(delta);
             }
+            else
+            {
+                Untap();
+                _analysis.AcceptSilence();
+            }
+        }
+        else
+        {
+            Untap();
+            EnsureListening(wearer);
+            ShowHeard(delta);
+        }
+
+        _analysis.Advance(delta);
+    }
+
+    private void ShowCaptured(float delta)
+    {
+        if (_frames != null && _frames.TakeLatest(_scratch))
+        {
+            _analysis.Accept(_scratch);
+            _sinceCapture = 0f;
             return;
         }
 
-        // Remote: whatever the owner worked out, eased the same way so a dropped packet holds the
-        // shape instead of snapping the mouth shut.
-        var remote = _stream;
-        if (remote == null || remote.IsDestroyed)
+        _sinceCapture += delta;
+        if (_sinceCapture >= CaptureIdleSeconds)
+            _analysis.AcceptSilence();
+    }
+
+    // The window for the sample being heard: the stream's read cursor less the output latency, both
+    // live, so a jitter buffer or a device that grows or shrinks moves the mouth with the sound.
+    private void ShowHeard(float delta)
+    {
+        var stream = _remote;
+        var frames = _frames;
+        if (stream == null || frames == null)
+        {
+            _analysis.AcceptSilence();
+            return;
+        }
+
+        double latency = Engine.Current?.AudioSystem?.OutputLatencySeconds ?? 0.0;
+        long heard = _clock.Update(stream.PlaybackIndex, latency, stream.SampleRate, delta);
+        if (frames.TakeUpTo(heard, _scratch, out long stamp))
+        {
+            _analysis.Accept(_scratch);
+            _shownStamp = stamp;
+            _hasShown = true;
+        }
+
+        // Nothing new reaching the ear, or past the last window analysed: the voice has stopped.
+        if (_clock.IsIdle || !_hasShown || heard - _shownStamp >= VisemeAnalysis.WindowSize)
+            _analysis.AcceptSilence();
+    }
+
+    // The input the voice stream captures from, so the mouth listens to the microphone the room hears.
+    private static UserAudioStream? VoiceOf(UserRoot wearer)
+        => wearer.GetRegisteredComponent<AvatarVoiceInfo>()?.AudioSource.Target as UserAudioStream;
+
+    private void EnsureTap(UserRoot wearer)
+    {
+        var input = VoiceOf(wearer)?.CaptureInput ?? Engine.Current?.AudioSystem?.DefaultAudioInput;
+        if (ReferenceEquals(input, _tapped))
             return;
 
-        int count = System.Math.Min(remote.Count, _scratch.Length);
-        for (int i = 0; i < count; i++)
-            _scratch[i] = remote[i];
-        _analysis.Accept(_scratch.AsSpan(0, count));
-        _analysis.Advance(delta);
+        Untap();
+        if (input == null)
+            return;
+
+        lock (_feedLock)
+        {
+            var frames = _frames ??= new VisemeFrames();
+            var source = _source ??= new VisemeAnalysis();
+            source.Reset();
+            source.TracksLevel = true;
+            source.VoiceProbability = 1f;
+            source.Output = frames;
+            frames.Clear();
+            _tapped = input;
+        }
+        _sinceCapture = 0f;
+        input.HighPassedSamples += OnHighPassedSamples;
+    }
+
+    private void Untap()
+    {
+        var input = _tapped;
+        if (input == null)
+            return;
+        input.HighPassedSamples -= OnHighPassedSamples;
+        lock (_feedLock)
+            _tapped = null;
+    }
+
+    private void EnsureListening(UserRoot wearer)
+    {
+        var stream = VoiceOf(wearer)?.Stream.Target;
+        if (stream != null && stream.IsDestroyed)
+            stream = null;
+        if (ReferenceEquals(stream, _remote))
+            return;
+
+        StopListening();
+        if (stream == null)
+            return;
+
+        lock (_feedLock)
+        {
+            var frames = _frames ??= new VisemeFrames();
+            var source = _source ??= new VisemeAnalysis();
+            source.Reset();
+            source.TracksLevel = false;
+            source.VoiceProbability = 1f;
+            source.Output = frames;
+            frames.Clear();
+            _hasDecoded = false;
+            _remote = stream;
+        }
+        _clock.Reset();
+        _hasShown = false;
+        stream.SamplesDecoded += OnSamplesDecoded;
+    }
+
+    private void StopListening()
+    {
+        var stream = _remote;
+        if (stream == null)
+            return;
+        stream.SamplesDecoded -= OnSamplesDecoded;
+        lock (_feedLock)
+            _remote = null;
+    }
+
+    private void StopFeeds()
+    {
+        Untap();
+        StopListening();
+    }
+
+    // VOICE CHAIN THREAD. The analysis owns its buffers and touches nothing in the datamodel.
+    private void OnHighPassedSamples(AudioInput input, StereoSample[] buffer, int count)
+    {
+        if (buffer == null || count <= 0)
+            return;
+
+        lock (_feedLock)
+        {
+            var source = _source;
+            if (source == null || !ReferenceEquals(input, _tapped))
+                return;
+            try
+            {
+                source.VoiceProbability = input.VoiceProbability;
+                source.Write(buffer.AsSpan(0, System.Math.Min(count, buffer.Length)), input.TargetSampleRate);
+            }
+            catch
+            {
+                // A throw here lands in the voice chain. A bad frame is a bad frame.
+            }
+        }
+    }
+
+    // SYNC THREAD, as each packet is decoded.
+    private void OnSamplesDecoded(AudioStream stream, ReadOnlySpan<StereoSample> samples, long firstIndex)
+    {
+        lock (_feedLock)
+        {
+            var source = _source;
+            if (source == null || !ReferenceEquals(stream, _remote))
+                return;
+            try
+            {
+                // Audio that does not follow on from the last packet, or that lands in a ring the mixer
+                // had already read dry (the talker paused), starts a fresh window rather than finishing
+                // one with the tail of the last sentence.
+                if (!_hasDecoded || firstIndex != _nextDecoded || stream.PlaybackIndex >= firstIndex)
+                {
+                    if (_hasDecoded && firstIndex < _nextDecoded)
+                        _frames?.Clear();
+                    source.Restart();
+                }
+                source.Write(samples, stream.SampleRate, firstIndex);
+                _nextDecoded = firstIndex + samples.Length;
+                _hasDecoded = true;
+            }
+            catch
+            {
+                // A throw here lands in the sync loop. A bad packet is a still mouth.
+            }
+        }
     }
 }

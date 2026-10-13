@@ -95,7 +95,7 @@ public class ArrayValueStream<T> : ImplicitStream
         }
     }
 
-    public override bool HasValidData => _receivedFirstData || IsLocal;
+    public override bool HasValidData => (_receivedFirstData && _values.Length == _count.Value) || IsLocal;
 
     private DateTime CurrentTime => Lerp(_trailingTime, _leadingTime, _timeTransition);
 
@@ -165,6 +165,11 @@ public class ArrayValueStream<T> : ImplicitStream
                 temp[i] = SyncCoder.Decode<T>(reader);
         }
 
+        // HasValidData becomes true below. Publish the first sample immediately, so a tracking
+        // flag decoded in this batch cannot expose zero quaternions before the next Update.
+        if (!_receivedFirstData && IsInterpolated)
+            _values = (T[])temp.Clone();
+
         if (IsInterpolated)
             WriteDataPoint(temp, DateTime.FromBinary((long)(message.StreamTime * TimeSpan.TicksPerSecond)));
         else
@@ -183,7 +188,11 @@ public class ArrayValueStream<T> : ImplicitStream
 
         if (_dataPoints.Count == 1)
         {
-            _values = _dataPoints[0].Value;
+            // InterpolateInto writes into _values. Do not alias the buffered sample or subsequent
+            // frames will interpolate from a pose we have already modified.
+            var sample = _dataPoints[0].Value;
+            EnsureSize(sample.Length);
+            Array.Copy(sample, _values, sample.Length);
             return;
         }
 
@@ -220,7 +229,7 @@ public class ArrayValueStream<T> : ImplicitStream
         {
             _trailingTime = CurrentTime;
             _timeTransition = 0f;
-            _leadingTime = time.AddSeconds(-InterpolationOffset);
+            _leadingTime = Earlier(time, InterpolationOffset);
             if (_leadingTime < _trailingTime) _leadingTime = _trailingTime;
         }
         else
@@ -239,6 +248,12 @@ public class ArrayValueStream<T> : ImplicitStream
     }
 
     protected virtual T InterpolateElement(T a, T b, float lerp) => lerp < 0.5f ? a : b;
+
+    // A sample's time is the sender's seconds since its world began, so in a world's first moments it sits
+    // closer to the start of the calendar than the interpolation offset, and stepping back by the offset
+    // ran off it: every such sample threw, and the decode dropped the rest of its message. -xlinka
+    private static DateTime Earlier(DateTime time, float seconds)
+        => new DateTime(System.Math.Max(0L, time.Ticks - (long)(seconds * TimeSpan.TicksPerSecond)));
 
     private static DateTime Lerp(DateTime a, DateTime b, float t)
     {

@@ -44,9 +44,9 @@ public sealed class AudioSystem : IDisposable
     private float _voice = 1f;
     private float _ui = 1f;
 
-    // Seconds from a source being read by the mixer to that sound reaching the ear.
-    public double OutputLatencySeconds
-        => (Simulator.PrimaryOutput.Device?.LatencySeconds ?? 0.0) + (double)Simulator.FrameSize / Simulator.SampleRate;
+    // Seconds from a source being read by the mixer to that sound reaching the ear, live: it follows the
+    // device's queue as it grows and shrinks. Zero headless.
+    public double OutputLatencySeconds => Simulator.PrimaryOutput.LatencySeconds;
 
     public void Initialize(IAudioDeviceOutput? device)
     {
@@ -178,7 +178,7 @@ public sealed class AudioSystem : IDisposable
     {
         if (string.IsNullOrEmpty(category))
             return;
-        _categoryVolumes[category] = Clamp01(volume);
+        _categoryVolumes[category] = float.IsNaN(volume) ? 0f : System.Math.Clamp(volume, 0f, User.MaxLocalVolume);
     }
 
     public bool TryGetCategoryVolume(string category, out float volume)
@@ -208,6 +208,28 @@ public sealed class AudioSystem : IDisposable
     // Per engine frame, on the world thread: folds settings into group volumes and the master gain,
     // and pushes the voice filter settings down to every capture input so the capture thread never
     // has to read them itself.
+    // The stream's device follows the setting; a device that fails is tried again whenever the setting is
+    // written, and on the next start.
+    private string _streamDeviceId = string.Empty;
+    private IAudioDeviceOutput? _streamDevice;
+
+    public bool HasStreamOutput => _streamDevice != null;
+
+    private void ApplyStreamOutput()
+    {
+        string wanted = EngineSettings.StreamOutputDevice;
+        if (string.Equals(wanted, _streamDeviceId, StringComparison.Ordinal))
+            return;
+        _streamDeviceId = wanted;
+        var previous = _streamDevice;
+        _streamDevice = wanted.Length > 0 && OperatingSystem.IsWindows() ? new Lumora.Audio.Wasapi.WasapiEndpointOutput(wanted) : null;
+        Simulator.StreamOutput.Device = _streamDevice;
+        (previous as IDisposable)?.Dispose();
+    }
+
+    // Ears sending to the stream device; while any does, the machine's own ears stay off it.
+    internal readonly HashSet<Lumora.Core.Components.Audio.AudioListener> StreamingEars = new();
+
     public void Update()
     {
         _master = Clamp01(EngineSettings.MasterVolume);
@@ -229,6 +251,9 @@ public sealed class AudioSystem : IDisposable
         }
 
         Simulator.PrimaryOutput.Volume = _master;
+        Simulator.StreamOutput.Volume = _master;
+        ApplyStreamOutput();
+        StreamingEars.RemoveWhere(static ear => ear.IsDestroyed || ear.Voice == null);
 
         if (_inputs.Count > 0)
         {
@@ -238,7 +263,8 @@ public sealed class AudioSystem : IDisposable
             _voiceFilter.GateAttack = EngineSettings.NoiseGateAttack;
             _voiceFilter.GateHold = EngineSettings.NoiseGateHold;
             _voiceFilter.GateRelease = EngineSettings.NoiseGateRelease;
-            _voiceFilter.NormalizationTarget = EngineSettings.NormalizationThreshold;
+            _voiceFilter.TargetLevel = EngineSettings.VoiceTargetLevel;
+            _voiceFilter.MicrophoneGain = EngineSettings.MicrophoneGain;
 
             for (int i = 0; i < _inputs.Count; i++)
                 _inputs[i].ApplySettings(_voiceFilter);
@@ -277,6 +303,8 @@ public sealed class AudioSystem : IDisposable
 
         Simulator.Stop();
         Simulator.Dispose();
+        (_streamDevice as IDisposable)?.Dispose();
+        _streamDevice = null;
     }
 
     public void Dispose() => Shutdown();

@@ -19,13 +19,18 @@ namespace Lumora.Audio;
 // claim to be - what it is, is the difference between a face that moves when its owner talks and a
 // face that does not, which is the entire point.
 //
-// Runs wherever it is fed. The design intent is that it runs ONCE, on the machine that owns the
-// voice, and the fifteen numbers travel; every peer re-deriving them from the decoded audio would be
-// the same work done N times to reach the same answer, and would desynchronise the moment one peer
-// dropped a packet. -xlinka
+// Runs wherever it is fed. The speaker's own machine feeds it the microphone for the speaker's own
+// mouth; every listener feeds it the voice it decoded, and each window comes out stamped with the
+// sample index it is centred on, so the mouth can be shown for the sample coming out of the speakers
+// rather than for whenever a separate stream of weights happened to arrive. One instance is either fed
+// (Write, on the thread the audio arrives on) or shown (Accept and Advance, on the world thread),
+// never both: the two halves share the target array. -xlinka
 public sealed class VisemeAnalysis
 {
-    public const int WindowSize = 1024;
+    // 10.7 ms windows every 5.3 ms at 48 kHz. Long enough to place the first two formants, short enough
+    // that the window centre, which is where the mouth is timed from, sits close to the newest sample.
+    public const int WindowSize = 512;
+    public const int HopSize = WindowSize / 2;
     public const int Count = 15;
 
     // Index order matches the engine's Viseme enum: Silence, PP, FF, TH, DD, KK, CH, SS, NN, RR, AA,
@@ -46,15 +51,38 @@ public sealed class VisemeAnalysis
     public const int OH = 13;
     public const int OU = 14;
 
-    // Below this the mouth is shut. Set against the gate's own threshold so a frame the voice stream
-    // will not send is not a frame the mouth moves for.
-    private const float SilenceFloor = 0.006f;
+    // Mean absolute level of a voiced window once the capture's level control has put the voice at its
+    // target (-18.5 dBFS voiced RMS). Decoded voice arrives at this level. The speaker's own tap is taken
+    // before that control, so it is brought to the same level by a gain of its own (TracksLevel).
+    public const float VoicedLevel = 0.095f;
+
+    // Fully open at this window level, just above VoicedLevel: ordinary speech opens the mouth most of
+    // the way and only the loud syllables open it all the way.
+    private const float LoudnessReference = 0.100f;
+
+    // The gate opens around -50 dBFS after the level control, about 0.0025 mean absolute. A window below
+    // that is one the voice stream would not send, so the mouth does not move for it either.
+    private const float SilenceFloor = 0.0025f;
 
     // How fast a shape may change. A mouth has mass; stepping straight to a new vowel every frame
-    // reads as a chattering puppet, and this is the single biggest difference between lip sync that
-    // looks alive and lip sync that looks wrong.
-    private const float AttackSeconds = 0.045f;
-    private const float ReleaseSeconds = 0.11f;
+    // reads as a chattering puppet. Exact one-pole time constants, so the feel does not change with the
+    // frame rate.
+    private const float AttackSeconds = 0.015f;
+    private const float ReleaseSeconds = 0.08f;
+
+    // Own-voice level: power average of voiced windows within 20 dB of the running estimate, and the
+    // same gain range the capture's level control is allowed.
+    private const float LevelSeconds = 1.5f;
+    private const float MinTrackedLevel = 0.0001f;
+    private const float MinLevelGain = 0.25f;
+    private const float MaxLevelGain = 16f;
+    private const int LevelWarmupWindows = 1024;
+
+    // Steady noise loud enough to pass the floor that the suppressor keeps calling not-voice (a fan, a
+    // road) closes the mouth once it has lasted this long. Slow on purpose: the voice probability runs
+    // a block behind this tap, so it only gets a say once noise has held the mouth open that long, and
+    // an onset in a quiet room never waits for it.
+    private const float NoiseVetoSeconds = 0.25f;
 
     private readonly FourierTransform _fft = new(WindowSize);
     private readonly float[] _real = new float[WindowSize];
@@ -64,12 +92,28 @@ public sealed class VisemeAnalysis
     private readonly float[] _target = new float[Count];
     private int _filled;
     private int _sampleRate = 48000;
+    private long _nextIndex;
+
+    private float _levelPower;
+    private int _levelWindows;
+    private float _noiseSeconds;
 
     public VisemeAnalysis()
     {
         _weights[Silence] = 1f;
         _target[Silence] = 1f;
     }
+
+    // Where finished windows go, each stamped with the index of its centre. Null keeps them in this
+    // instance only.
+    public VisemeFrames? Output { get; set; }
+
+    // Own voice, before the suppressor and the level control: measure against this voice's own running
+    // level rather than the fixed target, and let VoiceProbability close the mouth on steady noise.
+    public bool TracksLevel { get; set; }
+
+    // Latest voice probability from the suppressor (0..1), set by whoever feeds the tap before each Write.
+    public float VoiceProbability { get; set; } = 1f;
 
     public float this[int viseme] => viseme >= 0 && viseme < Count ? _weights[viseme] : 0f;
 
@@ -82,14 +126,29 @@ public sealed class VisemeAnalysis
 
     public void Reset()
     {
-        Array.Clear(_ring);
-        _filled = 0;
+        Restart();
+        _nextIndex = 0;
+        _levelPower = 0f;
+        _levelWindows = 0;
+        _noiseSeconds = 0f;
         for (int i = 0; i < Count; i++)
             _weights[i] = _target[i] = i == Silence ? 1f : 0f;
     }
 
+    // Drops the part-filled window, nothing else. For audio that does not continue the last write: the
+    // first window of a new talkspurt must not carry the tail of the previous one.
+    public void Restart()
+    {
+        Array.Clear(_ring);
+        _filled = 0;
+    }
+
     // Push captured audio in. Mono or stereo; stereo is mixed down, because a mouth is one mouth.
-    public void Write(ReadOnlySpan<StereoSample> samples, int sampleRate)
+    public void Write(ReadOnlySpan<StereoSample> samples, int sampleRate) => Write(samples, sampleRate, _nextIndex);
+
+    // firstIndex is the index of samples[0] on the caller's own sample clock (a stream's ring index);
+    // each window is stamped with the index of its centre.
+    public void Write(ReadOnlySpan<StereoSample> samples, int sampleRate, long firstIndex)
     {
         if (sampleRate > 0)
             _sampleRate = sampleRate;
@@ -101,36 +160,45 @@ public sealed class VisemeAnalysis
                 continue;
 
             AnalyzeWindow();
+            Output?.Push(firstIndex + i + 1 - WindowSize / 2, _target);
 
             // Half-window hop: often enough that a short consonant is not missed, cheap enough that
             // the transform is a rounding error next to the codec on the same thread.
-            Array.Copy(_ring, WindowSize / 2, _ring, 0, WindowSize / 2);
-            _filled = WindowSize / 2;
+            Array.Copy(_ring, HopSize, _ring, 0, WindowSize - HopSize);
+            _filled = WindowSize - HopSize;
         }
+        _nextIndex = firstIndex + samples.Length;
     }
 
     // Ease the live weights toward the last analysis. Called once a frame by the owner, with that
     // frame's delta, so the smoothing is in seconds rather than in frames.
     public void Advance(float deltaSeconds)
     {
+        if (!(deltaSeconds > 0f))
+            return;
+        float attack = 1f - MathF.Exp(-deltaSeconds / AttackSeconds);
+        float release = 1f - MathF.Exp(-deltaSeconds / ReleaseSeconds);
         for (int i = 0; i < Count; i++)
         {
             float target = _target[i];
-            float seconds = target > _weights[i] ? AttackSeconds : ReleaseSeconds;
-            float blend = seconds <= 0f ? 1f : deltaSeconds / seconds;
-            if (blend > 1f) blend = 1f;
+            float blend = target > _weights[i] ? attack : release;
             _weights[i] += (target - _weights[i]) * blend;
         }
     }
 
-    // Accept weights computed elsewhere (a remote peer's, off the stream) and ease toward them the
-    // same way, so a remote mouth moves with the same weight and the same inertia as a local one and
-    // a dropped packet reads as a held shape rather than a snap.
+    // Accept weights computed elsewhere (another instance's windows, off a VisemeFrames) and ease
+    // toward them the same way.
     public void Accept(ReadOnlySpan<float> incoming)
     {
         int n = System.Math.Min(incoming.Length, Count);
         for (int i = 0; i < n; i++)
             _target[i] = System.Math.Clamp(incoming[i], 0f, 1f);
+    }
+
+    public void AcceptSilence()
+    {
+        for (int i = 0; i < Count; i++)
+            _target[i] = i == Silence ? 1f : 0f;
     }
 
     private void AnalyzeWindow()
@@ -146,10 +214,24 @@ public sealed class VisemeAnalysis
         }
         energy /= WindowSize;
 
-        if (energy < SilenceFloor)
+        bool quiet;
+        if (TracksLevel)
         {
-            for (int i = 0; i < Count; i++)
-                _target[i] = i == Silence ? 1f : 0f;
+            energy *= TrackLevel(energy);
+            quiet = energy < SilenceFloor;
+            if (!quiet && VoiceProbability < 0.5f)
+                _noiseSeconds += HopSize / (float)_sampleRate;
+            else
+                _noiseSeconds = 0f;
+        }
+        else
+        {
+            quiet = energy < SilenceFloor;
+        }
+
+        if (quiet || _noiseSeconds >= NoiseVetoSeconds)
+        {
+            AcceptSilence();
             return;
         }
 
@@ -245,7 +327,7 @@ public sealed class VisemeAnalysis
 
         // How wide the mouth opens overall follows loudness, so a whisper moves the face less than a
         // shout does. Everything is scaled by it, and what is left over is silence.
-        float loudness = MathF.Min(1f, energy / 0.10f);
+        float loudness = MathF.Min(1f, energy / LoudnessReference);
         float sum = 0f;
         for (int i = 1; i < Count; i++)
         {
@@ -253,6 +335,28 @@ public sealed class VisemeAnalysis
             sum += _target[i];
         }
         _target[Silence] = MathF.Max(0f, 1f - sum);
+    }
+
+    // The gain that would bring this voice to VoicedLevel, learnt only from windows the suppressor calls
+    // voice: a running mean while that moves faster than the 1.5 s average would, then the average, so
+    // a new microphone does not start from a wrong guess.
+    private float TrackLevel(float energy)
+    {
+        if (VoiceProbability >= 0.5f && energy > MinTrackedLevel)
+        {
+            float level = MathF.Sqrt(_levelPower);
+            if (_levelWindows == 0 || (energy > level * 0.1f && energy < level * 10f))
+            {
+                if (_levelWindows < LevelWarmupWindows)
+                    _levelWindows++;
+                float blend = MathF.Max(1f / _levelWindows, 1f - MathF.Exp(-HopSize / (_sampleRate * LevelSeconds)));
+                _levelPower += (energy * energy - _levelPower) * blend;
+            }
+        }
+
+        if (_levelWindows == 0)
+            return 1f;
+        return System.Math.Clamp(VoicedLevel / MathF.Sqrt(_levelPower), MinLevelGain, MaxLevelGain);
     }
 
     private float Band(float fromHz, float toHz)

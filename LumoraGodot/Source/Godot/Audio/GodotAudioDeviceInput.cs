@@ -11,30 +11,23 @@ namespace Lumora.Source.Godot;
 
 // The engine's one way in from the microphone.
 //
-// The platform has no callback for captured audio: the capture effect fills a ring and somebody has
-// to come and take it. That somebody is a node in the scene tree, so samples arrive on the main
-// thread once a frame, in one block of however much piled up. Everything above this treats that as
-// "the capture thread" and never touches the datamodel from it, which stays true whichever thread it
-// turns out to be.
-//
-// The microphone gets its own bus, muted, because the only way to hear a capture bus is to route it
-// somewhere and the only thing that would do is put the room back through the speakers. The mute is
-// on the bus send, not on the effect chain, so the capture effect still sees every sample. -xlinka
+// The audio server keeps what the microphone records in a ring of its own, seconds deep, and hands
+// frames out on request. So nothing plays the microphone anywhere: no player, no muted bus, no
+// capture effect, and none of the mix periods those cost on the way through. Somebody has to come and
+// take the frames, and that somebody is a node in the scene tree, so samples arrive on the main thread
+// once a frame, in one block of however much piled up. The node runs ahead of the engine runner, so a
+// frame's audio is on the chain thread before that frame's world update starts rather than one frame
+// after it. Everything above this treats that as "the capture thread" and never touches the datamodel
+// from it, which stays true whichever thread it turns out to be. -xlinka
 public sealed class GodotAudioDeviceInput : IAudioDeviceInput
 {
-    private const string CaptureBusName = "LumoraCapture";
+    // Ahead of LumoraEngineRunner, which runs at the default of 0.
+    private const int PumpPriority = -1000;
 
-    // Half a second of slack. The poll runs once a frame and a frame that hitches for a quarter of a
-    // second should cost latency, not a hole in what somebody said.
-    private const float CaptureBufferSeconds = 0.5f;
-
-    private volatile AudioStreamPlayer? _player;
-    private volatile AudioEffectCapture? _capture;
     private volatile LumoraCaptureNode? _node;
     private volatile bool _started;
+    private volatile bool _open;
     private volatile int _sampleRate = 48000;
-
-    private Vector2[] _frames = Array.Empty<Vector2>();
 
     public event AudioSamplesHandler? SamplesCaptured;
 
@@ -56,8 +49,8 @@ public sealed class GodotAudioDeviceInput : IAudioDeviceInput
 
     public string DeviceId => Name;
 
-    // The capture runs at the mixer's rate, not the hardware's: the platform resamples the
-    // microphone into the bus before any effect sees it.
+    // The rate the server fills its input ring at, which is the input's and not the mixer's. The voice
+    // chain resamples it.
     public int SampleRate => _sampleRate;
 
     public bool IsSystemDefault
@@ -114,51 +107,30 @@ public sealed class GodotAudioDeviceInput : IAudioDeviceInput
             if (global::Godot.Engine.GetMainLoop() is not SceneTree tree || tree.Root == null)
                 return;
 
+            if (!_open)
+            {
+                var error = AudioServer.SetInputDeviceActive(true);
+                if (error != Error.Ok)
+                {
+                    LumoraLogger.Warn($"GodotAudioDeviceInput: the audio server would not open the microphone ({error}); it stays closed");
+                    _started = false;
+                    return;
+                }
+                _open = true;
+            }
+
+            int rate;
             try
             {
-                _sampleRate = (int)AudioServer.GetMixRate();
+                rate = (int)AudioServer.GetInputMixRate();
+                if (rate <= 0)
+                    rate = (int)AudioServer.GetMixRate();
             }
             catch
             {
-                _sampleRate = 48000;
+                rate = 48000;
             }
-
-            int bus = EnsureCaptureBus();
-            if (bus < 0)
-            {
-                LumoraLogger.Warn("GodotAudioDeviceInput: could not make a capture bus; the microphone stays closed");
-                _started = false;
-                return;
-            }
-
-            _capture = EnsureCaptureEffect(bus);
-            if (_capture == null)
-            {
-                LumoraLogger.Warn("GodotAudioDeviceInput: the capture bus refused a capture effect; the microphone stays closed");
-                _started = false;
-                return;
-            }
-
-            _capture.ClearBuffer();
-
-            var player = _player;
-            if (player == null || !GodotObject.IsInstanceValid(player))
-            {
-                player = new AudioStreamPlayer
-                {
-                    Name = "LumoraAudioInput",
-                    Bus = CaptureBusName,
-                    ProcessMode = Node.ProcessModeEnum.Always,
-                    Stream = new AudioStreamMicrophone(),
-                };
-                _player = player;
-            }
-
-            if (player.GetParent() == null)
-                tree.Root.AddChild(player);
-
-            if (!player.Playing)
-                player.Play();
+            _sampleRate = rate > 0 ? rate : 48000;
 
             var node = _node;
             if (node == null || !GodotObject.IsInstanceValid(node))
@@ -167,6 +139,7 @@ public sealed class GodotAudioDeviceInput : IAudioDeviceInput
                 {
                     Name = "LumoraAudioInputPump",
                     ProcessMode = Node.ProcessModeEnum.Always,
+                    ProcessPriority = PumpPriority,
                 };
                 node.Bind(this);
                 _node = node;
@@ -184,11 +157,12 @@ public sealed class GodotAudioDeviceInput : IAudioDeviceInput
 
     private void CloseOnMainThread()
     {
+        // A Start that landed while this close was deferred wins: the device it opened stays open.
+        if (_started)
+            return;
+
         var node = _node;
         _node = null;
-        var player = _player;
-        _player = null;
-        _capture = null;
 
         try
         {
@@ -198,11 +172,10 @@ public sealed class GodotAudioDeviceInput : IAudioDeviceInput
                 node.QueueFree();
             }
 
-            if (player != null && GodotObject.IsInstanceValid(player))
+            if (_open)
             {
-                if (player.Playing)
-                    player.Stop();
-                player.QueueFree();
+                _open = false;
+                AudioServer.SetInputDeviceActive(false);
             }
         }
         catch (Exception ex)
@@ -211,72 +184,27 @@ public sealed class GodotAudioDeviceInput : IAudioDeviceInput
         }
     }
 
-    private static int EnsureCaptureBus()
-    {
-        int bus = AudioServer.GetBusIndex(CaptureBusName);
-        if (bus < 0)
-        {
-            AudioServer.AddBus();
-            bus = AudioServer.BusCount - 1;
-            AudioServer.SetBusName(bus, CaptureBusName);
-        }
-
-        // Muted on the send, so nothing routes the microphone back into the room. The effect chain
-        // still runs, which is the whole point of putting the capture here.
-        AudioServer.SetBusMute(bus, true);
-        return bus;
-    }
-
-    private static AudioEffectCapture? EnsureCaptureEffect(int bus)
-    {
-        int effects = AudioServer.GetBusEffectCount(bus);
-        for (int i = 0; i < effects; i++)
-        {
-            if (AudioServer.GetBusEffect(bus, i) is AudioEffectCapture existing)
-            {
-                existing.BufferLength = CaptureBufferSeconds;
-                return existing;
-            }
-        }
-
-        var capture = new AudioEffectCapture { BufferLength = CaptureBufferSeconds };
-        AudioServer.AddBusEffect(bus, capture);
-        return capture;
-    }
-
-    // MAIN THREAD, once a frame.
+    // MAIN THREAD, once a frame. The ring is drained whether or not anyone is listening, so a listener
+    // that arrives later is not handed seconds of old room.
     internal void Poll()
     {
-        if (!_started)
-            return;
-
-        var capture = _capture;
-        var handler = SamplesCaptured;
-        if (capture == null || handler == null)
+        if (!_started || !_open)
             return;
 
         try
         {
-            if (!GodotObject.IsInstanceValid(capture))
-            {
-                // The bus layout changed underneath us. Reopening is the only way back, and doing it
-                // from here keeps the mixer thread out of it.
-                _capture = null;
-                OpenOnMainThread();
-                return;
-            }
-
-            int available = capture.GetFramesAvailable();
+            int available = AudioServer.GetInputFramesAvailable();
             if (available <= 0)
                 return;
 
-            _frames = capture.GetBuffer(available);
-            if (_frames == null || _frames.Length == 0)
+            var frames = AudioServer.GetInputFrames(available);
+            var handler = SamplesCaptured;
+            if (frames == null || frames.Length == 0 || handler == null)
                 return;
 
             // A stereo sample is two sequential floats and so is the vector the platform hands back,
             // so the block goes up as a view of the same memory rather than a copy.
-            handler(MemoryMarshal.Cast<Vector2, StereoSample>(_frames.AsSpan()));
+            handler(MemoryMarshal.Cast<Vector2, StereoSample>(frames.AsSpan()));
         }
         catch (Exception ex)
         {

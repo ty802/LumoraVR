@@ -23,7 +23,7 @@ namespace Lumora.Audio;
 //     every active space: pull every registered output (culled to MaxActiveOutputs by Priority then
 //     loudness) once and run its own effect chain on it, then for every listener: sum those outputs
 //     with their shape/spatialisation applied, run the listener's effect chain on the sum, add to the
-//     device mix; scale by PrimaryOutput.Volume, soft-clip, Write to the device. Outputs whose source
+//     device mix; scale by PrimaryOutput.Volume, limit, Write to the device. Outputs whose source
 //     IsActive is false cost nothing once their own chain has rung out.
 //   - Time: AudioFrameIndex advances by one per rendered frame, DspTime by FrameSize / SampleRate.
 // -xlinka
@@ -57,6 +57,7 @@ public sealed class AudioSimulator : IDisposable
         InvSampleRate = 1.0 / sampleRate;
         _stagedFrameSize = frameSize;
         PrimaryOutput = new AudioDeviceOutput(this);
+        StreamOutput = new AudioDeviceOutput(this);
         MaxActiveOutputs = 64;
     }
 
@@ -71,6 +72,10 @@ public sealed class AudioSimulator : IDisposable
     public double DspTime { get; private set; }
     public bool IsRunning { get; private set; }
     public AudioDeviceOutput PrimaryOutput { get; }
+
+    // What a stream carries, on a device of its own. Written beside the primary and paced by it: a stream
+    // device that drains slower loses the end of a frame, one that drains faster runs short. -xlinka
+    public AudioDeviceOutput StreamOutput { get; }
     public AudioSimulatorStats Stats { get; private set; }
 
     // Raised on the audio thread at the top of every render, after pre-render tasks.
@@ -166,6 +171,7 @@ public sealed class AudioSimulator : IDisposable
     {
         Stop();
         PrimaryOutput.Device = null;
+        StreamOutput.Device = null;
         lock (_structureLock)
         {
             _spaceAdds.Clear();
@@ -198,9 +204,6 @@ public sealed class AudioSimulator : IDisposable
 
             if (writable >= FrameSize)
             {
-                // Room for two whole frames means the device drained past our fill point while we
-                // were away. It is the only underrun signal the seam gives us. -xlinka
-                if (writable >= FrameSize * 2 && AudioFrameIndex > 8) _deviceUnderruns++;
                 RenderFrame(device);
             }
             else
@@ -231,6 +234,8 @@ public sealed class AudioSimulator : IDisposable
         int frame = FrameSize;
         StereoSample[] mix = PrimaryOutput.Mix;
         Array.Clear(mix, 0, frame);
+        StereoSample[] streamMix = StreamOutput.Mix;
+        Array.Clear(streamMix, 0, frame);
 
         int active = 0;
         int culled = 0;
@@ -247,7 +252,7 @@ public sealed class AudioSimulator : IDisposable
         if (device != null)
         {
             _nonFiniteSamples += SampleBuffers.Sanitize(mix.AsSpan(0, frame));
-            Spatializer.ApplyMaster(mix.AsSpan(0, frame), PrimaryOutput.Volume);
+            PrimaryOutput.Finish(mix.AsSpan(0, frame));
             for (int i = 0; i < frame; i++)
             {
                 float a = mix[i].AbsoluteAmplitude;
@@ -257,8 +262,30 @@ public sealed class AudioSimulator : IDisposable
             catch { }
         }
 
+        IAudioDeviceOutput? stream = StreamOutput.Device;
+        if (stream != null)
+        {
+            int room;
+            try { room = stream.FramesWritable; }
+            catch { room = 0; }
+            if (room > 0)
+            {
+                int count = room < frame ? room : frame;
+                _nonFiniteSamples += SampleBuffers.Sanitize(streamMix.AsSpan(0, count));
+                StreamOutput.Finish(streamMix.AsSpan(0, count));
+                try { stream.Write(new ReadOnlySpan<StereoSample>(streamMix, 0, count)); }
+                catch { }
+            }
+        }
+
         AudioFrameIndex++;
         DspTime += frame * InvSampleRate;
+
+        if (device != null)
+        {
+            try { _deviceUnderruns = device.Underruns; }
+            catch { }
+        }
 
         double elapsedMs = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
         if (elapsedMs > frame * 1000.0 * InvSampleRate) _droppedFrames++;
@@ -281,6 +308,7 @@ public sealed class AudioSimulator : IDisposable
     {
         FrameSize = frameSize;
         PrimaryOutput.EnsureBuffer(frameSize);
+        StreamOutput.EnsureBuffer(frameSize);
         for (int i = 0; i < _spaces.Count; i++) _spaces[i].EnsureBuffers(frameSize);
     }
 
@@ -308,12 +336,40 @@ public sealed class AudioDeviceOutput
     {
         Simulator = simulator;
         Mix = new StereoSample[System.Math.Max(1, simulator.FrameSize)];
+        _limiter = new LimiterFilter(simulator.SampleRate, new LimiterSettings { Ceiling = -1f, Release = 80f, InputGain = 0f });
     }
 
     public AudioSimulator Simulator { get; }
 
-    // Master gain applied last, before clipping.
+    // Master gain applied last, before the limiter.
     public float Volume { get; set; } = 1f;
+
+    // Everything a loud room sums to is pulled under -1 dBFS here rather than clipped, so a voice turned
+    // up past full scale stays a voice. Audio thread only. -xlinka
+    private readonly LimiterFilter _limiter;
+
+    // Seconds from the mixer reading a source to that sound reaching the ear, live: the limiter's
+    // lookahead, then the device's queue and the platform behind it. Zero with no device.
+    public double LatencySeconds
+    {
+        get
+        {
+            IAudioDeviceOutput? device = Device;
+            if (device == null) return 0.0;
+            double latency;
+            try { latency = device.LatencySeconds; }
+            catch { latency = 0.0; }
+            if (!double.IsFinite(latency) || latency < 0.0) latency = 0.0;
+            return latency + (double)_limiter.LatencySamples / Simulator.SampleRate;
+        }
+    }
+
+    internal void Finish(Span<StereoSample> buffer)
+    {
+        Spatializer.ApplyVolume(buffer, Volume);
+        _limiter.Process(buffer, Simulator.SampleRate);
+        Spatializer.ClampFullScale(buffer);
+    }
 
     // Swapping devices Stops the old and Starts the new on the caller's thread; the audio thread
     // sees the swap at its next render.
@@ -570,6 +626,7 @@ public sealed class AudioListenerVoice
     public AudioSpace Space { get; }
     public bool IsBoundToDevice => Device != null;
     public AudioDeviceOutput? Device { get; private set; }
+    public AudioDeviceOutput? Stream { get; private set; }
 
     // Read off the log when a listener that received gains still produced nothing at the device.
 
@@ -585,6 +642,8 @@ public sealed class AudioListenerVoice
     // A reference write is atomic and nothing downstream reads it twice in a frame, so the bind
     // lands immediately rather than a render later; the caller can read Device back straight away.
     public void BindToDevice(AudioDeviceOutput? device) => Device = device;
+
+    public void BindToStream(AudioDeviceOutput? stream) => Stream = stream;
 
     // Chain applied in order to this listener's mix; null or empty = dry.
     public void SetEffects(IReadOnlyList<IAudioDspFilter>? effects)
@@ -693,6 +752,11 @@ public sealed class AudioListenerVoice
         if (device != null)
         {
             SampleBuffers.Mix(device.Mix.AsSpan(0, frame), wet, 1f);
+        }
+        AudioDeviceOutput? stream = Stream;
+        if (stream != null)
+        {
+            SampleBuffers.Mix(stream.Mix.AsSpan(0, frame), wet, 1f);
         }
     }
 }
@@ -911,6 +975,9 @@ public sealed class AudioOutputVoice
             try { active = source.IsActive; }
             catch { active = false; }
         }
+        // What a resampled read left in the FIFO is the end of the sound that just stopped. Kept, it
+        // would play as a blip of old sound in front of the next one.
+        if (_sourceActive && !active) ClearFifo();
         _sourceActive = active;
         _hasActiveSource = active || (_ringing && _effects.Length > 0);
     }
@@ -950,17 +1017,36 @@ public sealed class AudioOutputVoice
             AdvanceRate(dopplerListener);
 
             int produced = 0;
-            int blocks = 0;
-            while (produced < frame && blocks < MaxFeedBlocks)
+            if (_rate == 1.0)
             {
-                produced += _fifo.Read(scratch.Slice(produced), ref _fifoPosition, _rate, ref _fifoFraction, ref _fifoLast);
-                if (produced >= frame) break;
+                // At native rate the source is read straight into the frame. Going through the FIFO
+                // costs a whole frame here, because the interpolating read holds its newest sample back
+                // and so pulls a second block every render. Whatever a resampled stretch left behind
+                // plays first, so the switch neither skips nor repeats a sample. -xlinka
+                produced = _fifo.Read(scratch, ref _fifoPosition);
+                _fifoFraction = 0.0;
+                if (produced < frame)
+                {
+                    Span<StereoSample> rest = scratch.Slice(produced);
+                    try { source.Read(rest, simulator); }
+                    catch { rest.Clear(); }
+                    produced = frame;
+                }
+            }
+            else
+            {
+                int blocks = 0;
+                while (produced < frame && blocks < MaxFeedBlocks)
+                {
+                    produced += _fifo.Read(scratch.Slice(produced), ref _fifoPosition, _rate, ref _fifoFraction, ref _fifoLast);
+                    if (produced >= frame) break;
 
-                Span<StereoSample> block = _block.AsSpan(0, frame);
-                try { source.Read(block, simulator); }
-                catch { block.Clear(); }
-                _fifo.Put(block);
-                blocks++;
+                    Span<StereoSample> block = _block.AsSpan(0, frame);
+                    try { source.Read(block, simulator); }
+                    catch { block.Clear(); }
+                    _fifo.Put(block);
+                    blocks++;
+                }
             }
 
             if (produced < frame) scratch.Slice(produced).Clear();
@@ -1077,11 +1163,16 @@ public sealed class AudioOutputVoice
 
     private void ResetStream()
     {
+        ClearFifo();
+        _rateStarted = false;
+        _peak = 0f;
+    }
+
+    private void ClearFifo()
+    {
         _fifo.Clear();
         _fifoPosition = 0;
         _fifoFraction = 0.0;
         _fifoLast = default;
-        _rateStarted = false;
-        _peak = 0f;
     }
 }

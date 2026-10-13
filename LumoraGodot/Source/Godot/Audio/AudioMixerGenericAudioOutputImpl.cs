@@ -4,9 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using Godot;
 using Lumora.Core.External.Audio.GenericOutputMixer;
-using Lumora.Core.External.Audio.Godot;
 #nullable enable
 namespace Lumora.Source.Godot;
 
@@ -64,32 +62,6 @@ public partial class AudioMixer : IAudioMixer
                 _buses.Remove(key);
 
             return result.ToArray();
-        }
-    }
-
-    public bool TryGetCatpureEffect([NotNullWhen(true)] out IAudioCapureEffect? capureEffect)
-    {
-        if (TryGetCaptureInfo(out var godotEffect, out var _))
-        {
-            capureEffect = new AudioCaptureEffectProxy(godotEffect);
-            return true;
-        }
-        capureEffect = default;
-        return false;
-    }
-
-    public void InitializeInput()
-    {
-        var loop = global::Godot.Engine.GetMainLoop();
-        if (loop is SceneTree tree)
-        {
-            AudioStreamPlayer player = new AudioStreamPlayer()
-            {
-                Stream = new AudioStreamMicrophone(),
-                Bus = "Voice"
-            };
-            tree.Root.AddChild(player);
-            player.Play();
         }
     }
 }

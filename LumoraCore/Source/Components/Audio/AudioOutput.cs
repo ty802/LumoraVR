@@ -140,7 +140,7 @@ public class AudioOutput : Component
             // replicated, and my slider for one person is neither.
             var user = ActiveUser;
             if (user != null)
-                volume *= Clamp01(user.LocalVolume);
+                volume *= Clamp(Sanitize(user.LocalVolume), 0f, User.MaxLocalVolume);
             var system = Engine.Current?.AudioSystem;
             return system == null ? volume : volume * system.GetGroupVolume(AudioTypeGroup.Value);
         }

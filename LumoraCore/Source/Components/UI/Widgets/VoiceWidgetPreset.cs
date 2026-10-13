@@ -30,6 +30,15 @@ public sealed class VoiceWidgetPreset : HomeWidgetPreset
     // widest thing on the strip instead of a stub at the end of it.
     private const float ButtonWidth = 44f;
     private const float MeterMinWidth = 120f;
+    // On the dash's top bar: laser-sized switches and a short meter.
+    private const float CompactButtonWidth = 28f;
+    private const float CompactMeterWidth = 40f;
+    private const float CompactGlyph = 16f;
+
+    // The strip at its compact width, and at its own.
+    public static float CompactWidth => 5f * CompactButtonWidth + 5f * Gap + CompactMeterWidth + 2f * Inset;
+    public static float FullWidth => 5f * ButtonWidth + 5f * Gap + MeterMinWidth + 2f * Inset;
+    public static float ControlsWidth => 5f * ButtonWidth + 4f * Gap + 2f * Inset;
     private const float MeterHeight = 12f;
     private const float MeterPad = 2f;
     private const float PeakWidth = 3f;
@@ -61,6 +70,16 @@ public sealed class VoiceWidgetPreset : HomeWidgetPreset
     private bool _lastMuted;
     private bool _stateKnown;
 
+    // Set before it builds by a host that has little room for it.
+    public bool Compact { get; set; }
+
+    // Set before it builds by a host that keeps to one accent (the voice popover on the dash's top bar): the
+    // lit switch is the accent whichever range it is.
+    public bool Quiet { get; set; }
+
+    // The top bar owns the visible meter; its dropdown only needs the voice switches.
+    public bool ShowMeter { get; set; } = true;
+
     public VoiceWidgetPreset()
     {
         MinSize.Value = new float2(5f * ButtonWidth + 5f * Gap + MeterMinWidth + 2f * Inset, 32f);
@@ -83,18 +102,29 @@ public sealed class VoiceWidgetPreset : HomeWidgetPreset
         ui.TextColor(DashTheme.Text);
         ui.HorizontalLayout(Gap);
         FillRect(ui.Current.GetComponent<RectTransform>() ?? ui.Current.AttachComponent<RectTransform>());
-        ui.PushStyle().MinWidth(ButtonWidth).PreferredWidth(ButtonWidth).FlexibleWidth(0f);
-        _muteButton = IconButton(ui, "mute", ToggleMute);
+        float buttonWidth = Compact ? CompactButtonWidth : ButtonWidth;
+        float glyph = Compact ? CompactGlyph : 22f;
+        float meterWidth = Compact ? CompactMeterWidth : MeterMinWidth;
+        ui.PushStyle().MinWidth(buttonWidth).PreferredWidth(buttonWidth).FlexibleWidth(0f);
+        _muteButton = IconButton(ui, "mute", glyph, ToggleMute);
         for (int i = 0; i < Modes.Length; i++)
         {
             var mode = Modes[i];
-            _modeButtons[i] = IconButton(ui, ModeIcons[i], () => SetMode(mode));
+            _modeButtons[i] = IconButton(ui, ModeIcons[i], glyph, () => SetMode(mode));
         }
         ui.PopStyle();
 
+        if (!ShowMeter)
+        {
+            ui.NestOut();
+            _stateKnown = false;
+            Poll();
+            return;
+        }
+
         // The microphone's level beside the switches, so you can see you are being heard: one continuous
         // bar taking every unit the switches did not.
-        ui.PushStyle().MinWidth(MeterMinWidth).PreferredWidth(MeterMinWidth).FlexibleWidth(1f);
+        ui.PushStyle().MinWidth(meterWidth).PreferredWidth(meterWidth).FlexibleWidth(1f);
         var meter = ui.Empty("Meter");
         ui.PopStyle();
         var track = meter.AddSlot("Track");
@@ -168,25 +198,25 @@ public sealed class VoiceWidgetPreset : HomeWidgetPreset
             if (button == null || button.IsDestroyed)
                 continue;
             bool allowed = Modes[i] <= max;
-            Paint(button, !muted && active == Modes[i], allowed, ModeLit[i]);
+            Paint(button, !muted && active == Modes[i], allowed, Quiet ? DashTheme.Accent : ModeLit[i]);
             ListingStyle.SetInteractable(button, allowed && !WidgetPanel.EditMode);
         }
 
         // Mute is the capture switch, not a range: it leaves the range you picked intact, so
         // unmuting drops you back where you were.
         if (_muteButton != null && !_muteButton.IsDestroyed)
-            Paint(_muteButton, muted || active == VoiceMode.Mute, true, DashTheme.Negative);
+            Paint(_muteButton, muted || active == VoiceMode.Mute, true, Quiet ? DashTheme.Accent : DashTheme.Negative);
     }
 
-    private static Button IconButton(UIBuilder ui, string icon, Action onClick)
+    private static Button IconButton(UIBuilder ui, string icon, float size, Action onClick)
     {
-        var button = ui.Button(string.Empty, (_, _) => onClick(), DashTheme.Surface);
+        var button = ui.Button(string.Empty, (_, _) => onClick(), DashTheme.GlassCard);
         var glyph = button.Slot.AddSlot("Icon");
         var rect = glyph.AttachComponent<RectTransform>();
         rect.AnchorMin.Value = new float2(0.5f, 0.5f);
         rect.AnchorMax.Value = new float2(0.5f, 0.5f);
-        rect.OffsetMin.Value = new float2(-11f, -11f);
-        rect.OffsetMax.Value = new float2(11f, 11f);
+        rect.OffsetMin.Value = new float2(-size * 0.5f, -size * 0.5f);
+        rect.OffsetMax.Value = new float2(size * 0.5f, size * 0.5f);
         var picture = glyph.AttachComponent<Lumora.Core.Assets.ImageProvider>();
         picture.GenerateMipmaps.Value = false;
         picture.URL.Value = new Uri("res://Assets/Textures/Icons/" + icon + ".svg");
@@ -199,7 +229,7 @@ public sealed class VoiceWidgetPreset : HomeWidgetPreset
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
-        if (IsDestroyed)
+        if (IsDestroyed || !ShowMeter)
             return;
         _meterTimer += delta;
         if (_meterTimer < MeterInterval)
@@ -296,9 +326,9 @@ public sealed class VoiceWidgetPreset : HomeWidgetPreset
 
     private static void Paint(Button button, bool on, bool allowed, in color lit)
     {
-        color normal = !allowed ? DashTheme.Field : on ? lit : DashTheme.Surface;
-        color hover = !allowed ? DashTheme.Field : on ? Shade(lit, 0.08f) : DashTheme.SurfaceHover;
-        color pressed = !allowed ? DashTheme.Field : on ? Shade(lit, -0.07f) : DashTheme.SurfacePressed;
+        color normal = !allowed ? DashTheme.Field : on ? lit : DashTheme.GlassCard;
+        color hover = !allowed ? DashTheme.Field : on ? Shade(lit, 0.08f) : DashTheme.GlassCardHover;
+        color pressed = !allowed ? DashTheme.Field : on ? Shade(lit, -0.07f) : DashTheme.GlassCardPressed;
         foreach (var driver in button.ColorDrivers)
         {
             if (driver == null || driver.IsDestroyed)

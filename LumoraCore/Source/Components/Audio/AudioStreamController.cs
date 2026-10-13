@@ -303,6 +303,18 @@ public sealed class AudioStreamController : Component
 
         ui.Spacer();
 
+        ui.PushStyle().MinWidth(120f).PreferredWidth(120f).FlexibleWidth(0f);
+        var stop = ui.Button("Stop", OnStopPressed, DashTheme.Surface);
+        stop.Slot.Name.Value = "Stop";
+        // Stop removes the stream item for good.
+        stop.ActOnRelease.Value = true;
+        foreach (var driver in stop.ColorDrivers)
+        {
+            if (driver != null && !driver.IsDestroyed)
+                driver.HighlightColor.Value = DashTheme.Negative;
+        }
+        ui.PopStyle();
+
         ui.NestOut();
         ui.PopStyle();
     }
@@ -339,6 +351,16 @@ public sealed class AudioStreamController : Component
     [SyncMethod]
     public void OnPlayForMePressed(Button button, UIInteractionContext context)
         => _playForMe = !PlayForMe;
+
+    // Ends the stream by taking the item away; the capture closes once nothing listens to the device.
+    // Who may take somebody else's is the world's permissions to decide, same as any other item.
+    [SyncMethod]
+    public void OnStopPressed(Button button, UIInteractionContext context)
+    {
+        var slot = Slot;
+        if (slot != null && !slot.IsDestroyed && !slot.IsRootSlot)
+            slot.Destroy();
+    }
 
     // Null is the default answer rather than a stored one: whoever spawned this is already hearing the
     // device out of their own speakers, so playing it back to them is a feedback loop with a delay on

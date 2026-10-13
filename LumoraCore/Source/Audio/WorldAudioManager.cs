@@ -357,7 +357,9 @@ public sealed class WorldAudioManager : IDisposable
 
     private void UpdateListeners(AudioSpace space, float delta)
     {
-        var device = Engine.Current?.AudioSystem?.Simulator.PrimaryOutput;
+        var audio = Engine.Current?.AudioSystem;
+        var device = audio?.Simulator.PrimaryOutput;
+        var stream = audio?.Simulator.StreamOutput;
         bool sawEar = false;
 
         for (int i = _listeners.Count - 1; i >= 0; i--)
@@ -408,11 +410,24 @@ public sealed class WorldAudioManager : IDisposable
 
             // Only the local user's ear is the one at the machine, so it is the only one the device
             // renders. Everything else mixes for its own sake and stays unbound.
-            bool bind = listener.IsLocalUserOutput;
+            bool streaming = listener.Streaming.Value;
+            bool bind = listener.IsLocalUserOutput && !streaming;
             if (bind != listener.BoundToDevice)
             {
                 voice.BindToDevice(bind ? device : null);
                 listener.BoundToDevice = bind;
+            }
+
+            // The stream hears an ear that asks for it, else what this machine's own ears hear.
+            if (streaming)
+                audio?.StreamingEars.Add(listener);
+            else
+                audio?.StreamingEars.Remove(listener);
+            bool toStream = streaming || (bind && audio != null && audio.StreamingEars.Count == 0);
+            if (toStream != listener.BoundToStream)
+            {
+                voice.BindToStream(toStream ? stream : null);
+                listener.BoundToStream = toStream;
             }
 
             if (bind)
@@ -841,9 +856,12 @@ public sealed class WorldAudioManager : IDisposable
             listener.PushedEffects[i].Reset();
         listener.PushedEffects.Clear();
         listener.ZoneVoices.Clear();
+        listener.BoundToStream = false;
+        Engine.Current?.AudioSystem?.StreamingEars.Remove(listener);
         if (voice == null || _space == null)
             return;
         voice.BindToDevice(null);
+        voice.BindToStream(null);
         _space.RemoveListener(voice);
     }
 

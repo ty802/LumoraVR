@@ -91,6 +91,7 @@ public static class MimeTypes
             "gif" => "image/gif",
             "webp" => "image/webp",
             "bmp" => "image/bmp",
+            "tif" or "tiff" => "image/tiff",
             "svg" => "image/svg+xml",
             "ico" => "image/x-icon",
             "mp3" => "audio/mpeg",
@@ -119,34 +120,6 @@ public static class MimeTypes
             "woff" => "font/woff",
             "woff2" => "font/woff2",
             _ => "application/octet-stream"
-        };
-    }
-
-    public static string ToExtension(string mimeType)
-    {
-        return mimeType.ToLowerInvariant() switch
-        {
-            "image/png" => ".png",
-            "image/jpeg" => ".jpg",
-            "image/gif" => ".gif",
-            "image/webp" => ".webp",
-            "image/bmp" => ".bmp",
-            "image/svg+xml" => ".svg",
-            "audio/mpeg" => ".mp3",
-            "audio/wav" => ".wav",
-            "audio/ogg" => ".ogg",
-            "audio/flac" => ".flac",
-            "video/mp4" => ".mp4",
-            "video/webm" => ".webm",
-            "model/gltf-binary" => ".glb",
-            "model/gltf+json" => ".gltf",
-            "application/json" => ".json",
-            "text/plain" => ".txt",
-            "font/ttf" => ".ttf",
-            "font/otf" => ".otf",
-            "font/woff" => ".woff",
-            "font/woff2" => ".woff2",
-            _ => ".bin"
         };
     }
 }

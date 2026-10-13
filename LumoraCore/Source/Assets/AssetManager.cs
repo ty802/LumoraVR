@@ -112,6 +112,8 @@ public class AssetManager : IDisposable
     // queue lands.
     public void Update(float deltaTime)
     {
+        TexturePixelCache.Tick();
+
         lock (_managerLock)
         {
             if (_managersToRemove.Count == 0)

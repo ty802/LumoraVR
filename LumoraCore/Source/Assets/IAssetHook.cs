@@ -108,7 +108,15 @@ public interface IRenderTextureAssetHook : ITextureAssetHook
     // scene from a slot that can move, so it redraws continuously. The two cannot share one set of
     // fields, so the camera's parameters ride separately and take priority while they are set. -xlinka
     void SetCameraOverride(RenderCameraParameters? parameters);
+
+    // The next frame it films, read back and written as an image: a photo. Null when there was nothing to read.
+    System.Threading.Tasks.Task<byte[]?> CaptureAsync(ImageEncoding encoding, float quality);
+
+    // The same frame as raw pixels, four bytes each, row 0 at the top.
+    System.Threading.Tasks.Task<PixelFrame?> CaptureRawAsync();
 }
+
+public sealed record PixelFrame(int Width, int Height, byte[] Rgba);
 
 // Everything a Camera needs the renderer to know, in engine terms. Position and rotation are GLOBAL:
 // the viewport that renders this does not sit under the camera's slot, so there is no parent transform
@@ -133,6 +141,8 @@ public readonly struct RenderCameraParameters
     public bool OcclusionCulling { get; init; }
     public bool Msaa { get; init; }
     public bool PostProcessing { get; init; }
+
+    public bool WearerView { get; init; }
 }
 
 public interface IMeshAssetHook : IAssetHook
@@ -182,12 +192,20 @@ public interface IMaterialAssetHook : IAssetHook
 
     void SetCustomShaderSource(string shaderSource);
 
+    // The chained pass's own source (an outline hull); empty drops the pass.
+    void SetNextPassShaderSource(string shaderSource);
+
+    void SetCubemap(string property, CubemapAsset cubemap);
+
     // Called before UpdateMaterial.
     void Clear();
 
     void ApplyChanges(Action callback);
 
     object GodotMaterial { get; }
+
+    // The copy identical materials share, for renderers that only draw with it.
+    object SharedGodotMaterial { get; }
 
     // -1 = default queue.
     int RenderQueue { get; }

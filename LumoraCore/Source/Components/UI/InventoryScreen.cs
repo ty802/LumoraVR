@@ -12,7 +12,8 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
-// What you have saved, on the cloud, as one folder tree you can shape.
+// What you have saved, as one folder tree you can shape: on the cloud, and on this machine until a new
+// save has gone up, which the status line follows.
 //
 // One root, and anything under it. The rail on the left shows the way down from the root to the
 // folder being looked at and takes you back up with a press; its bottom holds the kind filters and
@@ -25,15 +26,23 @@ namespace Lumora.Core.Components.UI;
 public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedScreen
 {
     private const float BarHeight = 40f;
+    private const float BarGap = DashTheme.Gap;
+    private const float ControlTextInset = 12f;
+    private const float HereMinWidth = 80f;
     private const float StatusHeight = 30f;
-    private const int Columns = 6;
-    private const int PageSize = 36;   // six full rows
+    // As many columns as cards of at least MinCardWidth fit, up to six: a narrow window gets fewer, wider
+    // cards instead of six slivers.
+    private const int MaxColumns = 6;
+    private const float MinCardWidth = 118f;
+    private const int PageSize = 36;   // six full rows at six across
     private const float CardSpacing = 10f;
     private const float ContentPad = 4f;
     private const int BufferRows = 1;
     private const float LaidOutFloor = 20f;
     private const float DoublePressSeconds = 0.45f;
     private const float ConfirmSeconds = 3f;
+    private const float SyncWidth = 280f;
+    private const int SyncChars = 46;
 
     private enum Sort { AToZ, ZToA, Newest, Oldest, ByType }
     private enum Show { All = 0, Worlds = 1, Items = 2, Avatars = 3 }
@@ -46,8 +55,16 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
     private ThumbnailCache _thumbnails = null!;
     private InventorySidebar _sidebar = null!;
     private Slot? _bar;
+    private RectTransform? _barNav;
+    private RectTransform? _barTools;
+    private float _barNavMin;
+    private float _barToolsMin;
+    private float _barToolsPref;
+    private int _barRows = 1;
     private Slot? _statusRow;
     private Text? _status;
+    private Text? _syncLine;
+    private long _listedRevision = -1;
     private RectTransform? _viewportRect;
     private RectTransform? _contentRect;
     private Slot? _contentSlot;
@@ -63,6 +80,9 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
     private readonly List<(RectTransform rect, string id, string name)> _dropRects = new();
     private int _boundFirstRow = -1;
     private float _lastCardW = -1f;
+    private int _columns = MaxColumns;
+
+    private int Columns => _columns;
 
     // The way down from the root: (folder id, name). The last one is the folder being looked at.
     private readonly List<(string id, string name)> _chain = new() { (Inventory.Root, "Inventory") };
@@ -156,9 +176,10 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         if (_pool.Count > 1 && _pool[1].Active)
         {
             var r = _pool[1].Rect.LocalComputeRect;
-            var canvas = _dashboard?.Slot.GetComponent<Canvas>();
+            var canvas = Slot.GetComponentInParents<Canvas>();
             var offset = canvas != null ? canvas.ScrollOffsetOf(_pool[1].Root) : float2.Zero;
-            _ghost.MoveTo(new float2(r.x + r.width * 0.5f + offset.x, r.y + r.height * 0.5f + offset.y));
+            var seen = new float2(r.x + r.width * 0.5f + offset.x, r.y + r.height * 0.5f + offset.y);
+            _ghost.MoveTo(canvas != null ? canvas.CanvasPointToLocal(_catcher.Slot, seen) : seen);
             if (_pool[1].Kind == InventoryEntryKind.Folder)
             {
                 _dropTarget = _pool[1].Id;
@@ -177,6 +198,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
 
     public override void OnDestroy()
     {
+        InventorySync.Changed -= OnSyncChanged;
         _thumbnails?.Clear();
         base.OnDestroy();
     }
@@ -204,13 +226,10 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         var thumbHost = Slot.AddSlot("Thumbnails");
         _thumbnails = new ThumbnailCache(this, thumbHost);
 
+        // Two strips that FitBar lays side by side or stacks: where you are, and what can be done here.
         _bar = root.AddSlot("Bar");
         _bar.AttachComponent<RectTransform>();
         BrowserParts.Height(_bar, BarHeight);
-        var barLayout = _bar.AttachComponent<HorizontalLayout>();
-        barLayout.Spacing.Value = 6f;
-        barLayout.ForceExpandWidth.Value = false;
-        barLayout.ForceExpandHeight.Value = true;
 
         Rule(root, DashTheme.Divider);
 
@@ -276,6 +295,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         _ghost = new InventoryGhost(_parts, ghostHost, ghostRect);
 
         BuildDialog(root);
+        InventorySync.Changed += OnSyncChanged;
         RebuildBar();
         Reload();
     }
@@ -297,6 +317,8 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         viewport.AttachComponent<Mask>();
         _scroll = viewport.AttachComponent<ScrollRect>();
         _scroll.ScrollSensitivity.Value = new float2(1f, 1f);
+        // Cards open, spawn and pick up for a move on a press; a drag down the grid starts on one.
+        _scroll.RowsActOnRelease.Value = true;
         _scroll.ScrollChanged += (_, _) => { _scrollbar?.Refresh(); RelayoutVirtual(force: false); };
 
         _contentSlot = viewport.AddSlot("Content");
@@ -349,39 +371,51 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
             return;
         bar.DestroyChildren();
         _dropRects.Clear();
+        var nav = BarStrip(bar, "Nav");
+        var tools = BarStrip(bar, "Tools");
+        _barNav = nav.GetComponent<RectTransform>();
+        _barTools = tools.GetComponent<RectTransform>();
+        FillBar(nav, tools);
+        _barNavMin = StripWidth(nav, preferred: false);
+        _barToolsMin = StripWidth(tools, preferred: false);
+        _barToolsPref = StripWidth(tools, preferred: true);
+        FitBar();
+        RebuildStatusRow();
+        MarkDirty();
+    }
 
+    private void FillBar(Slot nav, Slot tools)
+    {
         bool signedIn = _source.SignedIn;
         bool carrying = _carried.HasValue;
         bool canUp = _chain.Count > 1;
-        var up = AddInlineButton(bar, "Up", canUp ? TabFill : ControlFill, 56f, GoUp);
+        var up = AddBarButton(nav, "Up", canUp ? TabFill : ControlFill, 56f, GoUp);
         if (canUp)
             _dropRects.Add((up.GetComponent<RectTransform>()!, _chain[_chain.Count - 2].id, _chain[_chain.Count - 2].name));
 
-        var here = bar.AddSlot("Here");
+        var here = nav.AddSlot("Here");
         here.AttachComponent<RectTransform>();
-        here.AttachComponent<LayoutElement>().FlexibleWidth.Value = 1f;
+        var hereElement = here.AttachComponent<LayoutElement>();
+        hereElement.MinWidth.Value = HereMinWidth;
+        hereElement.FlexibleWidth.Value = 1f;
         var hereText = _parts.Label(here, BrowserParts.Truncate(FolderName, 40), DashTheme.FontBody, DashTheme.TextDim, BrowserParts.Weight.Semibold);
         hereText.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
 
         if (!signedIn)
-        {
-            MarkDirty();
-            RebuildStatusRow();
             return;
-        }
 
         if (carrying)
         {
             var carried = _carried!.Value;
-            var hint = bar.AddSlot("Hint");
+            var hint = tools.AddSlot("Hint");
             hint.AttachComponent<RectTransform>();
-            BrowserParts.Size(hint, 400f, DashTheme.ControlHeight);
+            var hintElement = BrowserParts.Size(hint, 400f, BarHeight);
+            hintElement.MinWidth.Value = 120f;
+            hintElement.FlexibleWidth.Value = 1f;
             var hintText = _parts.Label(hint, $"Moving \"{BrowserParts.Truncate(carried.Name, 22)}\": press a folder, a step in the rail, or Up",
                 DashTheme.FontSmall, DashTheme.TextDim, BrowserParts.Weight.Regular);
             hintText.HorizontalAlignment.Value = TextHorizontalAlignment.Right;
-            AddInlineButton(bar, "Cancel", TabFill, 84f, CancelCarry);
-            RebuildStatusRow();
-            MarkDirty();
+            AddBarButton(tools, "Cancel", TabFill, 84f, CancelCarry);
             return;
         }
 
@@ -391,36 +425,131 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         if (selected.HasValue)
         {
             var entry = selected.Value;
-            AddInlineButton(bar, "Rename", TabFill, 80f, () => OpenDialog(DialogKind.Rename));
-            AddInlineButton(bar, _confirmDeleteLeft > 0f ? "Confirm" : "Delete",
+            AddBarButton(tools, "Rename", TabFill, 80f, () => OpenDialog(DialogKind.Rename));
+            AddBarButton(tools, _confirmDeleteLeft > 0f ? "Confirm" : "Delete",
                 _confirmDeleteLeft > 0f ? DashTheme.Negative : TabFill, 76f, DeleteSelected);
             switch (entry.Kind)
             {
                 case InventoryEntryKind.Folder:
-                    AddInlineButton(bar, "Open", AccentColor, 76f, () => NavigateInto(entry));
+                    AddBarButton(tools, "Open", AccentColor, 76f, () => NavigateInto(entry));
                     break;
                 case InventoryEntryKind.Item:
                     if (entry.IsAvatar)
-                        AddInlineButton(bar, "Equip", TabFill, 70f, () => EquipItem(entry));
-                    AddInlineButton(bar, "Spawn", AccentColor, 76f, () => SpawnItem(entry));
+                        AddBarButton(tools, "Equip", TabFill, 70f, () => EquipItem(entry));
+                    AddBarButton(tools, "Spawn", AccentColor, 76f, () => SpawnItem(entry));
                     break;
                 case InventoryEntryKind.World:
-                    AddInlineButton(bar, "Orb", TabFill, 60f, () => SpawnWorldOrb(entry));
-                    AddInlineButton(bar, "Open", AccentColor, 76f, () => OpenWorld(entry));
+                    AddBarButton(tools, "Orb", TabFill, 60f, () => SpawnWorldOrb(entry));
+                    AddBarButton(tools, "Open", AccentColor, 76f, () => OpenWorld(entry));
                     break;
             }
         }
         else if (_search.Length == 0)
         {
-            AddInlineButton(bar, "Save held", TabFill, 96f, SaveHeld);
-            AddInlineButton(bar, "Save avatar", TabFill, 108f, SaveAvatar);
+            AddBarButton(tools, "Save held", TabFill, 96f, SaveHeld);
+            AddBarButton(tools, "Save avatar", TabFill, 108f, SaveAvatar);
         }
 
-        BuildSearchWell(bar);
-        AddInlineButton(bar, SortLabel(_sort), TabFill, 80f, CycleSort);
-        AddInlineButton(bar, _pickForMove ? "Pick" : "Move", _pickForMove ? AccentColor : TabFill, 66f, StartMove);
-        RebuildStatusRow();
-        MarkDirty();
+        BuildSearchWell(tools);
+        AddBarButton(tools, SortLabel(_sort), TabFill, 80f, CycleSort);
+        AddBarButton(tools, _pickForMove ? "Pick" : "Move", _pickForMove ? AccentColor : TabFill, 66f, StartMove);
+    }
+
+    private Slot AddBarButton(Slot row, string label, color fill, float width, Action onClick)
+    {
+        var cell = AddInlineButton(row, label, fill, width, onClick);
+        var element = cell.GetComponent<LayoutElement>()!;
+        element.MinWidth.Value = width;
+        element.MinHeight.Value = BarHeight;
+        element.PreferredHeight.Value = BarHeight;
+        var textRect = cell.FindChild("Label", recursive: false)!.GetComponent<RectTransform>()!;
+        SettingsUI.SetOffsets(textRect, new float2(ControlTextInset, 0f), new float2(-ControlTextInset, 0f));
+        return cell;
+    }
+
+    private static Slot BarStrip(Slot bar, string name)
+    {
+        var strip = bar.AddSlot(name);
+        strip.AttachComponent<RectTransform>();
+        if (name == "Tools")
+        {
+            var flow = strip.AttachComponent<WrapLayout>();
+            flow.Spacing.Value = BarGap;
+            flow.LineSpacing.Value = BarGap;
+            return strip;
+        }
+        var layout = strip.AttachComponent<HorizontalLayout>();
+        layout.Spacing.Value = BarGap;
+        layout.ForceExpandWidth.Value = false;
+        layout.ForceExpandHeight.Value = true;
+        return strip;
+    }
+
+    private static float StripWidth(Slot strip, bool preferred)
+    {
+        float sum = 0f;
+        int count = 0;
+        foreach (var child in strip.Children)
+        {
+            var element = child.GetComponent<LayoutElement>();
+            if (element == null)
+                continue;
+            sum += preferred ? MathF.Max(element.MinWidth.Value, element.PreferredWidth.Value) : element.MinWidth.Value;
+            count++;
+        }
+        return count > 1 ? sum + BarGap * (count - 1) : sum;
+    }
+
+    // The selection adds rename/delete/equip/spawn controls. Let that strip wrap below the folder
+    // when necessary, instead of clipping actions beyond the edge of a narrow inventory window.
+    private void FitBar()
+    {
+        var bar = _bar;
+        if (bar == null || bar.IsDestroyed || _barNav == null || _barTools == null)
+            return;
+        float width = bar.GetComponent<RectTransform>()?.LocalComputeRect.width ?? 0f;
+        if (width <= 0f)
+            return;
+        bool hasTools = _barToolsMin > 0f;
+        bool inline = !hasTools || width >= _barNavMin + BarGap + _barToolsPref;
+        int toolRows = 1;
+        float used = 0f;
+        if (!inline)
+        {
+            foreach (var child in _barTools.Slot.Children)
+            {
+                if (!child.ActiveSelf.Value || child.GetComponent<LayoutElement>() is not { } element)
+                    continue;
+                float childWidth = MathF.Min(width, MathF.Max(element.MinWidth.Value, element.PreferredWidth.Value));
+                if (used > 0f && used + BarGap + childWidth > width)
+                {
+                    toolRows++;
+                    used = 0f;
+                }
+                used += (used > 0f ? BarGap : 0f) + childWidth;
+            }
+        }
+        int rows = inline ? 1 : toolRows + 1;
+        if (rows != _barRows)
+        {
+            _barRows = rows;
+            BrowserParts.Height(bar, BarHeight * rows + BarGap * (rows - 1));
+        }
+        if (rows == 1)
+        {
+            float toolsWidth = hasTools ? MathF.Min(_barToolsPref, width - _barNavMin - BarGap) : 0f;
+            SettingsUI.SetAnchors(_barNav, float2.Zero, float2.One);
+            SettingsUI.SetOffsets(_barNav, float2.Zero, new float2(-(hasTools ? toolsWidth + BarGap : 0f), 0f));
+            SettingsUI.SetAnchors(_barTools, new float2(1f, 0f), float2.One);
+            SettingsUI.SetOffsets(_barTools, new float2(-toolsWidth, 0f), float2.Zero);
+        }
+        else
+        {
+            SettingsUI.SetAnchors(_barNav, new float2(0f, 1f), float2.One);
+            SettingsUI.SetOffsets(_barNav, new float2(0f, -BarHeight), float2.Zero);
+            SettingsUI.SetAnchors(_barTools, float2.Zero, new float2(1f, 0f));
+            SettingsUI.SetOffsets(_barTools, float2.Zero, new float2(0f, BarHeight * toolRows + BarGap * (toolRows - 1)));
+        }
     }
 
     private void BuildSearchWell(Slot bar)
@@ -428,19 +557,23 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         var cell = bar.AddSlot("SearchWell");
         cell.AttachComponent<RectTransform>();
         var element = cell.AttachComponent<LayoutElement>();
-        element.MinWidth.Value = 180f;
+        element.MinWidth.Value = 120f;
         element.PreferredWidth.Value = 180f;
+        element.FlexibleWidth.Value = 1f;
         element.FlexibleHeight.Value = 1f;
+        element.MinHeight.Value = BarHeight;
+        element.PreferredHeight.Value = BarHeight;
         ApplyRoundedPanel(cell, ControlFill, _focus == Field.Search ? AccentColor : RowBorder);
         var button = cell.AttachComponent<Button>();
         button.Clicked += (_, _) => { _focus = _focus == Field.Search ? Field.None : Field.Search; RebuildBar(); };
         bool empty = _search.Length == 0;
-        var text = AddFillLabel(cell, empty ? (_focus == Field.Search ? "Type to search" : "Search") : _search,
-            DashTheme.FontBody, empty ? TextDim : TextPrimary);
-        text.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        _parts.Label(cell, empty ? (_focus == Field.Search ? "Type to search" : "Search") : _search,
+            DashTheme.FontBody, empty ? TextDim : TextPrimary, BrowserParts.Weight.Regular,
+            TextHorizontalAlignment.Left, padLeft: ControlTextInset, padRight: ControlTextInset);
     }
 
-    // Left: the last message, or the selection's facts, or the listing. Right: the pages.
+    // Left: the last message, or the selection's facts, or the listing. Right: how far the saves made
+    // here have got going up, then the pages.
     private void RebuildStatusRow()
     {
         var row = _statusRow;
@@ -459,6 +592,17 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         _status = _parts.Label(textSlot, text, DashTheme.FontSmall, tint, BrowserParts.Weight.Regular);
         _status.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
 
+        _syncLine = null;
+        if (_source.SyncStatus.HasValue)
+        {
+            var syncSlot = row.AddSlot("Sync");
+            syncSlot.AttachComponent<RectTransform>();
+            BrowserParts.Size(syncSlot, SyncWidth, StatusHeight);
+            _syncLine = _parts.Label(syncSlot, string.Empty, DashTheme.FontSmall, DashTheme.TextDim, BrowserParts.Weight.Regular);
+            _syncLine.HorizontalAlignment.Value = TextHorizontalAlignment.Right;
+            ShowSyncState();
+        }
+
         int pages = PageCount();
         if (pages <= 1)
             return;
@@ -469,6 +613,25 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         _parts.Label(pageSlot, $"{_page + 1} / {pages}", DashTheme.FontSmall, DashTheme.TextDim, BrowserParts.Weight.Regular);
         AddInlineButton(row, "›", _page < pages - 1 ? TabFill : ControlFill, 40f, NextPage);
     }
+
+    private void ShowSyncState()
+    {
+        if (_syncLine == null || _syncLine.IsDestroyed)
+            return;
+        var state = _source.SyncStatus;
+        BrowserParts.SetText(_syncLine, state.HasValue ? BrowserParts.Truncate(InventorySync.Describe(state.Value), SyncChars) : string.Empty);
+        BrowserParts.SetColor(_syncLine.Color, state is { IsProblem: true } ? DashTheme.Warning : DashTheme.TextDim);
+    }
+
+    // News from the sync comes off its own thread. The line is redrawn here, and the folder read again
+    // when a save came, went or moved, or the account changed, while the screen is up to show it.
+    private void OnSyncChanged() => OnUi(() =>
+    {
+        if (InventorySync.Revision != _listedRevision && Slot.ActiveSelf.Value)
+            Reload();
+        else
+            ShowSyncState();
+    });
 
     private void SetStatus(string text, in color tint)
     {
@@ -492,7 +655,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
     private string DescribeListing()
     {
         if (!_source.SignedIn)
-            return "Sign in from the Home screen to use your inventory.";
+            return "Sign in with the profile widget on the workspace to use your inventory.";
         int folders = 0, worlds = 0, items = 0;
         foreach (var e in _entries)
         {
@@ -612,6 +775,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         if (_contentSlot == null)
             return;
         int serial = ++_loadSerial;
+        _listedRevision = InventorySync.Revision;
         if (!_source.SignedIn)
         {
             _entries.Clear();
@@ -666,9 +830,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
 
         if (_page > PageCount() - 1) _page = PageCount() - 1;
         if (_page < 0) _page = 0;
-        int rows = (PageLength + Columns - 1) / Columns;
-        if (rows < 1) rows = 1;
-        SetContentHeight(rows * InventoryCard.Height + (rows - 1) * CardSpacing + ContentPad * 2f);
+        FitContentHeight();
 
         if (_scroll != null)
             _scroll.AbsolutePosition = float2.Zero;
@@ -749,6 +911,13 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
 
     // THE GRID
 
+    private void FitContentHeight()
+    {
+        int rows = (PageLength + Columns - 1) / Columns;
+        if (rows < 1) rows = 1;
+        SetContentHeight(rows * InventoryCard.Height + (rows - 1) * CardSpacing + ContentPad * 2f);
+    }
+
     private void SetContentHeight(float height)
     {
         if (_contentRect != null)
@@ -758,6 +927,8 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+        FitBar();
+        _sidebar?.FitTree();
         RelayoutVirtual(force: false);
         if (_confirmDeleteLeft > 0f)
         {
@@ -791,6 +962,14 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         float contentW = _contentRect.LocalComputeRect.width;
         if (viewportH <= LaidOutFloor || contentW <= 0f)
             return;
+
+        int columns = System.Math.Clamp((int)MathF.Floor((contentW - 2f * ContentPad + CardSpacing) / (MinCardWidth + CardSpacing)), 1, MaxColumns);
+        if (columns != _columns)
+        {
+            _columns = columns;
+            FitContentHeight();
+            force = true;
+        }
 
         float rowStride = InventoryCard.Height + CardSpacing;
         int visibleRows = (int)MathF.Ceiling(viewportH / rowStride) + BufferRows;
@@ -978,7 +1157,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
             _ => entry.IsAvatar ? "Avatar" : "Item",
         });
         if (context.HasValue)
-            _ghost.MoveTo(context.Value.LocalPoint);
+            _ghost.MoveTo(context.Value.PointIn(_catcher.Slot));
         SetStatus("Escape puts it back.", DashTheme.TextDim);
         RepaintCards();
         RebuildBar();
@@ -1002,7 +1181,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
     {
         if (!_carried.HasValue || _ghost == null)
             return;
-        _ghost.MoveTo(context.LocalPoint);
+        _ghost.MoveTo(context.PointIn(_catcher?.Slot));
         string? target = FolderCardAt(context.LocalPoint)?.Id;
         if (!string.Equals(target, _dropTarget, StringComparison.Ordinal))
         {
@@ -1029,7 +1208,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         {
             foreach (var (rect, id, name) in _dropRects)
             {
-                if (rect != null && !rect.IsDestroyed && rect.LocalComputeRect.Contains(context.LocalPoint))
+                if (rect != null && !rect.IsDestroyed && rect.LocalComputeRect.Contains(context.PointIn(rect.Slot)))
                 {
                     targetId = id;
                     targetName = name;
@@ -1040,7 +1219,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
             {
                 foreach (var (rect, id) in _sidebar.TreeRects)
                 {
-                    if (rect != null && !rect.IsDestroyed && rect.LocalComputeRect.Contains(context.LocalPoint))
+                    if (rect != null && !rect.IsDestroyed && rect.Slot.IsActive && rect.LocalComputeRect.Contains(context.PointIn(rect.Slot)))
                     {
                         targetId = id;
                         for (int i = 0; i < _chain.Count; i++)
@@ -1067,8 +1246,8 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
 
     private InventoryCard? FolderCardAt(in float2 point)
     {
-        var canvas = _dashboard?.Slot.GetComponent<Canvas>();
-        if (canvas == null || _viewportRect == null || !_viewportRect.LocalComputeRect.Contains(point))
+        var canvas = Slot.GetComponentInParents<Canvas>();
+        if (canvas == null || _viewportRect == null || !_viewportRect.LocalComputeRect.Contains(canvas.CanvasPointToLocal(_viewportRect.Slot, point)))
             return null;
         for (int i = 0; i < _pool.Count; i++)
         {
@@ -1191,7 +1370,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         }
         spawned.GlobalPosition = SpawnPosition(world);
         InspectorUndo.Record(world, SlotExistenceUndoBatch.Created(world, new[] { spawned }, UndoLocale.SpawnItem));
-        SetStatus(manager.EquipAvatar(spawned) ? $"Wearing \"{entry.Name}\"." : $"\"{entry.Name}\" is in front of you, but it would not equip.",
+        SetStatus(manager.EquipAvatar(spawned, replaceCurrent: true) ? $"Wearing \"{entry.Name}\"." : $"\"{entry.Name}\" is in front of you, but it would not equip.",
             DashTheme.TextDim);
     });
 
@@ -1297,7 +1476,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
             return;
         }
         _busy = true;
-        SetStatus(uploads.Count == 1 ? "Uploading 1 item…" : $"Uploading {uploads.Count} items…", DashTheme.TextDim);
+        SetStatus(uploads.Count == 1 ? "Saving 1 item…" : $"Saving {uploads.Count} items…", DashTheme.TextDim);
         int refusedCount = refused;
         string? refusalText = lastRefusal;
         Await(Task.WhenAll(uploads), results =>
@@ -1340,7 +1519,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
             return;
         }
         _busy = true;
-        SetStatus("Uploading your avatar…", DashTheme.TextDim);
+        SetStatus("Saving your avatar…", DashTheme.TextDim);
         Await(_source.SaveItem(avatar, avatar.Name, FolderId), result =>
         {
             _busy = false;
@@ -1498,6 +1677,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
     // KEYS: the search well and the dialog's field share one route; whichever has focus takes them.
 
     public bool HasFieldFocus => _focus == Field.Search || (_focus == Field.Dialog && _dialog != DialogKind.None);
+    public string? CopyText => _focus == Field.Search ? _search : HasFieldFocus ? _dialogBuffer : null;
 
     public bool ConsumeChar(char c)
     {
@@ -1529,7 +1709,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         {
             if (_dialogBuffer.Length > 0)
             {
-                _dialogBuffer = _dialogBuffer.Substring(0, _dialogBuffer.Length - 1);
+                _dialogBuffer = Lumora.Core.Input.TextElements.RemoveLast(_dialogBuffer);
                 UpdateDialog();
             }
             return true;
@@ -1538,7 +1718,7 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
         {
             if (_search.Length > 0)
             {
-                _search = _search.Substring(0, _search.Length - 1);
+                _search = Lumora.Core.Input.TextElements.RemoveLast(_search);
                 Reload();
             }
             return true;

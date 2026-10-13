@@ -72,11 +72,12 @@ public sealed class InventoryListing
     public string? Problem;
 }
 
-// The inventory lives on the assets service and nowhere else. Every save is uploaded as one blob by
-// hash and listed as an item in a folder there; fetching brings the blob back into the local asset
-// cache so it can be loaded the way a file would. Nothing here writes a save to the user's disk,
-// because storage is what supporters pay for. The one local thing left is the file browser, and that
-// imports rather than saves. -xlinka
+// The inventory is the account's, kept on the assets service, but a save is made on this machine first:
+// it is stored in the local database and listed at once, and InventorySync takes it up in the background,
+// one blob per file by hash and an item in a folder. So a save never waits on the network, only on a
+// signed in account, whose saves are all the queue ever sends. Listings are the service's with this
+// account's saves that are not up yet laid over them, and fetching serves one of those from this machine
+// and anything else from the service, into the local asset cache to load the way a file would. -xlinka
 public static class Inventory
 {
     public const string Root = LumoraClient.InventoryRoot;
@@ -85,7 +86,6 @@ public static class Inventory
     public const string WorldKind = "World";
     private const string ItemExtension = ".litem";
     private const string WorldExtension = ".lworld";
-    private const string BlobMime = "application/octet-stream";
     private const int ThumbnailWidth = 256;
     private const int ThumbnailHeight = 144;
 
@@ -93,69 +93,72 @@ public static class Inventory
     private static readonly ConcurrentDictionary<string, string> Cached = new(StringComparer.OrdinalIgnoreCase);
 
     public static LumoraClient? Client => Engine.Current?.CDNClient;
-    public static bool IsSignedIn => Client?.IsAuthenticated == true;
+    public static bool IsSignedIn => InventorySync.SignedIn;
 
-    private static InventoryResult NotSignedIn() => InventoryResult.Failure("Sign in from the Home screen to use your inventory.");
+    internal static InventoryResult NotSignedIn() => InventoryResult.Failure("Sign in with the profile widget on the workspace to use your inventory.");
 
     // LISTING
 
+    // The folder as the service lists it, with this account's saves that are not up yet in it as well. They
+    // show when the service cannot be reached too, beside the reason it could not.
     public static async Task<InventoryListing> ListAsync(string folderId)
     {
         var listing = new InventoryListing();
-        var client = Client;
-        if (client == null || !client.IsAuthenticated)
+        var service = InventorySync.Service;
+        if (service == null || !service.SignedIn)
         {
             listing.Problem = NotSignedIn().Message;
             return listing;
         }
-        var result = await client.GetFolderContents(folderId).ConfigureAwait(false);
+        var result = await service.ListAsync(folderId).ConfigureAwait(false);
         if (result.Failed || result.Data == null)
-        {
             listing.Problem = result.Message ?? "The inventory service did not answer.";
-            return listing;
-        }
-        Fill(listing, result.Data, folderId);
+        else
+            Fill(listing, result.Data);
+        InventorySync.MergeInto(listing, folderId);
         return listing;
     }
 
     public static async Task<InventoryListing> SearchAsync(string query)
     {
         var listing = new InventoryListing();
-        var client = Client;
-        if (client == null || !client.IsAuthenticated)
+        var service = InventorySync.Service;
+        if (service == null || !service.SignedIn)
         {
             listing.Problem = NotSignedIn().Message;
             return listing;
         }
-        var result = await client.SearchInventory(query).ConfigureAwait(false);
+        var result = await service.SearchAsync(query).ConfigureAwait(false);
         if (result.Failed || result.Data == null)
-        {
             listing.Problem = result.Message ?? "The inventory service did not answer.";
-            return listing;
-        }
-        Fill(listing, result.Data, Root);
+        else
+            Fill(listing, result.Data);
+        InventorySync.MergeSearch(listing, query);
         return listing;
     }
 
-    private static void Fill(InventoryListing listing, FolderContents contents, string folderId)
+    // Each row under the folder the service says it is in, so a search hit knows where it lives; null is the
+    // top. An item shows its whole size, not just its saved file's. -xlinka
+    private static void Fill(InventoryListing listing, FolderContents contents)
     {
         foreach (var folder in contents.Folders)
         {
             listing.Entries.Add(new InventoryEntry(folder.Id, folder.Name, InventoryEntryKind.Folder, folder.CreatedAt,
-                0, folder.ItemCount + folder.FolderCount, string.Empty, string.Empty, null, folderId, folder.Path));
+                0, folder.ItemCount + folder.FolderCount, string.Empty, string.Empty, null, folder.ParentId ?? Root, folder.Path));
         }
         foreach (var item in contents.Items)
         {
-            bool world = string.Equals(item.Kind, WorldKind, StringComparison.OrdinalIgnoreCase) || item.Type == AssetType.World;
-            string itemKind = world ? (item.Mode ?? string.Empty)
-                : string.IsNullOrEmpty(item.Kind) ? (item.Type == AssetType.Avatar ? AvatarKind : ObjectKind) : item.Kind;
-            listing.Entries.Add(new InventoryEntry(item.AssetId, item.Name, world ? InventoryEntryKind.World : InventoryEntryKind.Item,
-                item.AddedAt, item.SizeBytes, 0, itemKind, item.Hash, item.ThumbnailHash, folderId, item.Path));
+            bool world = string.Equals(item.Kind, WorldKind, StringComparison.OrdinalIgnoreCase);
+            string itemKind = world ? (item.WorldMode ?? string.Empty) : item.Kind;
+            long size = item.TotalBytes > 0 ? item.TotalBytes : item.FileBytes;
+            listing.Entries.Add(new InventoryEntry(item.Id, item.Name, world ? InventoryEntryKind.World : InventoryEntryKind.Item,
+                item.UpdatedAt, size, 0, itemKind, item.FileHash, item.ThumbnailHash, item.FolderId ?? Root, item.Path));
         }
     }
 
     // FOLDERS AND MOVES
 
+    // Under an id made here, so a request answered too late to be seen cannot make the folder twice.
     public static async Task<InventoryResult> CreateFolderAsync(string parentId, string name)
     {
         if (!ValidName(name, out var error))
@@ -163,16 +166,21 @@ public static class Inventory
         var client = Client;
         if (client == null || !client.IsAuthenticated)
             return NotSignedIn();
-        var result = await client.CreateFolder(name.Trim(), parentId == Root ? null : parentId).ConfigureAwait(false);
+        var result = await client.UpsertFolder(Guid.NewGuid().ToString(), name.Trim(), parentId).ConfigureAwait(false);
         return result.Success
             ? InventoryResult.Success($"Folder \"{name.Trim()}\" is here.")
             : InventoryResult.Failure(result.Message ?? "Couldn't make that folder.");
     }
 
+    // A save that has not gone up yet is changed here, everything else on the service.
     public static async Task<InventoryResult> RenameAsync(InventoryEntry entry, string name)
     {
         if (!ValidName(name, out var error))
             return InventoryResult.Failure(error!);
+        if (!IsSignedIn)
+            return NotSignedIn();
+        if (!entry.IsFolder && await InventorySync.RenameAsync(entry.Id, name.Trim()).ConfigureAwait(false) is { } renamed)
+            return renamed;
         var client = Client;
         if (client == null || !client.IsAuthenticated)
             return NotSignedIn();
@@ -186,16 +194,20 @@ public static class Inventory
 
     public static async Task<InventoryResult> MoveAsync(InventoryEntry entry, string targetFolderId, string targetName)
     {
-        var client = Client;
-        if (client == null || !client.IsAuthenticated)
+        if (!IsSignedIn)
             return NotSignedIn();
         if (string.Equals(entry.FolderId, targetFolderId, StringComparison.Ordinal))
             return InventoryResult.Success("It is already there.");
         if (entry.IsFolder && string.Equals(entry.Id, targetFolderId, StringComparison.Ordinal))
             return InventoryResult.Failure("A folder cannot go inside itself.");
+        if (!entry.IsFolder && await InventorySync.MoveAsync(entry.Id, targetFolderId, targetName).ConfigureAwait(false) is { } moved)
+            return moved;
+        var client = Client;
+        if (client == null || !client.IsAuthenticated)
+            return NotSignedIn();
         var result = entry.IsFolder
             ? await client.MoveFolder(entry.Id, targetFolderId).ConfigureAwait(false)
-            : await client.MoveItemToFolder(entry.Id, entry.FolderId, targetFolderId).ConfigureAwait(false);
+            : await client.MoveItemToFolder(entry.Id, targetFolderId).ConfigureAwait(false);
         return result.Success
             ? InventoryResult.Success($"Moved \"{entry.Name}\" to {targetName}.")
             : InventoryResult.Failure(result.Message ?? "Couldn't move that.");
@@ -203,22 +215,34 @@ public static class Inventory
 
     public static async Task<InventoryResult> DeleteAsync(InventoryEntry entry)
     {
+        if (!IsSignedIn)
+            return NotSignedIn();
+        if (!entry.IsFolder && await InventorySync.DeleteAsync(entry.Id).ConfigureAwait(false) is { } deleted)
+            return deleted;
         var client = Client;
         if (client == null || !client.IsAuthenticated)
             return NotSignedIn();
         var result = entry.IsFolder
             ? await client.DeleteFolder(entry.Id).ConfigureAwait(false)
             : await client.DeleteInventoryItem(entry.Id).ConfigureAwait(false);
-        return result.Success
-            ? InventoryResult.Success($"Deleted \"{entry.Name}\".")
-            : InventoryResult.Failure(result.Message ?? "Couldn't delete that.");
+        if (result.Failed)
+            return InventoryResult.Failure(result.Message ?? "Couldn't delete that.");
+        if (entry.IsFolder)
+            await InventorySync.DropFolderAsync(entry.Id).ConfigureAwait(false);
+        InventorySync.SpaceFreed();
+        return InventoryResult.Success($"Deleted \"{entry.Name}\".");
     }
 
     // SAVING
 
-    // Serialises on the calling (world) thread, then uploads off it. The permission question is asked
-    // here as well as in the UI, so a route added later cannot skip it. -xlinka
+    // Serialises on the calling (world) thread, then keeps the save on this machine off it, and the sync
+    // takes it up from there. The permission question is asked here as well as in the UI, so a route added
+    // later cannot skip it. -xlinka
     public static Task<InventoryResult> SaveItemAsync(Slot slot, string? name, string? folderId)
+        => SaveItemAsync(slot, name, folderId, null);
+
+    // With the picture its card shows: a photo shows itself.
+    public static Task<InventoryResult> SaveItemAsync(Slot slot, string? name, string? folderId, byte[]? picture)
     {
         if (slot == null || slot.IsDestroyed || slot.World == null)
             return Task.FromResult(InventoryResult.Failure("There is nothing to save."));
@@ -240,10 +264,28 @@ public static class Inventory
         {
             return Task.FromResult(InventoryResult.Failure($"Couldn't pack \"{label}\": {ex.Message}"));
         }
-        return UploadSaveAsync(tree, ItemExtension, label, kind, folderId, null, null);
+        return InventorySync.SaveAsync(tree, ItemExtension, label, kind, folderId, picture, null);
     }
 
-    // The world as it is now, with a fresh picture of it. Both go up as blobs; the item links them.
+    // The folder of that name at the top, made the first time it is asked for; null when that cannot be done.
+    public static async Task<string?> TopFolderAsync(string name)
+    {
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            var listing = await ListAsync(Root).ConfigureAwait(false);
+            foreach (var entry in listing.Entries)
+            {
+                if (entry.IsFolder && string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase))
+                    return entry.Id;
+            }
+            if (attempt == 0 && !(await CreateFolderAsync(Root, name).ConfigureAwait(false)).Ok)
+                return null;
+        }
+        return null;
+    }
+
+    // The world as it is now, with a fresh picture of it. Both are kept here and go up as blobs; the item
+    // links them.
     public static Task<InventoryResult> SaveWorldAsync(World world, string? name, string? folderId)
     {
         if (world == null || world.IsDestroyed)
@@ -271,67 +313,7 @@ public static class Inventory
                 picture = jpeg;
         }
         catch { }
-        return UploadSaveAsync(tree, WorldExtension, label, WorldKind, folderId, picture, world.Mode.ToString());
-    }
-
-    // The tree was built on the world thread; from here on it is a detached snapshot. Every local
-    // asset it names goes up by its own hash first (the store skips ones it already has), the URLs
-    // are rewritten to cloud ones, and only then does the graph itself go up. -xlinka
-    private static async Task<InventoryResult> UploadSaveAsync(Persistence.DataTreeDictionary tree, string extension, string name, string kind,
-        string? folderId, byte[]? picture, string? mode)
-    {
-        var client = Client;
-        if (client == null)
-            return NotSignedIn();
-
-        var problems = new List<string>();
-        var manifest = await Persistence.CloudAssetPacker.PackAsync(tree, client, Engine.Current?.LocalDB, problems).ConfigureAwait(false);
-        if (problems.Count > 0)
-            Logging.Logger.Warn($"Inventory: \"{name}\" packed with {problems.Count} asset problem(s): {string.Join("; ", problems)}");
-
-        byte[] bytes;
-        try
-        {
-            bytes = Persistence.DataTreeConverter.SaveToBytes(tree);
-        }
-        catch (Exception ex)
-        {
-            return InventoryResult.Failure($"Couldn't pack \"{name}\": {ex.Message}");
-        }
-
-        var stored = await client.StoreContent(bytes, BlobMime, extension).ConfigureAwait(false);
-        if (stored.Failed || stored.Data == null)
-            return InventoryResult.Failure(stored.Message ?? "The upload did not go through.");
-
-        string? thumbnail = null;
-        if (picture != null)
-        {
-            var shot = await client.StoreContent(picture, "image/jpeg", ".jpg").ConfigureAwait(false);
-            if (shot.Success && shot.Data != null)
-                thumbnail = shot.Data.Hash;
-        }
-
-        var entries = new List<AssetManifestEntry>(manifest.Count);
-        foreach (var m in manifest)
-            entries.Add(new AssetManifestEntry { Hash = m.Hash, Name = m.Name, Extension = m.Extension, Type = m.Type, SizeBytes = m.SizeBytes });
-
-        var added = await client.AddInventoryItem(stored.Data.Hash, name, kind, folderId, thumbnail, bytes.LongLength, mode, null, entries).ConfigureAwait(false);
-        if (added.Failed)
-            return InventoryResult.Failure(added.Message ?? "The upload went through but the item was refused.");
-
-        // What was just sent is what a spawn would fetch, so keep it on hand.
-        try
-        {
-            var db = Engine.Current?.LocalDB;
-            if (db != null)
-            {
-                var path = db.GetTempFilePath(extension);
-                await File.WriteAllBytesAsync(path, bytes).ConfigureAwait(false);
-                Cached[stored.Data.Hash] = path;
-            }
-        }
-        catch { }
-        return InventoryResult.Success($"Saved \"{name}\".");
+        return InventorySync.SaveAsync(tree, WorldExtension, label, WorldKind, folderId, picture, world.Mode.ToString());
     }
 
     // FETCHING
@@ -339,9 +321,18 @@ public static class Inventory
     // The blob for an entry, as a file in the local cache. The same hash is only fetched once per run.
     public static async Task<(string? path, string? problem)> FetchToCacheAsync(InventoryEntry entry)
     {
-        if (string.IsNullOrEmpty(entry.Hash))
+        // A save that has not gone up yet is on this machine already. One that has is the service's, under the
+        // hash it went up as, and its copy here is dropped once nothing else needs it.
+        var hash = entry.Hash;
+        if (InventorySync.Find(entry.Id) is { } row)
+        {
+            if (row.State != InventoryRowState.Synced || string.IsNullOrEmpty(row.CloudHash))
+                return await FetchLocalAsync(row).ConfigureAwait(false);
+            hash = row.CloudHash!;
+        }
+        if (string.IsNullOrEmpty(hash))
             return (null, "That item has no content.");
-        if (Cached.TryGetValue(entry.Hash, out var have) && File.Exists(have))
+        if (Cached.TryGetValue(hash, out var have) && File.Exists(have))
             return (have, null);
         var client = Client;
         var db = Engine.Current?.LocalDB;
@@ -349,7 +340,7 @@ public static class Inventory
             return (null, NotSignedIn().Message);
         if (db == null)
             return (null, "The local cache isn't up yet.");
-        var fetched = await client.FetchContent(entry.Hash).ConfigureAwait(false);
+        var fetched = await client.FetchContent(hash).ConfigureAwait(false);
         if (fetched.Failed || fetched.Data == null)
             return (null, fetched.Message ?? "The download did not go through.");
 
@@ -374,7 +365,7 @@ public static class Inventory
         {
             var path = db.GetTempFilePath(entry.Kind == InventoryEntryKind.World ? WorldExtension : ItemExtension);
             await File.WriteAllBytesAsync(path, fetched.Data).ConfigureAwait(false);
-            Cached[entry.Hash] = path;
+            Cached[hash] = path;
             return (path, null);
         }
         catch (Exception ex)
@@ -383,8 +374,38 @@ public static class Inventory
         }
     }
 
+    // The saved copy, read through the database so a copy kept encrypted comes out plain, into a file of
+    // its own: whatever opens it may write it back, and the database's file must stay as it was.
+    private static async Task<(string? path, string? problem)> FetchLocalAsync(InventoryRow row)
+    {
+        if (Cached.TryGetValue(row.LocalUri, out var have) && File.Exists(have))
+            return (have, null);
+        var db = Engine.Current?.LocalDB;
+        if (db == null)
+            return (null, "The local cache isn't up yet.");
+        var bytes = await db.ReadAssetBytesAsync(row.LocalUri).ConfigureAwait(false);
+        if (bytes == null)
+            return (null, $"The saved copy of \"{row.Name}\" is no longer on this machine.");
+        try
+        {
+            var path = db.GetTempFilePath(ExtensionFor(row.Kind));
+            await File.WriteAllBytesAsync(path, db.EncryptAssetsAtRest ? Persistence.LocalEncryption.Encrypt(bytes) : bytes).ConfigureAwait(false);
+            Cached[row.LocalUri] = path;
+            return (path, null);
+        }
+        catch (Exception ex)
+        {
+            return (null, $"Couldn't open the saved copy: {ex.Message}");
+        }
+    }
+
+    // The picture is read here while this machine keeps it; once the save is up the copy may be gone, and the
+    // service has it under the same hash.
     public static async Task<byte[]?> FetchThumbnailAsync(InventoryEntry entry)
     {
+        if (InventorySync.Find(entry.Id) is { ThumbnailUri: { } picture } && Engine.Current?.LocalDB is { } db
+            && await db.ReadAssetBytesAsync(picture).ConfigureAwait(false) is { } kept)
+            return kept;
         if (string.IsNullOrEmpty(entry.ThumbnailHash))
             return null;
         var client = Client;
@@ -402,6 +423,8 @@ public static class Inventory
             return null;
         try
         {
+            // What someone takes out of their inventory is theirs, on the host as on a guest.
+            using var own = world.EnterSpawnAllocation();
             var slot = world.RootSlot.AddSlot(string.IsNullOrWhiteSpace(name) ? "Item" : name);
             slot.LoadObjectFromFile(path);
             return slot;
@@ -414,6 +437,45 @@ public static class Inventory
     }
 
     // HELPERS
+
+    internal static string ExtensionFor(string kind) => string.Equals(kind, WorldKind, StringComparison.OrdinalIgnoreCase) ? WorldExtension : ItemExtension;
+
+    // What just went up is what a spawn of it would fetch, so it is kept on hand.
+    internal static void Keep(string hash, byte[] packed, bool world)
+    {
+        try
+        {
+            var db = Engine.Current?.LocalDB;
+            if (db == null)
+                return;
+            var path = db.GetTempFilePath(world ? WorldExtension : ItemExtension);
+            File.WriteAllBytes(path, packed);
+            Cached[hash] = path;
+        }
+        catch { }
+    }
+
+    // The refusal for a save whose files could not all go up, naming the first few of them.
+    public static string NotUploaded(string name, List<string> problems)
+    {
+        const int Named = 4;
+        var named = string.Join("; ", problems.GetRange(0, System.Math.Min(Named, problems.Count)));
+        var more = problems.Count > Named ? $"; and {problems.Count - Named} more" : string.Empty;
+        return problems.Count == 1
+            ? $"Couldn't save \"{name}\": {named}."
+            : $"Couldn't save \"{name}\", {problems.Count} files it uses did not go up: {named}{more}.";
+    }
+
+    // What a save that went up without the files this machine no longer has says about them.
+    public static string LeftOut(string name, List<string> dropped)
+    {
+        const int Named = 4;
+        var named = string.Join("; ", dropped.GetRange(0, System.Math.Min(Named, dropped.Count)));
+        var more = dropped.Count > Named ? $"; and {dropped.Count - Named} more" : string.Empty;
+        return dropped.Count == 1
+            ? $"Saved \"{name}\" without {named}, which is missing on this machine."
+            : $"Saved \"{name}\" without {dropped.Count} files missing on this machine: {named}{more}.";
+    }
 
     public static string ItemKindOf(Slot slot)
         => slot.GetComponentInChildren<global::Lumora.Core.Components.Avatar.AvatarForm>() != null ? AvatarKind : ObjectKind;

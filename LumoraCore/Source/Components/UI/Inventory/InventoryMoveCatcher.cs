@@ -25,7 +25,13 @@ public sealed class InventoryMoveCatcher : InteractionElement, IUIInteractionCap
 
     protected override void OnHoverEnter(in UIInteractionContext context) => Moved?.Invoke(context);
 
-    protected override void OnPress(in UIInteractionContext context) => Dropped?.Invoke(context);
+    // Only a press made on it drops. One handed over by the card that just went into carry mode under the
+    // pointer is the same press that picked the card up.
+    protected override void OnPress(in UIInteractionContext context)
+    {
+        if (!PressHandedOn)
+            Dropped?.Invoke(context);
+    }
 }
 
 // The transparent copy that follows the pointer while a thing is being moved: a small card with the

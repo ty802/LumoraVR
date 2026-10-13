@@ -7,6 +7,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Lumora.Core.Logging;
 using Lumora.Core.Persistence;
@@ -26,8 +27,17 @@ public class LocalDB : IDisposable
     private readonly string _basePath;
     private readonly string _machineId;
     private readonly Dictionary<string, LocalAssetRecord> _assetRecords = new();
+    // Rows by table and id, kept apart from the assets so a row can never resolve as a file.
+    private readonly Dictionary<string, LocalAssetRecord> _rows = new();
     private readonly object _lock = new();
+    private readonly SemaphoreSlim _recordsGate = new(1, 1);
+    private long _recordsChanged;
+    private long _recordsWritten;
+    private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _initialized;
+
+    // A received file resolved or written since this moment is in use this run, and is never let go.
+    private readonly DateTime _openedUtc = DateTime.UtcNow;
 
     // Encrypt asset cache bytes at rest (AES-GCM via LocalEncryption), the same store
     // that already protects records.json. Reads always go through ReadAssetBytesAsync,
@@ -44,6 +54,10 @@ public class LocalDB : IDisposable
     public string MachineId => _machineId;
 
     public string BasePath => _basePath;
+
+    // Done once the index has been read, so nothing acts on rows or records before they are there. The
+    // engine starts the read without waiting for it.
+    public Task Ready => _ready.Task;
 
     public LocalDB(string? dbPath = null)
     {
@@ -62,7 +76,12 @@ public class LocalDB : IDisposable
         await LoadAssetRecordsAsync();
 
         _initialized = true;
+        _ready.TrySetResult();
         Logger.Log($"LocalDB: Initialized at '{_basePath}' with machine ID '{_machineId}'");
+
+        // The engine seldom gets as far as Dispose, so temp files earlier runs left are swept here. Only stale
+        // ones: another instance on this folder may be writing its own right now.
+        _ = Task.Run(() => CleanupTempFiles(TimeSpan.FromHours(1)));
     }
 
     public async Task<string> ImportLocalAssetAsync(string filePath, ImportLocation location = ImportLocation.Copy)
@@ -76,13 +95,23 @@ public class LocalDB : IDisposable
         var hash = await ComputeFileHashAsync(filePath);
         var localUri = $"local://{_machineId}/{hash}";
 
+        // A record whose file is gone names nothing, so the import goes ahead and writes it again. One that
+        // came from elsewhere is this machine's own once it is imported here.
+        bool held = false, promoted = false;
         lock (_lock)
         {
-            if (_assetRecords.TryGetValue(hash, out var existing))
+            if (_assetRecords.TryGetValue(hash, out var existing) && File.Exists(existing.FilePath))
             {
-                Logger.Log($"LocalDB: Asset already imported: {localUri}");
-                return localUri;
+                held = true;
+                promoted = Promote(existing);
             }
+        }
+        if (held)
+        {
+            if (promoted)
+                await SaveAssetRecordsAsync();
+            Logger.Debug($"LocalDB: Asset already imported: {localUri}");
+            return localUri;
         }
 
         var extension = Path.GetExtension(filePath);
@@ -135,7 +164,7 @@ public class LocalDB : IDisposable
 
             await SaveAssetRecordsAsync();
 
-            Logger.Log($"LocalDB: Imported '{Path.GetFileName(filePath)}' -> {localUri}");
+            Logger.Debug($"LocalDB: Imported '{Path.GetFileName(filePath)}' -> {localUri}");
             return localUri;
         }
         catch (Exception ex)
@@ -146,7 +175,9 @@ public class LocalDB : IDisposable
     }
 
     // Used by the mesh-as-asset path (SaveMeshAsync) but format-agnostic.
-    public async Task<string> SaveAssetAsync(byte[] data, string extension = ".lmesh")
+    // Received marks bytes that came from elsewhere (a cloud blob) rather than made here; those can be let go
+    // to keep the cache in budget and fetched again.
+    public async Task<string> SaveAssetAsync(byte[] data, string extension = ".lmesh", bool received = false)
     {
         if (data == null)
         {
@@ -160,13 +191,21 @@ public class LocalDB : IDisposable
         var hash = ComputeBytesHash(data);
         var localUri = $"local://{_machineId}/{hash}";
 
+        bool held = false, promoted = false;
         lock (_lock)
         {
-            if (_assetRecords.TryGetValue(hash, out _))
+            if (_assetRecords.TryGetValue(hash, out var existing) && File.Exists(existing.FilePath))
             {
-                Logger.Debug($"LocalDB: Asset already saved: {localUri}");
-                return localUri;
+                held = true;
+                promoted = !received && Promote(existing);
             }
+        }
+        if (held)
+        {
+            if (promoted)
+                await SaveAssetRecordsAsync();
+            Logger.Debug($"LocalDB: Asset already saved: {localUri}");
+            return localUri;
         }
 
         var targetPath = Path.Combine(GetAssetCachePath(), hash + extension);
@@ -193,7 +232,8 @@ public class LocalDB : IDisposable
             OriginalFileName = hash + extension,
             ImportedAt = DateTime.UtcNow,
             FileSize = data.LongLength,
-            Encrypted = encrypted
+            Encrypted = encrypted,
+            Received = received
         };
 
         lock (_lock)
@@ -202,7 +242,7 @@ public class LocalDB : IDisposable
         }
 
         await SaveAssetRecordsAsync();
-        Logger.Log($"LocalDB: Saved {data.Length}-byte asset -> {localUri}");
+        Logger.Debug($"LocalDB: Saved {data.Length}-byte asset -> {localUri}");
         return localUri;
     }
 
@@ -220,7 +260,9 @@ public class LocalDB : IDisposable
         {
             data = PhosMeshSerializer.Serialize(mesh);
         }
-        catch (NotSupportedException ex)
+        // The body cap throws InvalidDataException, and only NotSupportedException was caught, so one
+        // oversized mesh still took the whole import down with it. -xlinka
+        catch (Exception ex) when (ex is NotSupportedException or InvalidDataException)
         {
             Logger.Warn($"LocalDB: mesh cannot be baked, falling back to the source model - {ex.Message}");
             return Task.FromResult<string>(null!);
@@ -228,6 +270,119 @@ public class LocalDB : IDisposable
 
         return SaveAssetAsync(data, ".lmesh");
     }
+
+    // Forgets one asset: the record goes in the same serialized index write as every other change, and the
+    // file after it, so a crash between the two leaves a stray file rather than a record naming nothing. A
+    // file outside the cache (an import kept where it was) is never this database's to delete. True once
+    // the index no longer holds the record, and when there was none.
+    public async Task<bool> DeleteAssetAsync(string localUri)
+    {
+        var key = ExtractKey(localUri);
+        if (string.IsNullOrEmpty(key))
+            return false;
+
+        LocalAssetRecord? record;
+        lock (_lock)
+        {
+            if (!_assetRecords.Remove(key!, out record))
+                return true;
+        }
+
+        if (!await SaveAssetRecordsAsync().ConfigureAwait(false))
+            return false;
+        if (!string.IsNullOrEmpty(record.FilePath) && record.FilePath.StartsWith(GetAssetCachePath(), StringComparison.OrdinalIgnoreCase))
+        {
+            try { File.Delete(record.FilePath); } catch { /* a stray file now, but nothing names it */ }
+        }
+        return true;
+    }
+
+    // RECEIVED FILES
+    //
+    // A file a peer sent or the cloud handed down is kept as a cache: it can be had again, so it is the only
+    // kind ever let go to keep the disk in budget. What was made or imported here is never touched. A
+    // received file becomes this machine's own when it is imported here or a save names it, since a save
+    // has to open with nobody around to send it again. Anything resolved or written this run counts as in
+    // use and stays until a later run. -xlinka
+
+    // One received file as a trim sees it: when it was last wanted, and whether it may go now.
+    public readonly record struct ReceivedFile(string Key, long Size, DateTime LastUsedUtc, bool Evictable);
+
+    public List<ReceivedFile> GetReceivedFiles()
+    {
+        var files = new List<ReceivedFile>();
+        lock (_lock)
+        {
+            foreach (var record in _assetRecords.Values)
+            {
+                if (!record.Received)
+                    continue;
+                var used = record.LastUsedUtc > record.ImportedAt ? record.LastUsedUtc : record.ImportedAt;
+                files.Add(new ReceivedFile(record.Hash, record.FileSize, used, !InUseThisRun(record) && IsInAssetCache(record.FilePath)));
+            }
+        }
+        return files;
+    }
+
+    // Deletes a received file and forgets it, unless it is in use this run or open somewhere. The file goes
+    // first: one that will not delete keeps its record. The index is written by SaveRecordsAsync after a batch.
+    public bool TryReleaseReceived(string key)
+    {
+        lock (_lock)
+        {
+            if (!_assetRecords.TryGetValue(key, out var record) || !record.Received || InUseThisRun(record)
+                || !IsInAssetCache(record.FilePath))
+                return false;
+            try
+            {
+                File.Delete(record.FilePath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+            _assetRecords.Remove(key);
+            return true;
+        }
+    }
+
+    // The file behind an address is this machine's own from now on, whatever brought it here.
+    public bool Keep(string localUri)
+    {
+        var key = ExtractKey(localUri);
+        if (string.IsNullOrEmpty(key))
+            return false;
+        bool promoted;
+        lock (_lock)
+            promoted = _assetRecords.TryGetValue(key!, out var record) && Promote(record);
+        if (promoted)
+            _ = SaveAssetRecordsAsync();
+        return promoted;
+    }
+
+    public Task<bool> SaveRecordsAsync() => SaveAssetRecordsAsync();
+
+    private static bool Promote(LocalAssetRecord record)
+    {
+        if (!record.Received)
+            return false;
+        record.Received = false;
+        return true;
+    }
+
+    private bool IsReceived(string? localUri)
+    {
+        var key = string.IsNullOrEmpty(localUri) ? null : ExtractKey(localUri!);
+        if (string.IsNullOrEmpty(key))
+            return false;
+        lock (_lock)
+            return _assetRecords.TryGetValue(key!, out var record) && record.Received;
+    }
+
+    private bool InUseThisRun(LocalAssetRecord record) => record.LastUsedUtc >= _openedUtc || record.ImportedAt >= _openedUtc;
+
+    private bool IsInAssetCache(string? path)
+        => !string.IsNullOrEmpty(path) && path!.StartsWith(GetAssetCachePath(), StringComparison.OrdinalIgnoreCase);
 
     // DERIVED ASSETS
     //
@@ -270,7 +425,9 @@ public class LocalDB : IDisposable
 
     // Overwrites any previous blob at that address, since a derivative is defined by its inputs: if the suffix
     // matches, the newer computation supersedes the older one.
-    public async Task<string> SaveDerivedAssetAsync(string baseLocalUri, string suffix, byte[] data, string extension)
+    // A derivative is received when it came from elsewhere or its base did: either way it can be made or
+    // fetched again.
+    public async Task<string> SaveDerivedAssetAsync(string baseLocalUri, string suffix, byte[] data, string extension, bool received = false)
     {
         var uri = DeriveUri(baseLocalUri, suffix);
         if (uri == null || data == null)
@@ -311,6 +468,7 @@ public class LocalDB : IDisposable
             ImportedAt = DateTime.UtcNow,
             FileSize = data.LongLength,
             Encrypted = encrypted,
+            Received = received || IsReceived(baseLocalUri),
         };
 
         lock (_lock)
@@ -389,7 +547,8 @@ public class LocalDB : IDisposable
             // the whole file here, which is the cost this path exists to avoid; reads detect the header
             // either way, so a plaintext entry in an otherwise encrypted cache still loads.
             Encrypted = false,
-            Verified = false
+            Verified = false,
+            Received = true
         };
 
         lock (_lock)
@@ -400,7 +559,7 @@ public class LocalDB : IDisposable
         _ = SaveAssetRecordsAsync();
         VerifyAdoptedInBackground(key!, targetPath);
 
-        Logger.Log($"LocalDB: adopted gathered asset -> {localUri} ({size} bytes, '{extension}')");
+        Logger.Debug($"LocalDB: adopted gathered asset -> {localUri} ({size} bytes, '{extension}')");
         return targetPath;
     }
 
@@ -496,6 +655,56 @@ public class LocalDB : IDisposable
         await SaveAssetRecordsAsync();
     }
 
+    // ROWS
+    //
+    // Not everything this database keeps is a file. A row is a set of named fields filed under a table in
+    // the same encrypted index as the assets, for work this machine has to remember between runs: a save
+    // that has not gone up yet, say. Rows live beside the asset records, never among them, so no row can
+    // ever resolve as an asset. -xlinka
+
+    public List<(string Id, Dictionary<string, string> Fields)> GetRows(string table)
+    {
+        var rows = new List<(string, Dictionary<string, string>)>();
+        lock (_lock)
+        {
+            foreach (var record in _rows.Values)
+            {
+                if (record.Table == table)
+                    rows.Add((record.Hash, new Dictionary<string, string>(record.Metadata)));
+            }
+        }
+        return rows;
+    }
+
+    // True once the index on disk holds the row as given.
+    public Task<bool> PutRowAsync(string table, string id, IReadOnlyDictionary<string, string> fields)
+    {
+        var record = new LocalAssetRecord
+        {
+            Hash = id,
+            Table = table,
+            ImportedAt = DateTime.UtcNow,
+            Metadata = new Dictionary<string, string>(fields),
+        };
+        lock (_lock)
+        {
+            _rows[RowKey(table, id)] = record;
+        }
+        return SaveAssetRecordsAsync();
+    }
+
+    public Task<bool> DeleteRowAsync(string table, string id)
+    {
+        lock (_lock)
+        {
+            if (!_rows.Remove(RowKey(table, id)))
+                return Task.FromResult(true);
+        }
+        return SaveAssetRecordsAsync();
+    }
+
+    private static string RowKey(string table, string id) => table + "/" + id;
+
     // The record key inside a local:// URI: everything after the machine id.
     private static string? ExtractKey(string localUri)
     {
@@ -521,6 +730,7 @@ public class LocalDB : IDisposable
         {
             if (_assetRecords.TryGetValue(hash, out var record))
             {
+                record.LastUsedUtc = DateTime.UtcNow;
                 return record.FilePath;
             }
         }
@@ -534,6 +744,16 @@ public class LocalDB : IDisposable
         return path != null && File.Exists(path);
     }
 
+    // Whether the file behind an address is wrapped at rest, so its bytes on disk are not the asset's.
+    public bool IsStoredEncrypted(string localUri)
+    {
+        var key = ExtractKey(localUri);
+        if (string.IsNullOrEmpty(key))
+            return false;
+        lock (_lock)
+            return _assetRecords.TryGetValue(key!, out var record) && record.Encrypted;
+    }
+
     // The local:// address of a record this machine holds for a content hash, or null. A cloud
     // asset that was fetched into the database is addressed this way so the variant machinery,
     // which only knows local:// bases, can work on it. -xlinka
@@ -544,7 +764,10 @@ public class LocalDB : IDisposable
         lock (_lock)
         {
             if (_assetRecords.TryGetValue(hash!, out var record) && File.Exists(record.FilePath))
+            {
+                record.LastUsedUtc = DateTime.UtcNow;
                 return $"local://{_machineId}/{hash}";
+            }
         }
         return null;
     }
@@ -744,6 +967,11 @@ public class LocalDB : IDisposable
                 {
                     if (string.IsNullOrEmpty(record.Hash))
                         continue;
+                    if (!string.IsNullOrEmpty(record.Table))
+                    {
+                        _rows[RowKey(record.Table, record.Hash)] = record;
+                        continue;
+                    }
                     // Records carry absolute paths and the database folder can move (the data folder was
                     // consolidated once already), so a path outside the current asset folder is re-rooted
                     // by file name instead of left dangling. -xlinka
@@ -766,23 +994,59 @@ public class LocalDB : IDisposable
         }
     }
 
-    private async Task SaveAssetRecordsAsync()
+    // One write at a time, each of a snapshot taken in its own turn, so an older snapshot can never land
+    // on top of a newer one. A writer whose change an earlier turn already wrote skips its own. The index
+    // is written beside itself and moved over the old one, so a crash leaves one or the other whole.
+    // True once the caller's change is on disk. -xlinka
+    private async Task<bool> SaveAssetRecordsAsync()
     {
+        long wanted = Interlocked.Increment(ref _recordsChanged);
         var recordsPath = Path.Combine(_basePath, "records.json");
+        await _recordsGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            if (Interlocked.Read(ref _recordsWritten) >= wanted)
+                return true;
+
             List<LocalAssetRecord> snapshot;
+            long version;
             lock (_lock)
-                snapshot = new List<LocalAssetRecord>(_assetRecords.Values);
+            {
+                version = Interlocked.Read(ref _recordsChanged);
+                snapshot = new List<LocalAssetRecord>(_assetRecords.Count + _rows.Count);
+                snapshot.AddRange(_assetRecords.Values);
+                snapshot.AddRange(_rows.Values);
+            }
 
             var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
             // The records store (asset list, original paths, per-asset keys) is encrypted at rest.
             var bytes = LocalEncryption.Encrypt(Encoding.UTF8.GetBytes(json));
-            await File.WriteAllBytesAsync(recordsPath, bytes);
+            var tempPath = recordsPath + ".tmp";
+            await File.WriteAllBytesAsync(tempPath, bytes).ConfigureAwait(false);
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    File.Move(tempPath, recordsPath, true);
+                    break;
+                }
+                catch (IOException) when (attempt < 3)
+                {
+                    // Something else (a scanner, a backup) can hold the old index open for a moment.
+                    await Task.Delay(50).ConfigureAwait(false);
+                }
+            }
+            Interlocked.Exchange(ref _recordsWritten, version);
+            return true;
         }
         catch (Exception ex)
         {
             Logger.Warn($"LocalDB: Failed to save records: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            _recordsGate.Release();
         }
     }
 
@@ -814,9 +1078,20 @@ public class LocalAssetRecord
     // and every record whose bytes we hashed ourselves, reads back as settled.
     public bool Verified { get; set; } = true;
 
+    // True for a file a peer sent or the cloud handed down, which can be had again; false for one made or
+    // imported here. Only received files are ever let go to keep the cache in budget.
+    public bool Received { get; set; }
+
+    // When a load last resolved this file, for which received file goes first.
+    public DateTime LastUsedUtc { get; set; }
+
     // Reserved. The current model uses a single machine-bound master key (see LocalEncryption),
     // not a per-asset key, so this stays null. Kept for a future per-asset / server-issued key scheme.
     public byte[]? EncryptionKey { get; set; }
 
     public Dictionary<string, string> Metadata { get; set; } = new();
+
+    // Null for an asset. For a row (see LocalDB.PutRowAsync) the table it is filed under: Hash is then
+    // the row's id, Metadata its fields, and there is no file.
+    public string? Table { get; set; }
 }

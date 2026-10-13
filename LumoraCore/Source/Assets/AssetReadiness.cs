@@ -47,7 +47,7 @@ public static class AssetReadiness
         // about whether its TEXTURES are here. That gap is the whole "unready material pops" complaint,
         // and it is checked FIRST because a material is itself a procedural provider.
         if (provider is MaterialProvider material)
-            return inspectDependencies && !material.DependenciesReady;
+            return inspectDependencies && !material.DisplayReady;
 
         if (provider is IUrlAssetProvider url)
             return url.IsLoadPending;

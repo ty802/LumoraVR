@@ -29,6 +29,8 @@ internal sealed class InventorySidebar
 
     private readonly BrowserParts _parts;
     private readonly Slot _tree;
+    private readonly LayoutElement _treeElement;
+    private readonly List<Slot> _treeRows = new();
     private readonly Slot _filters;
     private readonly List<Row> _filterRows = new();
     private readonly List<(RectTransform rect, string id)> _treeRects = new();
@@ -65,6 +67,12 @@ internal sealed class InventorySidebar
         treeColumn.Spacing.Value = RowSpacing;
         treeColumn.ForceExpandWidth.Value = true;
         treeColumn.ForceExpandHeight.Value = false;
+        // The chain asks for all its steps but gives way down to one: in a short window FitTree folds the
+        // steps nearest the root away and the folder you are in stays.
+        _treeElement = _tree.AttachComponent<LayoutElement>();
+        _treeElement.MinHeight.Value = RowHeight;
+        _treeElement.PreferredHeight.Value = RowHeight;
+        _treeElement.FlexibleHeight.Value = 0f;
 
         var spacer = Root.AddSlot("Spacer");
         spacer.AttachComponent<RectTransform>();
@@ -105,11 +113,16 @@ internal sealed class InventorySidebar
     {
         _tree.DestroyChildren();
         _treeRects.Clear();
+        _treeRows.Clear();
+        float full = chain.Count * RowHeight + System.Math.Max(0, chain.Count - 1) * RowSpacing;
+        if (_treeElement.PreferredHeight.Value != full)
+            _treeElement.PreferredHeight.Value = full;
         for (int i = 0; i < chain.Count; i++)
         {
             var (id, name) = chain[i];
             bool last = i == chain.Count - 1;
             var slot = _tree.AddSlot(name);
+            _treeRows.Add(slot);
             var rect = slot.AttachComponent<RectTransform>();
             BrowserParts.Height(slot, RowHeight);
             var panel = BrowserParts.Panel(slot, last ? DashTheme.Accent : color.Transparent, DashTheme.RadiusControl);
@@ -128,6 +141,22 @@ internal sealed class InventorySidebar
             button.HoverExited += _ => row.SetHovered(false);
             string target = id;
             button.Clicked += (_, _) => PathPicked?.Invoke(target);
+        }
+    }
+
+    // As many of the last steps as the height the column gave the chain holds.
+    public void FitTree()
+    {
+        float height = _tree.GetComponent<RectTransform>()?.LocalComputeRect.height ?? 0f;
+        if (height <= 0f)
+            return;
+        int room = System.Math.Max(1, (int)MathF.Floor((height + RowSpacing + 0.5f) / (RowHeight + RowSpacing)));
+        int first = System.Math.Max(0, _treeRows.Count - room);
+        for (int i = 0; i < _treeRows.Count; i++)
+        {
+            bool show = i >= first;
+            if (_treeRows[i].ActiveSelf.Value != show)
+                _treeRows[i].ActiveSelf.Value = show;
         }
     }
 

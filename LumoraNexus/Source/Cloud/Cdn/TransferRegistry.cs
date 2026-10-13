@@ -71,22 +71,42 @@ public static class TransferRegistry
     public static void EndDownload(string hash, bool ok)
         => Report(new TransferProgress { Hash = hash, State = ok ? TransferState.Completed : TransferState.Error }, upload: false);
 
+    // One download, for a readout that follows particular assets: the key comes from DownloadKey with the hash
+    // it is filed under (a content hash, or the hash of a link), worked out once by the follower. Takes no
+    // lock and copies nothing.
+    public static string DownloadKey(string hash) => Key(hash, upload: false);
+
+    public static bool TryGetDownload(string downloadKey, out long transferred, out long total)
+    {
+        if (!string.IsNullOrEmpty(downloadKey) && _active.TryGetValue(downloadKey, out var entry))
+        {
+            transferred = entry.TransferredBytes;
+            total = entry.TotalBytes;
+            return true;
+        }
+        transferred = total = 0;
+        return false;
+    }
+
     public static List<Entry> Snapshot()
     {
-        var list = new List<Entry>(_active.Count);
-        foreach (var entry in _active.Values)
-            list.Add(entry);
+        var list = new List<Entry>();
+        foreach (var pair in _active)
+            list.Add(pair.Value);
         list.Sort((a, b) => a.StartedUtc.CompareTo(b.StartedUtc));
         return list;
     }
 
     // Downloads in flight and the bytes still to come, for a readout in the world.
+    // Read every frame by the world's load readout. Values and Count take every lock in the dictionary and
+    // Values copies it besides; walking the pairs takes none. -xlinka
     public static (int downloads, int uploads, long remainingBytes, long totalBytes) Totals()
     {
         int downloads = 0, uploads = 0;
         long remaining = 0, total = 0;
-        foreach (var entry in _active.Values)
+        foreach (var pair in _active)
         {
+            var entry = pair.Value;
             if (entry.IsUpload) uploads++; else downloads++;
             total += entry.TotalBytes;
             remaining += Math.Max(0, entry.TotalBytes - entry.TransferredBytes);

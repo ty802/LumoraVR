@@ -9,11 +9,6 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Base class for components that provide assets to the system.
-/// Manages asset lifecycle, reference counting, and update notifications.
-/// Bridges between component data (sync fields, URLs) and loaded asset instances.
-/// </summary>
 public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : Asset, new()
 {
     private HashSet<IAssetRef> references = new HashSet<IAssetRef>();
@@ -22,6 +17,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
     private Action _sendAssetUpdatedDelegate = null!;
     private Action _sendAssetRemovedDelegate = null!;
     private bool _refreshing;
+    private bool _refreshQueued;
 
     // PROPERTIES
 
@@ -40,9 +36,8 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         LumoraLogger.Debug($"AssetProvider.ReferenceSet: [{GetType().Name}] Adding reference, count before: {references.Count}");
         if (references.Add(reference) && references.Count == 1)
         {
-            // First reference added - trigger update
             LumoraLogger.Debug($"AssetProvider.ReferenceSet: [{GetType().Name}] First reference added, triggering RefreshAssetState");
-            RefreshAssetState();
+            RefreshOnWorldThread();
         }
     }
 
@@ -53,9 +48,39 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         references.Remove(reference);
         if (references.Count == 0)
         {
-            // Last reference removed - may trigger unload
-            RefreshAssetState();
+            RefreshOnWorldThread();
         }
+    }
+
+    // A reference comes and goes on whatever thread wrote it, and on a guest that is the sync thread,
+    // decoding the world it was sent while it holds that world. Building or freeing the asset there runs its
+    // hook there too, and a hook calls into the engine: a material loading a shader variant waited on the
+    // main thread inside the engine while the main thread waited on the world the sync thread held, and the
+    // guest froze for good the moment a big import reached it. Off the world thread the refresh waits for the
+    // world's next updates instead, once however many references changed meanwhile. On it, refreshes share a
+    // few milliseconds a frame and the rest wait their turn (AssetRefreshQueue): receiving an import is a
+    // thousand of them at once. Before a world's first update its thread is not known yet: a thread holding
+    // the world then is the sync thread, and anything else is whoever is building it, which gets the asset
+    // at once as before. -xlinka
+    private void RefreshOnWorldThread()
+    {
+        var world = World;
+        if (world == null || (world.WorldThreadId == 0 && world.HookManager?.HeldByCurrentThread != true))
+        {
+            RefreshAssetState();
+            return;
+        }
+        if (_refreshQueued)
+            return;
+        if (world.IsOnWorldThread && AssetRefreshQueue.TryRunNow(world, RefreshAssetState))
+            return;
+        _refreshQueued = true;
+        AssetRefreshQueue.Enqueue(world, () =>
+        {
+            _refreshQueued = false;
+            if (!IsDestroyed)
+                RefreshAssetState();
+        });
     }
 
     public void RegisterUpdateListener(IAssetRef reference)
@@ -83,14 +108,10 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         base.OnDestroy();
     }
 
-    /// <summary>
-    /// Called when component changes are applied.
-    /// Refreshes asset state based on current reference count.
-    /// </summary>
     public override void OnChanges()
     {
         LumoraLogger.Debug($"AssetProvider.OnChanges: [{GetType().Name}] Called, refCount={AssetReferenceCount}");
-        RefreshAssetState();
+        RefreshOnWorldThread();
     }
 
     // ASSET STATE MANAGEMENT
@@ -312,7 +333,6 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
             return new Uri(filePath);
         }
 
-        // Resolve local:// URIs via LocalDB
         if (assetURL.Scheme == "local")
         {
             var localDB = Engine.Current?.LocalDB;

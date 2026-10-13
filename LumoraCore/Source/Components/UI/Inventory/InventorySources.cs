@@ -22,11 +22,14 @@ internal interface IInventorySource
     Task<InventoryResult> SaveWorld(World world, string name, string folderId);
     Task<(string? path, string? problem)> FetchToCache(InventoryEntry entry);
     Task<byte[]?> FetchThumbnail(InventoryEntry entry);
+    // How far the saves made here have got going up; null where nothing syncs.
+    InventorySyncStatus? SyncStatus { get; }
 }
 
 internal sealed class CloudInventorySource : IInventorySource
 {
     public bool SignedIn => Inventory.IsSignedIn;
+    public InventorySyncStatus? SyncStatus => InventorySync.SignedIn ? InventorySync.Status : null;
     public Task<InventoryListing> List(string folderId) => Inventory.ListAsync(folderId);
     public Task<InventoryListing> Search(string query) => Inventory.SearchAsync(query);
     public Task<InventoryResult> CreateFolder(string parentId, string name) => Inventory.CreateFolderAsync(parentId, name);
@@ -81,6 +84,7 @@ internal sealed class DemoInventorySource : IInventorySource
     }
 
     public bool SignedIn => true;
+    public InventorySyncStatus? SyncStatus => null;
 
     private InventoryEntry ToEntry(Node n)
     {

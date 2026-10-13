@@ -10,7 +10,7 @@ using Lumora.Core.Persistence;
 namespace Lumora.Core.Components.UI;
 
 // Dashboard exit screen: a centered card offering "Exit and Save" (commit settings, then quit) or
-// "Exit and Discard" (quit without persisting). Switching to another tab cancels. Settings apply live
+// "Exit and Discard" (quit without persisting). Closing its window cancels. Settings apply live
 // for preview but are only written to disk here, so this is where saving happens.
 [ComponentCategory("Hidden")]
 public sealed class ExitScreen : DashboardScreen
@@ -29,6 +29,7 @@ public sealed class ExitScreen : DashboardScreen
     public override color NavLabelColor => ExitRed;
 
     private Dashboard? _dashboard;
+    private RectTransform? _cardRect;
     private Text? _titleText;
     private Text? _messageText;
     private Slot? _buttonsSlot;
@@ -36,10 +37,11 @@ public sealed class ExitScreen : DashboardScreen
 
     protected override void BuildContent(UIBuilder builder)
     {
-        _dashboard = Slot.GetComponentInParents<Dashboard>();
+        _dashboard = Dashboard.Of(Slot);
 
         var card = builder.Current.AddSlot("ExitCard");
         var cardRect = card.AttachComponent<RectTransform>();
+        _cardRect = cardRect;
         cardRect.AnchorMin.Value = new float2(0.5f, 0.5f);
         cardRect.AnchorMax.Value = new float2(0.5f, 0.5f);
         cardRect.OffsetMin.Value = new float2(-300f, -160f);
@@ -75,7 +77,19 @@ public sealed class ExitScreen : DashboardScreen
         AddButton(_buttonsSlot, "Save", "Exit.Save".AsLocale("Exit and Save"), SaveFill, OnExitAndSave);
         AddButton(_buttonsSlot, "Discard", "Exit.Discard".AsLocale("Exit and Discard"), DiscardFill, OnExitAndDiscard);
 
-        AddLabel(card, "Hint", "Exit.Hint".AsLocale("Pick another tab to cancel."), DashTheme.FontSmall, DashTheme.TextMuted, 22f);
+        AddLabel(card, "Hint", "Exit.Hint".AsLocale("Close this window to cancel."), DashTheme.FontSmall, DashTheme.TextMuted, 22f);
+    }
+
+    // The card is 600 wide where it has the room and gives way to the window it is in where it does not.
+    public override void OnCommonUpdate()
+    {
+        base.OnCommonUpdate();
+        var rect = _cardRect;
+        var host = RectTransform;
+        if (rect == null || rect.IsDestroyed || host == null)
+            return;
+        float half = System.MathF.Max(150f, System.MathF.Min(300f, host.LocalComputeRect.width * 0.5f - 16f));
+        SettingsUI.SetOffsets(rect, new float2(-half, -160f), new float2(half, 160f));
     }
 
     private void OnExitAndSave() => BeginExit(save: true);
@@ -102,7 +116,7 @@ public sealed class ExitScreen : DashboardScreen
             LocaleTextRegistry.Bind(_messageText, "Exit.Wait".AsLocale("Please wait…"));
         if (_buttonsSlot != null)
             _buttonsSlot.ActiveSelf.Value = false;
-        _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
+        Slot.GetComponentInParents<Canvas>()?.MarkDirty();
 
         World.RunInUpdates(3, () =>
         {
@@ -113,6 +127,9 @@ public sealed class ExitScreen : DashboardScreen
                 if (home != null)
                     home.SaveToFile(Lumora.Core.Engine.LocalHomeSavePath);
             }
+            // Whatever follows the account goes to it before the window does: on a discard too, since a
+            // site decision is kept the moment it is made, not when settings are saved.
+            AccountSettings.Flush(System.TimeSpan.FromSeconds(3));
             Lumora.Core.Engine.Current?.RequestQuit();
         });
     }
@@ -144,6 +161,8 @@ public sealed class ExitScreen : DashboardScreen
         ApplyRoundedPanel(buttonSlot, fill, CardBorder);
 
         var button = buttonSlot.AttachComponent<Button>();
+        // Both of these quit. Sliding off before letting go is the last way out.
+        button.ActOnRelease.Value = true;
         button.Clicked += (_, _) => onClick();
 
         var labelSlot = buttonSlot.AddSlot("Label");

@@ -44,7 +44,7 @@ public sealed class DebugScreen : WidgetScreen, ITabbedScreen
 
     protected override void BuildContent(UIBuilder builder)
     {
-        _dashboard = Slot.GetComponentInParents<Dashboard>();
+        _dashboard = Dashboard.Of(Slot);
         _tabs.Clear();
 
         var root = builder.Current;
@@ -133,7 +133,7 @@ public sealed class DebugScreen : WidgetScreen, ITabbedScreen
         }
         _refreshAccum = RefreshInterval; // force an immediate refresh on next tick
         RefreshActive();
-        _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
+        Slot.GetComponentInParents<Canvas>()?.MarkDirty();
     }
 
     public override void OnUpdate(float delta)

@@ -22,6 +22,7 @@ public sealed class ModalDialogRelay : Component
     internal readonly List<Button> Options = new();
     internal readonly List<Button> Choices = new();
     internal readonly List<BorderedImage> ChoicePanels = new();
+    internal readonly List<Text?> ChoiceDetails = new();
     internal TextInput? PromptInput;
 
     public string PromptText => PromptInput != null && !PromptInput.IsDestroyed

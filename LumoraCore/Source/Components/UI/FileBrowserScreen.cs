@@ -15,9 +15,24 @@ using Lumora.Core.Math;
 namespace Lumora.Core.Components.UI;
 
 [ComponentCategory("Hidden")]
+[UserspaceOnly]
 public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 {
-    private const int GridColumns = 8;
+    // As many columns as tiles of MinCardWidth fit, up to eight, so a narrow window gets fewer tiles with
+    // room for their names instead of eight slivers.
+    private const int MaxColumns = 8;
+    private const float MinCardWidth = 96f;
+    // The toolbar is two strips: getting around (Up and the path) and acting here (search and the three
+    // tools). Side by side while the path keeps PathMinWidth beside the tools, stacked below that.
+    private const float ToolbarRow = 40f;
+    private const float ToolbarGap = 6f;
+    private const float UpWidth = 56f;
+    private const float PathMinWidth = 240f;
+    private const float SearchWidth = 200f;
+    private const float RefreshWidth = 84f;
+    private const float FolderWidth = 96f;
+    private const float OpenWidth = 110f;
+    private const float ToolsWidth = SearchWidth + RefreshWidth + FolderWidth + OpenWidth + ToolbarGap * 3f;
     // A square-ish tile: the picture area on top (a folder shape, or a badge with the file's type),
     // the name under it.
     private const float CardHeight = 112f;
@@ -63,6 +78,8 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
     private RectTransform? _scrollHandle;
     private float _handlePressY;
     private float _handlePressScroll;
+    private float _handleTarget;
+    private bool _handleDragging;
     private int _scrollHandleRetries;
 
     private bool _newFolderActive;
@@ -85,6 +102,12 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
     private readonly List<CardView> _pool = new();
     private int _boundFirstRow = -1;
     private float _lastCardW = -1f;
+    private int _columns = MaxColumns;
+    private RectTransform? _toolbarRect;
+    private LayoutElement? _toolbarElement;
+    private RectTransform? _navRect;
+    private RectTransform? _toolsRect;
+    private int _toolbarRows;
     private IAssetProvider<FontSet>? _font;
     private RoundedRectTextureProvider? _rounded;
 
@@ -125,6 +148,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 
     protected override void BuildContent(UIBuilder builder)
     {
+        if (!IsExecutionAllowed) return;
         _dashboard = FindDashboard();
         var font = _dashboard?.Font.Target;
         var rounded = _dashboard?.RoundedSprite;
@@ -154,33 +178,20 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         NavigateTo(initial);
     }
 
-    private Dashboard? FindDashboard()
-    {
-        var s = Slot;
-        while (s != null)
-        {
-            var d = s.GetComponent<Dashboard>();
-            if (d != null) return d;
-            s = s.Parent;
-        }
-        return null;
-    }
+    private Dashboard? FindDashboard() => Dashboard.Of(Slot);
 
     private void BuildToolbar(Slot root, IAssetProvider<FontSet>? font, RoundedRectTextureProvider? rounded)
     {
         var toolbar = root.AddSlot("Toolbar");
-        toolbar.AttachComponent<RectTransform>();
-        var le = toolbar.AttachComponent<LayoutElement>();
-        le.MinHeight.Value = 40f;
-        le.PreferredHeight.Value = 40f;
-        var h = toolbar.AttachComponent<HorizontalLayout>();
-        h.Spacing.Value = 6f;
-        h.ForceExpandHeight.Value = true;
-        h.ForceExpandWidth.Value = false;
+        _toolbarRect = toolbar.AttachComponent<RectTransform>();
+        _toolbarElement = toolbar.AttachComponent<LayoutElement>();
+        _toolbarRows = 0;
 
-        AddToolButton(toolbar, "Up", GoUp, font, rounded, 56f);
+        var nav = ToolbarStrip(toolbar, "Nav");
+        _navRect = nav.GetComponent<RectTransform>();
+        AddToolButton(nav, "Up", GoUp, font, rounded, UpWidth);
 
-        var pathSlot = toolbar.AddSlot("Path");
+        var pathSlot = nav.AddSlot("Path");
         pathSlot.AttachComponent<RectTransform>();
         var pathLE = pathSlot.AttachComponent<LayoutElement>();
         pathLE.FlexibleWidth.Value = 1f;
@@ -193,15 +204,22 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         _pathLabel = pathBuilder.Text(string.Empty, 13f, TextPrimary);
         _pathLabel.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         _pathLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        _pathLabel.WordWrap.Value = false;
+        _pathLabel.AutoSizeHorizontal.Value = true;
+        _pathLabel.AutoSizeMin.Value = 11f;
+        _pathLabel.Ellipsis.Value = true;
         FillRect(_pathLabel.RectTransform!, 14f, 14f, 0f, 0f);
 
         // The search well sits in the same row as everything else; typing anywhere on this screen
         // goes into it, so it needs no focus press. The press it does take is for the VR keyboard.
-        var well = toolbar.AddSlot("Search");
+        var tools = ToolbarStrip(toolbar, "Tools");
+        _toolsRect = tools.GetComponent<RectTransform>();
+        var well = tools.AddSlot("Search");
         well.AttachComponent<RectTransform>();
         var wellLE = well.AttachComponent<LayoutElement>();
-        wellLE.MinWidth.Value = 200f;
-        wellLE.PreferredWidth.Value = 200f;
+        wellLE.MinWidth.Value = 90f;
+        wellLE.PreferredWidth.Value = SearchWidth;
+        wellLE.FlexibleWidth.Value = 1f;
         wellLE.MinHeight.Value = 40f;
         wellLE.PreferredHeight.Value = 40f;
         var wellBg = well.AttachComponent<BorderedImage>();
@@ -213,11 +231,64 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         _searchLabel = wb.Text("Type to search", 13f, TextDim);
         _searchLabel.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         _searchLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        _searchLabel.WordWrap.Value = false;
+        _searchLabel.Ellipsis.Value = true;
         FillRect(_searchLabel.RectTransform!, 14f, 14f, 0f, 0f);
 
-        AddToolButton(toolbar, "Refresh", Refresh, font, rounded, 84f);
-        AddToolButton(toolbar, "+ Folder", OpenNewFolderDialog, font, rounded, 96f);
-        AddToolButton(toolbar, "Open folder", OpenFolderHere, font, rounded, 110f);
+        AddToolButton(tools, "Refresh", Refresh, font, rounded, RefreshWidth);
+        AddToolButton(tools, "+ Folder", OpenNewFolderDialog, font, rounded, FolderWidth);
+        AddToolButton(tools, "Open folder", OpenFolderHere, font, rounded, OpenWidth);
+        LayoutToolbar(1);
+    }
+
+    private static Slot ToolbarStrip(Slot toolbar, string name)
+    {
+        var strip = toolbar.AddSlot(name);
+        strip.AttachComponent<RectTransform>();
+        var h = strip.AttachComponent<HorizontalLayout>();
+        h.Spacing.Value = ToolbarGap;
+        h.ForceExpandHeight.Value = true;
+        h.ForceExpandWidth.Value = false;
+        return strip;
+    }
+
+    private void FitToolbar()
+    {
+        if (_toolbarRect == null)
+            return;
+        float width = _toolbarRect.LocalComputeRect.width;
+        if (width <= 0f)
+            return;
+        int rows = width >= UpWidth + ToolbarGap + PathMinWidth + ToolbarGap + ToolsWidth ? 1 : 2;
+        if (rows != _toolbarRows)
+            LayoutToolbar(rows);
+    }
+
+    private void LayoutToolbar(int rows)
+    {
+        _toolbarRows = rows;
+        float height = rows == 1 ? ToolbarRow : ToolbarRow * 2f + ToolbarGap;
+        if (_toolbarElement != null)
+        {
+            _toolbarElement.MinHeight.Value = height;
+            _toolbarElement.PreferredHeight.Value = height;
+        }
+        if (_navRect == null || _toolsRect == null)
+            return;
+        if (rows == 1)
+        {
+            SettingsUI.SetAnchors(_navRect, float2.Zero, float2.One);
+            SettingsUI.SetOffsets(_navRect, float2.Zero, new float2(-(ToolsWidth + ToolbarGap), 0f));
+            SettingsUI.SetAnchors(_toolsRect, new float2(1f, 0f), float2.One);
+            SettingsUI.SetOffsets(_toolsRect, new float2(-ToolsWidth, 0f), float2.Zero);
+        }
+        else
+        {
+            SettingsUI.SetAnchors(_navRect, new float2(0f, 1f), float2.One);
+            SettingsUI.SetOffsets(_navRect, new float2(0f, -ToolbarRow), float2.Zero);
+            SettingsUI.SetAnchors(_toolsRect, float2.Zero, new float2(1f, 0f));
+            SettingsUI.SetOffsets(_toolsRect, float2.Zero, new float2(0f, ToolbarRow));
+        }
     }
 
     private void BuildViewport(Slot root, IAssetProvider<FontSet>? font, RoundedRectTextureProvider? rounded)
@@ -247,6 +318,8 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         viewport.AttachComponent<Mask>();
         _scroll = viewport.AttachComponent<ScrollRect>();
         _scroll.ScrollSensitivity.Value = new float2(1f, 1f);
+        // A folder card replaces the list and a second press imports, so a drag must not start either.
+        _scroll.RowsActOnRelease.Value = true;
         _scroll.ScrollChanged += (_, _) => OnScrollChanged();
 
         _contentSlot = viewport.AddSlot("Content");
@@ -293,15 +366,18 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         var handleBg = handleSlot.AttachComponent<BorderedImage>();
         ApplyRounded(handleBg, ScrollHandleColor, new color(0f, 0f, 0f, 0f), rounded);
 
-        var interaction = handleSlot.AttachComponent<InteractionElement>();
+        var interaction = DashScrollbar.CreateHandleInteraction(handleSlot, handleBg.Tint);
         interaction.Pressed += OnHandlePress;
         interaction.Dragged += OnHandleDrag;
+        interaction.Released += OnHandleRelease;
     }
 
     private void OnHandlePress(UIInteractionContext context)
     {
         _handlePressY = context.LocalPoint.y;
         _handlePressScroll = _scroll?.AbsolutePosition.y ?? 0f;
+        _handleTarget = _handlePressScroll;
+        _handleDragging = false;
     }
 
     private void OnHandleDrag(UIInteractionContext context)
@@ -326,7 +402,20 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         // requests a repaint) and fires ScrollChanged -> UpdateScrollHandle. No explicit canvas dirty: the old
         // MarkDirty() here was the parameterless FULL-rebuild, which re-tessellated the whole grid on every drag
         // frame (the drag flicker + fps drop). -xlinka
-        _scroll.AbsolutePosition = new float2(0f, System.Math.Clamp(scrolled, 0f, maxScroll));
+        _handleTarget = System.Math.Clamp(scrolled, 0f, maxScroll);
+        _handleDragging = true;
+        float shown = DashScrollbar.Follow(_scroll.AbsolutePosition.y, _handleTarget, World);
+        _scroll.AbsolutePosition = new float2(0f, System.Math.Clamp(shown, 0f, maxScroll));
+    }
+
+    // Let go, the list lands where the last drag frame put the handle, not where the release jolted it.
+    private void OnHandleRelease(UIInteractionContext context)
+    {
+        if (!_handleDragging)
+            return;
+        _handleDragging = false;
+        if (_scroll != null && !_scroll.IsDestroyed)
+            _scroll.AbsolutePosition = new float2(0f, _handleTarget);
     }
 
     private void UpdateScrollHandle()
@@ -389,6 +478,8 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         _statusLabel = ib.Text("Press a file to select it, press it twice to import it.", 13f, TextDim);
         _statusLabel.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         _statusLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        _statusLabel.WordWrap.Value = false;
+        _statusLabel.Ellipsis.Value = true;
         FillRect(_statusLabel.RectTransform!, 4f, 4f, 0f, 0f);
     }
 
@@ -399,7 +490,8 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         var le = slot.AttachComponent<LayoutElement>();
         if (width > 0f)
         {
-            le.MinWidth.Value = width;
+            // Gives way to 60% in a narrow window, the label shrinking with it.
+            le.MinWidth.Value = MathF.Round(width * 0.6f);
             le.PreferredWidth.Value = width;
         }
         else
@@ -416,6 +508,9 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         var t = b.Text(label, 13f, TextPrimary);
         t.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         t.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        t.AutoSizeHorizontal.Value = true;
+        t.AutoSizeMin.Value = 10f;
+        t.Ellipsis.Value = true;
         FillRect(t.RectTransform!, 0f, 0f, 0f, 0f);
         var btn = slot.AttachComponent<Button>();
         btn.Clicked += (_, _) => onClick();
@@ -486,6 +581,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 
     private void GoUp()
     {
+        if (!IsExecutionAllowed) return;
         if (string.IsNullOrEmpty(_currentPath)) return;
         try
         {
@@ -498,6 +594,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 
     private void Refresh()
     {
+        if (!IsExecutionAllowed) return;
         if (_contentSlot == null) return;
 
         _entries.Clear();
@@ -542,11 +639,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
             _filtered.Add(e);
         }
 
-        // Size the content to the FULL list so the scrollbar range is right, even though we only build the
-        // handful of cards that are actually on screen.
-        int rows = (_filtered.Count + GridColumns - 1) / GridColumns;
-        if (rows < 1) rows = 1;
-        SetContentHeight(rows * CardHeight + (rows - 1) * CardSpacing + ContentPad * 2f);
+        FitContentHeight();
 
         // New listing: snap to the top and force a full re-bind (resets every pooled card so none keeps showing
         // a stale entry). Runs now if laid out; if not, OnUpdate picks it up (the pool starts empty so a fresh
@@ -560,6 +653,15 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         World?.RunInUpdates(2, UpdateScrollHandle);
     }
 
+    // Sized to the FULL list so the scrollbar range is right, even though only the handful of cards on
+    // screen are built.
+    private void FitContentHeight()
+    {
+        int rows = (_filtered.Count + _columns - 1) / _columns;
+        if (rows < 1) rows = 1;
+        SetContentHeight(rows * CardHeight + (rows - 1) * CardSpacing + ContentPad * 2f);
+    }
+
     private void SetContentHeight(float height)
     {
         if (_contentRect == null) return;
@@ -570,6 +672,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+        FitToolbar();
         // Drive the virtualized layout from the frame loop so it binds reliably once the viewport lays out, and
         // keeps up with scroll/resize. Early-outs cheaply when nothing crossed a row boundary. - xlinka
         RelayoutVirtual(force: false);
@@ -599,7 +702,13 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
             return;
         }
 
-        int cols = GridColumns;
+        int cols = System.Math.Clamp((int)MathF.Floor((contentW - 2f * ContentPad + CardSpacing) / (MinCardWidth + CardSpacing)), 1, MaxColumns);
+        if (cols != _columns)
+        {
+            _columns = cols;
+            FitContentHeight();
+            force = true;
+        }
         float rowStride = CardHeight + CardSpacing;
         int visibleRows = (int)MathF.Ceiling(viewportH / rowStride) + BufferRows;
         int poolCount = System.Math.Max(1, visibleRows * cols);
@@ -719,6 +828,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
             card.Label.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
             card.Label.VerticalAlignment.Value = TextVerticalAlignment.Middle;
             card.Label.WordWrap.Value = true;
+            card.Label.Ellipsis.Value = true;
             FillRect(card.Label.RectTransform!, 0f, 0f, 0f, 0f);
 
             // Handler reads the card's LIVE path/type, not a captured value, because the card is recycled to a
@@ -760,7 +870,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         card.Path = entry.Path;
         card.IsDirectory = entry.IsDirectory;
         card.BaseColor = FileColor;
-        card.Label.Content.Value = TruncateLabel(entry.Name);
+        card.Label.Content.Value = entry.Name;
         card.Bg.Tint.Value = entry.Path == _selectedPath ? Highlight(card.BaseColor) : card.BaseColor;
 
         bool folder = entry.IsDirectory;
@@ -827,6 +937,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 
     private void SpawnImport(string path)
     {
+        if (!IsExecutionAllowed) return;
         var world = FocusedWorld;
         if (world == null)
             return;
@@ -838,7 +949,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
     private static (float3 position, floatQ rotation) ResolveSpawnPose(World world)
     {
         // The head in the world being imported INTO. Taking it off this screen's own world would be
-        // a position in the overlay's coordinate space, which means nothing over there.
+        // a position in the overlay's coordinate space, which means nothing in the target world.
         var head = world.LocalUser?.Root?.HeadSlot;
         if (head != null)
         {
@@ -975,6 +1086,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 
     private void ConfirmNewFolder()
     {
+        if (!IsExecutionAllowed) return;
         var name = _newFolderName.Trim();
         if (string.IsNullOrWhiteSpace(name)) { ShowNewFolderError("Name cannot be empty."); return; }
         if (name.Length > 255) { ShowNewFolderError("Name is too long."); return; }
@@ -1018,6 +1130,8 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
     }
 
     public bool HasFieldFocus => _newFolderActive || _searchFocused;
+    public string SearchText => _search;
+    public string? CopyText => _newFolderActive ? _newFolderName : _searchFocused ? _search : null;
 
     private void SetSearchFocus(bool focused)
     {
@@ -1028,8 +1142,9 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 
     public bool ConsumeChar(char c)
     {
-        if (!_newFolderActive) return false;
+        if (!HasFieldFocus) return false;
         if (char.IsControl(c)) return true;
+        if (!_newFolderActive) { SetSearch(_search + c); return true; }
         _newFolderName += c;
         UpdateNewFolderUI();
         return true;
@@ -1037,9 +1152,14 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 
     public bool ConsumeBackspace()
     {
-        if (!_newFolderActive) return false;
+        if (!HasFieldFocus) return false;
+        if (!_newFolderActive)
+        {
+            if (_search.Length > 0) SetSearch(Lumora.Core.Input.TextElements.RemoveLast(_search));
+            return true;
+        }
         if (_newFolderName.Length > 0)
-            _newFolderName = _newFolderName.Substring(0, _newFolderName.Length - 1);
+            _newFolderName = Lumora.Core.Input.TextElements.RemoveLast(_newFolderName);
         UpdateNewFolderUI();
         return true;
     }
@@ -1088,7 +1208,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
                 => new color(0.85f, 0.55f, 0.95f, 0.45f),
             ".mp4" or ".mov" or ".avi" or ".webm" or ".mkv" or ".m4v" or ".wmv"
                 => new color(0.95f, 0.45f, 0.55f, 0.45f),
-            ".obj" or ".fbx" or ".glb" or ".gltf" or ".dae" or ".blend" or ".stl"
+            ".obj" or ".fbx" or ".glb" or ".gltf" or ".dae" or ".blend" or ".stl" or ".unitypackage"
                 => new color(0.95f, 0.62f, 0.25f, 0.45f),
             ".cs" or ".py" or ".js" or ".ts" or ".cpp" or ".c" or ".h" or ".hpp" or ".java" or ".go" or ".rs" or ".rb" or ".lua" or ".swift" or ".kt"
                 => new color(0.45f, 0.65f, 0.95f, 0.45f),
@@ -1106,13 +1226,6 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
                 => new color(0.55f, 0.85f, 0.85f, 0.45f),
             _ => FileColor,
         };
-    }
-
-    private static string TruncateLabel(string label)
-    {
-        const int Max = 30;
-        if (label.Length <= Max) return label;
-        return label.Substring(0, Max - 1) + "…";
     }
 
     // The badge's word: the extension in capitals, or FILE when there is none.

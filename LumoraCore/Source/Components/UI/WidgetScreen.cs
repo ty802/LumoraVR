@@ -40,9 +40,9 @@ public abstract class WidgetScreen : DashboardScreen
     protected IAssetProvider<FontSet>? SemiboldFont => _dashboard?.FontSemibold.Target ?? _dashboard?.Font.Target;
     protected IAssetProvider<FontSet>? BoldFont => _dashboard?.FontBold.Target ?? _dashboard?.Font.Target;
 
-    protected Dashboard? ResolveDashboard() => _dashboard = Slot.GetComponentInParents<Dashboard>();
+    protected Dashboard? ResolveDashboard() => _dashboard = Dashboard.Of(Slot);
 
-    protected void MarkDirty() => _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
+    protected void MarkDirty() => Slot.GetComponentInParents<Canvas>()?.MarkDirty();
 
     // A pill row with a horizontal layout, its own graphic chunk, and the standard fill/border.
     protected Slot BeginRow(Slot page, string name)
@@ -77,6 +77,7 @@ public abstract class WidgetScreen : DashboardScreen
         var text = builder.Text(content, size, textColor);
         text.HorizontalAlignment.Value = alignment;
         text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        text.Ellipsis.Value = true;
         return text;
     }
 
@@ -98,6 +99,7 @@ public abstract class WidgetScreen : DashboardScreen
         text.Color.Value = textColor;
         text.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        text.Ellipsis.Value = true;
         return text;
     }
 
@@ -171,20 +173,23 @@ public abstract class WidgetScreen : DashboardScreen
         return driver;
     }
 
-    // A fixed-width pill button cell inside a row.
+    // A pill button cell inside a row, the given width when the row has it. In a narrow window the row
+    // squeezes it toward 70% and the label shrinks with it, rather than pushing the row out of its window.
     protected Slot AddInlineButton(Slot row, string label, color fill, float width, Action onClick)
     {
         var cell = row.AddSlot(label);
         cell.AttachComponent<RectTransform>();
         var element = cell.AttachComponent<LayoutElement>();
-        element.MinWidth.Value = width;
+        element.MinWidth.Value = MathF.Round(width * 0.7f);
         element.PreferredWidth.Value = width;
         element.FlexibleWidth.Value = 0f;
         element.FlexibleHeight.Value = 1f;
         ApplyRoundedPanel(cell, fill, RowBorder);
         var button = cell.AttachComponent<Button>();
         button.Clicked += (_, _) => onClick();
-        AddFillLabel(cell, label, DashTheme.FontBody, OnFill(fill), SemiboldFont);
+        var text = AddFillLabel(cell, label, DashTheme.FontBody, OnFill(fill), SemiboldFont);
+        text.AutoSizeHorizontal.Value = true;
+        text.AutoSizeMin.Value = 11f;
         return cell;
     }
 

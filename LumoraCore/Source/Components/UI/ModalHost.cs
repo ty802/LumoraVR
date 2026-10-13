@@ -26,7 +26,7 @@ namespace Lumora.Core.Components.UI;
 // confirm raised from inside a prompt does not silently eat the prompt.
 [SingleInstancePerSlot]
 [ComponentCategory("UI")]
-public sealed class ModalHost : UIComponent
+public sealed partial class ModalHost : UIComponent
 {
     private const float PanelWidth = 560f;
     private const float SidePadding = 24f;
@@ -41,7 +41,7 @@ public sealed class ModalHost : UIComponent
     private const float ButtonsHeight = 52f;
     private const float CornerRadius = DashTheme.RadiusCard;
 
-    private static readonly color ScrimFill = new color(0.02f, 0.02f, 0.05f, 0.62f);
+    private static readonly color ScrimFill = DashTheme.ModalScrim;
     private static readonly color PanelFill = DashTheme.Panel;
     private static readonly color PanelBorder = DashTheme.OutlineStrong;
     private static readonly color NeutralFill = DashTheme.Surface;
@@ -235,6 +235,9 @@ public sealed class ModalHost : UIComponent
         if (_promptInput != null && !_promptInput.IsDestroyed && _promptInput.IsFocused)
             _promptInput.Unfocus();
         _promptInput = null;
+        if (_choiceSearch != null && !_choiceSearch.IsDestroyed && _choiceSearch.IsFocused)
+            _choiceSearch.Unfocus();
+        _choiceSearch = null;
         _relay = null;
         if (_panel != null && !_panel.IsDestroyed)
             _panel.Destroy();
@@ -252,7 +255,7 @@ public sealed class ModalHost : UIComponent
         Teardown();
 
         var font = ResolveFont();
-        var rounded = Slot.GetComponentInParents<Dashboard>()?.RoundedSprite;
+        var rounded = Dashboard.Of(Slot)?.RoundedSprite;
 
         _scrim = Slot.AddSlot("ModalScrim");
         _scrim.Persistent.Value = false;
@@ -260,7 +263,6 @@ public sealed class ModalHost : UIComponent
         Fill(scrimRect);
         _scrim.OrderOffset.Value = 20000L;
         _scrim.AttachComponent<GraphicChunkRoot>().OverlayLevel = 1;
-        _scrim.AttachComponent<Image>().Tint.Value = ScrimFill;
         // Before the Button: the hit scan takes the last match on a slot, so the block goes first and
         // the button (when the dialog is dismissible) is allowed to win for the scrim itself.
         _scrim.AttachComponent<InteractionBlock>();
@@ -268,11 +270,12 @@ public sealed class ModalHost : UIComponent
         _panel = Slot.AddSlot("ModalPanel");
         _panel.Persistent.Value = false;
         float height = MeasureHeight(request);
+        float width = request.SearchChoices ? System.Math.Min(PanelWidth, AvailableSize.x - 32f) : PanelWidth;
         var panelRect = _panel.AttachComponent<RectTransform>();
         panelRect.AnchorMin.Value = new float2(0.5f, 0.5f);
         panelRect.AnchorMax.Value = new float2(0.5f, 0.5f);
-        panelRect.OffsetMin.Value = new float2(-PanelWidth * 0.5f, -height * 0.5f);
-        panelRect.OffsetMax.Value = new float2(PanelWidth * 0.5f, height * 0.5f);
+        panelRect.OffsetMin.Value = new float2(-width * 0.5f, -height * 0.5f);
+        panelRect.OffsetMax.Value = new float2(width * 0.5f, height * 0.5f);
         _panel.OrderOffset.Value = 20001L;
         _panel.AttachComponent<GraphicChunkRoot>().OverlayLevel = 2;
         RoundedPanel(_panel, PanelFill, PanelBorder, rounded);
@@ -284,6 +287,9 @@ public sealed class ModalHost : UIComponent
 
         if (request.DismissOnScrim)
             _scrim.AttachComponent<Button>().SetAction(_relay.OnScrimPressed);
+        // Add the image after the button so Button.OnAttach does not install a hover/press tint
+        // driver on the entire backdrop. Clicking outside still dismisses; the dim stays constant.
+        _scrim.AttachComponent<Image>().Tint.Value = ScrimFill;
 
         var column = _panel.AttachComponent<VerticalLayout>();
         column.Spacing.Value = RowSpacing;
@@ -295,9 +301,12 @@ public sealed class ModalHost : UIComponent
         column.ForceExpandHeight.Value = false;
 
         AddLabel(_panel, "Title", request.Title, 26f, TextPrimary, TitleHeight, font);
-        AddLabel(_panel, "Message", request.Message, 17f, TextDim, MessageHeight, font, wrap: true);
+        if (!request.SearchChoices || !request.Message.IsEmpty)
+            AddLabel(_panel, "Message", request.Message, 17f, TextDim, MessageHeight, font, wrap: true);
 
-        if (request.Choices.Count > 0)
+        if (request.SearchChoices)
+            BuildSearchableChoices(_panel, request, font, rounded);
+        else if (request.Choices.Count > 0)
             BuildChoices(_panel, request, font, rounded);
 
         if (request.Prompt)
@@ -355,11 +364,21 @@ public sealed class ModalHost : UIComponent
             // rather than as two competing labels.
             AddChoiceLabel(row, choice.Label, 17f, TextPrimary, font, TextHorizontalAlignment.Left,
                 new float2(0f, 0f), new float2(0.68f, 1f), new float2(14f, 0f), float2.Zero);
+            Text? detail = null;
             if (!string.IsNullOrEmpty(choice.Detail.Resolve()))
-                AddChoiceLabel(row, choice.Detail, 14f, TextDim, font, TextHorizontalAlignment.Right,
+                detail = AddChoiceLabel(row, choice.Detail, 14f, DetailColor(selected), font, TextHorizontalAlignment.Right,
                     new float2(0.68f, 0f), new float2(1f, 1f), float2.Zero, new float2(-14f, 0f));
+            _relay.ChoiceDetails.Add(detail);
         }
+
+        // The scroller puts its content in a chunk of its own, and a chunk draws in the band of its own
+        // level: left at 0, every row drew underneath this panel (level 2) and a long list came up empty.
+        foreach (var chunk in host.GetComponentsInChildren<GraphicChunkRoot>(false))
+            chunk.OverlayLevel = 3;
     }
+
+    // The dim grey that reads on a plain row all but vanishes on the accent a picked row wears.
+    private static color DetailColor(bool selected) => selected ? DashTheme.OnAccent : TextDim;
 
     private static Text AddChoiceLabel(Slot parent, LocaleText text, float size, color tint,
         IAssetProvider<FontSet>? font, TextHorizontalAlignment align,
@@ -403,8 +422,23 @@ public sealed class ModalHost : UIComponent
             }
         }
 
+        var details = _relay?.ChoiceDetails;
+        if (details != null)
+        {
+            for (int i = 0; i < details.Count; i++)
+            {
+                var detail = details[i];
+                if (detail != null && !detail.IsDestroyed)
+                    detail.Color.Value = DetailColor(i == index);
+            }
+        }
+
         try
         {
+            // Close before invoking a picker callback: changing language or resolution may rebuild UI,
+            // and a callback is also free to open another dialog.
+            if (request.CloseOnChoice)
+                Complete(request.CancelIndex);
             request.ChoiceChanged?.Invoke(index);
         }
         catch (Exception ex)
@@ -455,9 +489,26 @@ public sealed class ModalHost : UIComponent
             var element = cell.AttachComponent<LayoutElement>();
             element.FlexibleWidth.Value = 1f;
             element.FlexibleHeight.Value = 1f;
-            RoundedPanel(cell, FillFor(option.Style), PanelBorder, rounded);
+            var fill = FillFor(option.Style);
+            var background = RoundedPanel(cell, fill, PanelBorder, rounded);
 
             var button = cell.AttachComponent<Button>();
+            // Button only auto-binds plain Images; these bordered fills need an explicit driver.
+            var driver = button.AddColorDriver(background.Tint, fill, InteractionColorMode.Direct);
+            driver.HighlightColor.Value = option.Style switch
+            {
+                ModalOptionStyle.Accent => DashTheme.AccentHover,
+                ModalOptionStyle.Destructive => DashTheme.NegativeHover,
+                _ => DashTheme.SurfaceHover,
+            };
+            driver.PressedColor.Value = option.Style switch
+            {
+                ModalOptionStyle.Accent => DashTheme.AccentPressed,
+                ModalOptionStyle.Destructive => color.Lerp(DestructiveFill, color.Black, 0.15f),
+                _ => DashTheme.SurfacePressed,
+            };
+            driver.DisabledColor.Value = fill;
+            driver.Apply();
             button.SetAction(_relay!.OnOptionPressed);
             _relay.Options.Add(button);
 
@@ -472,8 +523,10 @@ public sealed class ModalHost : UIComponent
         _ => NeutralFill,
     };
 
-    private static float MeasureHeight(ModalRequest request)
+    private float MeasureHeight(ModalRequest request)
     {
+        if (request.SearchChoices)
+            return SearchableChromeHeight(request) + SearchableListHeight(request);
         float height = SidePadding * 2f + TitleHeight + MessageHeight + ButtonsHeight + RowSpacing * 2f;
         if (request.Prompt)
             height += PromptHeight + RowSpacing;
@@ -487,7 +540,7 @@ public sealed class ModalHost : UIComponent
 
     private IAssetProvider<FontSet>? ResolveFont()
     {
-        var dashboard = Slot.GetComponentInParents<Dashboard>();
+        var dashboard = Dashboard.Of(Slot);
         if (dashboard?.Font.Target != null)
             return dashboard.Font.Target;
         // No dashboard above us (a world-space panel with its own canvas). Borrow whatever font the

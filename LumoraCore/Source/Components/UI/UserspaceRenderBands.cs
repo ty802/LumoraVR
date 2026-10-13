@@ -12,7 +12,11 @@ namespace Lumora.Core.Components.UI;
 public static class UserspaceRenderBands
 {
     public const int DashSurfaceSortingOrder = 20000;
+    // Canvas sorting order of panels that stand in userspace beside the dash: above it, below the keyboard.
+    public const int PanelSortingOrder = 20050;
     public const int DashSurface = 4002 + DashSurfaceSortingOrder;
+    // The world loading card: over the dash it shows with, under hands and lasers.
+    public const int LoadingCard = 24200;
     public const int Hands = 24500;
     public const int DirectLine = 24800;
     public const int DirectCursor = 24900;

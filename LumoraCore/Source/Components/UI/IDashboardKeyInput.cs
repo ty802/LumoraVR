@@ -14,8 +14,31 @@ public interface IDashboardKeyInput
     // merely being able to take keys. -xlinka
     bool HasFieldFocus { get; }
 
+    // Inline fields copy their current value; null means there is no copyable field.
+    string? CopyText => null;
+
     bool ConsumeChar(char c);
     bool ConsumeBackspace();
     bool ConsumeEnter();
     bool ConsumeEscape();
+
+    // The keys an inline field has no use for; a screen that drives something bigger (the desktop) does.
+    bool ConsumeKey(DashboardKey key) => false;
+
+    // The keyboard was put away by hand. A screen whose field focus is its own flag drops it here, or the
+    // keyboard would see the focus still held and come straight back up.
+    void ReleaseFieldFocus()
+    {
+    }
+}
+
+public enum DashboardKey
+{
+    Tab,
+    Left,
+    Right,
+    Up,
+    Down,
+    Copy,
+    Paste,
 }

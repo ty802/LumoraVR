@@ -11,15 +11,22 @@ using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.Import;
 using Lumora.Core.Components.Interaction;
 using Lumora.Core.Components.Meshes;
+using Lumora.Core.Components.Touch;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
 [ComponentCategory("Hidden")]
+[UserspaceOnly]
 public class UserspaceDashboard : UIComponent
 {
-    private const int CaptureHeight = 720;
+    // The canvas the dash is laid out for. A window wider than 16:9 gets more width; a narrower one keeps
+    // the full design width and gets more HEIGHT instead. Narrowing the canvas to the window ran the tab
+    // bar, the top bar and the widget cards into each other on a near-square phone (768 wide on a Fold).
+    private const int DesignWidth = 1280;
+    private const int DesignHeight = 720;
+    private const int MaxCaptureSide = 2560;
     // Render the offscreen texture at this multiple of the logical canvas size, then
     // downsample on display. 2x means text/edges land between display pixels with proper
     // detail to filter from instead of stretching 1:1+ from a 1280x720 buffer. - xlinka
@@ -27,7 +34,7 @@ public class UserspaceDashboard : UIComponent
     // aliasing, and a 2560x1440 capture shown at ~1100 eye-buffer pixels tall on a Pico was being
     // sampled at more than 2:1: text turned to noise. 1280x720 there is close to 1:1 with the panel's
     // footprint. -xlinka
-    private static int SupersampleScale => Engine.IsMobilePlatform ? 1 : 2;
+    private static int SupersampleScale => Engine.IsStandaloneHeadset ? 1 : 2;
     private const float CanvasScale = 0.001f;
     private const float CaptureDistance = 1f;
 
@@ -39,7 +46,8 @@ public class UserspaceDashboard : UIComponent
     private const int DashSurfaceSortingOrder = UserspaceRenderBands.DashSurfaceSortingOrder;
     private static readonly float3 RigWorldPosition = new float3(0f, 1000f, 0f);
 
-    private int _captureWidth = 1280;
+    private int _captureWidth = DesignWidth;
+    private int _captureHeight = DesignHeight;
 
     public readonly Sync<bool> IsOpen;
     public readonly Sync<float> Distance;
@@ -62,7 +70,7 @@ public class UserspaceDashboard : UIComponent
     private Dashboard? _dashboard;
     private RenderTextureProvider? _renderTexture;
     private CurvedPlaneMesh? _displayMesh;
-    private UIUnlitMaterial? _displayMaterial;
+    private CustomShaderMaterial? _displayMaterial;
     private MeshRenderer? _displayRenderer;
     private bool _externalDisplay;
     private FontProvider? _fontProvider;
@@ -91,6 +99,18 @@ public class UserspaceDashboard : UIComponent
     private bool _followActivated;
     private bool _anchorValid;
     private bool _wasOpen;
+    // The frame the headset's origin was drawn from at the last placement, so a step to another one shows.
+    private World? _originWorld;
+    private UserRoot? _originRoot;
+    private Slot? _originSlot;
+    private float3 _originPosition;
+    private floatQ _originRotation = floatQ.Identity;
+    private bool _originSeen;
+    // The rig ray for a pointer with no reach behind it, a fingertip: nothing measures an angle for one.
+    private const float DefaultRigReach = 0.5f;
+    private const float MinRigReach = 0.01f;
+    private const double SlowOpenMs = 50.0;
+    private double _openMs;
     // Last seen shared-font atlas generation. New glyphs rasterize on demand and bump this; we re-render the
     // viewport when it changes so freshly-seen text isn't left blank under render-on-dirty. -xlinka
     private int _lastFontGeneration = -1;
@@ -128,6 +148,8 @@ public class UserspaceDashboard : UIComponent
     {
         base.OnStart();
         LocalInstance = this;
+        if (Slot.GetComponent<CameraDirector>() == null)
+            Slot.AttachComponent<CameraDirector>();
         EnsureBuilt();
         ApplyOpenState();
         ScheduleRigParkAfterWarmup();
@@ -187,7 +209,14 @@ public class UserspaceDashboard : UIComponent
         // the parked render rig doesn't dirty the canvas on its own, so without this the dash shows
         // blank until you switch tabs (which forces a rebuild). Does what a tab switch does, on open.
         if (open && !_wasOpen)
+        {
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
             _dashboard?.ForceRebuild();
+            double took = _openMs + System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            _openMs = 0.0;
+            if (took > SlowOpenMs)
+                Logging.Logger.Log($"UserspaceDashboard: opened in {took:0} ms");
+        }
         _wasOpen = open;
 
         // Render the offscreen UI only when it actually changed. The canvas flags a render after each mesh
@@ -218,15 +247,17 @@ public class UserspaceDashboard : UIComponent
             }
         }
 
-        // The whole-surface grab is disabled: boosting it above the canvas to move
-        // the dash also stole the laser in edit mode (you'd grab the whole dash
-        // instead of dragging a widget) and blocked clicks. Freeform place-and-stay
-        // (in OnLateUpdate) doesn't need it; repositioning should use a dedicated
-        // grab handle (future), not the entire surface.
+        // Freeform in VR: a grip anywhere on the dash picks it up and lets it go where you leave it. The grab
+        // is found by walking up from the surface the laser is on, so it never needs to win the laser over
+        // the canvas and clicks are untouched; in edit mode a grip lifts a widget instead. -xlinka
         if (_grabHandle != null)
         {
-            _grabHandle.AllowGrab.Value = false;
-            _grabHandle.InteractionPriority.Value = -1;
+            bool movable = open && Freeform.Value && !WidgetPanel.EditMode
+                && Engine.Current?.InputInterface?.IsVRActive == true;
+            if (_grabHandle.AllowGrab.Value != movable)
+                _grabHandle.AllowGrab.Value = movable;
+            if (_grabHandle.InteractionPriority.Value != -1)
+                _grabHandle.InteractionPriority.Value = -1;
         }
 
         // Positioning is intentionally NOT done here, for VR or desktop. OnCommonUpdate runs the
@@ -259,6 +290,7 @@ public class UserspaceDashboard : UIComponent
 
         var input = Engine.Current?.InputInterface;
         bool vr = input?.VR_Active ?? false;
+        bool stepped = StepOrigin(out var shift, out var turn);
 
         if (!vr)
         {
@@ -266,13 +298,24 @@ public class UserspaceDashboard : UIComponent
             return;
         }
 
+        // The view stepped to another frame (another world focused, a root that came or went): the dash goes
+        // with it and keeps its place around the viewer, Freeform included. With no head to place from, the view
+        // sits at the origin the step carried it to, and the dash stays where that left it until a head turns up.
+        // -xlinka
+        if (stepped)
+            CarryWithView(shift, turn);
+        if (!TryGetFocusedViewPose(out _, out _))
+            return;
+
         // Locked: pin the panel in front of the view every frame.
         // Freeform: leave it where it was placed; snap it back in front once
         // at the moment freeform is switched on so it stays within reach.
         bool freeform = Freeform.Value;
         if (!freeform)
         {
-            if (FollowViewWhileOpen.Value)
+            if (_lastFreeform)
+                ResetFollowAnchor();
+            else if (FollowViewWhileOpen.Value)
                 FollowFocusedViewLazily(delta);
         }
         else if (!_lastFreeform)
@@ -365,6 +408,41 @@ public class UserspaceDashboard : UIComponent
         PositionInFrontOfFocusedView();
     }
 
+    // Whether the view stepped to another frame since the last look: another world focused, a new root, a root
+    // override taken up or put down. Walking and turning move the frame without a step.
+    private bool StepOrigin(out float3 shift, out floatQ turn)
+    {
+        shift = float3.Zero;
+        turn = floatQ.Identity;
+        if (!PanelPlacement.TryOriginFrame(out var world, out var root, out var frame, out var position, out var rotation))
+            return false;
+        bool stepped = _originSeen && (!ReferenceEquals(world, _originWorld) || !ReferenceEquals(root, _originRoot)
+            || !ReferenceEquals(frame, _originSlot));
+        if (stepped)
+            PanelPlacement.FrameShift(_originPosition, _originRotation, position, rotation, out shift, out turn);
+        _originWorld = world;
+        _originRoot = root;
+        _originSlot = frame;
+        _originPosition = position;
+        _originRotation = rotation;
+        _originSeen = true;
+        return stepped;
+    }
+
+    // The dash and everything its follow keeps, into the view's new frame. The anchors stay level. A dash in
+    // the hand rides the hand, which went with the view.
+    private void CarryWithView(in float3 shift, in floatQ turn)
+    {
+        _anchorPosition = shift + turn * _anchorPosition;
+        _anchorTargetPosition = shift + turn * _anchorTargetPosition;
+        _anchorRotation = PanelPlacement.YawOf(turn * _anchorRotation);
+        _anchorTargetRotation = PanelPlacement.YawOf(turn * _anchorTargetRotation);
+        if (_grabHandle is { IsGrabbed: true })
+            return;
+        Slot.GlobalPosition = shift + turn * Slot.GlobalPosition;
+        Slot.GlobalRotation = turn * Slot.GlobalRotation;
+    }
+
     // Fit the flat surface to the window: place it ahead of the camera and scale
     // so it fills the viewport height (clamped by width), like a screen overlay.
     // Positions from the platform-pushed camera pose - the camera looks along
@@ -443,14 +521,39 @@ public class UserspaceDashboard : UIComponent
 
     public void Open()
     {
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool wasOpen = IsOpen.Value;
         IsOpen.Value = true;
         SetDashboardOpenFlag(true);
         EnsureBuilt();
         ApplyOpenState();
-        if (Engine.Current?.InputInterface?.VR_Active == true)
+        // Placed fresh in front of the view, so a step the view took while the dash was shut is not one to carry.
+        _originSeen = false;
+        StepOrigin(out _, out _);
+        var input = Engine.Current?.InputInterface;
+        if (input?.VR_Active == true)
+        {
             ResetFollowAnchor();
+            if (!wasOpen)
+                Haptics.Pulse(OpeningHand(input), TouchHaptics.Light);
+        }
         else
+        {
             PositionInFrontOfFocusedView();
+        }
+        if (!wasOpen)
+            _openMs = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+    }
+
+    // The hand whose button brought the dash up, when one and only one of them is down. Opened from code,
+    // from a keyboard or with a button down on each hand, nobody is told.
+    private static Chirality OpeningHand(InputInterface input)
+    {
+        bool left = input.LeftController is { } l && (l.PrimaryButtonPressed || l.MenuHoldFired);
+        bool right = input.RightController is { } r && (r.PrimaryButtonPressed || r.MenuHoldFired);
+        if (left == right)
+            return Chirality.None;
+        return left ? Chirality.Left : Chirality.Right;
     }
 
     public void Close()
@@ -458,6 +561,7 @@ public class UserspaceDashboard : UIComponent
         IsOpen.Value = false;
         SetDashboardOpenFlag(false);
         ApplyOpenState();
+        _dashboard?.FlushLayout();
     }
 
     private static void SetDashboardOpenFlag(bool value)
@@ -481,18 +585,27 @@ public class UserspaceDashboard : UIComponent
     public void SetAspect(float aspect)
     {
         if (aspect <= 0.1f) return;
-        // Quantize so near-16:9 windows resolve to the default 1280 and small
+        // Quantize so near-16:9 windows resolve to the design size and small
         // window-size jitter can't trigger full canvas rebuilds.
-        int w = (int)System.MathF.Round(CaptureHeight * aspect / 64f) * 64;
-        if (w < 640) w = 640;
-        if (w > 2560) w = 2560;
-        if (w == _captureWidth) return;
+        int w = DesignWidth;
+        int h = DesignHeight;
+        if (aspect >= (float)DesignWidth / DesignHeight)
+            w = System.Math.Clamp((int)System.MathF.Round(DesignHeight * aspect / 64f) * 64, DesignWidth, MaxCaptureSide);
+        else
+            h = System.Math.Clamp((int)System.MathF.Round(DesignWidth / aspect / 64f) * 64, DesignHeight, MaxCaptureSide);
+        if (w == _captureWidth && h == _captureHeight) return;
 
         _captureWidth = w;
-        if (_dashboard != null) _dashboard.Size.Value = new float2(w, CaptureHeight);
-        if (_renderTexture != null) _renderTexture.Width.Value = w * SupersampleScale;
+        _captureHeight = h;
+        if (_dashboard != null) _dashboard.Size.Value = new float2(w, h);
+        if (_renderTexture != null)
+        {
+            _renderTexture.Width.Value = w * SupersampleScale;
+            _renderTexture.Height.Value = h * SupersampleScale;
+            _renderTexture.OrthographicSize.Value = h * CanvasScale;
+        }
         if (_displayMesh != null)
-            _displayMesh.Size.Value = new float2(DisplayHeight.Value * ((float)w / CaptureHeight), DisplayHeight.Value);
+            _displayMesh.Size.Value = new float2(DisplayHeight.Value * ((float)w / h), DisplayHeight.Value);
     }
 
     public bool FeedAxis(float2 axis)
@@ -504,64 +617,108 @@ public class UserspaceDashboard : UIComponent
         return canvas.ProcessAxisAnyPointer(in axis);
     }
 
-    private string _searchBuffer = string.Empty;
+    // Where typing goes: an app out in the room whose field is waiting for keys, while it is the last thing
+    // pressed; otherwise the screen on the open dash. The headset keyboard and the hardware one both come in
+    // here, so both reach a popped app the same way they reach the dash. -xlinka
+    public DashboardScreen? KeyScreen
+    {
+        get
+        {
+            if (DashWindowPanel.TakesKeys)
+                return DashWindowPanel.KeyFocus!.Screen;
+            return IsOpen.Value ? _dashboard?.CurrentScreen : null;
+        }
+    }
+
+    // Keys belong to a popped app's field even with the dash closed.
+    public bool PanelTakesKeys => DashWindowPanel.TakesKeys;
 
     // Whether the screen on show actually wants keystrokes. The VR keyboard asks this to decide
     // whether to put itself up: a headset user typing into a dash field has no hardware keyboard to
     // reach for, and every screen that takes text says so by implementing the interface. -xlinka
-    public bool CurrentScreenTakesKeys => _dashboard?.CurrentScreen is IDashboardKeyInput;
+    public bool CurrentScreenTakesKeys => KeyScreen is IDashboardKeyInput;
 
     public void FeedSearchChar(char c)
     {
         // Let the current screen grab the keystroke first (inline name fields etc.); only fall through to the
-        // file-browser search buffer if nothing consumed it. -xlinka
-        if (_dashboard?.CurrentScreen is IDashboardKeyInput k && k.ConsumeChar(c))
+        // file-browser search buffer if nothing consumed it, and only on the dash. -xlinka
+        var screen = KeyScreen;
+        if (screen is IDashboardKeyInput k && k.ConsumeChar(c))
             return;
-        _searchBuffer += c;
-        ApplySearch();
+        if (PanelTakesKeys)
+            return;
+        if (screen is FileBrowserScreen browser)
+            browser.SetSearch(browser.SearchText + c);
     }
 
     public void FeedSearchBackspace()
     {
-        if (_dashboard?.CurrentScreen is IDashboardKeyInput k && k.ConsumeBackspace())
+        if (KeyScreen is IDashboardKeyInput k && k.ConsumeBackspace())
             return;
-        if (_searchBuffer.Length == 0) return;
-        _searchBuffer = _searchBuffer.Substring(0, _searchBuffer.Length - 1);
-        ApplySearch();
+        if (!PanelTakesKeys && KeyScreen is FileBrowserScreen browser && browser.SearchText.Length > 0)
+            browser.SetSearch(TextElements.RemoveLast(browser.SearchText));
     }
 
     public bool FeedEnter()
     {
-        return _dashboard?.CurrentScreen is IDashboardKeyInput k && k.ConsumeEnter();
+        return KeyScreen is IDashboardKeyInput k && k.ConsumeEnter();
     }
 
     public bool FeedEscape()
     {
-        return _dashboard?.CurrentScreen is IDashboardKeyInput k && k.ConsumeEscape();
+        return KeyScreen is IDashboardKeyInput k && k.ConsumeEscape();
+    }
+
+    public bool FeedKey(DashboardKey key)
+    {
+        if (KeyScreen is IDashboardKeyInput k && k.ConsumeKey(key))
+            return true;
+        if (key == DashboardKey.Copy && KeyScreen is IDashboardKeyInput { HasFieldFocus: true, CopyText: { } copied })
+        {
+            Engine.Current?.InputInterface?.ClipboardText?.SetText(copied);
+            return true;
+        }
+        // A dash field has no paste of its own, so the clipboard goes in as typing through the same door
+        // the keys use: the sign-in box took neither Ctrl+V nor the keyboard's Paste key. Only the first
+        // line, so a copied password with a line break after it is not cut short or submitted. -xlinka
+        if (key == DashboardKey.Paste && KeyScreen is IDashboardKeyInput { HasFieldFocus: true } field)
+        {
+            string text = Lumora.Core.Engine.Current?.InputInterface?.ClipboardText?.GetText() ?? string.Empty;
+            int lineEnd = text.IndexOfAny(new[] { '\r', '\n' });
+            if (lineEnd >= 0)
+                text = text.Substring(0, lineEnd);
+            foreach (char c in text)
+            {
+                if (!char.IsControl(c))
+                    field.ConsumeChar(c);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    public void ReleaseFieldFocus()
+    {
+        if (KeyScreen is IDashboardKeyInput k)
+            k.ReleaseFieldFocus();
     }
 
     public void ClearSearch()
     {
-        if (_searchBuffer.Length == 0) return;
-        _searchBuffer = string.Empty;
-        ApplySearch();
-    }
-
-    private void ApplySearch()
-    {
         if (_dashboard?.CurrentScreen is FileBrowserScreen fb)
-            fb.SetSearch(_searchBuffer);
+            fb.SetSearch(string.Empty);
     }
 
-    public void UpdateVrPointer(InteractionLaser laser, int pointerId, float2 normalized, bool pressed)
+    // reach: how far the beam went to the surface, in metres.
+    public void UpdateVrPointer(InteractionLaser laser, int pointerId, float2 normalized, bool pressed, float reach = 0f)
     {
-        UpdateSurfacePointer(VrSource(laser), pointerId, normalized, pressed);
+        UpdateSurfacePointer(VrSource(laser), pointerId, normalized, pressed, reach);
     }
 
     // A fingertip on the display surface, under the touch source's own ids.
     public void UpdateTouchPointer(int pointerId, float2 normalized, bool pressed)
     {
-        UpdateSurfacePointer(UIInteractionSource.Touch, pointerId, normalized, pressed);
+        UpdateSurfacePointer(UIInteractionSource.Touch, pointerId, normalized, pressed, 0f);
     }
 
     public void ClearTouchPointer(int pointerId)
@@ -569,21 +726,39 @@ public class UserspaceDashboard : UIComponent
         _canvasSlot?.GetComponent<Canvas>()?.ClearPointer(UIInteractionSource.Touch, pointerId, World?.LocalUser);
     }
 
-    private void UpdateSurfacePointer(UIInteractionSource source, int pointerId, float2 normalized, bool pressed)
+    private void UpdateSurfacePointer(UIInteractionSource source, int pointerId, float2 normalized, bool pressed, float reach)
     {
         if (_canvasSlot == null) return;
         var canvas = _canvasSlot.GetComponent<Canvas>();
         if (canvas == null) return;
 
         float lx = (normalized.x - 0.5f) * _captureWidth;
-        float ly = (0.5f - normalized.y) * CaptureHeight;
+        float ly = (0.5f - normalized.y) * _captureHeight;
         var worldPoint = _canvasSlot.LocalPointToGlobal(new float3(lx, ly, 0f));
         var forward = _canvasSlot.Forward;
-        canvas.UpdatePointer(source, pointerId, worldPoint + forward * 0.5f, -forward, pressed, World?.LocalUser);
+        canvas.UpdatePointer(source, pointerId, worldPoint + forward * RigReach(reach), -forward, pressed, World?.LocalUser);
+    }
+
+    // The beam's reach to the surface as the same angle at the rig. The canvas sizes its hover hold and the
+    // chrome its drag slop as angles at the pointer's distance, and the rig is drawn at another scale than the
+    // surface in front of the viewer: a fixed reach there made them a fixed count of pixels at any reach.
+    private float RigReach(float reach)
+    {
+        var surface = SurfaceSlot;
+        if (reach <= 0f || !float.IsFinite(reach) || surface == null || _canvasSlot == null || _displayMesh == null || _captureHeight <= 0)
+            return DefaultRigReach;
+        float surfaceUnit = _displayMesh.Size.Value.y / _captureHeight * MathF.Abs(surface.GlobalScale.y);
+        float rigUnit = MathF.Abs(_canvasSlot.GlobalScale.y);
+        if (surfaceUnit <= 1e-9f || rigUnit <= 1e-9f)
+            return DefaultRigReach;
+        return MathF.Max(MinRigReach, reach * rigUnit / surfaceUnit);
     }
 
     public IGrabbable? TryGrabVrPointer(InteractionLaser laser, int pointerId)
         => _canvasSlot?.GetComponent<Canvas>()?.TryGrab(VrSource(laser), pointerId);
+
+    public string? HoveredTip(InteractionLaser laser)
+        => _canvasSlot?.GetComponent<Canvas>()?.HoveredTip(VrSource(laser), laser.PointerId);
 
     public bool TryReceiveVrPointer(InteractionLaser laser, int pointerId, IReadOnlyList<IGrabbable> items)
         => _canvasSlot?.GetComponent<Canvas>()?.TryReceive(items, VrSource(laser), pointerId) == true;
@@ -602,10 +777,10 @@ public class UserspaceDashboard : UIComponent
         var size = _displayMesh.Size.Value;
         position = surface.LocalPointToGlobal(new float3(
             canvasPoint.x / _captureWidth * size.x,
-            canvasPoint.y / CaptureHeight * size.y,
+            canvasPoint.y / _captureHeight * size.y,
             0f));
         rotation = surface.GlobalRotation;
-        metersPerPixel = size.y / CaptureHeight * surface.GlobalScale.y;
+        metersPerPixel = size.y / _captureHeight * surface.GlobalScale.y;
         return true;
     }
 
@@ -614,6 +789,12 @@ public class UserspaceDashboard : UIComponent
         var canvas = _canvasSlot?.GetComponent<Canvas>();
         canvas?.ClearPointer(VrSource(laser), pointerId, World?.LocalUser);
     }
+
+    public bool ProcessVrAxis(InteractionLaser laser, int pointerId, float2 axis)
+        => _canvasSlot?.GetComponent<Canvas>()?.ProcessAxis(VrSource(laser), pointerId, axis) == true;
+
+    public bool WantsVrAxis(InteractionLaser laser, int pointerId)
+        => _canvasSlot?.GetComponent<Canvas>()?.WantsAxis(VrSource(laser), pointerId) == true;
 
     private static UIInteractionSource VrSource(InteractionLaser laser)
     {
@@ -710,7 +891,7 @@ public class UserspaceDashboard : UIComponent
         _canvasSlot.LocalScale.Value = float3.One * CanvasScale;
 
         _dashboard = _canvasSlot.AttachComponent<Dashboard>();
-        _dashboard.Size.Value = new float2(_captureWidth, CaptureHeight);
+        _dashboard.Size.Value = new float2(_captureWidth, _captureHeight);
         _dashboard.Font.Target = Font.Target;
         _dashboard.FontSemibold.Target = FontSemibold.Target;
         _dashboard.FontBold.Target = FontBold.Target;
@@ -718,13 +899,13 @@ public class UserspaceDashboard : UIComponent
 
         _renderTexture = _renderRig.AttachComponent<RenderTextureProvider>();
         _renderTexture.Width.Value = _captureWidth * SupersampleScale;
-        _renderTexture.Height.Value = CaptureHeight * SupersampleScale;
-        // Opaque capture: alpha-blended UI doesn't accumulate usable alpha in a
-        // transparent viewport, which made the whole dash ghostly. The slight
-        // see-through look comes from the surface material tint instead.
-        _renderTexture.ClearColor.Value = new color(DashTheme.Backdrop.r, DashTheme.Backdrop.g, DashTheme.Backdrop.b, 1f);
+        _renderTexture.Height.Value = _captureHeight * SupersampleScale;
+        // A clear capture: the UI blends over nothing and comes out with its colour multiplied by its own
+        // coverage, which is what the composite on the surface (and on the desktop window) expects. A
+        // straight-alpha read of it is what made an earlier clear capture look ghostly.
+        _renderTexture.ClearColor.Value = color.Transparent;
         _renderTexture.CullMask.Value = RenderLayerOverride.HiddenLayer;
-        _renderTexture.OrthographicSize.Value = CaptureHeight * CanvasScale;
+        _renderTexture.OrthographicSize.Value = _captureHeight * CanvasScale;
         _renderTexture.CameraPosition.Value = RigWorldPosition + new float3(0f, 0f, CaptureDistance);
         _renderTexture.CameraRotation.Value = floatQ.Identity;
     }
@@ -735,7 +916,7 @@ public class UserspaceDashboard : UIComponent
         if (_renderTexture == null) return;
         _built = true;
 
-        float aspect = (float)_captureWidth / CaptureHeight;
+        float aspect = (float)_captureWidth / _captureHeight;
         float height = DisplayHeight.Value;
 
         _surfaceSlot = Slot.AddSlot("Surface");
@@ -746,18 +927,10 @@ public class UserspaceDashboard : UIComponent
         _displayMesh.Curvature.Value = 0.5f;
         _displayMesh.Segments.Value = 24;
 
-        // UI overlay material with ZTest Always: the base UI shader depth-tests now (panels occlude
-        // properly), but the DASH must keep drawing above session-world geometry in desktop + VR.
-        _displayMaterial = _surfaceSlot.AttachComponent<UIUnlitMaterial>();
-        _displayMaterial.ZTest.Value = ZTest.Always;
-        _displayMaterial.Culling.Value = Culling.None;
-        _displayMaterial.UseVertexColor.Value = false;
-        // Fully opaque: the capture (its own SubViewport, opaque dark clear, no skybox) is the dash's
-        // isolation - it renders to its own pass, not into the session world. Any surface translucency just lets
-        // the session skybox/sun bleed through the dash, which is what we're avoiding. - xlinka
-        _displayMaterial.TintColor.Value = new colorHDR(1f, 1f, 1f, 1f);
-        _displayMaterial.RenderQueue.Value = 4002;
-        _displayMaterial.Texture.Target = _renderTexture;
+        // Past the depth buffer, so the dash stays over session-world geometry. The capture is the dash's
+        // isolation from the room's light: it is drawn unlit in its own pass, and what the room adds here is
+        // only its picture, blurred and darkened behind the glass. - xlinka
+        _displayMaterial = DashGlass.AttachComposite(_surfaceSlot, _renderTexture, 4002);
 
         var renderer = _surfaceSlot.AttachComponent<MeshRenderer>();
         renderer.Mesh.Target = _displayMesh;
@@ -803,23 +976,33 @@ public class UserspaceDashboard : UIComponent
         if (_defaultScreensBuilt || _dashboard == null) return;
         _defaultScreensBuilt = true;
 
-        // Tab order: Home (with the Create New World widget), Worlds (the world/session
-        // browser), then the social cluster (Friends/Groups/Inventory), Session, Settings,
-        // with the file browser last.
-        _dashboard?.AddScreen<HomeScreen>("Home", new color(0.94f, 0.81f, 0f, 1f));
-        _dashboard?.AddScreen<WorldsScreen>("Worlds", new color(0.20f, 0.80f, 1f, 1f));
+        // Home is the workspace itself; every other screen is an app with a window. Dock order: the places
+        // and people (Worlds, Groups, Friends, Inventory, Session), then the tools (Desktop, Files,
+        // Settings), then Exit on its own at the bottom.
+        var dash = _dashboard!;
+        var home = dash.AddScreen<HomeScreen>("Home", new color(0.94f, 0.81f, 0f, 1f));
+        dash.AddScreen<WorldsScreen>("Worlds", new color(0.20f, 0.80f, 1f, 1f), icon: "worlds");
+        dash.AddScreen<GroupsScreen>("Groups", new color(0.55f, 0.45f, 0.95f, 1f), icon: "groups");
         // No friends/contacts backend exists yet, so present this honestly as a placeholder rather
-        // than a working social feature: a dimmed "(Soon)" tab whose body says it isn't available. -xlinka
+        // than a working social feature: a dimmed "(Soon)" app whose window says it isn't available. -xlinka
         AddComingSoonScreen("Friends", new color(0.30f, 1f, 0.80f, 1f),
             "A friends and direct-message system isn't available yet.");
-        _dashboard?.AddScreen<GroupsScreen>("Groups", new color(0.55f, 0.45f, 0.95f, 1f));
-        _dashboard?.AddScreen<InventoryScreen>("Inventory", new color(0.85f, 0.60f, 0.22f, 1f));
-        _dashboard?.AddScreen<SessionScreen>("Session", new color(0.25f, 0.55f, 1f, 1f));
-        _dashboard?.AddScreen<SettingsScreen>("Settings", new color(1f, 0.22f, 0.28f, 1f));
-        _dashboard?.AddScreen<FileBrowserScreen>("Files", new color(0.70f, 0.66f, 0.32f, 1f));
-        // Reached from the home page's Debug card, not from a tab.
-        _dashboard?.AddScreen<DebugScreen>("Debug", new color(0.45f, 0.78f, 0.55f, 1f), showInNav: false);
-        _dashboard?.AddScreen<ExitScreen>("Exit", new color(1f, 0.30f, 0.32f, 1f));
+        dash.AddScreen<InventoryScreen>("Inventory", new color(0.85f, 0.60f, 0.22f, 1f), icon: "inventory");
+        dash.AddScreen<SessionScreen>("Session", new color(0.25f, 0.55f, 1f, 1f), icon: "session");
+        // Only where this machine's desktop can actually be reached (not under Wine, not without a display
+        // server). -xlinka
+        if (Lumora.Core.Desktop.DesktopPlatform.IsSupported)
+            dash.AddScreen<DesktopScreen>("Desktop", new color(0.93f, 0.45f, 0.80f, 1f), icon: "desktop", dockGroup: 1);
+        dash.AddScreen<FileBrowserScreen>("Files", new color(0.70f, 0.66f, 0.32f, 1f), icon: "files", dockGroup: 1);
+        dash.AddScreen<SettingsScreen>("Settings", new color(1f, 0.22f, 0.28f, 1f), icon: "settings", dockGroup: 1);
+        // Reached from the workspace's Debug card, not from the dock.
+        dash.AddScreen<DebugScreen>("Debug", new color(0.45f, 0.78f, 0.55f, 1f), showInNav: false, icon: "debug");
+        dash.AddScreen<ExitScreen>("Exit", new color(1f, 0.30f, 0.32f, 1f), icon: "exit", dockGroup: 2);
+
+        // App windows and detached panels belong to this run only. Start on Home with all apps closed,
+        // including when an older installation has a saved workspace. Home widget positions are preferences.
+        dash.RestoreLayout(persist: false);
+        home.RestoreDesk(persist: true);
     }
 
     // An honest placeholder tab for a feature with no backend yet: a "(Soon)" nav label and a body
@@ -828,9 +1011,8 @@ public class UserspaceDashboard : UIComponent
     {
         if (_dashboard == null) return;
 
-        var screen = _dashboard.AddScreen<DashboardScreen>(label + " (Soon)", accent);
+        var screen = _dashboard.AddScreen<DashboardScreen>(label + " (Soon)", accent, icon: label.ToLowerInvariant());
         screen.Placeholder.Value = true;
-        _dashboard.RefreshNavStyles();
         var content = screen.ContentSlot;
         if (content == null) return;
 

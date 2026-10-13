@@ -90,6 +90,11 @@ public sealed class ModalRequest
     // (a device meter, say) wants to know immediately rather than at the end.
     public Action<int>? ChoiceChanged;
 
+    // Compact pickers filter by name/detail and commit through ChoiceChanged on one click.
+    // Dismissing them never calls ChoiceChanged.
+    public bool SearchChoices;
+    public bool CloseOnChoice;
+
     public ModalRequest AddChoice(LocaleText label, LocaleText detail = default)
     {
         Choices.Add(new ModalChoice(label, detail));

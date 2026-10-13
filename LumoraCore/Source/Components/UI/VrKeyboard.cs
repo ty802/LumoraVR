@@ -25,7 +25,8 @@ namespace Lumora.Core.Components.UI;
 // wakes for it rather than a frame of keyboard nothing can press. -xlinka
 [ComponentCategory("UI")]
 [DefaultUpdateOrder(-1100)]
-public sealed class VrKeyboard : Component
+[UserspaceOnly]
+public sealed class VrKeyboard : Component, Helio.UI.IKeepsTextFocus
 {
     // Canvas units. Left column is a preview strip over four glyph rows and a modifier row; the right
     // column carries the numeric pad up top and the arrow cluster at the bottom.
@@ -63,11 +64,10 @@ public sealed class VrKeyboard : Component
     private const float EscapeKeyWidth = 44f;
     private const float CloseKeyWidth = 56f;
 
-    // Re-place a panel WE put down when it has drifted out of comfortable reach: too far, or too far
-    // around the head to read without turning. One the user has moved by hand stays where they left
-    // it, in reach or not; that placement is theirs.
-    private const float ReachDistance = 1f;
-    private const float ReachAngleDegrees = 70f;
+    // Keep a useful placement between fields, but bring it back on the next show if the user has
+    // walked away or turned around. Distances are relative to the focused user's scale.
+    private const float ReachDistance = 0.8f;
+    private const float ReachAngleDegrees = 55f;
     // Late updates after a show that keep re-docking. The dash positions itself in its own late
     // update, after ours, so the frame it opens the surface is still where it last was.
     private const int DockSettleFrames = 2;
@@ -150,8 +150,7 @@ public sealed class VrKeyboard : Component
     private bool _typingSession;
     // World time the focus went away, NaN while it is held. The hide waits HideGrace from here.
     private double _focusLostAt = double.NaN;
-    // Whether the panel has ever been placed, and whether the user has moved it since. A panel the
-    // user moved is never re-docked; one we placed is re-docked only when it drifts out of reach.
+    // Keep the user's chosen size when recovering a panel they moved out of reach.
     private bool _placed;
     private bool _userPlaced;
     private int _dockFrames;
@@ -181,7 +180,7 @@ public sealed class VrKeyboard : Component
         ShiftActive = new Sync<bool>(this, false);
         ShiftHeld = new Sync<bool>(this, false);
         Distance = new Sync<float >(this, 0.55f);
-        DropBelowGaze = new Sync<float>(this, 0.2f);
+        DropBelowGaze = new Sync<float>(this, 0.3f);
         RepeatDelay = new Sync<float>(this, 0.45f);
         RepeatInterval = new Sync<float>(this, 0.05f);
         ShiftHoldWindow = new Sync<float>(this, 0.5f);
@@ -255,6 +254,9 @@ public sealed class VrKeyboard : Component
 
     private static bool DashFieldFocused()
     {
+        // An app out in the room with a field waiting counts, dash open or not.
+        if (DashWindowPanel.TakesKeys)
+            return true;
         var input = Engine.Current?.InputInterface;
         if (input == null || !input.IsDashboardOpen)
             return false;
@@ -280,10 +282,9 @@ public sealed class VrKeyboard : Component
         }
 
         Slot.ActiveSelf.Value = true;
-        // The transform is the user's once they have moved the panel, and ours until then: the first
-        // show docks it, a later show finds it where it was left, and only a panel we placed that has
-        // drifted out of reach gets docked again. Hide/show and dash open/close never move it. -xlinka
-        if (!_placed || (!_userPlaced && !IsWithinReach()))
+        // Preserve a reachable placement. A keyboard left behind must still reopen near the user,
+        // even when its previous position was chosen by hand.
+        if (!IsGrabbed && (!_placed || !IsWithinReach()))
         {
             Dock();
             _dockFrames = DockSettleFrames;
@@ -305,6 +306,7 @@ public sealed class VrKeyboard : Component
         _focusLostAt = double.NaN;
         _dockFrames = 0;
         BlurFocused();
+        UserspaceDashboard.LocalInstance?.ReleaseFieldFocus();
     }
 
     // GRAB
@@ -316,8 +318,8 @@ public sealed class VrKeyboard : Component
     {
         _userPlaced = true;
         _dockFrames = 0;
-        // Whatever was down on a key when the hand closed is cancelled, not submitted, and the hands
-        // stay disarmed for poking until each tip has come back out of the panel.
+        // Whatever was down on a key when the hand closed lets go there: it stops repeating, nothing more
+        // is typed, and the hands stay disarmed for poking until each tip has come back out of the panel.
         Touch.CanvasTouchSource.DisarmAll(World);
         PokeCanvas()?.ReleaseAllPointers();
     }
@@ -335,9 +337,8 @@ public sealed class VrKeyboard : Component
             focused.Unfocus();
     }
 
-    // With the dash up, the first show hangs the keyboard off its bottom edge, tilted up toward the
-    // wearer. Placing both from the head independently put the keyboard right in front of the panel
-    // it was typing into. With no dash it goes in front of the head instead. -xlinka
+    // Dock below the field's panel only when that position is comfortable to reach. Large or distant
+    // windows must not send the keyboard to the floor or across the room.
     private const float DockGap = 0.06f;
     private const float DockTowardViewer = 0.18f;
     private const float DockTiltDegrees = -45f;
@@ -357,6 +358,16 @@ public sealed class VrKeyboard : Component
             return;
         _placed = true;
 
+        // Under the app being typed into when that is a panel out in the room.
+        var panel = DashWindowPanel.TakesKeys ? DashWindowPanel.KeyFocus?.Surface : null;
+        if (panel?.Slot is { IsDestroyed: false } panelSurface && Engine.Current?.InputInterface?.IsVRActive == true)
+        {
+            var bottom = panelSurface.LocalPointToGlobal(new float3(0f, -panel.Size.y * PanelSurface.UnitMeters * 0.5f, 0f));
+            var turn = panelSurface.GlobalRotation;
+            PlaceDockOrHead(bottom + turn * (float3.Down * DockGap + float3.Forward * DockTowardViewer), turn);
+            return;
+        }
+
         var dash = UserspaceDashboard.LocalInstance;
         var surface = dash != null && !dash.IsDestroyed && dash.IsOpen.Value ? dash.SurfaceSlot : null;
         if (surface == null || Engine.Current?.InputInterface?.IsVRActive != true)
@@ -367,10 +378,21 @@ public sealed class VrKeyboard : Component
 
         float halfHeight = dash!.DisplayHeight.Value * 0.5f;
         var local = new float3(0f, -halfHeight - DockGap, DockTowardViewer);
-        Slot.GlobalPosition = surface.LocalPointToGlobal(local);
-        // AxisAngle takes radians; the constant is in degrees so it reads as a tilt.
-        Slot.GlobalRotation = surface.GlobalRotation * floatQ.AxisAngleRad(float3.Right, DockTiltDegrees * (MathF.PI / 180f));
-        Slot.LocalScale.Value = float3.One * PanelScale;
+        PlaceDockOrHead(surface.LocalPointToGlobal(local), surface.GlobalRotation);
+    }
+
+    private void PlaceDockOrHead(float3 position, floatQ rotation)
+    {
+        var head = HeadSlot();
+        if (head == null || !IsWithinReach(position, head)
+            || float3.Dot(head.GlobalPosition - position, rotation * float3.Forward) <= 0f)
+        {
+            PlaceInFrontOfHead();
+            return;
+        }
+        Slot.GlobalPosition = position;
+        Slot.GlobalRotation = rotation * floatQ.AxisAngleRad(float3.Right, DockTiltDegrees * (MathF.PI / 180f));
+        ApplyDefaultScale(head);
     }
 
     private void PlaceInFrontOfHead()
@@ -387,18 +409,24 @@ public sealed class VrKeyboard : Component
             return;
         }
 
+        var up = ViewUp(head);
+        float scale = ViewScale(head);
+        var forward = FlatViewForward(head);
         Slot.GlobalPosition = head.GlobalPosition
-            + FlatViewForward(head) * Distance.Value
-            + float3.Down * DropBelowGaze.Value;
+            + forward * System.Math.Clamp(Distance.Value, 0.35f, 0.65f) * scale
+            - up * System.Math.Clamp(DropBelowGaze.Value, 0.15f, 0.45f) * scale;
 
         // Yaw so the panel's readable +Z face turns back at the head. Never floatQ.LookRotation here:
         // it hands back the inverse rotation and the panel goes edge-on at oblique angles. -xlinka
-        var toViewer = head.GlobalPosition - Slot.GlobalPosition;
-        toViewer.y = 0f;
-        if (toViewer.LengthSquared > 1e-6f)
-            Slot.GlobalRotation = floatQ.AxisAngleRad(float3.Up, MathF.Atan2(toViewer.x, toViewer.z));
+        Slot.GlobalRotation = LaserCarry.FacingRotation(-forward, up)
+            * floatQ.AxisAngleRad(float3.Right, -30f * (MathF.PI / 180f));
+        ApplyDefaultScale(head);
+    }
 
-        Slot.LocalScale.Value = float3.One * PanelScale;
+    private void ApplyDefaultScale(Slot head)
+    {
+        if (!_userPlaced)
+            Slot.GlobalScale = float3.One * (PanelScale * ViewScale(head));
     }
 
     private bool IsWithinReach()
@@ -408,12 +436,19 @@ public sealed class VrKeyboard : Component
         if (head == null || Slot == null || Slot.IsDestroyed)
             return true;
 
-        var offset = Slot.GlobalPosition - head.GlobalPosition;
-        if (offset.Length > ReachDistance)
+        return IsWithinReach(Slot.GlobalPosition, head);
+    }
+
+    private static bool IsWithinReach(float3 position, Slot head)
+    {
+        var offset = (position - head.GlobalPosition) / ViewScale(head);
+        var up = ViewUp(head);
+        float height = float3.Dot(offset, up);
+        if (offset.Length > ReachDistance || height < -0.65f || height > -0.08f)
             return false;
 
-        var flat = new float3(offset.x, 0f, offset.z);
-        if (flat.LengthSquared <= 1e-6f)
+        var flat = LaserCarry.FlattenInRoot(up, offset);
+        if (flat.Length < 0.2f)
             return false;
 
         float alignment = float3.Dot(flat.Normalized, FlatViewForward(head));
@@ -422,15 +457,28 @@ public sealed class VrKeyboard : Component
 
     private Slot? HeadSlot()
     {
-        var head = World?.LocalUser?.Root?.HeadSlot;
+        // The focused view is authoritative. The userspace proxy can lag a teleport or a change of
+        // avatar scale; keep it as the fallback while worlds are switching.
+        var head = Engine.Current?.WorldManager?.FocusedWorld?.LocalUser?.Root?.HeadSlot;
+        if (head == null || head.IsDestroyed)
+            head = World?.LocalUser?.Root?.HeadSlot;
         return head != null && !head.IsDestroyed ? head : null;
+    }
+
+    private static float3 ViewUp(Slot head) => head.ActiveUserRoot?.Slot.Up ?? float3.Up;
+
+    private static float ViewScale(Slot head)
+    {
+        var scale = head.ActiveUserRoot?.Slot.GlobalScale ?? float3.One;
+        return MathF.Max(0.001f, (MathF.Abs(scale.x) + MathF.Abs(scale.y) + MathF.Abs(scale.z)) / 3f);
     }
 
     private static float3 FlatViewForward(Slot head)
     {
         float3 forward = head.GlobalRotation * float3.Backward; // view forward is -Z
-        forward.y = 0f;
-        return forward.LengthSquared > 1e-6f ? forward.Normalized : float3.Backward;
+        forward = LaserCarry.FlattenInRoot(ViewUp(head), forward);
+        return forward.LengthSquared > 1e-6f ? forward.Normalized
+            : (head.ActiveUserRoot?.Slot.GlobalRotation ?? floatQ.Identity) * float3.Backward;
     }
 
     // POKE
@@ -466,8 +514,8 @@ public sealed class VrKeyboard : Component
                 // Cancel the edit without committing it; the focus poll puts the panel away next
                 // update. With no field focused the dashboard is the one editing, so it gets the
                 // cancel instead - otherwise Escape is a dead key on every dash screen.
-                if (TextInput.Focused is { IsDestroyed: false })
-                    BlurFocused();
+                if (TextInput.Focused is { IsDestroyed: false } focused)
+                    focused.Cancel();
                 else
                     UserspaceDashboard.LocalInstance?.FeedEscape();
                 return;
@@ -546,6 +594,25 @@ public sealed class VrKeyboard : Component
                 dash.FeedEnter();
                 break;
             case VrKeyRole.Tab:
+                dash.FeedKey(DashboardKey.Tab);
+                break;
+            case VrKeyRole.ArrowLeft:
+                dash.FeedKey(DashboardKey.Left);
+                break;
+            case VrKeyRole.ArrowRight:
+                dash.FeedKey(DashboardKey.Right);
+                break;
+            case VrKeyRole.ArrowUp:
+                dash.FeedKey(DashboardKey.Up);
+                break;
+            case VrKeyRole.ArrowDown:
+                dash.FeedKey(DashboardKey.Down);
+                break;
+            case VrKeyRole.Copy:
+                dash.FeedKey(DashboardKey.Copy);
+                break;
+            case VrKeyRole.Paste:
+                dash.FeedKey(DashboardKey.Paste);
                 break;
         }
     }
@@ -908,12 +975,16 @@ public sealed class VrKeyboard : Component
         // Button.OnAttach only adopts a plain Image; the rounded keys use BorderedImage, so the
         // hover/press driver has to be pointed at the tint by hand or the keys never light up.
         button.SetupBackgroundColor(backing.Tint);
+        // Every point of the key grid is a key: each answers out to the middle of the row gap around it,
+        // which also covers the narrower gap between keys (the right-hand key takes the sliver they share).
+        button.HitOutset.Value = RowSpacing * 0.5f;
 
         var key = slot.AttachComponent<VrKey>();
         key.Glyph.Value = glyph;
         key.ShiftGlyph.Value = shiftGlyph;
         key.Role.Value = role;
         key.Keyboard.Target = this;
+        button.KeepPressUntilRelease.Value = key.Repeats;
         button.SetAction(key.OnPressed);
 
         key.Label.Target = BuildKeyFace(slot, "Label", glyph, LabelSize, InspectorUI.TextColor,

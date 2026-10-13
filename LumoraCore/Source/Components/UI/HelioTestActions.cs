@@ -4,46 +4,20 @@
 using System;
 using Helio.UI;
 using Lumora.Core;
-using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
-/// <summary>
-/// Handlers for the Helio validation panel. The panel's buttons, checkbox and
-/// slider bind to these methods rather than to inline closures, so the actions
-/// are stored as element + method references and survive duplication: a cloned
-/// panel's controls drive the clone's own labels, not the original's.
-/// </summary>
+// Handlers for the widget sampler on the test bench. Its button, checkbox and slider bind to these methods
+// rather than to inline closures, so the actions are stored as element and method references and survive
+// duplication: a cloned panel's controls drive the clone's own status line, not the original's. -xlinka
 [ComponentCategory("Hidden")]
 public sealed class HelioTestActions : Component
 {
-    public readonly SyncRef<PanelShell> Panel;
     public readonly SyncRef<Text> Status;
-    public readonly Sync<int> ShellClickCount;
 
     public HelioTestActions()
     {
-        Panel = new SyncRef<PanelShell>(this);
         Status = new SyncRef<Text>(this);
-        ShellClickCount = new Sync<int>(this, 0);
-    }
-
-    [SyncMethod]
-    public void OnShellPressed(Button button, UIInteractionContext context)
-    {
-        ShellClickCount.Value++;
-        bool alternate = ShellClickCount.Value % 2 == 1;
-
-        var panel = Panel.Target;
-        if (panel != null)
-        {
-            panel.Title.Value = alternate ? $"Helio Validation {ShellClickCount.Value}" : "Helio Validation";
-            panel.HeaderColor.Value = alternate
-                ? new color(0.17f, 0.11f, 0.22f, 0.98f)
-                : new color(0.105f, 0.130f, 0.165f, 0.98f);
-        }
-
-        SetStatus("PanelShell title/header updated live");
     }
 
     [SyncMethod]

@@ -54,10 +54,11 @@ public class SwapPanel : UIComponent
         Duration = new Sync<float>(this, 0.25f);
     }
 
+    // Finds the container, never makes it, for the same reason the wizard finds its pages. -xlinka
     public override void OnStart()
     {
         base.OnStart();
-        EnsureContainer();
+        _containerSlot ??= Slot.FindChild(ContainerName, recursive: false);
     }
 
     public UIBuilder Show(Action<UIBuilder> build, SwapDirection direction = SwapDirection.None)
@@ -175,11 +176,13 @@ public class SwapPanel : UIComponent
         _currentPageSlot = null;
     }
 
+    private const string ContainerName = "Pages";
+
     private void EnsureContainer()
     {
-        if (_containerSlot != null) return;
+        if (_containerSlot != null && !_containerSlot.IsDestroyed) return;
 
-        _containerSlot = Slot.AddSlot("Pages");
+        _containerSlot = Slot.FindChild(ContainerName, recursive: false) ?? Slot.AddSlot(ContainerName);
         Fill(_containerSlot.AttachComponent<RectTransform>());
     }
 

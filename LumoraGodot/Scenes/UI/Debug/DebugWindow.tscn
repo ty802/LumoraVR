@@ -1,12 +1,10 @@
-[gd_scene load_steps=15 format=3 uid="uid://debug_window_scene"]
+[gd_scene format=3 uid="uid://cguwb4rasnlav"]
 
 [ext_resource type="FontFile" uid="uid://dne06dcdmx5hj" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
-[ext_resource type="Script" path="res://Source/Godot/Debug/DebugWindow.cs" id="2_script"]
-[ext_resource type="Script" path="res://Source/Godot/Debug/MemoryHistoryGraph.cs" id="3_mem_graph"]
-[ext_resource type="Script" path="res://Source/Godot/Debug/ProfilerGraph.cs" id="4_prof_graph"]
+[ext_resource type="Script" uid="uid://c7wy2lh6lm8j7" path="res://Source/Godot/Debug/DebugWindow.cs" id="2_script"]
+[ext_resource type="Script" uid="uid://bxualwmqpvhk7" path="res://Source/Godot/Debug/MemoryHistoryGraph.cs" id="3_mem_graph"]
+[ext_resource type="Script" uid="uid://cahn1r8bqmdfn" path="res://Source/Godot/Debug/ProfilerGraph.cs" id="4_prof_graph"]
 
-; Scope the debug window to the crisp non-MSDF FiraCode. Without this every label falls back to the
-; project default font (MSDF), and synthetic-bold on MSDF punches holes in the glyphs. -xlinka
 [sub_resource type="Theme" id="debug_theme"]
 default_font = ExtResource("1_font")
 
@@ -14,93 +12,86 @@ default_font = ExtResource("1_font")
 bg_color = Color(0.08, 0.08, 0.1, 1)
 
 [sub_resource type="StyleBoxFlat" id="tab_panel"]
-bg_color = Color(0.06, 0.06, 0.08, 1)
 content_margin_left = 8.0
 content_margin_top = 8.0
 content_margin_right = 8.0
 content_margin_bottom = 8.0
-
-[sub_resource type="StyleBoxFlat" id="section_bg"]
-bg_color = Color(0.1, 0.09, 0.14, 1)
-corner_radius_top_left = 6
-corner_radius_top_right = 6
-corner_radius_bottom_right = 6
-corner_radius_bottom_left = 6
-content_margin_left = 10.0
-content_margin_top = 6.0
-content_margin_right = 10.0
-content_margin_bottom = 6.0
-
-[sub_resource type="StyleBoxFlat" id="log_bg"]
-bg_color = Color(0.04, 0.04, 0.05, 1)
-corner_radius_top_left = 4
-corner_radius_top_right = 4
-corner_radius_bottom_right = 4
-corner_radius_bottom_left = 4
-content_margin_left = 8.0
-content_margin_top = 6.0
-content_margin_right = 8.0
-content_margin_bottom = 6.0
+bg_color = Color(0.06, 0.06, 0.08, 1)
 
 [sub_resource type="StyleBoxFlat" id="toolbar_bg"]
+content_margin_left = 6.0
+content_margin_top = 4.0
+content_margin_right = 6.0
+content_margin_bottom = 4.0
 bg_color = Color(0.1, 0.1, 0.12, 1)
 corner_radius_top_left = 4
 corner_radius_top_right = 4
 corner_radius_bottom_right = 4
 corner_radius_bottom_left = 4
-content_margin_left = 6.0
-content_margin_top = 4.0
-content_margin_right = 6.0
-content_margin_bottom = 4.0
+
+[sub_resource type="StyleBoxFlat" id="log_bg"]
+content_margin_left = 8.0
+content_margin_top = 6.0
+content_margin_right = 8.0
+content_margin_bottom = 6.0
+bg_color = Color(0.04, 0.04, 0.05, 1)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+
+[sub_resource type="StyleBoxFlat" id="status_bg"]
+content_margin_left = 8.0
+content_margin_top = 2.0
+content_margin_right = 8.0
+content_margin_bottom = 2.0
+bg_color = Color(0.06, 0.06, 0.08, 1)
+
+[sub_resource type="StyleBoxFlat" id="section_bg"]
+content_margin_left = 10.0
+content_margin_top = 6.0
+content_margin_right = 10.0
+content_margin_bottom = 6.0
+bg_color = Color(0.1, 0.09, 0.14, 1)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
 
 [sub_resource type="StyleBoxFlat" id="stat_row_bg"]
+content_margin_left = 8.0
+content_margin_top = 4.0
+content_margin_right = 8.0
+content_margin_bottom = 4.0
 bg_color = Color(0.09, 0.09, 0.11, 0.5)
 corner_radius_top_left = 3
 corner_radius_top_right = 3
 corner_radius_bottom_right = 3
 corner_radius_bottom_left = 3
+
+[sub_resource type="StyleBoxFlat" id="stat_row_alt_bg"]
 content_margin_left = 8.0
 content_margin_top = 4.0
 content_margin_right = 8.0
 content_margin_bottom = 4.0
-
-[sub_resource type="StyleBoxFlat" id="stat_row_alt_bg"]
 bg_color = Color(0.1, 0.1, 0.13, 0.5)
 corner_radius_top_left = 3
 corner_radius_top_right = 3
 corner_radius_bottom_right = 3
 corner_radius_bottom_left = 3
-content_margin_left = 8.0
-content_margin_top = 4.0
-content_margin_right = 8.0
-content_margin_bottom = 4.0
 
-[sub_resource type="StyleBoxFlat" id="memory_bar_bg"]
-bg_color = Color(0.15, 0.12, 0.2, 1)
-corner_radius_top_left = 3
-corner_radius_top_right = 3
-corner_radius_bottom_right = 3
-corner_radius_bottom_left = 3
-
-[sub_resource type="StyleBoxFlat" id="status_bg"]
-bg_color = Color(0.06, 0.06, 0.08, 1)
-content_margin_left = 8.0
-content_margin_top = 2.0
-content_margin_right = 8.0
-content_margin_bottom = 2.0
-
-[node name="DebugWindow" type="Control"]
+[node name="DebugWindow" type="Control" unique_id=1508556320]
 unique_name_in_owner = true
-script = ExtResource("2_script")
-theme = SubResource("debug_theme")
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+theme = SubResource("debug_theme")
+script = ExtResource("2_script")
 
-[node name="Background" type="Panel" parent="."]
+[node name="Background" type="Panel" parent="." unique_id=2012224387]
 unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
@@ -110,7 +101,7 @@ grow_horizontal = 2
 grow_vertical = 2
 theme_override_styles/panel = SubResource("bg_panel")
 
-[node name="RootMargin" type="MarginContainer" parent="Background"]
+[node name="RootMargin" type="MarginContainer" parent="Background" unique_id=773861993]
 unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
@@ -123,105 +114,104 @@ theme_override_constants/margin_top = 6
 theme_override_constants/margin_right = 6
 theme_override_constants/margin_bottom = 6
 
-[node name="RootVBox" type="VBoxContainer" parent="Background/RootMargin"]
+[node name="RootVBox" type="VBoxContainer" parent="Background/RootMargin" unique_id=598854738]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="Tabs" type="TabContainer" parent="Background/RootMargin/RootVBox"]
+[node name="Tabs" type="TabContainer" parent="Background/RootMargin/RootVBox" unique_id=1560193626]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_font_sizes/font_size = 13
 theme_override_styles/panel = SubResource("tab_panel")
+current_tab = 0
 
-; ============================================================
-; TAB 1: LOGS
-; ============================================================
-
-[node name="Logs" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs"]
+[node name="Logs" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs" unique_id=1534870154]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 4
+metadata/_tab_index = 0
 
-[node name="Toolbar" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Logs"]
+[node name="Toolbar" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Logs" unique_id=122948516]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("toolbar_bg")
 
-[node name="ToolbarHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar"]
+[node name="ToolbarHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar" unique_id=1701366668]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="FilterLog" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox"]
+[node name="FilterLog" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox" unique_id=1564518061]
 unique_name_in_owner = true
 layout_mode = 2
-button_pressed = true
 theme_override_colors/font_color = Color(0.6, 0.8, 0.6, 1)
 theme_override_colors/font_pressed_color = Color(0.6, 0.8, 0.6, 1)
 theme_override_font_sizes/font_size = 11
+button_pressed = true
 text = "LOG"
 
-[node name="FilterWarn" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox"]
+[node name="FilterWarn" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox" unique_id=1962945810]
 unique_name_in_owner = true
 layout_mode = 2
-button_pressed = true
 theme_override_colors/font_color = Color(1, 0.85, 0.2, 1)
 theme_override_colors/font_pressed_color = Color(1, 0.85, 0.2, 1)
 theme_override_font_sizes/font_size = 11
+button_pressed = true
 text = "WARN"
 
-[node name="FilterError" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox"]
+[node name="FilterError" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox" unique_id=1812284974]
 unique_name_in_owner = true
 layout_mode = 2
-button_pressed = true
 theme_override_colors/font_color = Color(1, 0.3, 0.3, 1)
 theme_override_colors/font_pressed_color = Color(1, 0.3, 0.3, 1)
 theme_override_font_sizes/font_size = 11
+button_pressed = true
 text = "ERROR"
 
-[node name="FilterDebug" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox"]
+[node name="FilterDebug" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox" unique_id=362429698]
 unique_name_in_owner = true
 layout_mode = 2
-button_pressed = true
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
 theme_override_colors/font_pressed_color = Color(0.5, 0.5, 0.55, 1)
 theme_override_font_sizes/font_size = 11
+button_pressed = true
 text = "DEBUG"
 
-[node name="Spacer1" type="Control" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox"]
+[node name="Spacer1" type="Control" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox" unique_id=1681914788]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="SearchBox" type="LineEdit" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox"]
+[node name="SearchBox" type="LineEdit" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox" unique_id=1875854488]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(200, 0)
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
 placeholder_text = "Search..."
 
-[node name="ClearBtn" type="Button" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox"]
+[node name="ClearBtn" type="Button" parent="Background/RootMargin/RootVBox/Tabs/Logs/Toolbar/ToolbarHBox" unique_id=935260559]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "Clear"
 
-[node name="LogDisplay" type="RichTextLabel" parent="Background/RootMargin/RootVBox/Tabs/Logs"]
+[node name="LogDisplay" type="RichTextLabel" parent="Background/RootMargin/RootVBox/Tabs/Logs" unique_id=1949527845]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
+focus_mode = 2
 theme_override_font_sizes/normal_font_size = 12
 theme_override_styles/normal = SubResource("log_bg")
 selection_enabled = true
 
-[node name="LogStatus" type="Panel" parent="Background/RootMargin/RootVBox/Tabs/Logs"]
+[node name="LogStatus" type="Panel" parent="Background/RootMargin/RootVBox/Tabs/Logs" unique_id=1163852678]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("status_bg")
 
-[node name="StatusLabel" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Logs/LogStatus"]
+[node name="StatusLabel" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Logs/LogStatus" unique_id=409117693]
 unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
@@ -233,53 +223,50 @@ theme_override_colors/font_color = Color(0.45, 0.45, 0.5, 1)
 theme_override_font_sizes/font_size = 11
 text = "0 messages"
 
-; ============================================================
-; TAB 2: PERFORMANCE
-; ============================================================
-
-[node name="Performance" type="ScrollContainer" parent="Background/RootMargin/RootVBox/Tabs"]
+[node name="Performance" type="ScrollContainer" parent="Background/RootMargin/RootVBox/Tabs" unique_id=1213848366]
 unique_name_in_owner = true
+visible = false
 layout_mode = 2
 horizontal_scroll_mode = 0
+metadata/_tab_index = 1
 
-[node name="PerfVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance"]
+[node name="PerfVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance" unique_id=386879069]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 10
 
-; -- Framerate Section --
-[node name="FramerateSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox"]
+[node name="FramerateSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox" unique_id=196494799]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="FramerateVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection"]
+[node name="FramerateVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection" unique_id=561100796]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 2
 
-[node name="FramerateHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox"]
+[node name="FramerateHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox" unique_id=224640526]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.7, 0.3, 1)
 theme_override_font_sizes/font_size = 14
 text = "FRAMERATE"
 
-[node name="Sep1" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox"]
+[node name="Sep1" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox" unique_id=1794529198]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="FPSRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox"]
+[node name="FPSRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox" unique_id=564046567]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_bg")
 
-[node name="FPSHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/FPSRow"]
+[node name="FPSHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/FPSRow" unique_id=878870946]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="FPSKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/FPSRow/FPSHBox"]
+[node name="FPSKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/FPSRow/FPSHBox" unique_id=1251427166]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
@@ -287,7 +274,7 @@ theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "FPS"
 
-[node name="FPSValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/FPSRow/FPSHBox"]
+[node name="FPSValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/FPSRow/FPSHBox" unique_id=1225959665]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -295,16 +282,16 @@ theme_override_colors/font_color = Color(0.3, 0.9, 0.4, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="FrameTimeRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox"]
+[node name="FrameTimeRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox" unique_id=468343329]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_alt_bg")
 
-[node name="FrameTimeHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/FrameTimeRow"]
+[node name="FrameTimeHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/FrameTimeRow" unique_id=1092431351]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="FrameTimeKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/FrameTimeRow/FrameTimeHBox"]
+[node name="FrameTimeKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/FrameTimeRow/FrameTimeHBox" unique_id=1880718369]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
@@ -312,7 +299,7 @@ theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Frame Time"
 
-[node name="FrameTimeValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/FrameTimeRow/FrameTimeHBox"]
+[node name="FrameTimeValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/FrameTimeRow/FrameTimeHBox" unique_id=1300545856]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -320,16 +307,16 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="RenderTimeRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox"]
+[node name="RenderTimeRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox" unique_id=116082625]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_bg")
 
-[node name="RenderTimeHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/RenderTimeRow"]
+[node name="RenderTimeHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/RenderTimeRow" unique_id=984888241]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="RenderTimeKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/RenderTimeRow/RenderTimeHBox"]
+[node name="RenderTimeKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/RenderTimeRow/RenderTimeHBox" unique_id=51714728]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
@@ -337,7 +324,7 @@ theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Render Time"
 
-[node name="RenderTimeValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/RenderTimeRow/RenderTimeHBox"]
+[node name="RenderTimeValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/RenderTimeRow/RenderTimeHBox" unique_id=446258935]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -345,16 +332,16 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="PhysicsTimeRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox"]
+[node name="PhysicsTimeRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox" unique_id=1282560747]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_alt_bg")
 
-[node name="PhysicsTimeHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/PhysicsTimeRow"]
+[node name="PhysicsTimeHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/PhysicsTimeRow" unique_id=860972724]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="PhysicsTimeKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/PhysicsTimeRow/PhysicsTimeHBox"]
+[node name="PhysicsTimeKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/PhysicsTimeRow/PhysicsTimeHBox" unique_id=613354078]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
@@ -362,7 +349,7 @@ theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Physics Time"
 
-[node name="PhysicsTimeValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/PhysicsTimeRow/PhysicsTimeHBox"]
+[node name="PhysicsTimeValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/FramerateSection/FramerateVBox/PhysicsTimeRow/PhysicsTimeHBox" unique_id=295862641]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -370,38 +357,37 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-; -- World Section --
-[node name="WorldSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox"]
+[node name="WorldSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox" unique_id=1384504913]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="WorldVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection"]
+[node name="WorldVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection" unique_id=1184357594]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 2
 
-[node name="WorldHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox"]
+[node name="WorldHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox" unique_id=425617669]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.8, 1, 1)
 theme_override_font_sizes/font_size = 14
 text = "WORLD"
 
-[node name="Sep2" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox"]
+[node name="Sep2" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox" unique_id=2099692833]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="WorldNameRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox"]
+[node name="WorldNameRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox" unique_id=1619927569]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_bg")
 
-[node name="WorldNameHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/WorldNameRow"]
+[node name="WorldNameHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/WorldNameRow" unique_id=946031145]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="WorldNameKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/WorldNameRow/WorldNameHBox"]
+[node name="WorldNameKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/WorldNameRow/WorldNameHBox" unique_id=262556484]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
@@ -409,7 +395,7 @@ theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "World"
 
-[node name="WorldNameValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/WorldNameRow/WorldNameHBox"]
+[node name="WorldNameValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/WorldNameRow/WorldNameHBox" unique_id=1596874730]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -417,16 +403,16 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="SlotsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox"]
+[node name="SlotsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox" unique_id=724480962]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_alt_bg")
 
-[node name="SlotsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/SlotsRow"]
+[node name="SlotsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/SlotsRow" unique_id=661152535]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="SlotsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/SlotsRow/SlotsHBox"]
+[node name="SlotsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/SlotsRow/SlotsHBox" unique_id=286376896]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
@@ -434,7 +420,7 @@ theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Slots"
 
-[node name="SlotsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/SlotsRow/SlotsHBox"]
+[node name="SlotsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/SlotsRow/SlotsHBox" unique_id=1471311774]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -442,16 +428,16 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="ComponentsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox"]
+[node name="ComponentsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox" unique_id=680277936]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_bg")
 
-[node name="ComponentsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/ComponentsRow"]
+[node name="ComponentsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/ComponentsRow" unique_id=1745214950]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="ComponentsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/ComponentsRow/ComponentsHBox"]
+[node name="ComponentsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/ComponentsRow/ComponentsHBox" unique_id=889668327]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
@@ -459,7 +445,7 @@ theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Components"
 
-[node name="ComponentsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/ComponentsRow/ComponentsHBox"]
+[node name="ComponentsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/ComponentsRow/ComponentsHBox" unique_id=1015682187]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -467,16 +453,16 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="UsersRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox"]
+[node name="UsersRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox" unique_id=1244211924]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_alt_bg")
 
-[node name="UsersHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/UsersRow"]
+[node name="UsersHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/UsersRow" unique_id=1230008904]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="UsersKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/UsersRow/UsersHBox"]
+[node name="UsersKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/UsersRow/UsersHBox" unique_id=140736198]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
@@ -484,7 +470,7 @@ theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Users"
 
-[node name="UsersValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/UsersRow/UsersHBox"]
+[node name="UsersValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/WorldSection/WorldVBox/UsersRow/UsersHBox" unique_id=577876078]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -492,37 +478,36 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-; -- Memory Section --
-[node name="MemorySection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox"]
+[node name="MemorySection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox" unique_id=1504085433]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="MemoryVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection"]
+[node name="MemoryVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection" unique_id=1775828743]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 2
 
-[node name="MemoryHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox"]
+[node name="MemoryHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox" unique_id=1681790734]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 1, 0.6, 1)
 theme_override_font_sizes/font_size = 14
 text = "MEMORY"
 
-[node name="Sep3" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox"]
+[node name="Sep3" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox" unique_id=1183005264]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="GCMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox"]
+[node name="GCMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox" unique_id=1484797910]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_bg")
 
-[node name="GCMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/GCMemRow"]
+[node name="GCMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/GCMemRow" unique_id=1871526828]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="GCMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/GCMemRow/GCMemHBox"]
+[node name="GCMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/GCMemRow/GCMemHBox" unique_id=22591961]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
@@ -530,7 +515,7 @@ theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "GC Memory"
 
-[node name="GCMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/GCMemRow/GCMemHBox"]
+[node name="GCMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/GCMemRow/GCMemHBox" unique_id=1221266377]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -538,16 +523,16 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="VideoMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox"]
+[node name="VideoMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox" unique_id=1306636973]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_alt_bg")
 
-[node name="VideoMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/VideoMemRow"]
+[node name="VideoMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/VideoMemRow" unique_id=251154437]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="VideoMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/VideoMemRow/VideoMemHBox"]
+[node name="VideoMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/VideoMemRow/VideoMemHBox" unique_id=2040696935]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
@@ -555,7 +540,7 @@ theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Video Memory"
 
-[node name="VideoMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/VideoMemRow/VideoMemHBox"]
+[node name="VideoMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/VideoMemRow/VideoMemHBox" unique_id=2084454713]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -563,16 +548,16 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="ObjectsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox"]
+[node name="ObjectsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox" unique_id=522120666]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_bg")
 
-[node name="ObjectsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/ObjectsRow"]
+[node name="ObjectsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/ObjectsRow" unique_id=1343175217]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="ObjectsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/ObjectsRow/ObjectsHBox"]
+[node name="ObjectsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/ObjectsRow/ObjectsHBox" unique_id=935003504]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
@@ -580,7 +565,7 @@ theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Godot Objects"
 
-[node name="ObjectsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/ObjectsRow/ObjectsHBox"]
+[node name="ObjectsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/ObjectsRow/ObjectsHBox" unique_id=574299857]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -588,16 +573,16 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="NodesRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox"]
+[node name="NodesRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox" unique_id=1092346405]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_alt_bg")
 
-[node name="NodesHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/NodesRow"]
+[node name="NodesHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/NodesRow" unique_id=1881179387]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="NodesKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/NodesRow/NodesHBox"]
+[node name="NodesKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/NodesRow/NodesHBox" unique_id=1346560324]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
@@ -605,7 +590,7 @@ theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Godot Nodes"
 
-[node name="NodesValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/NodesRow/NodesHBox"]
+[node name="NodesValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/MemorySection/MemoryVBox/NodesRow/NodesHBox" unique_id=1941780476]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -613,277 +598,431 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-; ============================================================
-; TAB 3: MEMORY PROFILER
-; ============================================================
+[node name="GpuSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox" unique_id=696933396]
+layout_mode = 2
+theme_override_styles/panel = SubResource("section_bg")
 
-[node name="Memory Profiler" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs"]
+[node name="GpuVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection" unique_id=1150964606]
+layout_mode = 2
+theme_override_constants/separation = 2
+
+[node name="GpuHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox" unique_id=773869823]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.5, 0.85, 1, 1)
+theme_override_font_sizes/font_size = 14
+text = "RENDER / GPU"
+
+[node name="GpuSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox" unique_id=298282058]
+layout_mode = 2
+
+[node name="DrawCallsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox" unique_id=1922052654]
+layout_mode = 2
+theme_override_styles/panel = SubResource("stat_row_bg")
+
+[node name="DrawCallsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/DrawCallsRow" unique_id=478175047]
+layout_mode = 2
+
+[node name="DrawCallsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/DrawCallsRow/DrawCallsHBox" unique_id=93256719]
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+theme_override_font_sizes/font_size = 13
+text = "Draw Calls / Frame"
+
+[node name="DrawCallsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/DrawCallsRow/DrawCallsHBox" unique_id=94836217]
 unique_name_in_owner = true
 layout_mode = 2
-theme_override_constants/separation = 6
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
+theme_override_font_sizes/font_size = 13
+text = "-"
 
-[node name="ProfilerToolbar" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler"]
+[node name="PrimitivesRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox" unique_id=1648931078]
+layout_mode = 2
+theme_override_styles/panel = SubResource("stat_row_alt_bg")
+
+[node name="PrimitivesHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/PrimitivesRow" unique_id=2030354930]
+layout_mode = 2
+
+[node name="PrimitivesKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/PrimitivesRow/PrimitivesHBox" unique_id=1950158567]
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+theme_override_font_sizes/font_size = 13
+text = "Primitives / Frame"
+
+[node name="PrimitivesValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/PrimitivesRow/PrimitivesHBox" unique_id=2025682112]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
+theme_override_font_sizes/font_size = 13
+text = "-"
+
+[node name="RenderObjectsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox" unique_id=194365617]
+layout_mode = 2
+theme_override_styles/panel = SubResource("stat_row_bg")
+
+[node name="RenderObjectsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderObjectsRow" unique_id=2095484736]
+layout_mode = 2
+
+[node name="RenderObjectsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderObjectsRow/RenderObjectsHBox" unique_id=1231942400]
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+theme_override_font_sizes/font_size = 13
+text = "Objects Drawn / Frame"
+
+[node name="RenderObjectsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderObjectsRow/RenderObjectsHBox" unique_id=1815405368]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
+theme_override_font_sizes/font_size = 13
+text = "-"
+
+[node name="TextureMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox" unique_id=219406665]
+layout_mode = 2
+theme_override_styles/panel = SubResource("stat_row_alt_bg")
+
+[node name="TextureMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/TextureMemRow" unique_id=759900929]
+layout_mode = 2
+
+[node name="TextureMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/TextureMemRow/TextureMemHBox" unique_id=534369471]
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+theme_override_font_sizes/font_size = 13
+text = "Texture Memory"
+
+[node name="TextureMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/TextureMemRow/TextureMemHBox" unique_id=143299619]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
+theme_override_font_sizes/font_size = 13
+text = "-"
+
+[node name="BufferMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox" unique_id=406127519]
+layout_mode = 2
+theme_override_styles/panel = SubResource("stat_row_bg")
+
+[node name="BufferMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/BufferMemRow" unique_id=809856885]
+layout_mode = 2
+
+[node name="BufferMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/BufferMemRow/BufferMemHBox" unique_id=353447510]
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+theme_override_font_sizes/font_size = 13
+text = "Buffer Memory"
+
+[node name="BufferMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/BufferMemRow/BufferMemHBox" unique_id=788738534]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
+theme_override_font_sizes/font_size = 13
+text = "-"
+
+[node name="RenderVideoMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox" unique_id=1450534768]
+layout_mode = 2
+theme_override_styles/panel = SubResource("stat_row_alt_bg")
+
+[node name="RenderVideoMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderVideoMemRow" unique_id=1832256076]
+layout_mode = 2
+
+[node name="RenderVideoMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderVideoMemRow/RenderVideoMemHBox" unique_id=1985868383]
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+theme_override_font_sizes/font_size = 13
+text = "Total Video Memory"
+
+[node name="RenderVideoMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderVideoMemRow/RenderVideoMemHBox" unique_id=583739170]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
+theme_override_font_sizes/font_size = 13
+text = "-"
+
+[node name="RenderHint" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox" unique_id=501448770]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.45, 0.45, 0.52, 1)
+theme_override_font_sizes/font_size = 10
+text = "Live GPU pipeline stats for the focused world. High draw calls usually means too many materials / un-batched UI."
+
+[node name="Memory Profiler" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs" unique_id=490989482]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 6
+metadata/_tab_index = 2
+
+[node name="ProfilerToolbar" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler" unique_id=1346330116]
 layout_mode = 2
 theme_override_styles/panel = SubResource("toolbar_bg")
 
-[node name="ProfilerToolbarHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar"]
+[node name="ProfilerToolbarHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar" unique_id=2114096269]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="CaptureSnapshotBtn" type="Button" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar/ProfilerToolbarHBox"]
+[node name="CaptureSnapshotBtn" type="Button" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar/ProfilerToolbarHBox" unique_id=2061513243]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "Capture Snapshot"
 
-[node name="ClearSnapshotsBtn" type="Button" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar/ProfilerToolbarHBox"]
+[node name="ClearSnapshotsBtn" type="Button" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar/ProfilerToolbarHBox" unique_id=76405678]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "Clear Snapshots"
 
-[node name="AutoSnapshotToggle" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar/ProfilerToolbarHBox"]
+[node name="AutoSnapshotToggle" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar/ProfilerToolbarHBox" unique_id=314358912]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "Auto (5s)"
 
-[node name="MemoryLiveToggle" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar/ProfilerToolbarHBox"]
+[node name="MemoryLiveToggle" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar/ProfilerToolbarHBox" unique_id=57204100]
 unique_name_in_owner = true
 layout_mode = 2
-button_pressed = true
 theme_override_font_sizes/font_size = 11
+button_pressed = true
 text = "Live"
 
-[node name="ToolbarSpacer" type="Control" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar/ProfilerToolbarHBox"]
+[node name="ToolbarSpacer" type="Control" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar/ProfilerToolbarHBox" unique_id=922756850]
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="MemoryStatusLabel" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar/ProfilerToolbarHBox"]
+[node name="MemoryStatusLabel" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/ProfilerToolbar/ProfilerToolbarHBox" unique_id=402481830]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Waiting for memory packets..."
 
-[node name="MemorySplit" type="HSplitContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler"]
+[node name="MemorySplit" type="HSplitContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler" unique_id=349981446]
 layout_mode = 2
 size_flags_vertical = 3
+split_offsets = PackedInt32Array(220)
 split_offset = 220
 
-[node name="SnapshotPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit"]
+[node name="SnapshotPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit" unique_id=530860938]
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="SnapshotVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/SnapshotPanel"]
+[node name="SnapshotVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/SnapshotPanel" unique_id=29109153]
 layout_mode = 2
 theme_override_constants/separation = 6
 
-[node name="SnapshotTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/SnapshotPanel/SnapshotVBox"]
+[node name="SnapshotTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/SnapshotPanel/SnapshotVBox" unique_id=1896614269]
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.75, 0.35, 1)
 theme_override_font_sizes/font_size = 13
 text = "Snapshots"
 
-[node name="SnapshotList" type="ItemList" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/SnapshotPanel/SnapshotVBox"]
+[node name="SnapshotList" type="ItemList" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/SnapshotPanel/SnapshotVBox" unique_id=597720233]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_font_sizes/font_size = 11
 
-[node name="MemoryRightVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit"]
+[node name="MemoryRightVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit" unique_id=122762726]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 theme_override_constants/separation = 6
 
-[node name="MemorySummaryPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox"]
+[node name="MemorySummaryPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox" unique_id=17625962]
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="SummaryVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel"]
+[node name="SummaryVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel" unique_id=549997832]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="SummaryTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox"]
+[node name="SummaryTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox" unique_id=1342339846]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.78, 1, 1)
 theme_override_font_sizes/font_size = 13
 text = "Memory Summary"
 
-[node name="SummaryGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox"]
+[node name="SummaryGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox" unique_id=357532297]
 layout_mode = 2
 columns = 4
 
-[node name="CommittedKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="CommittedKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=1117586614]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Committed"
 
-[node name="MemCommittedValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="MemCommittedValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=36422729]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.95, 0.6, 0.95, 1)
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="GcKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="GcKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=1915020711]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "GC Heap"
 
-[node name="MemGCValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="MemGCValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=861973408]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.45, 0.9, 0.52, 1)
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="EstimatedKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="EstimatedKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=893029978]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Estimated"
 
-[node name="MemEstimatedValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="MemEstimatedValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=467292677]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.72, 0.4, 1)
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="WorkingSetKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="WorkingSetKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=1948081416]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Working Set"
 
-[node name="MemWorkingSetValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="MemWorkingSetValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=778723911]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="PrivateKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="PrivateKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=1937918988]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Private"
 
-[node name="MemPrivateValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="MemPrivateValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=243536315]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="VideoKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="VideoKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=1817147958]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Video"
 
-[node name="MemVideoValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="MemVideoValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=1801170955]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.4, 0.8, 1, 1)
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="ObjectsKeyMem" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="ObjectsKeyMem" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=554411852]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Objects"
 
-[node name="MemObjectsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="MemObjectsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=649910221]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="NodesKeyMem" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="NodesKeyMem" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=178119744]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Nodes"
 
-[node name="MemNodesValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid"]
+[node name="MemNodesValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox/SummaryGrid" unique_id=898912676]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="GCCountValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox"]
+[node name="GCCountValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemorySummaryPanel/SummaryVBox" unique_id=1352954631]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.45, 0.45, 0.52, 1)
 theme_override_font_sizes/font_size = 10
 text = "GC Collections: Gen0 0 | Gen1 0 | Gen2 0"
 
-[node name="MemoryHistoryPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox"]
+[node name="MemoryHistoryPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox" unique_id=1199442852]
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="HistoryVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemoryHistoryPanel"]
+[node name="HistoryVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemoryHistoryPanel" unique_id=509297844]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="HistoryTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemoryHistoryPanel/HistoryVBox"]
+[node name="HistoryTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemoryHistoryPanel/HistoryVBox" unique_id=880727007]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.78, 1, 1)
 theme_override_font_sizes/font_size = 13
 text = "Memory History"
 
-[node name="LegendLabel" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemoryHistoryPanel/HistoryVBox"]
+[node name="LegendLabel" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemoryHistoryPanel/HistoryVBox" unique_id=321406435]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.45, 0.45, 0.52, 1)
 theme_override_font_sizes/font_size = 10
 text = "Magenta: Committed   Green: GC   Orange: Estimated   Blue: Video"
 
-[node name="MemoryGraph" type="Control" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemoryHistoryPanel/HistoryVBox"]
+[node name="MemoryGraph" type="Control" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/MemoryHistoryPanel/HistoryVBox" unique_id=1056173303]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 170)
 layout_mode = 2
 script = ExtResource("3_mem_graph")
 
-[node name="BreakdownPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox"]
+[node name="BreakdownPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox" unique_id=383237554]
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="BreakdownVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/BreakdownPanel"]
+[node name="BreakdownVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/BreakdownPanel" unique_id=1006403293]
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 4
 
-[node name="BreakdownToolbar" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/BreakdownPanel/BreakdownVBox"]
+[node name="BreakdownToolbar" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/BreakdownPanel/BreakdownVBox" unique_id=1689375374]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="BreakdownTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/BreakdownPanel/BreakdownVBox/BreakdownToolbar"]
+[node name="BreakdownTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/BreakdownPanel/BreakdownVBox/BreakdownToolbar" unique_id=1158294718]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.78, 1, 1)
 theme_override_font_sizes/font_size = 13
 text = "Component Breakdown"
 
-[node name="BreakdownSpacer" type="Control" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/BreakdownPanel/BreakdownVBox/BreakdownToolbar"]
+[node name="BreakdownSpacer" type="Control" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/BreakdownPanel/BreakdownVBox/BreakdownToolbar" unique_id=1943833626]
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="MemorySearchBox" type="LineEdit" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/BreakdownPanel/BreakdownVBox/BreakdownToolbar"]
+[node name="MemorySearchBox" type="LineEdit" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/BreakdownPanel/BreakdownVBox/BreakdownToolbar" unique_id=303557723]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(200, 0)
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 placeholder_text = "Filter components..."
 
-[node name="ComponentTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/BreakdownPanel/BreakdownVBox"]
+[node name="ComponentTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/BreakdownPanel/BreakdownVBox" unique_id=1260707152]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
@@ -892,230 +1031,76 @@ columns = 4
 hide_root = true
 select_mode = 1
 
-[node name="ComponentDetailsPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox"]
+[node name="ComponentDetailsPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox" unique_id=1977544147]
 layout_mode = 2
 theme_override_styles/panel = SubResource("status_bg")
 
-[node name="ComponentDetails" type="RichTextLabel" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/ComponentDetailsPanel"]
+[node name="ComponentDetails" type="RichTextLabel" parent="Background/RootMargin/RootVBox/Tabs/Memory Profiler/MemorySplit/MemoryRightVBox/ComponentDetailsPanel" unique_id=713094951]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 86)
 layout_mode = 2
+focus_mode = 2
 theme_override_font_sizes/normal_font_size = 11
 bbcode_enabled = true
 fit_content = true
-selection_enabled = true
 scroll_active = false
+selection_enabled = true
 
-; -- Render / GPU Section (lives in the Performance tab) --
-[node name="GpuSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox"]
-layout_mode = 2
-theme_override_styles/panel = SubResource("section_bg")
-
-[node name="GpuVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection"]
-layout_mode = 2
-theme_override_constants/separation = 2
-
-[node name="GpuHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.5, 0.85, 1, 1)
-theme_override_font_sizes/font_size = 14
-text = "RENDER / GPU"
-
-[node name="GpuSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
-layout_mode = 2
-
-[node name="DrawCallsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
-layout_mode = 2
-theme_override_styles/panel = SubResource("stat_row_bg")
-
-[node name="DrawCallsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/DrawCallsRow"]
-layout_mode = 2
-
-[node name="DrawCallsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/DrawCallsRow/DrawCallsHBox"]
-custom_minimum_size = Vector2(190, 0)
-layout_mode = 2
-theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
-theme_override_font_sizes/font_size = 13
-text = "Draw Calls / Frame"
-
-[node name="DrawCallsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/DrawCallsRow/DrawCallsHBox"]
+[node name="Profiler" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs" unique_id=213227912]
 unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
-theme_override_font_sizes/font_size = 13
-text = "-"
-
-[node name="PrimitivesRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
-layout_mode = 2
-theme_override_styles/panel = SubResource("stat_row_alt_bg")
-
-[node name="PrimitivesHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/PrimitivesRow"]
-layout_mode = 2
-
-[node name="PrimitivesKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/PrimitivesRow/PrimitivesHBox"]
-custom_minimum_size = Vector2(190, 0)
-layout_mode = 2
-theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
-theme_override_font_sizes/font_size = 13
-text = "Primitives / Frame"
-
-[node name="PrimitivesValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/PrimitivesRow/PrimitivesHBox"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
-theme_override_font_sizes/font_size = 13
-text = "-"
-
-[node name="RenderObjectsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
-layout_mode = 2
-theme_override_styles/panel = SubResource("stat_row_bg")
-
-[node name="RenderObjectsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderObjectsRow"]
-layout_mode = 2
-
-[node name="RenderObjectsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderObjectsRow/RenderObjectsHBox"]
-custom_minimum_size = Vector2(190, 0)
-layout_mode = 2
-theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
-theme_override_font_sizes/font_size = 13
-text = "Objects Drawn / Frame"
-
-[node name="RenderObjectsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderObjectsRow/RenderObjectsHBox"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
-theme_override_font_sizes/font_size = 13
-text = "-"
-
-[node name="TextureMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
-layout_mode = 2
-theme_override_styles/panel = SubResource("stat_row_alt_bg")
-
-[node name="TextureMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/TextureMemRow"]
-layout_mode = 2
-
-[node name="TextureMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/TextureMemRow/TextureMemHBox"]
-custom_minimum_size = Vector2(190, 0)
-layout_mode = 2
-theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
-theme_override_font_sizes/font_size = 13
-text = "Texture Memory"
-
-[node name="TextureMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/TextureMemRow/TextureMemHBox"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
-theme_override_font_sizes/font_size = 13
-text = "-"
-
-[node name="BufferMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
-layout_mode = 2
-theme_override_styles/panel = SubResource("stat_row_bg")
-
-[node name="BufferMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/BufferMemRow"]
-layout_mode = 2
-
-[node name="BufferMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/BufferMemRow/BufferMemHBox"]
-custom_minimum_size = Vector2(190, 0)
-layout_mode = 2
-theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
-theme_override_font_sizes/font_size = 13
-text = "Buffer Memory"
-
-[node name="BufferMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/BufferMemRow/BufferMemHBox"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
-theme_override_font_sizes/font_size = 13
-text = "-"
-
-[node name="RenderVideoMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
-layout_mode = 2
-theme_override_styles/panel = SubResource("stat_row_alt_bg")
-
-[node name="RenderVideoMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderVideoMemRow"]
-layout_mode = 2
-
-[node name="RenderVideoMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderVideoMemRow/RenderVideoMemHBox"]
-custom_minimum_size = Vector2(190, 0)
-layout_mode = 2
-theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
-theme_override_font_sizes/font_size = 13
-text = "Total Video Memory"
-
-[node name="RenderVideoMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderVideoMemRow/RenderVideoMemHBox"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
-theme_override_font_sizes/font_size = 13
-text = "-"
-
-[node name="RenderHint" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.45, 0.45, 0.52, 1)
-theme_override_font_sizes/font_size = 10
-text = "Live GPU pipeline stats for the focused world. High draw calls usually means too many materials / un-batched UI."
-
-; ==================== PROFILER TAB ====================
-[node name="Profiler" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs"]
-unique_name_in_owner = true
+visible = false
 layout_mode = 2
 theme_override_constants/separation = 8
+metadata/_tab_index = 3
 
-[node name="ProfHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler"]
+[node name="ProfHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler" unique_id=805252951]
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.7, 0.3, 1)
 theme_override_font_sizes/font_size = 14
 text = "FRAME TIME"
 
-[node name="ProfilerGraph" type="Control" parent="Background/RootMargin/RootVBox/Tabs/Profiler"]
+[node name="ProfilerGraph" type="Control" parent="Background/RootMargin/RootVBox/Tabs/Profiler" unique_id=431327494]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 150)
 layout_mode = 2
 script = ExtResource("4_prof_graph")
 
-[node name="ProfLegend" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler"]
+[node name="ProfLegend" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler" unique_id=1536285923]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.45, 0.45, 0.52, 1)
 theme_override_font_sizes/font_size = 10
 text = "Bars: per-frame time. Green <=16.6ms (60fps)   Amber <=33ms (30fps)   Red slower   Blue line: 60fps budget"
 
-[node name="ProfStatusLabel" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler"]
+[node name="ProfStatusLabel" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler" unique_id=23448932]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Waiting for profile packets..."
 
-[node name="ProfSplit" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler"]
+[node name="ProfSplit" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler" unique_id=1302403278]
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 8
 
-[node name="ProfComponentPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit"]
+[node name="ProfComponentPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit" unique_id=1315809470]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="ProfComponentVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfComponentPanel"]
+[node name="ProfComponentVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfComponentPanel" unique_id=1015466356]
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 4
 
-[node name="ProfComponentTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfComponentPanel/ProfComponentVBox"]
+[node name="ProfComponentTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfComponentPanel/ProfComponentVBox" unique_id=595307384]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.78, 1, 1)
 theme_override_font_sizes/font_size = 13
 text = "By Component Type"
 
-[node name="ProfComponentTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfComponentPanel/ProfComponentVBox"]
+[node name="ProfComponentTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfComponentPanel/ProfComponentVBox" unique_id=1954235597]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
@@ -1123,24 +1108,24 @@ theme_override_font_sizes/font_size = 11
 columns = 3
 hide_root = true
 
-[node name="ProfSlotPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit"]
+[node name="ProfSlotPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit" unique_id=1358060753]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="ProfSlotVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfSlotPanel"]
+[node name="ProfSlotVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfSlotPanel" unique_id=852616363]
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 4
 
-[node name="ProfSlotTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfSlotPanel/ProfSlotVBox"]
+[node name="ProfSlotTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfSlotPanel/ProfSlotVBox" unique_id=1133774579]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.78, 1, 1)
 theme_override_font_sizes/font_size = 13
 text = "By Slot"
 
-[node name="ProfSlotTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfSlotPanel/ProfSlotVBox"]
+[node name="ProfSlotTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfSlotPanel/ProfSlotVBox" unique_id=1409278808]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
@@ -1148,42 +1133,42 @@ theme_override_font_sizes/font_size = 11
 columns = 3
 hide_root = true
 
-; ==================== NETWORK TAB ====================
-[node name="Network" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs"]
+[node name="Network" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs" unique_id=1259499557]
 unique_name_in_owner = true
+visible = false
 layout_mode = 2
 theme_override_constants/separation = 6
+metadata/_tab_index = 4
 
-; -- Session Section --
-[node name="NetSessionSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network"]
+[node name="NetSessionSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network" unique_id=1708682086]
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="NetSessionVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection"]
+[node name="NetSessionVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection" unique_id=448488944]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="NetSessionHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox"]
+[node name="NetSessionHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox" unique_id=198285252]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.85, 1, 1)
 theme_override_font_sizes/font_size = 14
 text = "SESSION"
 
-[node name="NetSessionSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox"]
+[node name="NetSessionSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox" unique_id=9377781]
 layout_mode = 2
 
-[node name="NetSessionGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox"]
+[node name="NetSessionGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox" unique_id=1906131322]
 layout_mode = 2
 columns = 4
 
-[node name="NetRoleKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetRoleKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=1932653948]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Role"
 
-[node name="NetRoleValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetRoleValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=1205400867]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1191,14 +1176,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetLatencyKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetLatencyKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=1691079146]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Latency"
 
-[node name="NetLatencyValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetLatencyValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=1782928599]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1206,14 +1191,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetWorldKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetWorldKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=305848400]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "World"
 
-[node name="NetWorldValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetWorldValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=646592693]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1221,14 +1206,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetEncryptedKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetEncryptedKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=1721468644]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Encrypted"
 
-[node name="NetEncryptedValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetEncryptedValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=1515056310]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1236,14 +1221,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetSessionIdKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetSessionIdKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=269451503]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Session ID"
 
-[node name="NetSessionIdValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetSessionIdValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=128057420]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1251,14 +1236,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetVisibilityKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetVisibilityKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=1334397035]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Visibility"
 
-[node name="NetVisibilityValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetVisibilityValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=10363885]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1266,14 +1251,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetSyncRateKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetSyncRateKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=541220187]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Sync Rate"
 
-[node name="NetSyncRateValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetSyncRateValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=589679002]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1281,14 +1266,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetConnCountKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetConnCountKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=449869528]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Connections"
 
-[node name="NetConnCountValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+[node name="NetConnCountValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid" unique_id=1706727419]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1296,36 +1281,35 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-; -- Traffic Section --
-[node name="NetTrafficSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network"]
+[node name="NetTrafficSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network" unique_id=99842732]
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="NetTrafficVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection"]
+[node name="NetTrafficVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection" unique_id=1488974052]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="NetTrafficHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox"]
+[node name="NetTrafficHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox" unique_id=107492770]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 1, 0.6, 1)
 theme_override_font_sizes/font_size = 14
 text = "SYNC TRAFFIC (sent / recv)"
 
-[node name="NetTrafficSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox"]
+[node name="NetTrafficSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox" unique_id=50447178]
 layout_mode = 2
 
-[node name="NetTrafficGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox"]
+[node name="NetTrafficGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox" unique_id=1585729122]
 layout_mode = 2
 columns = 4
 
-[node name="NetDeltasKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetDeltasKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=1646095487]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Deltas"
 
-[node name="NetDeltasValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetDeltasValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=445623227]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1333,14 +1317,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetFullsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetFullsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=1101535077]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Fulls"
 
-[node name="NetFullsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetFullsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=239032150]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1348,14 +1332,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetStreamsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetStreamsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=1368650785]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Streams"
 
-[node name="NetStreamsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetStreamsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=747932668]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1363,14 +1347,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetRawKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetRawKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=1665485649]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Raw Frames"
 
-[node name="NetRawValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetRawValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=74630019]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1378,14 +1362,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetCorrectionsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetCorrectionsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=2144804225]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Corrections"
 
-[node name="NetCorrectionsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetCorrectionsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=831206550]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1393,14 +1377,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetProcessedKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetProcessedKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=585750420]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Processed"
 
-[node name="NetProcessedValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetProcessedValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=2144267022]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1408,14 +1392,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetLastDeltaKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetLastDeltaKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=569956968]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Last D Changes"
 
-[node name="NetLastDeltaValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+[node name="NetLastDeltaValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid" unique_id=955510777]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1423,36 +1407,35 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-; -- Queues Section --
-[node name="NetQueuesSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network"]
+[node name="NetQueuesSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network" unique_id=1289535732]
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="NetQueuesVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection"]
+[node name="NetQueuesVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection" unique_id=1294606947]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="NetQueuesHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox"]
+[node name="NetQueuesHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox" unique_id=1754579923]
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.75, 0.35, 1)
 theme_override_font_sizes/font_size = 14
 text = "QUEUES (pending)"
 
-[node name="NetQueuesSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox"]
+[node name="NetQueuesSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox" unique_id=700367864]
 layout_mode = 2
 
-[node name="NetQueuesGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox"]
+[node name="NetQueuesGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox" unique_id=1284619199]
 layout_mode = 2
 columns = 4
 
-[node name="NetToProcessKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+[node name="NetToProcessKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid" unique_id=446565935]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "To Process"
 
-[node name="NetToProcessValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+[node name="NetToProcessValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid" unique_id=403108580]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1460,14 +1443,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetToTransmitKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+[node name="NetToTransmitKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid" unique_id=1568438372]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "To Transmit"
 
-[node name="NetToTransmitValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+[node name="NetToTransmitValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid" unique_id=1819931777]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1475,14 +1458,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetIncomingKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+[node name="NetIncomingKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid" unique_id=2025336329]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Incoming"
 
-[node name="NetIncomingValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+[node name="NetIncomingValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid" unique_id=1685044104]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1490,14 +1473,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetPendingStreamsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+[node name="NetPendingStreamsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid" unique_id=299035737]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Streams"
 
-[node name="NetPendingStreamsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+[node name="NetPendingStreamsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid" unique_id=2102414636]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1505,36 +1488,35 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-; -- Assets Section --
-[node name="NetAssetsSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network"]
+[node name="NetAssetsSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network" unique_id=1251696692]
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="NetAssetsVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection"]
+[node name="NetAssetsVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection" unique_id=25164853]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="NetAssetsHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox"]
+[node name="NetAssetsHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox" unique_id=52445113]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.7, 0.6, 1, 1)
 theme_override_font_sizes/font_size = 14
 text = "ASSET TRANSFERS"
 
-[node name="NetAssetsSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox"]
+[node name="NetAssetsSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox" unique_id=1622191017]
 layout_mode = 2
 
-[node name="NetAssetsGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox"]
+[node name="NetAssetsGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox" unique_id=2002469625]
 layout_mode = 2
 columns = 4
 
-[node name="NetUploadsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+[node name="NetUploadsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid" unique_id=896956039]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Uploads"
 
-[node name="NetUploadsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+[node name="NetUploadsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid" unique_id=1287250729]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1542,14 +1524,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetDownloadsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+[node name="NetDownloadsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid" unique_id=316955780]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Downloads"
 
-[node name="NetDownloadsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+[node name="NetDownloadsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid" unique_id=1220347745]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1557,14 +1539,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetAssetReqKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+[node name="NetAssetReqKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid" unique_id=159448301]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Requests"
 
-[node name="NetAssetReqValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+[node name="NetAssetReqValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid" unique_id=947355636]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1572,14 +1554,14 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-[node name="NetRelaysKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+[node name="NetRelaysKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid" unique_id=1363348021]
 custom_minimum_size = Vector2(110, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 12
 text = "Relays"
 
-[node name="NetRelaysValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+[node name="NetRelaysValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid" unique_id=74988507]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1587,24 +1569,23 @@ theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_font_sizes/font_size = 12
 text = "-"
 
-; -- Connections Section --
-[node name="NetConnectionsSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network"]
+[node name="NetConnectionsSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network" unique_id=1926216064]
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="NetConnectionsVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetConnectionsSection"]
+[node name="NetConnectionsVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetConnectionsSection" unique_id=639851139]
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 4
 
-[node name="NetConnectionsHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetConnectionsSection/NetConnectionsVBox"]
+[node name="NetConnectionsHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetConnectionsSection/NetConnectionsVBox" unique_id=1217215572]
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.75, 0.35, 1)
 theme_override_font_sizes/font_size = 14
 text = "CONNECTIONS"
 
-[node name="NetConnectionTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Network/NetConnectionsSection/NetConnectionsVBox"]
+[node name="NetConnectionTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Network/NetConnectionsSection/NetConnectionsVBox" unique_id=2112982873]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
@@ -1612,85 +1593,86 @@ theme_override_font_sizes/font_size = 11
 columns = 6
 hide_root = true
 
-[node name="NetStatusLabel" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network"]
+[node name="NetStatusLabel" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network" unique_id=2115620233]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.45, 0.45, 0.52, 1)
 theme_override_font_sizes/font_size = 10
 text = "Waiting for network packets..."
 
-; ==================== FRAME TAB ====================
-[node name="Frame" type="ScrollContainer" parent="Background/RootMargin/RootVBox/Tabs"]
+[node name="Frame" type="ScrollContainer" parent="Background/RootMargin/RootVBox/Tabs" unique_id=538752441]
 unique_name_in_owner = true
+visible = false
 layout_mode = 2
 horizontal_scroll_mode = 0
+metadata/_tab_index = 5
 
-[node name="FrameVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame"]
+[node name="FrameVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame" unique_id=68752459]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 8
 
-[node name="FrameHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox"]
+[node name="FrameHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox" unique_id=599603536]
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.7, 0.3, 1)
 theme_override_font_sizes/font_size = 14
 text = "WHERE THE FRAME WENT"
 
-[node name="FrameBlurb" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox"]
+[node name="FrameBlurb" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox" unique_id=269647247]
 layout_mode = 2
-autowrap_mode = 3
 theme_override_colors/font_color = Color(0.45, 0.45, 0.52, 1)
 theme_override_font_sizes/font_size = 10
 text = "Measured, not derived. World phases come from the update loop itself; render times come from the renderer with measurement enabled. Record, reproduce the stutter, then export the CSV."
+autowrap_mode = 3
 
-[node name="FrameCaptureBar" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox"]
+[node name="FrameCaptureBar" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox" unique_id=1591878449]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="FrameRecordToggle" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameCaptureBar"]
+[node name="FrameRecordToggle" type="CheckButton" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameCaptureBar" unique_id=184289899]
 unique_name_in_owner = true
 layout_mode = 2
 button_pressed = true
 text = "Record"
 
-[node name="FrameExportBtn" type="Button" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameCaptureBar"]
+[node name="FrameExportBtn" type="Button" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameCaptureBar" unique_id=536718698]
 unique_name_in_owner = true
 layout_mode = 2
 text = "Export CSV"
 
-[node name="FrameOpenFolderBtn" type="Button" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameCaptureBar"]
+[node name="FrameOpenFolderBtn" type="Button" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameCaptureBar" unique_id=265856896]
 unique_name_in_owner = true
 layout_mode = 2
 text = "Open Folder"
 
-[node name="FrameClearBtn" type="Button" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameCaptureBar"]
+[node name="FrameClearBtn" type="Button" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameCaptureBar" unique_id=1756342719]
 unique_name_in_owner = true
 layout_mode = 2
 text = "Clear"
 
-[node name="FrameCaptureStatus" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox"]
+[node name="FrameCaptureStatus" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox" unique_id=1022385331]
 unique_name_in_owner = true
 layout_mode = 2
-autowrap_mode = 3
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Waiting for frame packets..."
+autowrap_mode = 3
 
-[node name="FramePhasePanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox"]
+[node name="FramePhasePanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox" unique_id=702207231]
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="FramePhaseVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FramePhasePanel"]
+[node name="FramePhaseVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FramePhasePanel" unique_id=174710727]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="FramePhaseTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FramePhasePanel/FramePhaseVBox"]
+[node name="FramePhaseTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FramePhasePanel/FramePhaseVBox" unique_id=2089435404]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.78, 1, 1)
 theme_override_font_sizes/font_size = 13
 text = "World Update Phases (last frame)"
 
-[node name="FramePhaseTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FramePhasePanel/FramePhaseVBox"]
+[node name="FramePhaseTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FramePhasePanel/FramePhaseVBox" unique_id=2092987179]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 210)
 layout_mode = 2
@@ -1698,169 +1680,168 @@ theme_override_font_sizes/font_size = 11
 columns = 3
 hide_root = true
 
-[node name="FrameRenderPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox"]
+[node name="FrameRenderPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox" unique_id=1470639731]
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="FrameRenderVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel"]
+[node name="FrameRenderVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel" unique_id=1726826570]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="FrameRenderTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox"]
+[node name="FrameRenderTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox" unique_id=596631701]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.78, 1, 1)
 theme_override_font_sizes/font_size = 13
 text = "Renderer"
 
-[node name="FrameRenderGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox"]
+[node name="FrameRenderGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox" unique_id=342794849]
 layout_mode = 2
-columns = 4
 theme_override_constants/h_separation = 14
 theme_override_constants/v_separation = 3
+columns = 4
 
-[node name="LblRenderCpu" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="LblRenderCpu" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=1710637664]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Render CPU"
 
-[node name="FrameRenderCpuValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="FrameRenderCpuValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=1830896147]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="LblRenderGpu" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="LblRenderGpu" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=1927152128]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Render GPU"
 
-[node name="FrameRenderGpuValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="FrameRenderGpuValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=1818738732]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="LblFrameSetup" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="LblFrameSetup" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=1203257889]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Frame setup CPU"
 
-[node name="FrameSetupValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="FrameSetupValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=1297955745]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="LblCpuFrame" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="LblCpuFrame" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=212538793]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Process delta"
 
-[node name="FrameCpuValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="FrameCpuValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=302283413]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="LblDrawsVisible" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="LblDrawsVisible" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=1828204013]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Draws: visible"
 
-[node name="FrameDrawsVisibleValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="FrameDrawsVisibleValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=1217984695]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="LblDrawsShadow" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="LblDrawsShadow" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=1025841095]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Draws: SHADOW"
 
-[node name="FrameDrawsShadowValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="FrameDrawsShadowValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=1912675786]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="LblDrawsCanvas" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="LblDrawsCanvas" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=722532231]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Draws: canvas"
 
-[node name="FrameDrawsCanvasValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="FrameDrawsCanvasValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=57810776]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="LblObjectsVisible" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="LblObjectsVisible" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=672982363]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Objects: visible"
 
-[node name="FrameObjectsVisibleValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="FrameObjectsVisibleValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=1720430815]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="LblObjectsShadow" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="LblObjectsShadow" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=12700807]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "Objects: shadow"
 
-[node name="FrameObjectsShadowValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="FrameObjectsShadowValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=1915134213]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="LblGpuMem" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="LblGpuMem" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=253832155]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 11
 text = "GPU mem (tex/buf/total)"
 
-[node name="FrameGpuMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid"]
+[node name="FrameGpuMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameRenderPanel/FrameRenderVBox/FrameRenderGrid" unique_id=839848949]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
 text = "-"
 
-[node name="FrameShadowHint" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox"]
+[node name="FrameShadowHint" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox" unique_id=1824466127]
 unique_name_in_owner = true
 layout_mode = 2
-autowrap_mode = 3
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 10
-text = ""
+autowrap_mode = 3
 
-[node name="FrameHookPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox"]
+[node name="FrameHookPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox" unique_id=84797709]
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="FrameHookVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameHookPanel"]
+[node name="FrameHookVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameHookPanel" unique_id=1426105455]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="FrameHookTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameHookPanel/FrameHookVBox"]
+[node name="FrameHookTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameHookPanel/FrameHookVBox" unique_id=1585855724]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.78, 1, 1)
 theme_override_font_sizes/font_size = 13
 text = "Hook Cost By Type (last frame, both passes)"
 
-[node name="FrameHookTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameHookPanel/FrameHookVBox"]
+[node name="FrameHookTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameHookPanel/FrameHookVBox" unique_id=292150974]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 260)
 layout_mode = 2
@@ -1868,36 +1849,35 @@ theme_override_font_sizes/font_size = 11
 columns = 3
 hide_root = true
 
-[node name="FrameStutterHint" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox"]
+[node name="FrameStutterHint" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox" unique_id=362387]
 unique_name_in_owner = true
 layout_mode = 2
-autowrap_mode = 3
 theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
 theme_override_font_sizes/font_size = 10
-text = ""
+autowrap_mode = 3
 
-[node name="FrameViewportPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox"]
+[node name="FrameViewportPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox" unique_id=1243423187]
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="FrameViewportVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameViewportPanel"]
+[node name="FrameViewportVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameViewportPanel" unique_id=315938138]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="FrameViewportTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameViewportPanel/FrameViewportVBox"]
+[node name="FrameViewportTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameViewportPanel/FrameViewportVBox" unique_id=1278783159]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.78, 1, 1)
 theme_override_font_sizes/font_size = 13
 text = "Cost Per Viewport"
 
-[node name="FrameViewportHint" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameViewportPanel/FrameViewportVBox"]
+[node name="FrameViewportHint" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameViewportPanel/FrameViewportVBox" unique_id=1672489555]
 layout_mode = 2
-autowrap_mode = 3
 theme_override_colors/font_color = Color(0.45, 0.45, 0.52, 1)
 theme_override_font_sizes/font_size = 10
 text = "The dash, every mirror and every camera render the world again into their own viewport. If one of these rivals main, that is where the frame went."
+autowrap_mode = 3
 
-[node name="FrameViewportTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameViewportPanel/FrameViewportVBox"]
+[node name="FrameViewportTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Frame/FrameVBox/FrameViewportPanel/FrameViewportVBox" unique_id=1983671997]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 180)
 layout_mode = 2

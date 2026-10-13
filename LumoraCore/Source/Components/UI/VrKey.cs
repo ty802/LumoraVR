@@ -3,6 +3,7 @@
 
 using System;
 using Helio.UI;
+using Lumora.Core.Input;
 
 namespace Lumora.Core.Components.UI;
 
@@ -32,7 +33,7 @@ public enum VrKeyRole
 // press MEANS - the key never touches the focused field itself - so the shift state, the one-shot
 // consume and the show/hide rules all live in one place. -xlinka
 //
-// The one thing the key owns is REPEAT. A Button only ever hands out edges (it submits on release),
+// The one thing the key owns is REPEAT. A Button only ever hands out edges (it acts as the press lands),
 // so "still holding it" has to be read off the button's live press state every frame, and that read
 // belongs next to the timer that consumes it. Updates gate on the default Slot.IsActive, which is
 // exactly right here: the key slots are inactive while the panel is hidden, and a hidden keyboard
@@ -40,10 +41,6 @@ public enum VrKeyRole
 [ComponentCategory("UI")]
 public sealed class VrKey : Component
 {
-    // Runaway guard: a keyboard with its repeat interval driven to zero would spin the drain loop
-    // below forever inside one frame.
-    private const float MinRepeatInterval = 0.01f;
-
     public readonly Sync<string> Glyph;
     public readonly Sync<string> ShiftGlyph;
     public readonly Sync<VrKeyRole> Role;
@@ -55,11 +52,9 @@ public sealed class VrKey : Component
     public readonly SyncRef<Text> AltLabel;
 
     private Button? _button;
-    // Seconds this key has been held, and the hold time the next repeat fires at. Per-peer: a repeat
-    // is a local input gesture, not replicated state.
-    private float _heldTime;
-    private float _nextRepeat;
-    private bool _wasHeld;
+    // Per-peer repeat timing: holding a key is local input, not replicated state.
+    private KeyRepeat _repeat;
+    private TextInput? _pressedField;
 
     public VrKey()
     {
@@ -98,37 +93,15 @@ public sealed class VrKey : Component
         base.OnUpdate(delta);
 
         var keyboard = Keyboard.Target;
-        bool held = Repeats
+        _button ??= Slot?.GetComponent<Button>();
+        bool held = Repeats && Enabled.Value && Slot is { IsActive: true }
             && keyboard is { IsDestroyed: false }
-            && _button is { IsDestroyed: false }
+            && keyboard.Slot.IsActive && !keyboard.IsGrabbed
+            && ReferenceEquals(_pressedField, TextInput.Focused)
+            && _button is { IsDestroyed: false, CanInteract: true }
             && _button.IsPressedNow;
-
-        if (!held)
-        {
-            _wasHeld = false;
-            return;
-        }
-
-        // First frame of the hold. The press itself types nothing here - the button submits on
-        // release, which is where the first character comes from - so the timer just starts counting
-        // towards the wait. -xlinka
-        if (!_wasHeld)
-        {
-            _wasHeld = true;
-            _heldTime = 0f;
-            _nextRepeat = MathF.Max(keyboard!.RepeatDelay.Value, 0f);
-            return;
-        }
-
-        _heldTime += delta;
-        float interval = MathF.Max(keyboard!.RepeatInterval.Value, MinRepeatInterval);
-        // Drain rather than fire once: a hitched frame longer than the interval owes more than one
-        // repeat, and swallowing them makes a held backspace lag behind the hand.
-        while (_heldTime >= _nextRepeat)
-        {
-            keyboard.HandleKey(this);
-            _nextRepeat += interval;
-        }
+        int count = _repeat.Advance(held, delta, keyboard?.RepeatInterval.Value ?? KeyRepeat.DefaultInterval);
+        for (int i = 0; i < count; i++) keyboard!.HandleKey(this);
     }
 
     // A key with no shifted face (space, enter, the specials) reads the same either way.
@@ -173,6 +146,15 @@ public sealed class VrKey : Component
     [SyncMethod]
     public void OnPressed(Button button, UIInteractionContext context)
     {
+        _button = button;
+        _pressedField = TextInput.Focused;
+        _repeat.Begin(Keyboard.Target?.RepeatDelay.Value ?? KeyRepeat.DefaultDelay);
         Keyboard.Target?.HandleKey(this);
+    }
+
+    public override void OnDisabled()
+    {
+        _repeat.Reset();
+        base.OnDisabled();
     }
 }

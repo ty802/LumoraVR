@@ -13,31 +13,38 @@ using Lumora.Nexus.Cloud;
 
 namespace Lumora.Core.Components.UI;
 
-// The home dash: a grid of widgets, not a screen of inline cards. Everything on it is a WidgetPreset, so
-// every one of them can be dragged off onto its own panel in the world and dropped back on the top bar,
-// which is the whole point of the grid. The account tile owns the top-left corner with the actions running
-// down under it, the two view toggles sit top-right with the session directory below them, and the middle
-// is deliberately empty: that is where a popped-out widget lands when you put it back. -xlinka
+// Home is the workspace itself: the desk under the windows, one widget grid filling it. Everything on it is
+// a WidgetPreset, so any of them can be lifted off onto a panel of its own in the room and put back down.
+// On the floor of the column on the right, what you have left out in the room and who is online; your account,
+// your microphone and the tools are on the top bar, the time, the frame rate and the way out in its middle.
+// Windows go over the desk, so it stays one Workspace plate away.
+// -xlinka
 [ComponentCategory("Hidden")]
 public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
 {
-    // A fixed cell count, not a fixed cell size: the dash width follows the display aspect, so cells that
-    // stretch keep the right-hand column against the right edge instead of leaving a growing gutter.
-    // 64 across and 27 down comes out at about 15 px cells on the 16:9 dash, fine enough that a widget
-    // put down by hand lands close to where it was let go instead of snapping half a card away. -xlinka
-    private const int Columns = 64;
-    private const int Rows = 27;
+    // A fixed cell count that stretches with the desk, about this many units a cell, so a widget put down by
+    // hand lands close to where it was let go.
+    private const float TargetPitch = 14f;
+    private const float CellSpacing = 6f;
+    private const float UsersOnlineHeight = 62f;
 
-    private const int CardWidth = 13;
-    private const int CardHeight = 3;
-    private const int RightColumn = Columns - CardWidth;
-    private const int AccountWidth = 20;
-    // Action cards are eleven of sixty-four columns wide, not the account tile's twenty.
-    private const int ActionWidth = 11;
-    private const int AccountHeight = 7;
+    public const string DeskKey = "Dash.Desk.Layout";
+    private const string DeskVersion = "3";
+    private const float DeskSaveInterval = 1f;
+
+    private float2 _pitch = new(TargetPitch, TargetPitch);
+    private bool _persistDesk;
+    private string? _deskSaved;
+    private float _deskClock;
+    private int _columns;
+    private int _rows;
+    private bool _floorStacked;
+    private bool _floorEditing;
+    private WidgetGrid? _grid;
+    private float2 _gridDesk;
 
     private static readonly color OverlayFill = DashTheme.Panel;
-    private static readonly color ScrimFill = new color(0.02f, 0.02f, 0.05f, 0.62f);
+    private static readonly color ScrimFill = DashTheme.ModalScrim;
 
     private string _template = "LocalHome";
     private SessionVisibility _visibility = SessionVisibility.Private;
@@ -76,7 +83,7 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
         {
             if (_account != null && !_account.IsDestroyed)
                 return _account;
-            _account = Slot.GetComponentInChildren<AccountWidgetPreset>();
+            _account = _dashboard?.TopBar?.Account ?? Slot.GetComponentInChildren<AccountWidgetPreset>();
             return _account != null && !_account.IsDestroyed ? _account : null;
         }
     }
@@ -90,63 +97,323 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
         var root = builder.Current;
         _ = root.GetComponent<RectTransform>() ?? root.AttachComponent<RectTransform>();
 
+        // Cells counted off the desk this dash has now; OnCommonUpdate follows the desk when it changes.
+        var desk = _dashboard?.DeskRect ?? new Rect(0f, 0f, 1174f, 638f);
+        _columns = System.Math.Max(24, (int)MathF.Round((desk.width + CellSpacing) / TargetPitch));
+        _rows = System.Math.Max(16, (int)MathF.Round((desk.height + CellSpacing) / TargetPitch));
+        _pitch = new float2((desk.width + CellSpacing) / _columns, (desk.height + CellSpacing) / _rows);
+
         var grid = root.AttachComponent<WidgetGrid>();
-        grid.FixedColumns.Value = Columns;
-        grid.FixedRows.Value = Rows;
-        grid.Spacing.Value = new float2(4f, 4f);
-        grid.Padding.Value = new float2(DashTheme.Inset, DashTheme.Inset);
+        _grid = grid;
+        _gridDesk = desk.Size;
+        grid.FixedColumns.Value = _columns;
+        grid.FixedRows.Value = _rows;
+        grid.Spacing.Value = new float2(CellSpacing, CellSpacing);
+        grid.Padding.Value = float2.Zero;
         grid.PlacedStyler = preset => _dashboard?.StyleDroppedWidget(preset);
 
-        _account = AddWidget<AccountWidgetPreset>(root, "Account", 0, 0, AccountWidth, AccountHeight);
+        // Laid out in cells, so every card is a whole number of them and the gaps are the grid's own. The whole
+        // column is full width, so a desk that grows moves it with its right edge as one piece.
+        int column = Cells(Dashboard.GadgetColumnWidth, _pitch.x);
+        int left = _columns - column;
+        int tray = Cells(PoppedOutWidgetPreset.HeightFor(0), _pitch.y);
+        int online = Cells(UsersOnlineHeight, _pitch.y);
 
-        // The action cards sit at the BOTTOM of the left column, the width of the account tile above
-        // them, so the column reads as two blocks with the empty middle between: the tile you sign in
-        // with, and the things you do. Stacked from the floor up, so Paste being absent never leaves a
-        // hole. -xlinka
-        int row = Rows - CardHeight;
-        // No platform clipboard bridge means a paste can never do anything, so the card does not exist
-        // rather than sitting there greyed out forever.
-        if (ImportHandlers.Clipboard != null)
-        {
-            AddWidget<PasteWidgetPreset>(root, "Paste", 0, row, ActionWidth, CardHeight);
-            row -= CardHeight;
-        }
-        AddWidget<AvatarStudioWidgetPreset>(root, "AvatarStudio", 0, row, ActionWidth, CardHeight);
-        row -= CardHeight;
-        AddWidget<StreamAudioWidgetPreset>(root, "StreamAudio", 0, row, ActionWidth, CardHeight);
-        row -= CardHeight;
-        AddWidget<NewWorldWidgetPreset>(root, "NewWorld", 0, row, ActionWidth, CardHeight);
-
-        AddWidget<FreeformDashWidgetPreset>(root, "FreeformDash", RightColumn, 0, CardWidth, CardHeight);
-        AddWidget<EditWidgetsWidgetPreset>(root, "EditWidgets", RightColumn, CardHeight, CardWidth, CardHeight);
-        AddWidget<OpenDebugWidgetPreset>(root, "Debug", RightColumn, CardHeight * 2, CardWidth, CardHeight);
-
-        // Placed at its open height against the bottom row. From here the card owns its own footprint: it
-        // collapses to a title row when the services are unreachable, off the top edge, so the bottom of
-        // the card stays on this row either way.
-        AddWidget<DirectoryWidgetPreset>(root, "Directory", RightColumn, Rows - 7, CardWidth, 7);
+        // One group on the floor of the column: the windows out in the room on the floor, and who is online
+        // standing on them.
+        Place<PoppedOutWidgetPreset>(root, "PoppedOut", left, _rows - tray, column, tray);
+        Place<DirectoryWidgetPreset>(root, "UsersOnline", left, _rows - tray - online, column, online);
+        _floorStacked = true;
 
         BuildCreateOverlay(root);
     }
 
-    private T AddWidget<T>(Slot grid, string name, int x, int y, int width, int height)
-        where T : HomeWidgetPreset, new()
+    // The desk changed shape (the dash follows the window it is shown in). Fixed counts would stretch every
+    // cell, so the counts follow the desk instead and whatever stood against the right or bottom edge moves
+    // with that edge: the column stays a column and the strip stays along the floor.
+    public override void OnCommonUpdate()
+    {
+        base.OnCommonUpdate();
+        if (_grid == null || _grid.IsDestroyed || _dashboard == null)
+            return;
+        if (_persistDesk)
+        {
+            _deskClock += World?.Time.Delta ?? 0f;
+            if (_deskClock >= DeskSaveInterval)
+            {
+                _deskClock = 0f;
+                SaveDesk();
+            }
+        }
+        StackFloor();
+        var desk = _dashboard.DeskRect;
+        if (MathF.Abs(desk.width - _gridDesk.x) < 1f && MathF.Abs(desk.height - _gridDesk.y) < 1f)
+            return;
+        _gridDesk = desk.Size;
+        int columns = System.Math.Max(24, (int)MathF.Round((desk.width + CellSpacing) / TargetPitch));
+        int rows = System.Math.Max(16, (int)MathF.Round((desk.height + CellSpacing) / TargetPitch));
+        int dc = columns - _columns;
+        int dr = rows - _rows;
+        if (dc == 0 && dr == 0)
+            return;
+        // Users online standing on the tray goes wherever the tray goes, or the tray moving up would land on it
+        // and the grid would put it in the first free spot instead.
+        var riding = _floorStacked ? DeskWidget("UsersOnline") : null;
+        foreach (var widget in _grid.Slot.GetComponentsInChildren<Widget>(false))
+        {
+            if (dc != 0 && widget.GridX.Value + widget.GridWidth.Value >= _columns - 1)
+                widget.GridX.Value = System.Math.Clamp(widget.GridX.Value + dc, 0, System.Math.Max(0, columns - widget.GridWidth.Value));
+            if (dr != 0 && (widget.GridY.Value + widget.GridHeight.Value >= _rows - 1 || ReferenceEquals(widget, riding)))
+                widget.GridY.Value = System.Math.Clamp(widget.GridY.Value + dr, 0, System.Math.Max(0, rows - widget.GridHeight.Value));
+        }
+        _columns = columns;
+        _rows = rows;
+        _pitch = new float2((desk.width + CellSpacing) / columns, (desk.height + CellSpacing) / rows);
+        _grid.FixedColumns.Value = columns;
+        _grid.FixedRows.Value = rows;
+        _grid.InvalidateArrange();
+    }
+
+    // THE FLOOR
+    //
+    // The tray of windows out in the room and Users online are one group on the floor of the column: the tray
+    // on the floor, growing up a row per window, and Users online standing on it. Each card writes its own
+    // height; this keeps the second standing on the first. Moved apart by hand in edit mode, they stay where
+    // they were put. -xlinka
+    private void StackFloor()
+    {
+        var tray = DeskWidget("PoppedOut");
+        var online = DeskWidget("UsersOnline");
+        if (tray == null || online == null)
+            return;
+        if (WidgetPanel.EditMode)
+        {
+            _floorEditing = true;
+            return;
+        }
+        if (_floorEditing)
+        {
+            _floorEditing = false;
+            _floorStacked = Stacked(tray.GridX.Value, tray.GridY.Value, online.GridX.Value, online.GridY.Value, online.GridHeight.Value);
+        }
+        if (!_floorStacked)
+            return;
+        int y = System.Math.Max(0, tray.GridY.Value - online.GridHeight.Value);
+        if (online.GridY.Value != y)
+            online.GridY.Value = y;
+        if (online.GridX.Value != tray.GridX.Value)
+            online.GridX.Value = tray.GridX.Value;
+    }
+
+    private static bool Stacked(int trayX, int trayY, int onlineX, int onlineY, int onlineHeight)
+        => trayX == onlineX && onlineY + onlineHeight == trayY;
+
+    private Widget? DeskWidget(string name)
+    {
+        foreach (var child in _grid!.Slot.Children)
+        {
+            if (!child.IsDestroyed && child.Name.Value == name)
+                return child.GetComponent<Widget>();
+        }
+        return null;
+    }
+
+    // THE DESK, KEPT
+    //
+    // Where each widget on the desk was left, in cells, for this machine: read once the dash says it keeps its
+    // arrangement (the user's own), written a moment after a move settles and when the dash closes.
+    // version|columns,rows|name=x,y,w,h|... An older version is of a desk that is not built any more and is
+    // left alone. A widget no longer on the desk is skipped; a desk of another shape
+    // moves whatever stood against its right or bottom edge with that edge, as a resize does; anything that
+    // would land on another widget leaves the whole desk as built. -xlinka
+
+    public void RestoreDesk(bool persist)
+    {
+        _persistDesk = persist;
+        if (!persist || _grid == null || _grid.IsDestroyed)
+            return;
+        string saved = Lumora.Core.Settings.ReadValue(DeskKey, string.Empty) ?? string.Empty;
+        if (saved.Length > 0 && ApplyDesk(saved))
+        {
+            _deskSaved = DeskSignature();
+            // Kept apart last time, kept apart now.
+            DeskCard? tray = null, online = null;
+            foreach (var card in DeskCards())
+            {
+                if (card.Slot.Name.Value == "PoppedOut") tray = card;
+                else if (card.Slot.Name.Value == "UsersOnline") online = card;
+            }
+            if (tray != null && online != null)
+            {
+                var t = tray.Cells;
+                var o = online.Cells;
+                _floorStacked = Stacked(t.X, t.Y, o.X, o.Y, o.H);
+            }
+        }
+    }
+
+    public void SaveDesk()
+    {
+        if (!_persistDesk || _grid == null || _grid.IsDestroyed)
+            return;
+        var value = DeskSignature();
+        if (value == _deskSaved)
+            return;
+        _deskSaved = value;
+        Lumora.Core.Settings.WriteValue(DeskKey, value);
+    }
+
+    // A widget on the desk by its slot: the Widget once its preset has built one, the preset's own cells
+    // before that (a desk is restored in the same frame it is built in).
+    private sealed class DeskCard
+    {
+        public required Slot Slot;
+        public Widget? Widget;
+        public WidgetPreset? Preset;
+
+        public (int X, int Y, int W, int H) Cells => Widget != null
+            ? (Widget.GridX.Value, Widget.GridY.Value, Widget.GridWidth.Value, Widget.GridHeight.Value)
+            : (Preset!.GridX.Value, Preset.GridY.Value, Preset.GridWidth.Value, Preset.GridHeight.Value);
+
+        public void Set(int x, int y, int w, int h)
+        {
+            if (Preset != null)
+            {
+                if (Preset.GridX.Value != x) Preset.GridX.Value = x;
+                if (Preset.GridY.Value != y) Preset.GridY.Value = y;
+                if (Preset.GridWidth.Value != w) Preset.GridWidth.Value = w;
+                if (Preset.GridHeight.Value != h) Preset.GridHeight.Value = h;
+            }
+            if (Widget != null)
+            {
+                if (Widget.GridX.Value != x) Widget.GridX.Value = x;
+                if (Widget.GridY.Value != y) Widget.GridY.Value = y;
+                if (Widget.GridWidth.Value != w) Widget.GridWidth.Value = w;
+                if (Widget.GridHeight.Value != h) Widget.GridHeight.Value = h;
+            }
+        }
+    }
+
+    private List<DeskCard> DeskCards()
+    {
+        var cards = new List<DeskCard>();
+        if (_grid == null)
+            return cards;
+        foreach (var child in _grid.Slot.Children)
+        {
+            if (child.IsDestroyed)
+                continue;
+            var widget = child.GetComponent<Widget>();
+            var preset = child.GetComponent<WidgetPreset>();
+            if (widget == null && preset == null)
+                continue;
+            cards.Add(new DeskCard { Slot = child, Widget = widget, Preset = preset });
+        }
+        return cards;
+    }
+
+    private string DeskSignature()
+    {
+        var cards = DeskCards();
+        cards.Sort((a, b) => string.CompareOrdinal(a.Slot.Name.Value, b.Slot.Name.Value));
+        var sb = new System.Text.StringBuilder(DeskVersion + "|");
+        sb.Append(_columns).Append(',').Append(_rows);
+        var seen = new HashSet<string>();
+        foreach (var card in cards)
+        {
+            string name = card.Slot.Name.Value ?? string.Empty;
+            if (name.Length == 0 || name.IndexOfAny(new[] { '|', '=', ',' }) >= 0 || !seen.Add(name))
+                continue;
+            var (x, y, w, h) = card.Cells;
+            sb.Append('|').Append(name).Append('=').Append(x).Append(',').Append(y).Append(',').Append(w).Append(',').Append(h);
+        }
+        return sb.ToString();
+    }
+
+    private bool ApplyDesk(string saved)
+    {
+        var parts = saved.Split('|');
+        if (parts.Length < 2 || parts[0] != DeskVersion)
+            return false;
+        var dims = parts[1].Split(',');
+        if (dims.Length != 2 || !int.TryParse(dims[0], out int savedColumns) || !int.TryParse(dims[1], out int savedRows)
+            || savedColumns <= 0 || savedRows <= 0)
+            return false;
+
+        var cards = DeskCards();
+        var byName = new Dictionary<string, DeskCard>();
+        foreach (var card in cards)
+            byName.TryAdd(card.Slot.Name.Value ?? string.Empty, card);
+
+        var placed = new Dictionary<DeskCard, (int X, int Y, int W, int H)>();
+        foreach (var card in cards)
+            placed[card] = card.Cells;
+        for (int i = 2; i < parts.Length; i++)
+        {
+            int eq = parts[i].IndexOf('=');
+            if (eq <= 0 || !byName.TryGetValue(parts[i].Substring(0, eq), out var widget))
+                continue;
+            var f = parts[i].Substring(eq + 1).Split(',');
+            if (f.Length != 4 || !int.TryParse(f[0], out int x) || !int.TryParse(f[1], out int y)
+                || !int.TryParse(f[2], out int w) || !int.TryParse(f[3], out int h) || w <= 0 || h <= 0)
+                continue;
+            if (x + w >= savedColumns - 1)
+                x += _columns - savedColumns;
+            if (y + h >= savedRows - 1)
+                y += _rows - savedRows;
+            w = System.Math.Min(w, _columns);
+            h = System.Math.Min(h, _rows);
+            x = System.Math.Clamp(x, 0, _columns - w);
+            y = System.Math.Clamp(y, 0, _rows - h);
+            placed[widget] = (x, y, w, h);
+        }
+
+        var cells = new List<(int X, int Y, int W, int H)>(placed.Values);
+        for (int a = 0; a < cells.Count; a++)
+        {
+            for (int b = a + 1; b < cells.Count; b++)
+            {
+                var p = cells[a];
+                var q = cells[b];
+                if (p.X < q.X + q.W && q.X < p.X + p.W && p.Y < q.Y + q.H && q.Y < p.Y + p.H)
+                    return false;
+            }
+        }
+        foreach (var pair in placed)
+        {
+            var (x, y, w, h) = pair.Value;
+            pair.Key.Set(x, y, w, h);
+        }
+        _grid?.InvalidateArrange();
+        return true;
+    }
+
+    // Cells a length in desk units takes: n cells span n pitches less one gap.
+    private static int Cells(float length, float pitch)
+        => System.Math.Max(1, (int)MathF.Round((length + CellSpacing) / pitch));
+
+    private T Place<T>(Slot grid, string name, int x, int y, int width, int height)
+        where T : WidgetPreset, new()
     {
         var slot = grid.AddSlot(name);
         // Its own chunk: a widget that repaints on its own clock (the directory poll, a focused field)
         // re-meshes itself instead of the whole screen.
         slot.AttachComponent<GraphicChunkRoot>();
         var preset = slot.AttachComponent<T>();
+        x = System.Math.Clamp(x, 0, _columns - 1);
+        y = System.Math.Clamp(y, 0, _rows - 1);
         preset.GridX.Value = x;
         preset.GridY.Value = y;
-        preset.GridWidth.Value = width;
-        preset.GridHeight.Value = height;
+        preset.GridWidth.Value = System.Math.Clamp(width, 1, _columns - x);
+        preset.GridHeight.Value = System.Math.Clamp(height, 1, _rows - y);
+        _dashboard?.StyleDroppedWidget(preset);
         return preset;
     }
 
     // KEY INPUT
 
     public bool HasFieldFocus => Account?.HasFieldFocus ?? false;
+    public string? CopyText => Account?.CopyText;
 
     public bool ConsumeChar(char c) => Account?.ConsumeChar(c) ?? false;
 
@@ -193,8 +460,6 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
         // Plain translucent dim. It dims the dashboard CONTENT behind the dialog (this is inside the
         // dash's own render texture). A screen-read blur would sample the session world (sky/sun), not
         // the transparent dash UI, so it just pulled the world in - a dim is the right modal scrim.
-        var backImage = _createBackdrop.AttachComponent<Image>();
-        backImage.Tint.Value = ScrimFill;
         _createBackdrop.AttachComponent<Button>().Clicked += (_, ctx) =>
         {
             // Dismiss only when the click lands OUTSIDE the dialog panel, so clicks on the panel or
@@ -205,6 +470,8 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
                 return;
             CloseCreateMenu();
         };
+        // Add the image after the button to keep its dim independent of hover/press colours.
+        _createBackdrop.AttachComponent<Image>().Tint.Value = ScrimFill;
         _createBackdrop.ActiveSelf.Value = false;
 
         // Centered dialog. Wider than tall; sized to fit inside the 720px-tall canvas with margin so
@@ -365,6 +632,8 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
     public void OpenSignIn()
     {
         SetCreateMenuOpen(false);
+        // The dialog's keys come here, and only the screen in front gets keys.
+        _dashboard?.Workspace?.FocusDesk();
         Account?.OpenSignInDialog();
     }
 
@@ -428,6 +697,7 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
         "LocalHome" => "Home Space",
         "Grid" => "Grid Space",
         "Scratch" => "Scratch Space",
+        "Shaders" => "Shader Gallery",
         _ => template,
     };
 

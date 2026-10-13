@@ -47,10 +47,12 @@ public class WizardForm : UIComponent
         CanvasSize.Value = DefaultCanvasSize;
     }
 
+    // Finds the pages, never makes them: on a machine that did not build the wizard they arrive with it,
+    // and adding a set there would hang a second, empty one under somebody else's dialog. -xlinka
     public override void OnStart()
     {
         base.OnStart();
-        EnsureSwapPanel();
+        FindSwapPanel();
     }
 
     public void OpenRoot(Action<UIBuilder> build)
@@ -85,11 +87,21 @@ public class WizardForm : UIComponent
         _swapPanel!.Show(_path[_path.Count - 1]);
     }
 
+    private void FindSwapPanel()
+    {
+        if (_swapPanel != null && !_swapPanel.IsDestroyed) return;
+        _swapSlot = Slot.FindChild(SwapSlotName, recursive: false);
+        _swapPanel = _swapSlot?.GetComponent<SwapPanel>();
+    }
+
+    private const string SwapSlotName = "WizardPages";
+
     private void EnsureSwapPanel()
     {
+        FindSwapPanel();
         if (_swapPanel != null) return;
 
-        _swapSlot = Slot.AddSlot("WizardPages");
+        _swapSlot = Slot.AddSlot(SwapSlotName);
         Fill(_swapSlot.AttachComponent<RectTransform>());
         _swapPanel = _swapSlot.AttachComponent<SwapPanel>();
         _swapPanel.Duration.Value = SlideDuration.Value;

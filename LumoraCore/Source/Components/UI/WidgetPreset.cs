@@ -51,6 +51,7 @@ public abstract class WidgetPreset : Component
 
     public Widget EnsureBuilt()
     {
+        ComponentExecutionPolicy.Demand(GetType(), World);
         var widget = Slot.GetComponent<Widget>() ?? Slot.AttachComponent<Widget>();
         if (_built)
             return widget;

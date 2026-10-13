@@ -30,6 +30,7 @@ namespace Lumora.Core.Components.UI;
 // Every entry here writes a setting a subsystem actually reads. If you cannot point at the consumer,
 // it does not go on this screen. -xlinka
 [ComponentCategory("Hidden")]
+[UserspaceOnly]
 public sealed class SettingsScreen : DashboardScreen
 {
     private const string KindBinding = "binding";
@@ -43,9 +44,7 @@ public sealed class SettingsScreen : DashboardScreen
     // stays last however often its rows are torn out and re-added.
     private const long WebAccessOrder = 1L << 20;
 
-    // Gap between two audio rows' Order values. The device rows are torn out and re-added mid-page, so
-    // they need room to land between the fixed rows around them.
-    private const long AudioRowStep = 256;
+    private const float MetresPerInch = 0.0254f;
 
     // One poll drives every live row on the screen: the locomotion strip, the pad status, the last
     // input readout and the binding cells. It also catches settings changed from somewhere else (a Home
@@ -61,16 +60,19 @@ public sealed class SettingsScreen : DashboardScreen
     private readonly ListingItemSource _entries = new();
     private ListingView? _sidebarView;
     private ListingView? _entryView;
+    private RectTransform? _entryViewport;
+    private readonly SettingsRowFit _rowFit = new();
     private Text? _title;
     private ListingItem? _activeItem;
     private string _activeCategory = string.Empty;
     private float _refreshAccum;
-    private readonly List<ListingToggle> _inputDeviceRows = new();
-    private readonly List<ListingToggle> _outputDeviceRows = new();
-    private ListingToggle? _inputDefaultToggle;
-    private ListingToggle? _outputDefaultToggle;
+    private ListingDropdown? _inputDeviceChoice;
+    private ListingDropdown? _outputDeviceChoice;
+    private ListingDropdown? _streamDeviceChoice;
     private readonly List<ListingItem> _webAccessRows = new();
     private int _webAccessVersion = -1;
+    private ListingSlider? _heightRow;
+    private ListingSlider? _tooltipDelayRow;
     private LocaleText _controlsStatus = "Settings.Controls.Hint".AsLocale("Click a binding to rebind it. Escape cancels.");
     private bool _localeHooked;
 
@@ -78,7 +80,7 @@ public sealed class SettingsScreen : DashboardScreen
 
     protected override void BuildContent(UIBuilder builder)
     {
-        _dashboard = Slot.GetComponentInParents<Dashboard>();
+        _dashboard = Dashboard.Of(Slot);
         _fonts.Regular = _dashboard?.Font.Target;
         _fonts.Semibold = _dashboard?.FontSemibold.Target;
         _fonts.Bold = _dashboard?.FontBold.Target;
@@ -116,21 +118,28 @@ public sealed class SettingsScreen : DashboardScreen
         // The rail is bare: no card, no outline. The items are words, and only the current one carries
         // a wash. Its first item lines up with the title beside it.
         var railHost = AddColumn(root, "Sidebar", SettingsMetrics.SidebarWidth);
+        // The rail gives up width before the rows do, down to what its longest word needs.
+        railHost.GetComponent<LayoutElement>()!.MinWidth.Value = SettingsMetrics.SidebarMinWidth;
         float railTop = (SettingsMetrics.TitleHeight - SettingsMetrics.NavHeight) * 0.5f;
         var railViewport = SettingsUI.Fill(railHost, "Viewport", 0f, DashTheme.Gap, 0f, railTop);
         var railTemplates = new ListingTemplateMapper { DefaultHeight = SettingsMetrics.NavHeight };
         railTemplates.MapKind(KindNavCategory, new SettingsNavTemplate(_fonts, PickCategory));
         _sidebarView = ListingView.Attach(railViewport, _sidebarStyle, railTemplates, _categories);
+        // The rail is a handful of tabs that never scroll: they switch as the press lands.
+        if (_sidebarView.Scroll != null)
+            _sidebarView.Scroll.RowsActOnRelease.Value = false;
 
         // No panel fill of its own. The dash already hands every screen a panel to sit on, and a second
         // one in the same tone inside it is a box drawn around nothing. The rows carry the surface.
         var entryHost = AddColumn(root, "Entries", 0f);
+        entryHost.GetComponent<LayoutElement>()!.MinWidth.Value = SettingsMetrics.EntriesMinWidth;
         _title = SettingsUI.Label(entryHost, "Title", _fonts.Strong, DashTheme.FontTitle, DashTheme.Text,
             TextHorizontalAlignment.Left, new float2(0f, 1f), new float2(1f, 1f),
             new float2(DashTheme.Inset, -SettingsMetrics.TitleHeight), new float2(-DashTheme.Inset, 0f));
         var entryViewport = SettingsUI.Fill(entryHost, "Viewport",
             SettingsMetrics.PanelInset, SettingsMetrics.PanelInset,
             SettingsMetrics.PanelInset, SettingsMetrics.TitleHeight);
+        _entryViewport = SettingsUI.Rect(entryViewport);
         _entryView = ListingView.Attach(entryViewport, _style, BuildEntryTemplates(), _entries);
 
         var first = _categories.ItemsAt(string.Empty);
@@ -158,6 +167,9 @@ public sealed class SettingsScreen : DashboardScreen
     {
         if (IsDestroyed)
             return;
+        BuildDeviceChoices(input: true);
+        BuildDeviceChoices(input: false);
+        BuildStreamDeviceChoices();
         _sidebarView?.RefreshValues();
         _entryView?.RefreshValues();
         if (_title != null && _activeItem != null)
@@ -167,18 +179,19 @@ public sealed class SettingsScreen : DashboardScreen
 
     private ListingTemplateMapper BuildEntryTemplates()
     {
-        var labels = new SettingsLabelTemplate(_fonts);
+        var labels = new SettingsLabelTemplate(_fonts) { Fit = _rowFit };
         var mapper = new ListingTemplateMapper { DefaultHeight = SettingsMetrics.RowHeight };
         mapper.Map<ListingHeader>(new SettingsSectionTemplate(_fonts));
-        mapper.Map<ListingToggle>(new SettingsToggleTemplate(_fonts));
-        mapper.Map<ListingSlider>(new SettingsSliderTemplate(_fonts));
-        mapper.Map<ListingChoice>(new SettingsChoiceTemplate(_fonts));
-        mapper.Map<ListingAction>(new SettingsActionTemplate(_fonts));
+        mapper.Map<ListingToggle>(new SettingsToggleTemplate(_fonts) { Fit = _rowFit });
+        mapper.Map<ListingSlider>(new SettingsSliderTemplate(_fonts) { Fit = _rowFit });
+        mapper.Map<ListingChoice>(new SettingsChoiceTemplate(_fonts) { Fit = _rowFit });
+        mapper.Map<ListingDropdown>(new SettingsDropdownTemplate(_fonts) { Fit = _rowFit });
+        mapper.Map<ListingAction>(new SettingsActionTemplate(_fonts) { Fit = _rowFit });
         mapper.Map<ListingLabel>(labels);
         mapper.Fallback(labels);
-        mapper.MapKind(KindBinding, new SettingsBindingTemplate(_fonts, this));
-        mapper.MapKind(KindLocomotion, new SettingsLocomotionTemplate(_fonts, this));
-        mapper.MapKind(KindWebAccess, new WebAccessRowTemplate(_fonts, this));
+        mapper.MapKind(KindBinding, new SettingsBindingTemplate(_fonts, this) { Fit = _rowFit });
+        mapper.MapKind(KindLocomotion, new SettingsLocomotionTemplate(_fonts, this) { Fit = _rowFit });
+        mapper.MapKind(KindWebAccess, new WebAccessRowTemplate(_fonts, this) { Fit = _rowFit });
         return mapper;
     }
 
@@ -255,9 +268,11 @@ public sealed class SettingsScreen : DashboardScreen
         const string path = "general";
         Header(path, "You", "Settings.General.Section.You".AsLocale("You"));
         // Drives the avatar auto-rescale: SettingsApplier feeds it to InputInterface.UserHeight and
-        // AvatarIK re-scales so the eyes land at this height.
-        Slider(path, "height", "Settings.General.Height".AsLocale("Height"), SettingsCatalog.UserHeight,
-            () => EngineSettings.UserHeight, v => EngineSettings.UserHeight = v, v => $"{v:0.00} m");
+        // AvatarIK re-scales so the eyes land at this height. Metres whatever the units say: imperial
+        // changes the label and walks the bar an inch at a time, never the value.
+        _heightRow = Slider(path, "height", "Settings.General.Height".AsLocale("Height"), SettingsCatalog.UserHeight,
+            () => EngineSettings.UserHeight, v => EngineSettings.UserHeight = v, DescribeHeight);
+        ApplyHeightStep();
 
         Header(path, "Video", "Settings.General.Section.Video".AsLocale("Video"));
         // The cap a link is resolved at when the player itself asks for nothing in particular. Decode
@@ -270,6 +285,12 @@ public sealed class SettingsScreen : DashboardScreen
         _entries.Add(path, ListingChoice.FromEnum<CookiesBrowser>("videocookies",
             "Settings.General.VideoCookies".AsLocale("Video Cookies"),
             () => EngineSettings.VideoCookiesBrowser, v => EngineSettings.VideoCookiesBrowser = v));
+
+        Header(path, "Storage", "Settings.General.Section.Storage".AsLocale("Storage"));
+        // Disk for what came from elsewhere: downloads, and what peers or the cloud sent. Past it the file
+        // wanted longest ago goes, and comes back when something needs it again.
+        Slider(path, "assetcache", "Settings.General.AssetCache".AsLocale("Asset Cache"), SettingsCatalog.AssetCacheGigabytes,
+            () => EngineSettings.AssetCacheGigabytes, v => EngineSettings.AssetCacheGigabytes = (int)v, v => $"{(int)v} GB");
 
         _entries.Add(path, new ListingHeader(path + ".h.WebAccess", "Settings.General.Section.WebAccess".AsLocale("Web Access"))
         {
@@ -351,30 +372,21 @@ public sealed class SettingsScreen : DashboardScreen
         Slider(path, "uivolume", "Settings.Audio.UIVolume".AsLocale("Interface"), SettingsCatalog.UIVolume,
             () => EngineSettings.UIVolume, v => EngineSettings.UIVolume = v, v => $"{v * 100f:0}%");
 
-        // DEVICES. Two sections that read the same, one per direction: the system default is a standing
-        // choice that follows the machine, and turning it off pins a named device instead. Nothing here
-        // is offered that the platform did not list, so a machine with one microphone shows one.
-        Header(path, "InputDevice", "Settings.Audio.Section.InputDevice".AsLocale("Input Device"));
-        _inputDefaultToggle = Toggle(path, "inputdefault", "Settings.Audio.UseSystemInput".AsLocale("Use System Default"),
-            () => EngineSettings.AudioInputDevice.Length == 0,
-            v => UseSystemDevice(input: true, v),
-            "Settings.Audio.UseSystemInput.Hint".AsLocale("Follows whatever the machine is set to"));
-        BuildDeviceRows(input: true);
-
-        Header(path, "OutputDevice", "Settings.Audio.Section.OutputDevice".AsLocale("Output Device"));
-        _outputDefaultToggle = Toggle(path, "outputdefault", "Settings.Audio.UseSystemOutput".AsLocale("Use System Default"),
-            () => EngineSettings.AudioOutputDevice.Length == 0,
-            v => UseSystemDevice(input: false, v),
-            "Settings.Audio.UseSystemOutput.Hint".AsLocale("Follows whatever the machine is set to"));
-        BuildDeviceRows(input: false);
-        // Devices are enumerated once at boot, so anything plugged in since is not on either list until
-        // this runs. It re-applies the selection too: a device that came back gets picked up again.
-        _entries.Add(path, new ListingAction("reloaddevices",
-            "Settings.Audio.ReloadDevices".AsLocale("Look again for audio devices"))
+        // A device choice includes the system default, so selecting hardware is one action.
+        if (HasDesktopWindow)
         {
-            Invoke = ReloadAudioDevices,
-            ButtonLabel = "Settings.Audio.ReloadDevicesButton".AsLocale("Reload"),
-        });
+            Header(path, "Devices", "Settings.Audio.Section.Devices".AsLocale("Devices"));
+            BuildDeviceChoices(input: true);
+            BuildDeviceChoices(input: false);
+            // Devices are enumerated once at boot, so anything plugged in since is not on either list until
+            // this runs. It re-applies the selection too: a device that came back gets picked up again.
+            _entries.Add(path, new ListingAction("reloaddevices",
+                "Settings.Audio.ReloadDevices".AsLocale("Look again for audio devices"))
+            {
+                Invoke = ReloadAudioDevices,
+                ButtonLabel = "Settings.Audio.ReloadDevicesButton".AsLocale("Reload"),
+            });
+        }
 
         Header(path, "Input", "Settings.Audio.Section.Input".AsLocale("Microphone"));
         // Microphone. Local to this machine: muting here stops anything being captured at all, which is
@@ -382,13 +394,19 @@ public sealed class SettingsScreen : DashboardScreen
         Toggle(path, "micmute", "Settings.Audio.MicrophoneMuted".AsLocale("Mute Microphone"),
             () => EngineSettings.MicrophoneMuted, v => EngineSettings.MicrophoneMuted = v,
             "Settings.Audio.MicrophoneMuted.Hint".AsLocale("Nothing is captured or sent while this is on"));
+        // Ahead of everything else in the chain, so with normalizing on it only matters to a microphone
+        // too quiet or too hot for the leveller's own range.
+        Slider(path, "micgain", "Settings.Audio.MicrophoneGain".AsLocale("Microphone Gain"),
+            SettingsCatalog.MicrophoneGain,
+            () => EngineSettings.MicrophoneGain, v => EngineSettings.MicrophoneGain = v,
+            v => $"{v:+0.0;-0.0;0} dB");
         Toggle(path, "voicenormalize", "Settings.Audio.VoiceNormalization".AsLocale("Normalize Voice"),
             () => EngineSettings.VoiceNormalization, v => EngineSettings.VoiceNormalization = v,
             "Settings.Audio.VoiceNormalization.Hint".AsLocale("Evens out a quiet or a loud microphone"));
-        Slider(path, "voicenormlevel", "Settings.Audio.NormalizationThreshold".AsLocale("Normalize Level"),
-            SettingsCatalog.NormalizationThreshold,
-            () => EngineSettings.NormalizationThreshold, v => EngineSettings.NormalizationThreshold = v,
-            v => $"{v * 100f:0}%");
+        Slider(path, "voicetargetlevel", "Settings.Audio.VoiceTargetLevel".AsLocale("Voice Level"),
+            SettingsCatalog.VoiceTargetLevel,
+            () => EngineSettings.VoiceTargetLevel, v => EngineSettings.VoiceTargetLevel = v,
+            v => $"{v:0.0} dB");
         // The gate cuts the room between words. It does not clean up noise carried over speech: that
         // would be a denoiser and there is none here.
         // Ahead of the gate: takes the room out per band instead of switching the whole frame off.
@@ -425,14 +443,18 @@ public sealed class SettingsScreen : DashboardScreen
             () => EngineSettings.DefaultStreamBitrateKbps, v => EngineSettings.DefaultStreamBitrateKbps = (int)v,
             v => $"{v:0} kbps");
 
-        SpaceAudioRows();
+        // Where the camera sends the stream's sound. The audio system only opens an output by id on
+        // Windows, so nowhere else gets the section.
+        if (HasStreamDevices)
+        {
+            Header(path, "Stream", "Settings.Audio.Section.Stream".AsLocale("Stream"));
+            BuildStreamDeviceChoices();
+        }
     }
 
     // AUDIO DEVICES
     //
-    // Both lists come from the platform seam and hold real hardware only: what the platform calls its
-    // "default" entry is the toggle above the list, not a device to pick. A machine with nothing on one
-    // side gets a single dead placeholder row rather than a header with nothing under it.
+    // Device IDs stay separate from display labels, including the empty ID for the system default.
 
     // Is there anything in the list that carries what the machine is playing?
     private static bool HasLoopbackDevice(IReadOnlyList<string> devices)
@@ -466,8 +488,6 @@ public sealed class SettingsScreen : DashboardScreen
 
     private static int IndexIn(IReadOnlyList<string> devices, string name)
     {
-        if (name.Length == 0)
-            return -1;
         for (int i = 0; i < devices.Count; i++)
         {
             if (string.Equals(devices[i], name, StringComparison.Ordinal))
@@ -476,236 +496,191 @@ public sealed class SettingsScreen : DashboardScreen
         return -1;
     }
 
-    // A saved device the machine no longer has keeps a row at the end of its section. The preference is
-    // deliberately not cleared when a headset is unplugged - plug it back in, hit reload and it is used
-    // again - so the section has to be able to say what it is waiting for. -xlinka
-    private static bool IsSavedDeviceMissing(bool input)
+    // Update an existing item in place: reloads keep the page order and scroll position.
+    private void BuildDeviceChoices(bool input)
     {
-        string saved = SavedDevice(input);
-        return saved.Length > 0 && IndexIn(AudioDevices(input), saved) < 0;
-    }
-
-    // One row per device, radio semantics on a plain toggle: a row reads whether the setting names its
-    // device, and only a write of true does anything. A segmented strip could not hold names like
-    // "Microphone (2- Rode NT-USB)" without smearing the pills over each other. -xlinka
-    private void BuildDeviceRows(bool input)
-    {
-        var rows = input ? _inputDeviceRows : _outputDeviceRows;
-        for (int i = 0; i < rows.Count; i++)
-            _entries.Remove(AudioPath, rows[i].Key);
-        rows.Clear();
-
-        // Re-added rows land at the end of the path, so placement rides Order off the section's own
-        // toggle rather than insertion order. SpaceAudioRows leaves a full step of room below it.
-        long order = (input ? _inputDefaultToggle?.Order : _outputDefaultToggle?.Order) ?? 0L;
-        string prefix = input ? "indev." : "outdev.";
+        if (!HasDesktopWindow)
+            return;
 
         var devices = AudioDevices(input);
-
-        // WHAT KIND OF DEVICE IT IS, on the row.
-        //
-        // The list used to be bare names, and a name is not enough to act on: somebody looking for
-        // their system audio has to already know that the entry called "CABLE Output" is it and the
-        // one called "Monitor of Built-in Audio" is too. Both are loopbacks and neither says so.
-        // Capture devices sort first here because this is the microphone list; the stream picker
-        // sorts the other way for the same reason. -xlinka
+        var ordered = new List<string>(devices);
         if (input)
         {
-            var ordered = new List<(string Name, Lumora.Core.Audio.AudioInputType Type)>(devices.Count);
-            for (int i = 0; i < devices.Count; i++)
-                ordered.Add((devices[i], Lumora.Core.Audio.AudioInputTypes.Classify(devices[i])));
             ordered.Sort((a, b) =>
             {
-                int byType = Lumora.Core.Audio.AudioInputTypes.CaptureOrder(a.Type)
-                    .CompareTo(Lumora.Core.Audio.AudioInputTypes.CaptureOrder(b.Type));
-                return byType != 0 ? byType : string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+                int byType = Lumora.Core.Audio.AudioInputTypes.CaptureOrder(Lumora.Core.Audio.AudioInputTypes.Classify(a))
+                    .CompareTo(Lumora.Core.Audio.AudioInputTypes.CaptureOrder(Lumora.Core.Audio.AudioInputTypes.Classify(b)));
+                return byType != 0 ? byType : string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
             });
-
-            for (int i = 0; i < ordered.Count; i++)
-            {
-                var row = AddDeviceRow(prefix + i, ordered[i].Name, ordered[i].Name, input, ++order);
-                if (ordered[i].Type != Lumora.Core.Audio.AudioInputType.Unknown)
-                    row.DetailText = Lumora.Core.Audio.AudioInputTypes.Describe(ordered[i].Type);
-                rows.Add(row);
-            }
-        }
-        else
-        {
-            for (int i = 0; i < devices.Count; i++)
-                rows.Add(AddDeviceRow(prefix + i, devices[i], devices[i], input, ++order));
         }
 
-        // A machine with no loopback at all is the common case on Windows, and silence about it is
-        // what sends people hunting through settings that do not exist. Say it once, with the two
-        // things that actually work. -xlinka
-        if (input && !HasLoopbackDevice(devices))
+        var names = new List<string> { "Settings.Audio.SystemDefault".AsLocale("System default").Resolve() };
+        var ids = new List<string> { string.Empty };
+        var details = new List<string>
         {
-            rows.Add(_entries.Add(AudioPath, new ListingToggle(prefix + "noloopback",
-                "Settings.Audio.NoLoopback".AsLocale("No system-audio device"))
+            (devices.Count == 0 ? "Settings.Audio.NoDevices".AsLocale("No devices found")
+                : "Settings.Audio.UseSystemInput.Hint".AsLocale("Follows whatever the machine is set to")).Resolve(),
+        };
+        foreach (string name in ordered)
+        {
+            ids.Add(name);
+            names.Add(name);
+            details.Add(input ? Lumora.Core.Audio.AudioInputTypes.Describe(Lumora.Core.Audio.AudioInputTypes.Classify(name)) : string.Empty);
+        }
+        string saved = SavedDevice(input);
+        if (saved.Length > 0 && IndexIn(ids, saved) < 0)
+        {
+            ids.Add(saved);
+            names.Add("Settings.Audio.DeviceUnplugged".AsLocale("{0} (not here)", saved).Resolve());
+            details.Add(string.Empty);
+        }
+
+        var choice = input ? _inputDeviceChoice : _outputDeviceChoice;
+        if (choice == null)
+        {
+            choice = _entries.Add(AudioPath, new ListingDropdown(input ? "inputdevice" : "outputdevice",
+                input ? "Settings.Audio.Section.InputDevice".AsLocale("Input Device")
+                    : "Settings.Audio.Section.OutputDevice".AsLocale("Output Device"))
             {
-                Read = () => false,
+                Options = names,
+                Read = () => IndexIn(ids, SavedDevice(input)),
                 Write = _ => { },
-                DetailText = "Settings.Audio.NoLoopback.Hint".AsLocale(
-                    "To stream what this machine plays, turn on Stereo Mix in Windows sound settings, or install a virtual audio cable"),
-                Interactable = false,
-                Order = ++order,
-            }));
+            });
+            if (input) _inputDeviceChoice = choice;
+            else _outputDeviceChoice = choice;
         }
-
-        if (IsSavedDeviceMissing(input))
+        choice.Options = names;
+        choice.OptionDetails = details;
+        choice.Read = () => IndexIn(ids, SavedDevice(input));
+        choice.Write = index =>
         {
-            string saved = SavedDevice(input);
-            rows.Add(AddDeviceRow(prefix + "saved",
-                "Settings.Audio.DeviceUnplugged".AsLocale("{0} (not here)", saved), saved, input, ++order));
-        }
-
-        if (rows.Count == 0)
-        {
-            // Nothing to choose from. One dead row rather than a header with a hole under it.
-            rows.Add(_entries.Add(AudioPath, new ListingToggle(prefix + "none",
-                "Settings.Audio.SystemDefault".AsLocale("System default"))
-            {
-                Read = () => false,
-                Write = _ => { },
-                DetailText = "Settings.Audio.NoDevices".AsLocale("No devices found"),
-                Interactable = false,
-                Order = ++order,
-            }));
-        }
-    }
-
-    private ListingToggle AddDeviceRow(string key, LocaleText label, string device, bool input, long order)
-        => _entries.Add(AudioPath, new ListingToggle(key, label)
-        {
-            Read = () => string.Equals(SavedDevice(input), device, StringComparison.Ordinal),
-            // Clicking the chosen device again is ignored: unticking it would leave the section holding
-            // nothing while the system-default toggle above it still reads off.
-            Write = picked =>
-            {
-                if (picked)
-                    SelectDevice(input, device);
-            },
-            // Marks this as a real device rather than the placeholder, which never becomes interactive.
-            Tag = device,
-            Order = order,
-            // Set here as well as on the refresh tick, or a rebuilt row is live for up to one interval
-            // while the system default is still on.
-            Interactable = SavedDevice(input).Length > 0,
-        });
-
-    // Picking a device is also how the system default goes off: the setting holds a name or it holds
-    // nothing, and there is no third state to keep in step.
-    private void SelectDevice(bool input, string device)
-    {
-        if (device.Length == 0)
-            return;
-        SaveDevice(input, device);
-        // The unplugged row belongs to whatever was saved a moment ago, so the section is rebuilt rather
-        // than rebound.
-        BuildDeviceRows(input);
-        _entryView?.RefreshValues();
-    }
-
-    private void UseSystemDevice(bool input, bool useSystem)
-    {
-        if (useSystem)
-        {
-            SaveDevice(input, string.Empty);
-            BuildDeviceRows(input);
-            _entryView?.RefreshValues();
-            return;
-        }
-
-        // Turning it off has to land on a device the machine actually has, or the toggle springs back
-        // on the next tick and nothing explains why.
-        var audio = Engine.Current?.AudioSystem;
-        string name = (input ? audio?.CurrentInputDeviceName : audio?.CurrentOutputDeviceName) ?? string.Empty;
-        if (name.Length == 0)
-        {
-            var devices = AudioDevices(input);
-            if (devices.Count == 0)
+            if (index < 0 || index >= ids.Count)
                 return;
-            name = devices[0];
-        }
-
-        SelectDevice(input, name);
+            SaveDevice(input, ids[index]);
+            BuildDeviceChoices(input);
+            _entryView?.RefreshValues();
+        };
+        choice.ListHint = input && OperatingSystem.IsWindows() && !HasLoopbackDevice(devices)
+            ? "Settings.Audio.NoLoopback.Hint".AsLocale(
+                "To stream what this machine plays, turn on Stereo Mix in Windows sound settings, or install a virtual audio cable")
+            : default;
     }
 
     private void ReloadAudioDevices()
     {
         Engine.Current?.AudioSystem?.RefreshDevices();
-        BuildDeviceRows(input: true);
-        BuildDeviceRows(input: false);
+        BuildDeviceChoices(input: true);
+        BuildDeviceChoices(input: false);
+        BuildStreamDeviceChoices();
         _entryView?.RefreshValues();
         MarkDirty();
     }
 
-    // Audio rows are placed by Order rather than by when they were added, because the device rows get
-    // torn out and re-added in the middle of the page. One pass over the freshly built list hands every
-    // row a slot with room left between it and the next. -xlinka
-    private void SpaceAudioRows()
+    private static bool HasStreamDevices => HasDesktopWindow && OperatingSystem.IsWindows();
+
+    private void BuildStreamDeviceChoices()
     {
-        var items = _entries.ItemsAt(AudioPath);
-        for (int i = 0; i < items.Count; i++)
-            items[i].Order = (i + 1) * AudioRowStep;
+        if (!HasStreamDevices)
+            return;
+
+        var outputs = Lumora.Audio.Wasapi.WasapiEndpoints.EnumerateOutputs();
+        var ids = new List<string> { string.Empty };
+        var names = new List<string> { "Settings.Audio.StreamNone".AsLocale("No Stream Device").Resolve() };
+        foreach (var output in outputs)
+        {
+            ids.Add(output.Id);
+            names.Add(output.Name);
+        }
+        string saved = EngineSettings.StreamOutputDevice;
+        if (saved.Length > 0 && IndexIn(ids, saved) < 0)
+        {
+            ids.Add(saved);
+            names.Add("Settings.Audio.StreamDeviceUnplugged".AsLocale("Saved device (not here)").Resolve());
+        }
+        _streamDeviceChoice ??= _entries.Add(AudioPath, new ListingDropdown("streamdevice",
+            "Settings.Audio.StreamDevice".AsLocale("Stream Device"))
+        {
+            Options = names,
+            Read = () => IndexIn(ids, EngineSettings.StreamOutputDevice),
+            Write = _ => { },
+            ListHint = "Settings.Audio.StreamNone.Hint".AsLocale("A virtual audio cable lets a streaming program pick the stream's sound up"),
+        });
+        _streamDeviceChoice.Options = names;
+        _streamDeviceChoice.Read = () => IndexIn(ids, EngineSettings.StreamOutputDevice);
+        _streamDeviceChoice.Write = index =>
+        {
+            if (index < 0 || index >= ids.Count)
+                return;
+            EngineSettings.StreamOutputDevice = ids[index];
+            BuildStreamDeviceChoices();
+            _entryView?.RefreshValues();
+        };
     }
 
-    // A device row you can click while the system default is on would be a picker that changes
-    // nothing. Flipped here rather than by rebuilding the rows, same as the turn-mode pair.
-    private void ApplyAudioDeviceGating()
-    {
-        ApplyDeviceGating(_inputDeviceRows, input: true);
-        ApplyDeviceGating(_outputDeviceRows, input: false);
-    }
-
-    private static void ApplyDeviceGating(List<ListingToggle> rows, bool input)
-    {
-        bool live = SavedDevice(input).Length > 0;
-        for (int i = 0; i < rows.Count; i++)
-            rows[i].Interactable = live && rows[i].Tag is string;
-    }
+    // Desktop controls are absent on mobile; handhelds still draw their own screen.
+    private static bool HasDesktopWindow => !Engine.IsMobilePlatform;
+    private static bool DrawsOwnScreen => !Engine.IsStandaloneHeadset;
 
     private void BuildGraphics()
     {
         const string path = "graphics";
-        Header(path, "Display", "Settings.Graphics.Section.Display".AsLocale("Display"));
-        Toggle(path, "vsync", "Settings.Graphics.VSync".AsLocale("VSync"), () => EngineSettings.VSync, v => EngineSettings.VSync = v);
-        Toggle(path, "fullscreen", "Settings.Graphics.Fullscreen".AsLocale("Fullscreen"), () => EngineSettings.Fullscreen, v => EngineSettings.Fullscreen = v);
-        Slider(path, "fps", "Settings.Graphics.FpsLimit".AsLocale("FPS Limit"), SettingsCatalog.MaxFps,
-            () => EngineSettings.MaxFps, v => EngineSettings.MaxFps = (int)v,
-            v => v <= 0f ? "Off" : $"{(int)v}");
-        // Caps the loop while the window is unfocused or minimized (vsync stops throttling there).
-        Slider(path, "bgfps", "Settings.Graphics.BackgroundFps".AsLocale("Background FPS"), SettingsCatalog.BackgroundFps,
-            () => EngineSettings.BackgroundFps, v => EngineSettings.BackgroundFps = (int)v,
-            v => v <= 0f ? "Off" : $"{(int)v}");
-        // Windowed this resizes the window; fullscreen it drops the 3D buffer to that height and leaves
-        // the interface at native. A picker, not a slider: nobody drags for a resolution.
-        _entries.Add(path, new ListingChoice("resolution", "Settings.Graphics.Resolution".AsLocale("Resolution"))
+        if (DrawsOwnScreen)
+            Header(path, "Display", "Settings.Graphics.Section.Display".AsLocale("Display"));
+        if (HasDesktopWindow)
         {
-            Options = ResolutionOptionLabels(),
-            Read = () => ResolutionIndex(EngineSettings.ResolutionHeight),
-            Write = index =>
+            Toggle(path, "vsync", "Settings.Graphics.VSync".AsLocale("VSync"), () => EngineSettings.VSync, v => EngineSettings.VSync = v);
+            Toggle(path, "fullscreen", "Settings.Graphics.Fullscreen".AsLocale("Fullscreen"), () => EngineSettings.Fullscreen, v => EngineSettings.Fullscreen = v);
+        }
+        if (DrawsOwnScreen)
+        {
+            // Vertical degrees, the way the camera takes it.
+            Slider(path, "fov", "Settings.Graphics.FieldOfView".AsLocale("Field of View"), SettingsCatalog.FieldOfView,
+                () => EngineSettings.FieldOfView, v => EngineSettings.FieldOfView = v, v => $"{v:0}°");
+            Slider(path, "fps", "Settings.Graphics.FpsLimit".AsLocale("FPS Limit"), SettingsCatalog.MaxFps,
+                () => EngineSettings.MaxFps, v => EngineSettings.MaxFps = (int)v,
+                v => v <= 0f ? "Off" : $"{(int)v}");
+        }
+        if (HasDesktopWindow)
+        {
+            // Caps the loop while the window is unfocused or minimized (vsync stops throttling there).
+            Slider(path, "bgfps", "Settings.Graphics.BackgroundFps".AsLocale("Background FPS"), SettingsCatalog.BackgroundFps,
+                () => EngineSettings.BackgroundFps, v => EngineSettings.BackgroundFps = (int)v,
+                v => v <= 0f ? "Off" : $"{(int)v}");
+            // Windowed this resizes the window; fullscreen it drops the 3D buffer to that height and leaves
+            // the interface at native. A picker, not a slider: nobody drags for a resolution.
+            _entries.Add(path, new ListingDropdown("resolution", "Settings.Graphics.Resolution".AsLocale("Resolution"))
             {
-                var options = EngineSettings.ResolutionHeightOptions;
-                if (index >= 0 && index < options.Length)
-                    EngineSettings.ResolutionHeight = options[index];
-            },
-        });
+                Options = ResolutionOptionLabels(),
+                Read = () => ResolutionIndex(EngineSettings.ResolutionHeight),
+                Write = index =>
+                {
+                    var options = EngineSettings.ResolutionHeightOptions;
+                    if (index >= 0 && index < options.Length)
+                        EngineSettings.ResolutionHeight = options[index];
+                },
+            });
+        }
 
-        // 5% steps so the viewport is not re-allocated per pixel of drag. With dynamic resolution on
-        // this is the CEILING rather than the fixed value.
-        Slider(path, "renderscale", "Settings.Graphics.RenderScale".AsLocale("Render Scale"), SettingsCatalog.RenderScale,
-            () => EngineSettings.RenderScale, v => EngineSettings.RenderScale = v, v => $"{v * 100f:0}%");
-        Toggle(path, "dynres", "Settings.Graphics.DynamicResolution".AsLocale("Dynamic Resolution"),
-            () => EngineSettings.DynamicResolution, v => EngineSettings.DynamicResolution = v);
-        // Desktop only, and only does anything below 100% scale. Not offered in a headset: see
-        // EngineSettings.Upscaler for why.
-        _entries.Add(path, new ListingChoice("upscaler", "Settings.Graphics.Upscaler".AsLocale("Upscaler"))
+        if (DrawsOwnScreen)
         {
-            Options = new[] { "Bilinear", "FSR 1", "FSR 2" },
-            Read = () => EngineSettings.Upscaler,
-            Write = index => EngineSettings.Upscaler = index,
-        });
+            // 5% steps so the viewport is not re-allocated per pixel of drag. With dynamic resolution on
+            // this is the CEILING rather than the fixed value.
+            Slider(path, "renderscale", "Settings.Graphics.RenderScale".AsLocale("Render Scale"), SettingsCatalog.RenderScale,
+                () => EngineSettings.RenderScale, v => EngineSettings.RenderScale = v, v => $"{v * 100f:0}%");
+            Toggle(path, "dynres", "Settings.Graphics.DynamicResolution".AsLocale("Dynamic Resolution"),
+                () => EngineSettings.DynamicResolution, v => EngineSettings.DynamicResolution = v);
+        }
+        if (HasDesktopWindow)
+        {
+            // Desktop only, and only does anything below 100% scale. Not offered in a headset: see
+            // EngineSettings.Upscaler for why.
+            _entries.Add(path, new ListingChoice("upscaler", "Settings.Graphics.Upscaler".AsLocale("Upscaler"))
+            {
+                Options = new[] { "Bilinear", "FSR 1", "FSR 2" },
+                Read = () => EngineSettings.Upscaler,
+                Write = index => EngineSettings.Upscaler = index,
+            });
+        }
 
         Header(path, "Image", "Settings.Graphics.Section.Image".AsLocale("Image"));
         // The renderer shipped on the platform's untouched defaults: a LINEAR tonemapper with a white
@@ -727,42 +702,52 @@ public sealed class SettingsScreen : DashboardScreen
             () => EngineSettings.Contrast, v => EngineSettings.Contrast = v, v => $"{v:0.00}");
         Slider(path, "saturation", "Settings.Graphics.Saturation".AsLocale("Saturation"), SettingsCatalog.Saturation,
             () => EngineSettings.Saturation, v => EngineSettings.Saturation = v, v => $"{v:0.00}");
-        Slider(path, "bloom", "Settings.Graphics.Bloom".AsLocale("Bloom"), SettingsCatalog.Bloom,
-            () => EngineSettings.Bloom, v => EngineSettings.Bloom = v,
-            v => v <= 0.001f ? "Off" : $"{v:0.##}");
-        // Contact shadow in corners and under bodies. One number, shown as a percentage. Not offered by
-        // the standalone renderer.
-        Slider(path, "ao", "Settings.Graphics.AmbientOcclusion".AsLocale("Ambient Occlusion"), SettingsCatalog.AmbientOcclusion,
-            () => EngineSettings.AmbientOcclusion, v => EngineSettings.AmbientOcclusion = v,
-            v => v <= 0.001f ? "Off" : $"{v * 100f:0}%");
-        // Diffuse bounce between nearby surfaces, the occlusion's partner pass. Costs about what the
-        // occlusion costs; off by default.
-        Toggle(path, "ssil", "Settings.Graphics.IndirectLighting".AsLocale("Indirect Lighting"),
-            () => EngineSettings.ScreenSpaceIndirectLighting, v => EngineSettings.ScreenSpaceIndirectLighting = v);
-        // A ray march per pixel; only glossy floors and water show it. Off by default.
-        Toggle(path, "ssr", "Settings.Graphics.ScreenSpaceReflections".AsLocale("Screen Space Reflections"),
-            () => EngineSettings.ScreenSpaceReflections, v => EngineSettings.ScreenSpaceReflections = v);
-        // Costs fill rate rather than frame logic. Off is a real option on a weak GPU, but in a
-        // headset the first step off zero is the difference between crawling edges and a clean image.
-        Slider(path, "aa", "Settings.Graphics.AntiAliasing".AsLocale("Anti-Aliasing"), 0f, EngineSettings.AntiAliasingOptions.Length - 1, 1f,
-            () => AntiAliasingIndex(EngineSettings.AntiAliasing),
-            v =>
+        if (HasDesktopWindow)
+        {
+            Slider(path, "bloom", "Settings.Graphics.Bloom".AsLocale("Bloom"), SettingsCatalog.Bloom,
+                () => EngineSettings.Bloom, v => EngineSettings.Bloom = v,
+                v => v <= 0.001f ? "Off" : $"{v:0.##}");
+            // Contact shadow in corners and under bodies. One number, shown as a percentage. Not offered by
+            // the standalone renderer.
+            Slider(path, "ao", "Settings.Graphics.AmbientOcclusion".AsLocale("Ambient Occlusion"), SettingsCatalog.AmbientOcclusion,
+                () => EngineSettings.AmbientOcclusion, v => EngineSettings.AmbientOcclusion = v,
+                v => v <= 0.001f ? "Off" : $"{v * 100f:0}%");
+            // Diffuse bounce between nearby surfaces, the occlusion's partner pass. Costs about what the
+            // occlusion costs; off by default.
+            Toggle(path, "ssil", "Settings.Graphics.IndirectLighting".AsLocale("Indirect Lighting"),
+                () => EngineSettings.ScreenSpaceIndirectLighting, v => EngineSettings.ScreenSpaceIndirectLighting = v);
+            // A ray march per pixel; only glossy floors and water show it. Off by default.
+            Toggle(path, "ssr", "Settings.Graphics.ScreenSpaceReflections".AsLocale("Screen Space Reflections"),
+                () => EngineSettings.ScreenSpaceReflections, v => EngineSettings.ScreenSpaceReflections = v);
+        }
+        if (DrawsOwnScreen)
+        {
+            _entries.Add(path, new ListingChoice("aa", "Settings.Graphics.AntiAliasing".AsLocale("Anti-Aliasing"))
             {
-                int index = System.Math.Clamp((int)MathF.Round(v), 0, EngineSettings.AntiAliasingOptions.Length - 1);
-                EngineSettings.AntiAliasing = EngineSettings.AntiAliasingOptions[index];
-            },
-            v => EngineSettings.DescribeAntiAliasing(
-                EngineSettings.AntiAliasingOptions[System.Math.Clamp((int)MathF.Round(v), 0, EngineSettings.AntiAliasingOptions.Length - 1)]));
+                Options = Array.ConvertAll(EngineSettings.AntiAliasingOptions, EngineSettings.DescribeAntiAliasing),
+                Read = () => AntiAliasingIndex(EngineSettings.AntiAliasing),
+                Write = index =>
+                {
+                    var options = EngineSettings.AntiAliasingOptions;
+                    if (index >= 0 && index < options.Length)
+                        EngineSettings.AntiAliasing = options[index];
+                },
+            });
+        }
 
         Header(path, "Quality", "Settings.Graphics.Section.Quality".AsLocale("Quality"));
-        // Never set by anything until now, so every world ran on the renderer default. One of the
-        // largest single levers on shadow cost.
-        _entries.Add(path, new ListingChoice("shadowquality", "Settings.Graphics.ShadowQuality".AsLocale("Shadow Quality"))
+        if (HasDesktopWindow)
         {
-            Options = EngineSettings.ShadowQualityOptions,
-            Read = () => EngineSettings.ShadowQuality,
-            Write = index => EngineSettings.ShadowQuality = index,
-        });
+            // Never set by anything until now, so every world ran on the renderer default. One of the
+            // largest single levers on shadow cost. Hard also draws point light shadows in two passes
+            // instead of six.
+            _entries.Add(path, new ListingChoice("shadowquality", "Settings.Graphics.ShadowQuality".AsLocale("Shadow Quality"))
+            {
+                Options = EngineSettings.ShadowQualityOptions,
+                Read = () => EngineSettings.ShadowQuality,
+                Write = index => EngineSettings.ShadowQuality = index,
+            });
+        }
         // Driven as an index over the generated buckets, not pixels: a drag can only land on a size
         // that actually has a variant behind it. Providers re-resolve live onto the new cap.
         Slider(path, "texturesize", "Settings.Graphics.MaxTextureSize".AsLocale("Max Texture Size"), 0f, EngineSettings.TextureSizeOptions.Length - 1, 1f,
@@ -786,24 +771,55 @@ public sealed class SettingsScreen : DashboardScreen
         Slider(path, "meshlod", "Settings.Graphics.MeshDetail".AsLocale("Mesh Detail"), SettingsCatalog.MeshLodThreshold,
             () => EngineSettings.MeshLodThreshold, v => EngineSettings.MeshLodThreshold = v,
             EngineSettings.DescribeMeshLodThreshold);
-        // Multiplier on every directional light's cascade range - the cheapest real cut on the shadow
-        // pass, and it works on worlds whose lights someone else authored.
+        // Multiplier on every directional light's cascade range and on how far away a lamp keeps its
+        // shadow - the cheapest real cut on the shadow pass, and it works on worlds whose lights someone
+        // else authored.
         Slider(path, "shadowdistance", "Settings.Graphics.ShadowDistance".AsLocale("Shadow Distance"), SettingsCatalog.ShadowDistanceScale,
             () => EngineSettings.ShadowDistanceScale, v => EngineSettings.ShadowDistanceScale = v, v => $"{v:0.00}x");
+        if (DrawsOwnScreen)
+        {
+            // Point and spot lights that cast at once, nearest and brightest first; the rest light
+            // without a shadow. A world with no more than this many looks exactly as it was built.
+            Slider(path, "shadowedlights", "Settings.Graphics.ShadowedLights".AsLocale("Shadowed Lights"), SettingsCatalog.ShadowedLights,
+                () => EngineSettings.ShadowedLights, v => EngineSettings.ShadowedLights = (int)MathF.Round(v),
+                v => v <= 0f ? "Off" : $"{(int)MathF.Round(v)}");
+            Slider(path, "shadowedlightsvr", "Settings.Graphics.ShadowedLightsVR".AsLocale("Shadowed Lights (VR)"), SettingsCatalog.ShadowedLights,
+                () => EngineSettings.ShadowedLightsVR, v => EngineSettings.ShadowedLightsVR = (int)MathF.Round(v),
+                v => v <= 0f ? "Off" : $"{(int)MathF.Round(v)}");
+            // How often a spinning or sliding thing's shadow catches up. Every frame keeps every lamp
+            // around it re-rendering; a few times a second lets them cache in between.
+            Slider(path, "movingshadows", "Settings.Graphics.MovingShadows".AsLocale("Moving Shadows"), SettingsCatalog.MovingShadowRate,
+                () => EngineSettings.MovingShadowRate, v => EngineSettings.MovingShadowRate = (int)MathF.Round(v),
+                v => v <= 0f ? "Every frame" : $"{(int)MathF.Round(v)} per second");
+        }
     }
 
     private void BuildMovement()
     {
         const string path = "movement";
+        // A headset that draws no screen of its own has no mouse, but it still points, so the section and
+        // the laser row are there everywhere.
         Header(path, "Look", "Settings.Movement.Section.Look".AsLocale("Look"));
-        Slider(path, "mousesens", "Settings.Movement.MouseSensitivity".AsLocale("Mouse Sensitivity"), SettingsCatalog.MouseSensitivity,
-            () => EngineSettings.MouseSensitivity, v => EngineSettings.MouseSensitivity = v, v => $"{v:0.00}x");
-        Slider(path, "mousesmooth", "Settings.Movement.MouseSmoothing".AsLocale("Mouse Smoothing"), SettingsCatalog.MouseSmoothing,
-            () => EngineSettings.MouseSmoothing, v => EngineSettings.MouseSmoothing = v,
+        if (DrawsOwnScreen)
+        {
+            Slider(path, "mousesens", "Settings.Movement.MouseSensitivity".AsLocale("Mouse Sensitivity"), SettingsCatalog.MouseSensitivity,
+                () => EngineSettings.MouseSensitivity, v => EngineSettings.MouseSensitivity = v, v => $"{v:0.00}x");
+            Slider(path, "mousesmooth", "Settings.Movement.MouseSmoothing".AsLocale("Mouse Smoothing"), SettingsCatalog.MouseSmoothing,
+                () => EngineSettings.MouseSmoothing, v => EngineSettings.MouseSmoothing = v,
+                v => v <= 0.001f ? "Off" : $"{v:0.00}");
+        }
+        // Read by every VR laser as it casts. Off is the raw controller ray.
+        Slider(path, "lasersmooth", "Settings.Movement.LaserSmoothing".AsLocale("Laser Smoothing"), SettingsCatalog.LaserSmoothing,
+            () => EngineSettings.LaserSmoothing, v => EngineSettings.LaserSmoothing = v,
             v => v <= 0.001f ? "Off" : $"{v:0.00}");
 
         Header(path, "Locomotion", "Settings.Movement.Section.Locomotion".AsLocale("Locomotion"));
         _entries.Add(path, new ListingCustom("locomotion", KindLocomotion, "Settings.Movement.Mode".AsLocale("Mode")));
+        // Read live by the walk and noclip modules. A desktop has one direction, the view's, and ignores it.
+        var direction = ListingChoice.FromEnum<MovementDirection>("movedirection", "Settings.Movement.Direction".AsLocale("Direction"),
+            () => EngineSettings.MovementDirection, v => EngineSettings.MovementDirection = v);
+        direction.DetailText = "Settings.Movement.Direction.Hint".AsLocale("In VR, move where you look or where the hand on the move stick points");
+        _entries.Add(path, direction);
         Slider(path, "noclip", "Settings.Movement.NoclipSpeed".AsLocale("Noclip Speed"), SettingsCatalog.NoclipSpeed,
             () => EngineSettings.NoclipSpeed, v => EngineSettings.NoclipSpeed = v, v => $"{v:0.#} m/s");
 
@@ -826,9 +842,13 @@ public sealed class SettingsScreen : DashboardScreen
     private void BuildInterface()
     {
         const string path = "interface";
-        // The one setting in this category with nothing to group it with, so it leads the page rather
-        // than sitting under a section header repeating its own name.
+        // How the interface reads, its language and its units, leads the page. Nothing else groups with
+        // the two, and a section header over them would only repeat the names.
         _entries.Add(path, BuildLanguageChoice());
+        // The Height label under General reads it; the value itself stays in metres.
+        Toggle(path, "imperialunits", "Settings.Interface.ImperialUnits".AsLocale("Imperial Units"),
+            () => EngineSettings.ImperialUnits, v => EngineSettings.ImperialUnits = v,
+            "Settings.Interface.ImperialUnits.Hint".AsLocale("Feet and inches instead of metres"));
 
         Header(path, "Editing", "Settings.Interface.Section.Editing".AsLocale("Editing"));
         _entries.Add(path, new ListingChoice("gizmocontrols", "Settings.Interface.GizmoControls".AsLocale("Gizmo controls"))
@@ -839,6 +859,28 @@ public sealed class SettingsScreen : DashboardScreen
             DetailText = "Settings.Interface.GizmoControls.Hint".AsLocale(
                 "Choose modes in the menu, use floating cubes, or grab move, rotate and scale handles together"),
         });
+
+        Header(path, "Photos", "Settings.Interface.Section.Photos".AsLocale("Photos"));
+        Toggle(path, "handframe", "Settings.Photos.HandFrame".AsLocale("Hand Viewfinder"),
+            () => EngineSettings.HandFrame, v => EngineSettings.HandFrame = v,
+            "Settings.Photos.HandFrame.Hint".AsLocale("An L with the left hand, index up, opens a viewfinder; the right trigger takes the photo"));
+        _entries.Add(path, new ListingChoice("photosize", "Settings.Photos.Size".AsLocale("Photo Size"))
+        {
+            Options = new[] { "1920 x 1080", "2560 x 1440", "3840 x 2160" },
+            Read = () => EngineSettings.PhotoSize,
+            Write = index => EngineSettings.PhotoSize = index,
+        });
+        _entries.Add(path, new ListingChoice("photoformat", "Settings.Photos.Format".AsLocale("Photo Format"))
+        {
+            Options = new[] { "WebP", "PNG", "JPG" },
+            Read = () => (int)EngineSettings.PhotoEncoding,
+            Write = index => EngineSettings.PhotoEncoding = (Lumora.Core.Assets.ImageEncoding)index,
+        });
+        Slider(path, "phototimer", "Settings.Photos.Timer".AsLocale("Timer"), SettingsCatalog.PhotoTimerSeconds,
+            () => EngineSettings.PhotoTimerSeconds, v => EngineSettings.PhotoTimerSeconds = v, v => $"{v:0} s");
+        Toggle(path, "photosinventory", "Settings.Photos.ToInventory".AsLocale("Save Photos to Inventory"),
+            () => EngineSettings.PhotosToInventory, v => EngineSettings.PhotosToInventory = v,
+            "Settings.Photos.ToInventory.Hint".AsLocale("Every photo also goes into the Photos folder of your inventory"));
 
         Header(path, "Reticle", "Settings.Interface.Section.Reticle".AsLocale("Reticle"));
         // The desktop cursor drawer reads these through InterfaceSettings, which forwards to the same
@@ -851,6 +893,20 @@ public sealed class SettingsScreen : DashboardScreen
         var thickness = Slider(path, "reticlethickness", "Settings.Interface.ReticleThickness".AsLocale("Thickness"), SettingsCatalog.ReticleThickness,
             () => EngineSettings.ReticleThickness, v => EngineSettings.ReticleThickness = v, v => $"{v:0.#} px");
         thickness.Tag = "reticle";
+
+        Header(path, "Tooltips", "Settings.Interface.Section.Tooltips".AsLocale("Tooltips"));
+        // The laser draws the label beside its cursor, from the name the thing under it gives.
+        Toggle(path, "tooltips", "Settings.Interface.Tooltips".AsLocale("Show Tooltips"),
+            () => EngineSettings.Tooltips, v => EngineSettings.Tooltips = v);
+        _tooltipDelayRow = Slider(path, "tooltipdelay", "Settings.Interface.TooltipDelay".AsLocale("Tooltip Delay"), SettingsCatalog.TooltipDelay,
+            () => EngineSettings.TooltipDelay, v => EngineSettings.TooltipDelay = v, v => $"{v:0.0} s");
+
+        Header(path, "People", "Settings.Interface.Section.People".AsLocale("People"));
+        // A glowing stand-in with a progress readout while somebody's avatar is still arriving; off shows the
+        // avatar as it builds.
+        Toggle(path, "avatararrival", "Settings.Interface.AvatarArrival".AsLocale("Avatar Arrival"),
+            () => EngineSettings.AvatarArrival, v => EngineSettings.AvatarArrival = v,
+            "Settings.Interface.AvatarArrival.Hint".AsLocale("Show a glowing stand-in with progress while someone's avatar loads"));
 
         Header(path, "Dashboard", "Settings.Interface.Section.Dashboard".AsLocale("Dashboard"));
         // Freeform leaves the panel where you put it instead of pinning it in front of your view. VR
@@ -881,6 +937,17 @@ public sealed class SettingsScreen : DashboardScreen
         var map = Engine.Current?.InputInterface?.Actions;
 
         Header(path, "Devices", "Settings.Controls.Section.Devices".AsLocale("Devices"));
+        _entries.Add(path, new ListingChoice("primaryhand", "Settings.Controls.PrimaryHand".AsLocale("Primary hand"))
+        {
+            Options = new[] { "Left", "Right" },
+            Read = () => EngineSettings.PrimaryHand == Input.Chirality.Left ? 0 : 1,
+            Write = index => EngineSettings.PrimaryHand = index == 0 ? Input.Chirality.Left : Input.Chirality.Right,
+            DetailText = "Settings.Controls.PrimaryHand.Hint".AsLocale("The hand you lead with, which menus and world scripts can ask about"),
+        });
+        // Scales every pulse on its way to the controllers. Off sends none.
+        Slider(path, "haptics", "Settings.Controls.Haptics".AsLocale("Haptics"), SettingsCatalog.HapticsStrength,
+            () => EngineSettings.HapticsStrength, v => EngineSettings.HapticsStrength = v,
+            v => v <= 0.001f ? "Off" : $"{v * 100f:0}%");
         _entries.Add(path, new ListingLabel("pad", "Settings.Controls.Gamepad".AsLocale("Gamepad"), DescribePad));
         _entries.Add(path, new ListingLabel("lastinput", "Settings.Controls.LastInput".AsLocale("Last input"), DescribeLastInput));
         _entries.Add(path, new ListingAction("resetall", "Settings.Controls.ResetAll".AsLocale("Every control back to stock"))
@@ -948,10 +1015,19 @@ public sealed class SettingsScreen : DashboardScreen
             Format = format,
         });
 
-    // The strip lists whatever locale tables actually loaded, in their own language, plus the generated
+    // Rounded to whole inches before the split, so 1.80 m reads 5 ft 11 in and never 5 ft 12 in.
+    private static string DescribeHeight(float metres)
+    {
+        if (!EngineSettings.ImperialUnits)
+            return $"{metres:0.00} m";
+        int inches = (int)MathF.Round(metres / MetresPerInch);
+        return $"{inches / 12} ft {inches % 12} in";
+    }
+
+    // The list shows whatever locale tables actually loaded, in their own language, plus the generated
     // pseudo locale. Nothing is offered that has no table behind it: a language you can pick and that
     // then changes nothing is the exact kind of placebo setting this screen does not carry. -xlinka
-    private static ListingChoice BuildLanguageChoice()
+    private static ListingDropdown BuildLanguageChoice()
     {
         var available = LocaleManager.Available;
         var codes = new List<string>(available.Count);
@@ -961,7 +1037,7 @@ public sealed class SettingsScreen : DashboardScreen
             codes.Add(available[i].Code);
             names.Add(available[i].NativeName);
         }
-        return new ListingChoice("language", "Settings.Interface.Language".AsLocale("Language"))
+        return new ListingDropdown("language", "Settings.Interface.Language".AsLocale("Language"))
         {
             Options = names,
             Read = () => LocaleManager.IndexOf(LocaleManager.CurrentLocale),
@@ -1004,12 +1080,12 @@ public sealed class SettingsScreen : DashboardScreen
         return 0;
     }
 
-    private static int AntiAliasingIndex(int samples)
+    private static int AntiAliasingIndex(int mode)
     {
         var options = EngineSettings.AntiAliasingOptions;
         for (int i = 0; i < options.Length; i++)
         {
-            if (options[i] == samples)
+            if (options[i] == mode)
                 return i;
         }
         return 0;
@@ -1022,8 +1098,9 @@ public sealed class SettingsScreen : DashboardScreen
         base.OnShow();
         // A pad plugged in, a rebind made elsewhere, or an avatar that finished spawning while this
         // screen sat closed.
-        BuildDeviceRows(input: true);
-        BuildDeviceRows(input: false);
+        BuildDeviceChoices(input: true);
+        BuildDeviceChoices(input: false);
+        BuildStreamDeviceChoices();
         BuildWebAccessRows();
         _entryView?.RefreshValues();
         MarkDirty();
@@ -1041,6 +1118,9 @@ public sealed class SettingsScreen : DashboardScreen
         if (!Slot.ActiveSelf.Value)
             return;
 
+        // The rows take their shape from the list's width, so a new width measures every row again.
+        if (_entryViewport != null && _rowFit.Update(_entryViewport.LocalComputeRect.width))
+            _entryView?.Refresh();
         PumpRebindCapture();
 
         _refreshAccum += delta;
@@ -1049,7 +1129,8 @@ public sealed class SettingsScreen : DashboardScreen
         _refreshAccum = 0f;
 
         ApplyTurnModeGating();
-        ApplyAudioDeviceGating();
+        ApplyTooltipGating();
+        ApplyHeightStep();
         if (WebAccess.Shared.Version != _webAccessVersion)
             BuildWebAccessRows();
         _entryView?.RefreshValues();
@@ -1067,6 +1148,21 @@ public sealed class SettingsScreen : DashboardScreen
         }
     }
 
+    // The delay means nothing with tooltips off, so it greys out the same way.
+    private void ApplyTooltipGating()
+    {
+        if (_tooltipDelayRow != null)
+            _tooltipDelayRow.Interactable = EngineSettings.Tooltips;
+    }
+
+    // An inch a notch while imperial is on, so every step of the bar is a new label; a centimetre
+    // otherwise. Set on the tick so units brought by the account change it too.
+    private void ApplyHeightStep()
+    {
+        if (_heightRow != null)
+            _heightRow.Step = EngineSettings.ImperialUnits ? MetresPerInch : SettingsCatalog.UserHeight.Step;
+    }
+
     // Polls the map's listener rather than driving it: the capture itself happens inside the input
     // pass, where the raw devices live, so all this has to do is notice when it finished.
     private void PumpRebindCapture()
@@ -1079,6 +1175,11 @@ public sealed class SettingsScreen : DashboardScreen
 
         switch (map.CaptureStatus)
         {
+            case InputBindingMap.CaptureState.Listening:
+                _controlsStatus = "Settings.Controls.CapturePrompt"
+                    .AsLocale("For \"{0}\": {1}. Escape cancels.", map.CaptureTarget?.Label ?? string.Empty, map.CapturePrompt);
+                break;
+
             case InputBindingMap.CaptureState.Captured:
                 var bound = map.CaptureConflicts;
                 if (bound.Count > 0)
@@ -1113,8 +1214,8 @@ public sealed class SettingsScreen : DashboardScreen
             return;
         map.ClearCapture();
         map.BeginCapture(action, devices);
-        _controlsStatus = "Settings.Controls.PressControl"
-            .AsLocale("Press a control for \"{0}\"... (Escape cancels)", action.Label);
+        _controlsStatus = "Settings.Controls.CapturePrompt"
+            .AsLocale("For \"{0}\": {1}. Escape cancels.", action.Label, map.CapturePrompt);
         _entryView?.RefreshValues();
     }
 
@@ -1175,8 +1276,7 @@ public sealed class SettingsScreen : DashboardScreen
     private static string DescribeLastInput()
     {
         var map = Engine.Current?.InputInterface?.Actions;
-        var last = map?.LastActivatedControl;
-        return last.HasValue && last.Value.IsValid ? last.Value.Describe() : "-";
+        return map?.LastActivatedBinding?.Describe() ?? "-";
     }
 
     internal LocomotionController? GetLocalLocomotionController()
@@ -1198,5 +1298,5 @@ public sealed class SettingsScreen : DashboardScreen
         EngineSettings.PreferredLocomotion = module.DisplayName;
     }
 
-    private void MarkDirty() => _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
+    private void MarkDirty() => Slot.GetComponentInParents<Canvas>()?.MarkDirty();
 }

@@ -17,9 +17,12 @@ namespace Lumora.Core.Components.UI;
 
 // Dashboard "Groups" screen: browse and join groups, read a group's page, and manage one you run.
 //
-// Four views over one virtualized Listing, not four screens. The chrome at the top is a plain row that
-// gets rebuilt when the view changes; everything under it is items, so a page with two members and a page
-// with two hundred cost the same and the scroll holds its place across a refresh.
+// Four views over one virtualized Listing, not four screens. The header is the page's title with the search
+// and a refresh beside it, then Browse and Mine as one switch with one side lit and New group as the one
+// primary action; it is rebuilt when the view changes. Everything under it is items, the groups as tiles as
+// many to a row as the window is wide, so a page with two members and a page with two hundred cost the same
+// and the scroll holds its place across a refresh. Signed out, the page says what groups are and offers the
+// way in instead of an empty list.
 //
 // Every control here calls a real route. Where the service has nothing to answer with (setting the icon,
 // hosting for a group) there is no control, rather than one that looks pressable and does nothing.
@@ -36,10 +39,15 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
     public const string KindField = "grpfield";
     public const string KindActions = "grpactions";
     public const string KindStorage = "grpstorage";
+    public const string KindTiles = "grptiles";
 
     // Between the viewport's right edge and the scrollbar track.
     private const float ScrollbarGap = 6f;
     private const float HeaderHeight = 38f;
+    private const float TabsHeight = 34f;
+    private const float HeaderGap = 8f;
+    private const float SegmentWidth = 96f;
+    private const float IconButtonSize = 34f;
     // Seconds a destructive pill stays armed after the first press.
     private const double ConfirmWindow = 3.0;
     // The slice slider moves in whole 64 MB steps: a byte-exact drag is not a thing anybody wants.
@@ -61,6 +69,11 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
     private GroupIconCache? _icons;
     private Slot? _header;
     private Slot? _body;
+    private Slot? _listingHost;
+    private Slot? _listingViewport;
+    private Slot? _signedOut;
+    private int _columns = 1;
+    private bool? _signedSeen;
     private Text? _searchText;
     private bool _localeHooked;
 
@@ -161,6 +174,28 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
         if (!Slot.ActiveSelf.Value)
             return;
         _scrollbar?.Refresh();
+
+        // Signed in or out while the page is up: the header and the lists follow.
+        bool signedIn = SignedIn;
+        if (_signedSeen != signedIn)
+        {
+            bool first = _signedSeen == null;
+            _signedSeen = signedIn;
+            if (!first)
+            {
+                BuildHeader();
+                LoadList();
+            }
+        }
+
+        // The window changed width: the tiles go into rows of as many as fit now.
+        int columns = ColumnsNow();
+        if (columns != _columns)
+        {
+            _columns = columns;
+            if (_view == View.Browse || _view == View.Mine)
+                Rebuild();
+        }
 
         // A destructive pill that was armed and never pressed again goes back to saying what it does.
         if (_armed.Length > 0 && (DateTime.UtcNow - _armedAt).TotalSeconds > ConfirmWindow)
@@ -273,7 +308,13 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
         col.ForceExpandWidth.Value = true;
         col.ForceExpandHeight.Value = false;
 
-        _header = BeginRow(root, "Header");
+        _header = root.AddSlot("Header");
+        _header.AttachComponent<RectTransform>();
+        _header.AttachComponent<GraphicChunkRoot>();
+        var headerColumn = _header.AttachComponent<VerticalLayout>();
+        headerColumn.Spacing.Value = HeaderGap;
+        headerColumn.ForceExpandWidth.Value = true;
+        headerColumn.ForceExpandHeight.Value = false;
 
         _body = root.AddSlot("Body");
         _body.AttachComponent<RectTransform>();
@@ -282,6 +323,7 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
         bodyElement.FlexibleHeight.Value = 1f;
 
         BuildListing(_body);
+        BuildSignedOut(_body);
         BuildHeader();
 
         if (!_localeHooked)
@@ -327,6 +369,7 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
         hostRect.AnchorMax.Value = float2.One;
         hostRect.OffsetMin.Value = float2.Zero;
         hostRect.OffsetMax.Value = float2.Zero;
+        _listingHost = host;
 
         _relay = host.AttachComponent<GroupsRelay>();
         _relay.Screen = this;
@@ -338,6 +381,7 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
 
         var viewport = SettingsUI.Fill(host, "Viewport", SettingsMetrics.PanelInset, SettingsMetrics.PanelInset,
             SettingsMetrics.PanelInset + DashScrollbar.Width + ScrollbarGap, 0f);
+        _listingViewport = viewport;
 
         var templates = new ListingTemplateMapper { DefaultHeight = SettingsMetrics.RowHeight };
         var note = new GroupNoteTemplate(_fonts);
@@ -351,6 +395,7 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
         templates.MapKind(KindField, new GroupFieldTemplate(_fonts, _relay));
         templates.MapKind(KindActions, new GroupActionsTemplate(_fonts, _relay));
         templates.MapKind(KindStorage, new GroupStorageTemplate(_fonts));
+        templates.MapKind(KindTiles, new GroupTileRowTemplate(_fonts, _relay, _icons));
         templates.Fallback(note);
 
         _listing = ListingView.Attach(viewport, style, templates, _items);
@@ -361,6 +406,8 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
         host.World?.RunInUpdates(2, () => _scrollbar?.Refresh());
     }
 
+    // The title, with the search and a refresh beside it on the lists, or the way back on a group's page; then,
+    // on the lists, the two lists as one switch and New group as the one primary action.
     private void BuildHeader()
     {
         var header = _header;
@@ -368,28 +415,193 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
             return;
         header.DestroyChildren();
         _searchText = null;
+        bool page = _view == View.Group || _view == View.Admin;
+        bool lists = !page && SignedIn;
+        SetFixedHeight(header, HeaderHeight + (lists ? HeaderGap + TabsHeight : 0f));
 
-        var titleBuilder = RowBuilder(header);
-        titleBuilder.MinWidth(120f).FlexibleWidth(1f);
-        string title = _view == View.Group || _view == View.Admin
-            ? (_group?.Name ?? GroupsLocale.Title.Resolve())
-            : GroupsLocale.Title.Resolve();
-        AddRowLabel(titleBuilder, title, DashTheme.FontHeading, SectionTitleColor, TextHorizontalAlignment.Left);
-
-        if (_view == View.Group || _view == View.Admin)
-        {
-            AddInlineButton(header, GroupsLocale.Back.Resolve(), TabFill, 84f, BackToList);
-            AddInlineButton(header, GroupsLocale.Refresh.Resolve(), TabFill, 88f, RefreshCurrent);
+        var top = HeaderRow(header, "Top", HeaderHeight);
+        if (page)
+            AddIconButton(top, "Back", "back", BackToList);
+        string title = page ? (_group?.Name ?? GroupsLocale.Title.Resolve()) : GroupsLocale.Title.Resolve();
+        var titleText = AddFillLabel(Flexible(top, "Title", 80f), title, DashTheme.FontTitle, DashTheme.Text, BoldFont);
+        titleText.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        titleText.AutoSizeHorizontal.Value = true;
+        titleText.AutoSizeMin.Value = 13f;
+        if (lists)
+            BuildSearchWell(top);
+        if (page || SignedIn)
+            AddIconButton(top, "Refresh", "refresh", RefreshCurrent);
+        if (!lists)
             return;
-        }
 
-        BuildSearchWell(header);
-        AddInlineButton(header, GroupsLocale.TabBrowse.Resolve(),
-            _view == View.Browse ? AccentColor : TabFill, 84f, () => SwitchTab(View.Browse));
-        AddInlineButton(header, GroupsLocale.TabMine.Resolve(),
-            _view == View.Mine ? AccentColor : TabFill, 74f, () => SwitchTab(View.Mine));
-        AddInlineButton(header, GroupsLocale.New.Resolve(), AccentColor, 66f, OpenCreate);
-        AddInlineButton(header, GroupsLocale.Refresh.Resolve(), TabFill, 88f, RefreshCurrent);
+        var tabs = HeaderRow(header, "Tabs", TabsHeight);
+        BuildSwitch(tabs);
+        Flexible(tabs, "Space", 0f);
+        AddPrimaryButton(tabs, "New", GroupsLocale.NewGroup.Resolve(), 132f, OpenCreate);
+    }
+
+    private static Slot HeaderRow(Slot header, string name, float height)
+    {
+        var row = header.AddSlot(name);
+        row.AttachComponent<RectTransform>();
+        SetFixedHeight(row, height);
+        var layout = row.AttachComponent<HorizontalLayout>();
+        layout.Spacing.Value = 8f;
+        layout.ForceExpandWidth.Value = false;
+        layout.ForceExpandHeight.Value = true;
+        return row;
+    }
+
+    private static Slot Flexible(Slot row, string name, float preferred)
+    {
+        var slot = row.AddSlot(name);
+        slot.AttachComponent<RectTransform>();
+        var element = slot.AttachComponent<LayoutElement>();
+        element.MinWidth.Value = 0f;
+        element.PreferredWidth.Value = preferred;
+        element.FlexibleWidth.Value = 1f;
+        element.FlexibleHeight.Value = 1f;
+        return slot;
+    }
+
+    private static Slot FixedCell(Slot row, string name, float width)
+    {
+        var slot = row.AddSlot(name);
+        slot.AttachComponent<RectTransform>();
+        var element = slot.AttachComponent<LayoutElement>();
+        element.MinWidth.Value = width;
+        element.PreferredWidth.Value = width;
+        element.FlexibleWidth.Value = 0f;
+        element.FlexibleHeight.Value = 1f;
+        return slot;
+    }
+
+    // A line glyph in the text colour that lights under the pointer.
+    private void AddIconButton(Slot row, string name, string icon, Action onClick)
+    {
+        var cell = FixedCell(row, name, IconButtonSize);
+        var plate = SettingsUI.Panel(cell, color.Transparent, color.Transparent, DashTheme.RadiusControl);
+        var button = cell.AttachComponent<Button>();
+        button.Clicked += (_, _) => onClick();
+        var fill = button.AddColorDriver(plate.Color, color.Transparent, InteractionColorMode.Direct);
+        fill.NormalColor.Value = color.Transparent;
+        fill.HighlightColor.Value = DashTheme.GlassCardHover;
+        fill.PressedColor.Value = DashTheme.GlassCardPressed;
+        fill.DisabledColor.Value = color.Transparent;
+        fill.Apply();
+        var glyph = SettingsUI.Child(cell, "Glyph", new float2(0.5f, 0.5f), new float2(0.5f, 0.5f), new float2(-9f, -9f), new float2(9f, 9f));
+        var image = glyph.AttachComponent<Image>();
+        if (_dashboard != null)
+            image.Texture.Target = _dashboard.IconProvider(icon);
+        image.PreserveAspect.Value = true;
+        image.InteractionTarget.Value = false;
+        image.Tint.Value = DashTheme.TextDim;
+    }
+
+    // Browse and Mine as one control: the list on show is lit, the other is plain.
+    private void BuildSwitch(Slot row)
+    {
+        var cell = FixedCell(row, "Switch", SegmentWidth * 2f + 4f);
+        SettingsUI.Panel(cell, DashTheme.Field.WithAlpha(0.6f), DashTheme.Outline, DashTheme.RadiusControl + 1f);
+        AddSegment(cell, "Browse", GroupsLocale.TabBrowse.Resolve(), 0, _view == View.Browse, () => SwitchTab(View.Browse));
+        AddSegment(cell, "Mine", GroupsLocale.TabMine.Resolve(), 1, _view == View.Mine, () => SwitchTab(View.Mine));
+    }
+
+    private void AddSegment(Slot cell, string name, string label, int index, bool on, Action onClick)
+    {
+        var slot = SettingsUI.Child(cell, name, new float2(index * 0.5f, 0f), new float2(index * 0.5f + 0.5f, 1f),
+            new float2(index == 0 ? 2f : 1f, 2f), new float2(index == 0 ? -1f : -2f, -2f));
+        var plate = SettingsUI.Panel(slot, on ? DashTheme.AccentSoft : color.Transparent, color.Transparent, DashTheme.RadiusControl - 1f);
+        var button = slot.AttachComponent<Button>();
+        button.Clicked += (_, _) => onClick();
+        var fill = button.AddColorDriver(plate.Color, plate.Color.Value, InteractionColorMode.Direct);
+        fill.NormalColor.Value = on ? DashTheme.AccentSoft : color.Transparent;
+        fill.HighlightColor.Value = on ? DashTheme.Accent.WithAlpha(0.26f) : DashTheme.GlassCardHover;
+        fill.PressedColor.Value = DashTheme.Accent.WithAlpha(0.32f);
+        fill.DisabledColor.Value = fill.NormalColor.Value;
+        fill.Apply();
+        var text = AddFillLabel(slot, label, DashTheme.FontSmall, on ? DashTheme.Accent : DashTheme.TextDim, SemiboldFont);
+        text.AutoSizeHorizontal.Value = true;
+        text.AutoSizeMin.Value = 11f;
+    }
+
+    private void AddPrimaryButton(Slot row, string name, string label, float width, Action onClick)
+    {
+        var cell = FixedCell(row, name, width);
+        var plate = SettingsUI.Panel(cell, DashTheme.Accent, color.Transparent, DashTheme.RadiusControl);
+        var button = cell.AttachComponent<Button>();
+        button.Clicked += (_, _) => onClick();
+        var fill = button.AddColorDriver(plate.Color, DashTheme.Accent, InteractionColorMode.Direct);
+        fill.NormalColor.Value = DashTheme.Accent;
+        fill.HighlightColor.Value = DashTheme.AccentHover;
+        fill.PressedColor.Value = DashTheme.AccentPressed;
+        fill.DisabledColor.Value = DashTheme.Field;
+        fill.Apply();
+        var text = AddFillLabel(cell, label, DashTheme.FontSmall, OnFill(DashTheme.Accent), SemiboldFont);
+        text.AutoSizeHorizontal.Value = true;
+        text.AutoSizeMin.Value = 11f;
+    }
+
+    // SIGNED OUT
+    // What a group is, the way in, and what the page shows once you are in. In the middle of the body, over
+    // the list, which has nothing to list.
+    private void BuildSignedOut(Slot body)
+    {
+        _signedOut = SettingsUI.Fill(body, "SignedOut");
+        var column = SettingsUI.Child(_signedOut, "Column", new float2(0.5f, 0.5f), new float2(0.5f, 0.5f),
+            new float2(-220f, -130f), new float2(220f, 130f));
+        var tile = SettingsUI.Child(column, "Icon", new float2(0.5f, 1f), new float2(0.5f, 1f), new float2(-30f, -60f), new float2(30f, 0f));
+        SettingsUI.Panel(tile, DashTheme.AccentSoft, color.Transparent, 16f);
+        var glyph = SettingsUI.Child(tile, "Glyph", new float2(0.5f, 0.5f), new float2(0.5f, 0.5f), new float2(-16f, -16f), new float2(16f, 16f));
+        var image = glyph.AttachComponent<Image>();
+        if (_dashboard != null)
+            image.Texture.Target = _dashboard.IconProvider("groups");
+        image.PreserveAspect.Value = true;
+        image.InteractionTarget.Value = false;
+        image.Tint.Value = DashTheme.Accent;
+
+        var title = SettingsUI.Label(column, "Title", BoldFont, DashTheme.FontTitle, DashTheme.Text, TextHorizontalAlignment.Center,
+            new float2(0f, 1f), new float2(1f, 1f), new float2(0f, -96f), new float2(0f, -68f), shrinkToFit: true);
+        title.Content.Value = GroupsLocale.Title.Resolve();
+        var body1 = SettingsUI.Label(column, "Body", BodyFont, DashTheme.FontBody, DashTheme.TextDim, TextHorizontalAlignment.Center,
+            new float2(0f, 1f), new float2(1f, 1f), new float2(0f, -158f), new float2(0f, -102f), shrinkToFit: true);
+        body1.WordWrap.Value = true;
+        body1.Content.Value = GroupsLocale.SignedOutBody.Resolve();
+
+        var signIn = SettingsUI.Child(column, "SignIn", new float2(0.5f, 1f), new float2(0.5f, 1f), new float2(-80f, -206f), new float2(80f, -170f));
+        var plate = SettingsUI.Panel(signIn, DashTheme.Accent, color.Transparent, DashTheme.RadiusControl);
+        var button = signIn.AttachComponent<Button>();
+        button.Clicked += (_, _) => SignInFromBar();
+        var fill = button.AddColorDriver(plate.Color, DashTheme.Accent, InteractionColorMode.Direct);
+        fill.NormalColor.Value = DashTheme.Accent;
+        fill.HighlightColor.Value = DashTheme.AccentHover;
+        fill.PressedColor.Value = DashTheme.AccentPressed;
+        fill.DisabledColor.Value = DashTheme.Accent;
+        fill.Apply();
+        var label = SettingsUI.FillLabel(signIn, "Text", SemiboldFont, DashTheme.FontBody, OnFill(DashTheme.Accent), TextHorizontalAlignment.Center, true);
+        label.Content.Value = GroupsLocale.SignIn.Resolve();
+
+        var after = SettingsUI.Label(column, "After", BodyFont, DashTheme.FontSmall, DashTheme.TextMuted, TextHorizontalAlignment.Center,
+            new float2(0f, 1f), new float2(1f, 1f), new float2(0f, -258f), new float2(0f, -218f), shrinkToFit: true);
+        after.WordWrap.Value = true;
+        after.Content.Value = GroupsLocale.SignedOutAfter.Resolve();
+        _signedOut.ActiveSelf.Value = false;
+    }
+
+    // The sign-in dialog the top bar's profile opens, owned by Home.
+    private void SignInFromBar()
+    {
+        var dash = Dashboard.Of(Slot);
+        if (dash?.DeskScreen is HomeScreen home)
+            home.OpenSignIn();
+    }
+
+    private void ShowSignedOut(bool signedOut)
+    {
+        if (_signedOut != null && !_signedOut.IsDestroyed && _signedOut.ActiveSelf.Value != signedOut)
+            _signedOut.ActiveSelf.Value = signedOut;
+        if (_listingHost != null && !_listingHost.IsDestroyed && _listingHost.ActiveSelf.Value == signedOut)
+            _listingHost.ActiveSelf.Value = !signedOut;
     }
 
     // A pressable well whose label is the search buffer. There is no text input widget in the dash, so the
@@ -399,8 +611,8 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
         var cell = header.AddSlot("SearchWell");
         cell.AttachComponent<RectTransform>();
         var element = cell.AttachComponent<LayoutElement>();
-        element.MinWidth.Value = 200f;
-        element.PreferredWidth.Value = 200f;
+        element.MinWidth.Value = 80f;
+        element.PreferredWidth.Value = 160f;
         element.FlexibleWidth.Value = 0f;
         element.FlexibleHeight.Value = 1f;
         ApplyRoundedPanel(cell, ControlFill, _focus == GroupField.Search ? AccentColor : RowBorder);
@@ -420,9 +632,9 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
             return;
 
         _items.ClearAll();
+        ShowSignedOut(!SignedIn);
         if (!SignedIn)
         {
-            AddNote("signedout", GroupsLocale.SignedOut);
             PushSearch();
             MarkDirty();
             return;
@@ -446,12 +658,41 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
         MarkDirty();
     }
 
-    // Only the two list views filter locally. A group page is not a list of things anybody searches.
+    // The lists filter as their tiles are laid out (a row of tiles is not one thing a search can match), and
+    // a group page is not a list of things anybody searches, so the listing's own filter stays off.
     private void PushSearch()
     {
         if (_listing == null)
             return;
-        _listing.Search = _view == View.Browse || _view == View.Mine ? _search : string.Empty;
+        _listing.Search = string.Empty;
+    }
+
+    private bool Matches(GroupInfo group)
+        => _search.Length == 0 || group.Name.Contains(_search, StringComparison.OrdinalIgnoreCase)
+            || group.Tag.Contains(_search, StringComparison.OrdinalIgnoreCase);
+
+    // Cards in rows of as many as the page is wide.
+    private void AddTiles(string key, List<GroupCardItem> cards)
+    {
+        int columns = System.Math.Clamp(_columns, 1, GroupTileRowTemplate.MaxColumns);
+        for (int i = 0; i < cards.Count; i += columns)
+        {
+            var row = new GroupTileRowItem(key + "." + (i / columns)) { Columns = columns };
+            for (int j = i; j < System.Math.Min(cards.Count, i + columns); j++)
+                row.Cards.Add(cards[j]);
+            _items.AddRoot(row);
+        }
+    }
+
+    // How many tiles a row holds at the listing's width now.
+    private int ColumnsNow()
+    {
+        var rect = _listingViewport?.GetComponent<RectTransform>()?.LocalComputeRect;
+        float width = rect?.width ?? 0f;
+        if (width <= 1f)
+            return _columns;
+        int columns = (int)MathF.Floor((width + GroupMetrics.TileGap) / (GroupMetrics.TileMinWidth + GroupMetrics.TileGap));
+        return System.Math.Clamp(columns, 1, GroupTileRowTemplate.MaxColumns);
     }
 
     private void BuildList()
@@ -474,27 +715,39 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
             if (_myInvites.Count > 0)
             {
                 _items.AddRoot(new ListingHeader("h.invites", GroupsLocale.Invites));
+                var invites = new List<GroupCardItem>();
                 for (int i = 0; i < _myInvites.Count; i++)
-                    _items.AddRoot(InviteCard(_myInvites[i]));
+                    invites.Add(InviteCard(_myInvites[i]));
+                AddTiles("invites", invites);
             }
 
-            if (_mine.Count == 0)
+            var mine = new List<GroupCardItem>();
+            for (int i = 0; i < _mine.Count; i++)
+            {
+                if (Matches(_mine[i]))
+                    mine.Add(MineCard(_mine[i]));
+            }
+            if (mine.Count == 0)
             {
                 AddNote("mine.empty", GroupsLocale.MineEmpty);
                 return;
             }
-            for (int i = 0; i < _mine.Count; i++)
-                _items.AddRoot(MineCard(_mine[i]));
+            AddTiles("mine", mine);
             return;
         }
 
-        if (_browse.Count == 0)
+        var browse = new List<GroupCardItem>();
+        for (int i = 0; i < _browse.Count; i++)
+        {
+            if (Matches(_browse[i]))
+                browse.Add(BrowseCard(_browse[i]));
+        }
+        if (browse.Count == 0)
         {
             AddNote("browse.empty", GroupsLocale.BrowseEmpty);
             return;
         }
-        for (int i = 0; i < _browse.Count; i++)
-            _items.AddRoot(BrowseCard(_browse[i]));
+        AddTiles("browse", browse);
     }
 
     private void BuildCreateForm()
@@ -1773,7 +2026,7 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
             case GroupField.Search:
                 _search = edit(_search);
                 BuildHeader();
-                PushSearch();
+                Rebuild();
                 break;
             case GroupField.CreateName: _createName = edit(_createName); break;
             case GroupField.EditName: _editName = edit(_editName); break;
@@ -1806,6 +2059,22 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
     };
 
     public bool HasFieldFocus => _focus != GroupField.None;
+    public string? CopyText => _focus switch
+    {
+        GroupField.Search => _search,
+        GroupField.CreateName => _createName,
+        GroupField.EditName => _editName,
+        GroupField.EditTag => _editTag,
+        GroupField.EditBio => _editBio,
+        GroupField.EditColor => _editColor,
+        GroupField.InviteId => _inviteId,
+        GroupField.Announcement => _announcement,
+        GroupField.EventTitle => _eventTitle,
+        GroupField.EventWorld => _eventWorld,
+        GroupField.EventDate => _eventDate,
+        GroupField.EventTime => _eventTime,
+        _ => null,
+    };
 
     public bool ConsumeChar(char c)
     {
@@ -1822,7 +2091,7 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
     {
         if (_focus == GroupField.None)
             return false;
-        WriteFocused(text => text.Length > 0 ? text.Substring(0, text.Length - 1) : text);
+        WriteFocused(Lumora.Core.Input.TextElements.RemoveLast);
         return true;
     }
 

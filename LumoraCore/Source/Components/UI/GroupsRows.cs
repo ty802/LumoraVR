@@ -20,7 +20,7 @@ public static class GroupsLocale
 {
     public static readonly LocaleText Title = "Groups.Title".AsLocale("Groups");
     public static readonly LocaleText SignedOut =
-        "Groups.SignedOut".AsLocale("Sign in from the Home screen to see groups.");
+        "Groups.SignedOut".AsLocale("Sign in with the profile widget on the workspace to see groups.");
     public static readonly LocaleText Loading = "Groups.Loading".AsLocale("Loading");
     public static readonly LocaleText LoadFailed = "Groups.LoadFailed".AsLocale("Could not load that.");
     public static readonly LocaleText ActionFailed =
@@ -31,6 +31,12 @@ public static class GroupsLocale
     public static readonly LocaleText Back = "Groups.Back".AsLocale("Back");
     public static readonly LocaleText Refresh = "Groups.Refresh".AsLocale("Refresh");
     public static readonly LocaleText New = "Groups.New".AsLocale("New");
+    public static readonly LocaleText NewGroup = "Groups.NewGroup".AsLocale("New group");
+    public static readonly LocaleText SignIn = "Groups.SignIn".AsLocale("Sign in");
+    public static readonly LocaleText SignedOutBody = "Groups.SignedOut.Body".AsLocale(
+        "A group is a shared home for the people you play with: one page, members with roles, announcements and events, and worlds hosted for its members.");
+    public static readonly LocaleText SignedOutAfter = "Groups.SignedOut.After".AsLocale(
+        "Once you are signed in, this page shows the groups you are in, the invites waiting for you and the public groups you can join.");
     public static readonly LocaleText Search = "Groups.Search".AsLocale("Search");
     public static readonly LocaleText SearchHint = "Groups.Search.Hint".AsLocale("Search groups");
 
@@ -213,6 +219,10 @@ internal static class GroupMetrics
 {
     public const float NoteHeight = 26f;
     public const float CardHeight = 76f;
+    // A group tile on the grid, and the narrowest one a row of them may squeeze to.
+    public const float TileHeight = 140f;
+    public const float TileMinWidth = 250f;
+    public const float TileGap = 10f;
     public const float HeaderCardHeight = 108f;
     public const float MemberHeight = 44f;
     public const float MemberStorageHeight = 72f;
@@ -547,6 +557,26 @@ public sealed class GroupsRelay : Component
         }
         var action = index == 0 ? card.Primary : card.Secondary;
         Screen!.Dispatch(action, card.GroupId, string.Empty);
+    }
+
+    // A tile is a quarter of a row's bindings: the tile itself opens the group, then its first and second pill.
+    [SyncMethod]
+    public void OnTilePressed(Button button, UIInteractionContext context)
+    {
+        if (!Resolve(button, out var item, out int index) || item is not GroupTileRowItem row)
+            return;
+        int tile = index / 4;
+        int part = index % 4;
+        if (tile < 0 || tile >= row.Cards.Count)
+            return;
+        var card = row.Cards[tile];
+        if (part == 0)
+        {
+            if (card.Openable)
+                Screen!.Dispatch(GroupAction.Open, card.GroupId, string.Empty);
+            return;
+        }
+        Screen!.Dispatch(part == 1 ? card.Primary : card.Secondary, card.GroupId, string.Empty);
     }
 
     [SyncMethod]
@@ -1562,6 +1592,157 @@ internal sealed class GroupStorageTemplate : ListingRowTemplate
             SettingsUI.SetAnchors(AllocatedRect, float2.Zero, new float2(allocFraction, 1f));
             SettingsUI.SetPaint(Used, quota > 0f ? DashTheme.Accent : DashTheme.Field, color.Transparent);
             SettingsUI.SetPaint(Allocated, DashTheme.AccentSoft, color.Transparent);
+        }
+    }
+}
+
+// GROUP TILES
+// Group cards side by side, as many to a row as the page is wide: each tile its picture or initials, its
+// name and tag, how many are in it and who may come in, a line of what it is about, and the one or two things
+// a press on it can do. A press anywhere else on the tile opens the group's page. -xlinka
+internal sealed class GroupTileRowItem : ListingItem
+{
+    public readonly List<GroupCardItem> Cards = new();
+    public int Columns = 1;
+
+    public GroupTileRowItem(string key) : base(key)
+    {
+        Kind = GroupsScreen.KindTiles;
+    }
+}
+
+internal sealed class GroupTileRowTemplate : ListingRowTemplate
+{
+    public const int MaxColumns = 4;
+    private const float Inset = 12f;
+    private const float Icon = 44f;
+    private const float ChipWidth = 84f;
+
+    private readonly SettingsFonts _fonts;
+    private readonly GroupsRelay _relay;
+    private readonly GroupIconCache _icons;
+
+    public GroupTileRowTemplate(SettingsFonts fonts, GroupsRelay relay, GroupIconCache icons)
+    {
+        _fonts = fonts;
+        _relay = relay;
+        _icons = icons;
+    }
+
+    public override float Height => GroupMetrics.TileHeight;
+    public override bool UsesRowBackground => false;
+    public override void ConfigureRow(Slot row, ListingStyle style) { }
+
+    public override ListingRow Build(ListingView view, UIBuilder builder, Slot row)
+    {
+        var owner = new TileRow { Icons = _icons };
+        for (int i = 0; i < MaxColumns; i++)
+            owner.Tiles[i] = BuildTile(row, i, owner);
+        return owner;
+    }
+
+    private Tile BuildTile(Slot row, int index, TileRow owner)
+    {
+        var slot = SettingsUI.Child(row, "Tile" + index, float2.Zero, float2.One, float2.Zero, float2.Zero);
+        var background = SettingsUI.Panel(slot, DashTheme.GlassCard, DashTheme.Outline, DashTheme.RadiusCard);
+        var open = slot.AttachComponent<Button>();
+
+        var iconHost = SettingsUI.Child(slot, "Icon", new float2(0f, 1f), new float2(0f, 1f),
+            new float2(Inset, -(Inset + Icon)), new float2(Inset + Icon, -Inset));
+        var icon = GroupIcon.Build(iconHost, _fonts, Icon, DashTheme.FontHeading);
+
+        float textLeft = Inset + Icon + 10f;
+        var name = SettingsUI.Label(slot, "Name", _fonts.Medium, DashTheme.FontBody, DashTheme.Text, TextHorizontalAlignment.Left,
+            new float2(0f, 1f), new float2(1f, 1f), new float2(textLeft, -(Inset + 22f)), new float2(-(Inset + ChipWidth + 6f), -Inset), shrinkToFit: true);
+        var meta = SettingsUI.Label(slot, "Meta", _fonts.Body, DashTheme.FontSmall, DashTheme.TextDim, TextHorizontalAlignment.Left,
+            new float2(0f, 1f), new float2(1f, 1f), new float2(textLeft, -(Inset + 42f)), new float2(-Inset, -(Inset + 24f)), shrinkToFit: true);
+        var bio = SettingsUI.Label(slot, "Bio", _fonts.Body, DashTheme.FontSmall, DashTheme.TextMuted, TextHorizontalAlignment.Left,
+            new float2(0f, 1f), new float2(1f, 1f), new float2(Inset, -(Inset + Icon + 40f)), new float2(-Inset, -(Inset + Icon + 6f)), shrinkToFit: true);
+        bio.WordWrap.Value = true;
+
+        var chip = SettingsChip.Build(SettingsUI.Child(slot, "Chip", new float2(1f, 1f), new float2(1f, 1f),
+            new float2(-(Inset + ChipWidth), -(Inset + 22f)), new float2(-Inset, -Inset)), _fonts.Medium, DashTheme.FontLabel, DashTheme.RadiusChip);
+        var primary = SettingsChip.Build(SettingsUI.Child(slot, "Primary", new float2(1f, 0f), new float2(1f, 0f),
+            new float2(-(Inset + GroupMetrics.ActionWidth), Inset), new float2(-Inset, Inset + GroupMetrics.PillHeight)),
+            _fonts.Medium, DashTheme.FontSmall, DashTheme.RadiusControl);
+        float secondRight = Inset + GroupMetrics.ActionWidth + GroupMetrics.PillGap;
+        var secondary = SettingsChip.Build(SettingsUI.Child(slot, "Second", new float2(1f, 0f), new float2(1f, 0f),
+            new float2(-(secondRight + GroupMetrics.ActionWidth), Inset), new float2(-secondRight, Inset + GroupMetrics.PillHeight)),
+            _fonts.Medium, DashTheme.FontSmall, DashTheme.RadiusControl);
+
+        _relay.Register(open, owner, index * 4);
+        open.SetAction(_relay.OnTilePressed);
+        _relay.Register(primary.Button, owner, index * 4 + 1);
+        primary.Button.SetAction(_relay.OnTilePressed);
+        _relay.Register(secondary.Button, owner, index * 4 + 2);
+        secondary.Button.SetAction(_relay.OnTilePressed);
+        slot.ActiveSelf.Value = false;
+        return new Tile
+        {
+            Slot = slot, Rect = SettingsUI.Rect(slot), Background = background, Open = open, Icon = icon,
+            Name = name, Meta = meta, Bio = bio, Chip = chip, Primary = primary, Secondary = secondary,
+        };
+    }
+
+    private sealed class Tile
+    {
+        public Slot Slot = null!;
+        public RectTransform Rect = null!;
+        public RoundedPanel Background = null!;
+        public Button Open = null!;
+        public GroupIcon Icon = null!;
+        public Text Name = null!;
+        public Text Meta = null!;
+        public Text Bio = null!;
+        public SettingsChip Chip = null!;
+        public SettingsChip Primary = null!;
+        public SettingsChip Secondary = null!;
+    }
+
+    private sealed class TileRow : ListingRow
+    {
+        public readonly Tile[] Tiles = new Tile[MaxColumns];
+        public GroupIconCache Icons = null!;
+
+        public override void Bind(ListingItem item)
+        {
+            if (item is not GroupTileRowItem row)
+                return;
+            int columns = System.Math.Clamp(row.Columns, 1, MaxColumns);
+            for (int i = 0; i < Tiles.Length; i++)
+            {
+                var tile = Tiles[i];
+                bool on = i < row.Cards.Count && i < columns;
+                ListingStyle.SetActive(tile.Slot, on);
+                if (!on)
+                    continue;
+                var card = row.Cards[i];
+                float half = GroupMetrics.TileGap * 0.5f;
+                SettingsUI.SetAnchors(tile.Rect, new float2((float)i / columns, 0f), new float2((float)(i + 1) / columns, 1f));
+                SettingsUI.SetOffsets(tile.Rect, new float2(i == 0 ? 0f : half, 0f), new float2(i == columns - 1 ? 0f : -half, 0f));
+                SettingsUI.SetPaint(tile.Background, DashTheme.GlassCard, DashTheme.Outline);
+
+                tile.Icon.Bind(Icons, card.IconHash, card.GroupTag, card.Tint);
+                ListingStyle.SetText(tile.Name, card.GroupTag.Length > 0 ? card.Name + "  [" + card.GroupTag + "]" : card.Name);
+                string meta = card.Meta;
+                if (card.Visibility.Length > 0)
+                    meta = meta.Length > 0 ? meta + "  ·  " + card.Visibility : card.Visibility;
+                ListingStyle.SetText(tile.Meta, meta);
+                ListingStyle.SetActive(tile.Meta.Slot, meta.Length > 0);
+                ListingStyle.SetText(tile.Bio, card.Bio);
+                ListingStyle.SetActive(tile.Bio.Slot, card.Bio.Length > 0);
+                ListingStyle.SetInteractable(tile.Open, card.Openable);
+
+                ListingStyle.SetActive(tile.Chip.Slot, card.Chip.Length > 0);
+                if (card.Chip.Length > 0)
+                    GroupBand.PaintChip(tile.Chip, card.Chip, card.ChipLit);
+                ListingStyle.SetActive(tile.Primary.Slot, card.PrimaryLabel.Length > 0);
+                if (card.PrimaryLabel.Length > 0)
+                    GroupBand.PaintAction(tile.Primary, card.PrimaryLabel, card.PrimaryEnabled, false, card.PrimaryEnabled);
+                ListingStyle.SetActive(tile.Secondary.Slot, card.SecondaryLabel.Length > 0);
+                if (card.SecondaryLabel.Length > 0)
+                    GroupBand.PaintAction(tile.Secondary, card.SecondaryLabel, true, false, false);
+            }
         }
     }
 }

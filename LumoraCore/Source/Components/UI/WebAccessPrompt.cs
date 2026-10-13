@@ -69,9 +69,13 @@ public sealed class WebAccessPrompt : Component
         var request = new ModalRequest
         {
             Title = TitleText,
-            Message = "WebAccess.Prompt.Message".AsLocale("{0}\n{1}\nScript by {2}, in {3}",
-                question.Host, question.Reason,
-                Clip(question.AskerName, UnknownAuthor), Clip(question.WorldName, UnnamedWorld)),
+            Message = Lumora.Core.Networking.Web.WebAddressFilter.IsLocalHost(question.Host)
+                ? "WebAccess.Prompt.MessageLocal".AsLocale("{0}\nOn this computer or your local network.\n{1}\nScript by {2}, in {3}",
+                    question.Host, question.Reason,
+                    Clip(question.AskerName, UnknownAuthor), Clip(question.WorldName, UnnamedWorld))
+                : "WebAccess.Prompt.Message".AsLocale("{0}\n{1}\nScript by {2}, in {3}",
+                    question.Host, question.Reason,
+                    Clip(question.AskerName, UnknownAuthor), Clip(question.WorldName, UnnamedWorld)),
             Invoker = Slot,
             CancelIndex = -1,
             DefaultIndex = -1,

@@ -107,6 +107,10 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
     private Slot _browsePage = null!;
     private Slot _detailPage = null!;
     private Slot _createPage = null!;
+    private DashScrollbar? _createScrollbar;
+    private ScrollContentSizer? _createSizer;
+    private float _createWidth;
+    private Text? _modeHint;
     private Text _statusLabel = null!;
     private Slot _pagerRow = null!;
     private Text _pagerCount = null!;
@@ -130,11 +134,22 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
     private RectTransform _scrollHandle = null!;
     private float _handlePressY;
     private float _handlePressScroll;
+    private float _handleTarget;
+    private bool _handleDragging;
     private int _scrollHandleRetries;
     private float _gridHeight;
 
     // Detail view.
     private ArtBlock _heroArt = null!;
+    private Slot _detailContent = null!;
+    private Slot _heroFrame = null!;
+    private Slot _detailInfo = null!;
+    private Slot _detailDescriptionRow = null!;
+    private ScrollContentSizer _detailSizer = null!;
+    private DashScrollbar _detailScrollbar = null!;
+    private WorldDetailPeople _detailPeople = null!;
+    private float _detailWidth;
+    private float _refreshCountdown;
     private Text _detailDescription = null!;
     private Text _detailFacts = null!;
     private Chip _detailModeChip = null!;
@@ -378,6 +393,8 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         viewport.AttachComponent<Mask>().ShowMaskGraphic.Value = false;
         _scroll = viewport.AttachComponent<ScrollRect>();
         _scroll.ScrollSensitivity.Value = new float2(1f, 1f);
+        // A world card swaps the grid for its detail page.
+        _scroll.RowsActOnRelease.Value = true;
         _scroll.ScrollChanged += (_, _) => UpdateScrollHandle();
 
         _contentSlot = viewport.AddSlot("Content");
@@ -433,30 +450,45 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         _scrollHandle.AnchorMax.Value = new float2(1f, 1f);
         _scrollHandle.OffsetMin.Value = new float2(0f, -60f);
         _scrollHandle.OffsetMax.Value = float2.Zero;
-        BrowserParts.Panel(handle, DashTheme.TextMuted, ScrollbarWidth * 0.5f);
+        var handlePanel = BrowserParts.Panel(handle, DashTheme.TextMuted, ScrollbarWidth * 0.5f);
 
-        var interaction = handle.AttachComponent<InteractionElement>();
+        var interaction = DashScrollbar.CreateHandleInteraction(handle, handlePanel.Color);
         interaction.Pressed += OnHandlePress;
         interaction.Dragged += OnHandleDrag;
+        interaction.Released += OnHandleRelease;
     }
 
     private void BuildDetailPage(Slot pages)
     {
         _detailPage = BrowserParts.Child(pages, "Detail");
-        var column = _detailPage.AttachComponent<VerticalLayout>();
+        var viewport = SettingsUI.Fill(_detailPage, "Viewport", 0f, 0f, DashScrollbar.Width + DashTheme.Gap, 0f);
+        viewport.AttachComponent<Mask>().ShowMaskGraphic.Value = false;
+        var scroll = viewport.AttachComponent<ScrollRect>();
+        scroll.ScrollSensitivity.Value = float2.One;
+        _detailContent = viewport.AddSlot("Content");
+        var contentRect = _detailContent.AttachComponent<RectTransform>();
+        contentRect.AnchorMin.Value = new float2(0f, 1f);
+        contentRect.AnchorMax.Value = float2.One;
+        contentRect.OffsetMin.Value = new float2(0f, -100f);
+        contentRect.OffsetMax.Value = float2.Zero;
+        _detailSizer = _detailContent.AttachComponent<ScrollContentSizer>();
+        scroll.Content.Target = contentRect;
+        _detailScrollbar = DashScrollbar.OnRightEdge(_detailPage, 0f, 0f, 0f);
+        _detailScrollbar.Bind(scroll, SettingsUI.Rect(viewport), contentRect, MarkDirty);
+        var column = _detailContent.AttachComponent<VerticalLayout>();
         column.Spacing.Value = DashTheme.GapLarge;
         column.ForceExpandWidth.Value = true;
         column.ForceExpandHeight.Value = false;
 
-        var heroRow = _detailPage.AddSlot("Hero");
+        var heroRow = _detailContent.AddSlot("Hero");
         heroRow.AttachComponent<RectTransform>();
-        BrowserParts.Height(heroRow, HeroHeight);
-        var heroLayout = heroRow.AttachComponent<HorizontalLayout>();
+        var heroLayout = heroRow.AttachComponent<WrapLayout>();
         heroLayout.Spacing.Value = DashTheme.GapLarge;
-        heroLayout.ForceExpandWidth.Value = false;
-        heroLayout.ForceExpandHeight.Value = true;
+        heroLayout.LineSpacing.Value = DashTheme.GapLarge;
+        heroLayout.RowAlignment.Value = LayoutAlignment.Start;
 
         var heroFrame = heroRow.AddSlot("Image");
+        _heroFrame = heroFrame;
         heroFrame.AttachComponent<RectTransform>();
         heroFrame.AttachComponent<GraphicChunkRoot>();
         BrowserParts.Size(heroFrame, HeroWidth, HeroHeight);
@@ -467,8 +499,10 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
             HeroWidth / HeroHeight, 2f);
 
         var info = heroRow.AddSlot("Info");
+        _detailInfo = info;
         info.AttachComponent<RectTransform>();
-        BrowserParts.Flex(info, 1f, 1f);
+        var infoSize = BrowserParts.Flex(info, 0f, 0f);
+        infoSize.MinWidth.Value = infoSize.PreferredWidth.Value = 440f;
         var infoLayout = info.AttachComponent<VerticalLayout>();
         infoLayout.Spacing.Value = DashTheme.Gap;
         infoLayout.ForceExpandWidth.Value = true;
@@ -486,24 +520,23 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         _detailUsersChip = _parts.AddChip(chips, string.Empty, DashTheme.Field, DashTheme.TextDim, 92f);
 
         var description = info.AddSlot("Description");
+        _detailDescriptionRow = description;
         description.AttachComponent<RectTransform>();
-        BrowserParts.Height(description, 84f);
+        BrowserParts.Height(description, 56f);
         _detailDescription = _parts.Label(description, string.Empty, DashTheme.FontBody, DashTheme.TextDim,
             BrowserParts.Weight.Regular, TextHorizontalAlignment.Left, wrap: true);
 
         var facts = info.AddSlot("Facts");
         facts.AttachComponent<RectTransform>();
-        BrowserParts.Height(facts, 20f);
+        BrowserParts.Height(facts, 36f);
         _detailFacts = _parts.Label(facts, string.Empty, DashTheme.FontSmall, DashTheme.TextMuted,
-            BrowserParts.Weight.Regular);
+            BrowserParts.Weight.Regular, wrap: true);
 
         var actions = info.AddSlot("Actions");
         actions.AttachComponent<RectTransform>();
-        BrowserParts.Height(actions, DashTheme.ControlHeight);
-        var actionLayout = actions.AttachComponent<HorizontalLayout>();
+        var actionLayout = actions.AttachComponent<WrapLayout>();
         actionLayout.Spacing.Value = DashTheme.Gap;
-        actionLayout.ForceExpandWidth.Value = false;
-        actionLayout.ForceExpandHeight.Value = false;
+        actionLayout.LineSpacing.Value = DashTheme.Gap;
         _detailPrimary = _parts.AddButton(actions, "Join", 132f, DashTheme.ControlHeight, DashTheme.Accent,
             DashTheme.AccentHover, DashTheme.AccentPressed, DashTheme.OnAccent,
             BrowserParts.Weight.Semibold, () => _primaryAction?.Invoke());
@@ -532,12 +565,13 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         // its own, and "why can't I drop the portal" was the first question asked of it. -xlinka
         _detailLinkHintRow = info.AddSlot("LinkHint");
         _detailLinkHintRow.AttachComponent<RectTransform>();
-        BrowserParts.Height(_detailLinkHintRow, 18f);
+        BrowserParts.Height(_detailLinkHintRow, 42f);
         _detailLinkHint = _parts.Label(_detailLinkHintRow, string.Empty, DashTheme.FontSmall, DashTheme.Warning,
-            BrowserParts.Weight.Regular);
+            BrowserParts.Weight.Regular, wrap: true);
         BrowserParts.SetActive(_detailLinkHintRow, false);
 
-        var header = _detailPage.AddSlot("SessionsHeader");
+        _detailPeople = new WorldDetailPeople(_parts, _detailContent);
+        var header = _detailContent.AddSlot("SessionsHeader");
         header.AttachComponent<RectTransform>();
         BrowserParts.Height(header, SectionHeaderHeight);
         _sessionsHeader = _parts.Label(header, "SESSIONS", DashTheme.FontLabel, DashTheme.TextMuted,
@@ -547,7 +581,9 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         rule.AttachComponent<Image>().Tint.Value = DashTheme.Divider;
         _sessionsHeaderSlot = header;
 
-        _strip = new SessionStrip(_parts, _detailPage);
+        _strip = new SessionStrip(_parts, _detailContent);
+        _strip.ThumbnailFor = entry => OfferThumbnail("session|" + entry.SessionId, entry.ThumbnailBase64, entry.ThumbnailUrl);
+        _strip.ForgetThumbnail = id => _thumbnails.Forget("session|" + id);
         _strip.SessionPicked += _ => { _dataDirty = true; MarkDirty(); };
         _strip.JoinRequested += JoinSession;
 
@@ -860,6 +896,25 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+        if (Slot?.IsActive != true) return;
+        _refreshCountdown -= delta;
+        if (_refreshCountdown <= 0f)
+        {
+            _refreshCountdown = 1f;
+            _dataDirty = true; // Local previews and user presence also change without session discovery.
+        }
+        if (_page == Page.Detail)
+            FitDetail();
+        if (_page == Page.Create && _createSizer != null)
+        {
+            float width = _createSizer.Slot.GetComponent<RectTransform>()?.LocalComputeRect.width ?? 0f;
+            if (width > 0f && MathF.Abs(width - _createWidth) > 0.5f)
+            {
+                _createWidth = width;
+                _createSizer.Invalidate();
+            }
+            _createScrollbar?.Refresh();
+        }
         if (!_dataDirty)
             return;
         _dataDirty = false;
@@ -1165,6 +1220,9 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
                 var captured = data.Key;
                 card.Activate = () => OpenDetail(captured);
             }
+            _worldsByKey.TryGetValue(data.Key, out var openWorld);
+            card.SetCloseAction(openWorld != null && !openWorld.IsDestroyed && FindFallbackWorld(openWorld) != null
+                ? () => CloseWorld(openWorld) : null);
             card.Apply(data.Name, data.Meta, data.Mode, data.Badge, data.Highlighted, data.GroupTag);
             card.ApplyArt(data.Art);
         }
@@ -1261,9 +1319,9 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
                 string key = KeyForWorld(world);
                 // Our own hosted world publishes a thumbnail into its session metadata on a timer; that
                 // is a picture of this exact world, so the card shows it.
-                var art = OfferThumbnail(key, world.Session?.Metadata?.ThumbnailBase64);
+                var art = OfferThumbnail(key, world.PreviewThumbnailBase64);
                 _scratch.Add(new CardData(key, name, line, world.Mode,
-                    world.Name == "LocalHome" ? "Home" : null, isFocused, art, GroupSessionTags.WorldShortTag(world)));
+                    null, isFocused, art, GroupSessionTags.WorldShortTag(world)));
             }
         }
 
@@ -1281,6 +1339,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
 
             WorldMode? mode = null;
             string? base64 = null;
+            string? thumbnailUrl = null;
             string groupTag = string.Empty;
             for (int j = 0; j < group.Sessions.Count; j++)
             {
@@ -1289,10 +1348,11 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
                 if (groupTag.Length == 0)
                     groupTag = GroupSessionTags.ReadShortTag(group.Sessions[j].Tags);
                 base64 ??= group.Sessions[j].ThumbnailBase64;
+                if (string.IsNullOrEmpty(thumbnailUrl)) thumbnailUrl = group.Sessions[j].ThumbnailUrl;
             }
 
             string key = "live|" + group.Key;
-            var art = OfferThumbnail(key, base64);
+            var art = OfferThumbnail(key, base64, thumbnailUrl);
             _scratch.Add(new CardData(key, group.DisplayName, line, mode,
                 group.Sessions.Count > 1 ? group.Sessions.Count + " sessions" : null, false, art, groupTag));
         }
@@ -1380,10 +1440,12 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
 
     // THUMBNAILS
 
-    private IAssetProvider<TextureAsset>? OfferThumbnail(string key, string? base64)
+    private IAssetProvider<TextureAsset>? OfferThumbnail(string key, string? base64, string? url = null)
     {
         if (!string.IsNullOrEmpty(base64))
             _thumbnails.OfferBase64(key, base64, OnThumbnailReady);
+        else if (!string.IsNullOrEmpty(url))
+            _thumbnails.OfferUrl(key, url);
         return _thumbnails.Get(key);
     }
 
@@ -1433,6 +1495,28 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         }
     }
 
+    private void FitDetail()
+    {
+        float width = SettingsUI.Rect(_detailContent).LocalComputeRect.width;
+        if (width > LaidOutViewportFloor && MathF.Abs(width - _detailWidth) > .5f)
+        {
+            _detailWidth = width;
+            float imageWidth = MathF.Min(320f, width);
+            BrowserParts.Size(_heroFrame, imageWidth, imageWidth * 9f / 16f);
+            float infoWidth = width >= 720f ? width - imageWidth - DashTheme.GapLarge : width;
+            var size = _detailInfo.GetComponent<LayoutElement>()!;
+            size.MinWidth.Value = size.PreferredWidth.Value = infoWidth;
+            _detailSizer.Invalidate();
+        }
+        _detailScrollbar.Refresh();
+    }
+
+    private void SetDetailDescription(string? description)
+    {
+        BrowserParts.SetActive(_detailDescriptionRow, !string.IsNullOrWhiteSpace(description));
+        BrowserParts.SetText(_detailDescription, description ?? string.Empty);
+    }
+
     private void SyncLiveDetail()
     {
         string groupKey = _detailKey.Substring("live|".Length);
@@ -1449,6 +1533,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         int maxUsers = 0;
         bool anyInternet = false;
         string? base64 = null;
+        string? thumbnailUrl = null;
         if (live)
         {
             for (int i = 0; i < group!.Sessions.Count; i++)
@@ -1464,13 +1549,15 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
                 maxUsers += entry.MaxUsers;
                 anyInternet |= entry.Source == SessionSource.Internet;
                 base64 ??= entry.ThumbnailBase64;
+                if (string.IsNullOrEmpty(thumbnailUrl)) thumbnailUrl = entry.ThumbnailUrl;
             }
         }
 
         _heroArt.SetPlaceholder(mode, name);
-        _heroArt.SetTexture(OfferThumbnail(_detailKey, base64));
+        _heroArt.SetTexture(OfferThumbnail(_detailKey, base64, thumbnailUrl));
         ApplyDetailChips(mode, anyInternet ? "Internet" : "Local", live ? $"{users}/{maxUsers} users" : null);
-        BrowserParts.SetText(_detailDescription, description);
+        SetDetailDescription(description);
+        _detailPeople.Apply(null);
         BrowserParts.SetText(_detailFacts, live
             ? (hosts.Count == 0 ? "No host name announced." : "Hosted by " + string.Join(", ", hosts))
             : "This world is no longer being hosted.");
@@ -1507,14 +1594,17 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
 
         BrowserParts.SetText(_backName, BrowserParts.Truncate(name, 36));
         _heroArt.SetPlaceholder(world.Mode, name);
-        _heroArt.SetTexture(OfferThumbnail(_detailKey, world.Session?.Metadata?.ThumbnailBase64));
+        _heroArt.SetTexture(OfferThumbnail(_detailKey, world.PreviewThumbnailBase64));
 
         var access = world.Configuration?.AccessLevel.Value;
         ApplyDetailChips(world.Mode, world.IsAuthority ? "Hosting" : "Guest",
             UserCount(world.GetAllUsers().Count));
-        BrowserParts.SetText(_detailDescription, world.Session?.Metadata?.Description ?? string.Empty);
+        SetDetailDescription(world.Session?.Metadata?.Description);
+        _detailPeople.Apply(world);
 
-        var facts = new List<string>(3);
+        var facts = new List<string>(4);
+        var host = world.Session?.Metadata?.HostUsername;
+        if (!string.IsNullOrWhiteSpace(host)) facts.Add("Hosted by " + host);
         if (!running || world.IsLoading)
             facts.Add(world.LoadStateDescription.Resolve());
         if (access.HasValue)
@@ -1765,7 +1855,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         // the join is ready, and cleanly bails on failure. -xlinka
         if (loader != null)
         {
-            loader.JoinSessionAsync(name, url, focusWhenReady: true);
+            loader.JoinSessionAsync(name, entry.AllJoinUrls, focusWhenReady: true);
             _dataDirty = true;
             return;
         }
@@ -1783,19 +1873,55 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
     private void BuildCreatePage(Slot pages)
     {
         _createPage = BrowserParts.Child(pages, "Create");
-        var column = _createPage.AttachComponent<VerticalLayout>();
+        // Keep the action visible even in a short window. Only the form scrolls; its template strip
+        // scrolls sideways independently, and the options wrap to use the width available.
+        const float footerHeight = 40f;
+        var viewport = SettingsUI.Fill(_createPage, "Viewport", 0f, footerHeight + DashTheme.Gap,
+            DashScrollbar.Width + DashTheme.Gap, 0f);
+        viewport.AttachComponent<Mask>().ShowMaskGraphic.Value = false;
+        var pageScroll = viewport.AttachComponent<ScrollRect>();
+        pageScroll.ScrollSensitivity.Value = new float2(1f, 1f);
+        var form = viewport.AddSlot("Form");
+        var formRect = form.AttachComponent<RectTransform>();
+        // Top-pinned full-width strip; ScrollContentSizer writes its height from the rows, ScrollRect owns
+        // where it sits.
+        formRect.AnchorMin.Value = new float2(0f, 1f);
+        formRect.AnchorMax.Value = new float2(1f, 1f);
+        formRect.OffsetMin.Value = new float2(0f, -100f);
+        formRect.OffsetMax.Value = float2.Zero;
+        _createSizer = form.AttachComponent<ScrollContentSizer>();
+        pageScroll.Content.Target = formRect;
+        _createScrollbar = DashScrollbar.OnRightEdge(_createPage, 0f, 0f, footerHeight + DashTheme.Gap);
+        _createScrollbar.Bind(pageScroll, SettingsUI.Rect(viewport), formRect, MarkDirty);
+        var column = form.AttachComponent<VerticalLayout>();
         column.Spacing.Value = DashTheme.Gap;
+        column.PaddingRight.Value = 2f;
         column.ForceExpandWidth.Value = true;
         column.ForceExpandHeight.Value = false;
 
-        FormLabel(_createPage, "TEMPLATE");
-        var templates = _createPage.AddSlot("Templates");
-        templates.AttachComponent<RectTransform>();
-        BrowserParts.Height(templates, TemplateCardHeight);
-        var grid = templates.AttachComponent<WrapLayout>();
-        grid.Spacing.Value = DashTheme.Gap;
-        grid.LineSpacing.Value = DashTheme.Gap;
-        grid.RowAlignment.Value = LayoutAlignment.Start;
+        FormLabel(form, "TEMPLATE");
+        var strip = form.AddSlot("Templates");
+        strip.AttachComponent<RectTransform>();
+        BrowserParts.Height(strip, TemplateCardHeight);
+        strip.AttachComponent<Mask>().ShowMaskGraphic.Value = false;
+        var stripScroll = strip.AttachComponent<ScrollRect>();
+        // Picking a template is a press on its card, so a drag along the strip only slides it. The strip
+        // travels sideways, so the wheel does too.
+        stripScroll.RowsActOnRelease.Value = true;
+        stripScroll.WheelScrollsHorizontal.Value = true;
+        stripScroll.ScrollSensitivity.Value = new float2(1f, 4f);
+        var templates = strip.AddSlot("Cards");
+        var cardsRect = templates.AttachComponent<RectTransform>();
+        int templateCount = WorldTemplates.AvailableTemplates.Count;
+        cardsRect.AnchorMin.Value = new float2(0f, 0f);
+        cardsRect.AnchorMax.Value = new float2(0f, 1f);
+        cardsRect.OffsetMin.Value = float2.Zero;
+        cardsRect.OffsetMax.Value = new float2(templateCount * TemplateCardWidth + MathF.Max(0, templateCount - 1) * DashTheme.Gap, 0f);
+        var cardRow = templates.AttachComponent<HorizontalLayout>();
+        cardRow.Spacing.Value = DashTheme.Gap;
+        cardRow.ForceExpandWidth.Value = false;
+        cardRow.ForceExpandHeight.Value = true;
+        stripScroll.Content.Target = cardsRect;
         foreach (var template in WorldTemplates.AvailableTemplates)
         {
             var captured = template;
@@ -1804,8 +1930,8 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
             _templateCards[template] = card;
         }
 
-        FormLabel(_createPage, "NAME");
-        var nameRow = _createPage.AddSlot("Name");
+        FormLabel(form, "NAME");
+        var nameRow = form.AddSlot("Name");
         nameRow.AttachComponent<RectTransform>();
         nameRow.AttachComponent<GraphicChunkRoot>();
         BrowserParts.Height(nameRow, DashTheme.ControlHeight);
@@ -1818,7 +1944,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         // HOST FOR sits above the access pills and only appears at all when the caller actually has a
         // group they may host for, so a signed-out form is the form it has always been. One cycle pill:
         // the list is short and a row of them would push the options off the page.
-        _hostForRow = _createPage.AddSlot("HostFor");
+        _hostForRow = form.AddSlot("HostFor");
         _hostForRow.AttachComponent<RectTransform>();
         BrowserParts.Height(_hostForRow, FormGroupHeight);
         var hostForLayout = _hostForRow.AttachComponent<HorizontalLayout>();
@@ -1832,17 +1958,21 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
             DashTheme.TextDim, BrowserParts.Weight.Semibold, CycleHostGroup);
         BrowserParts.SetActive(_hostForRow, false);
 
-        // Mode and access share a row. Stacked with their own labels the form ran off the bottom of the
-        // body, and there is no scroller on this page.
-        var optionsRow = _createPage.AddSlot("Options");
-        optionsRow.AttachComponent<RectTransform>();
-        BrowserParts.Height(optionsRow, FormGroupHeight);
-        var optionsLayout = optionsRow.AttachComponent<HorizontalLayout>();
+        var options = form.AddSlot("Options");
+        options.AttachComponent<RectTransform>();
+        var optionsLayout = options.AttachComponent<WrapLayout>();
         optionsLayout.Spacing.Value = DashTheme.GapLarge;
-        optionsLayout.ForceExpandWidth.Value = false;
-        optionsLayout.ForceExpandHeight.Value = false;
+        optionsLayout.LineSpacing.Value = DashTheme.Gap;
+        optionsLayout.RowAlignment.Value = LayoutAlignment.Start;
 
-        var modeGroup = FormGroup(optionsRow, "MODE", GroupWidth(ModeLabels()));
+        var modeRow = options.AddSlot("Mode");
+        modeRow.AttachComponent<RectTransform>();
+        BrowserParts.Size(modeRow, GroupWidth(ModeLabels()), FormGroupHeight + DashTheme.Gap + FormLabelHeight);
+        var modeLayout = modeRow.AttachComponent<VerticalLayout>();
+        modeLayout.Spacing.Value = DashTheme.Gap;
+        modeLayout.ForceExpandWidth.Value = true;
+        modeLayout.ForceExpandHeight.Value = false;
+        var modeGroup = FormGroup(modeRow, "MODE", GroupWidth(ModeLabels()));
         foreach (WorldMode mode in Enum.GetValues<WorldMode>())
         {
             var captured = mode;
@@ -1853,7 +1983,15 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
             _modePills.Add((mode, pill));
         }
 
-        var accessGroup = FormGroup(optionsRow, "WHO CAN JOIN", "WHO CAN JOIN",
+        // The pills carry the bare mode names so the row fits a half-width window; what each one means sits
+        // under them for the one picked.
+        var hintSlot = modeRow.AddSlot("ModeHint");
+        hintSlot.AttachComponent<RectTransform>();
+        BrowserParts.Height(hintSlot, FormLabelHeight);
+        _modeHint = _parts.Label(hintSlot, ModeHint(_mode), DashTheme.FontSmall, DashTheme.TextMuted,
+            BrowserParts.Weight.Regular);
+
+        var accessGroup = FormGroup(options, "WHO CAN JOIN", "WHO CAN JOIN",
             GroupWidth(VisibilityLabels()), out _accessGroupSlot);
         foreach (SessionVisibility visibility in Enum.GetValues<SessionVisibility>())
         {
@@ -1867,7 +2005,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
 
         // A group world is on one of two tiers and nothing else: members only, or anyone. Group+ would be
         // the same world as members only until contacts exist, so it is not offered. -xlinka
-        var groupAccess = FormGroup(optionsRow, "GROUP ACCESS", "WHO CAN JOIN",
+        var groupAccess = FormGroup(options, "GROUP ACCESS", "WHO CAN JOIN",
             GroupWidth(GroupAccessLabels()), out _groupAccessSlot);
         foreach (bool membersOnly in new[] { true, false })
         {
@@ -1880,8 +2018,8 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         }
         BrowserParts.SetActive(_groupAccessSlot, false);
 
-        FormLabel(_createPage, "MAX USERS");
-        var sliderRow = _createPage.AddSlot("MaxUsers");
+        FormLabel(form, "MAX USERS");
+        var sliderRow = form.AddSlot("MaxUsers");
         sliderRow.AttachComponent<RectTransform>();
         BrowserParts.Height(sliderRow, DashTheme.ControlHeight);
         var sliderLayout = sliderRow.AttachComponent<HorizontalLayout>();
@@ -1903,8 +2041,10 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
             _maxUsers = (int)MathF.Round(v);
             BrowserParts.SetText(valueLabel, _maxUsers.ToString());
         });
-        // The builder's width style did not reach the slot it created, so it came out a stub. Size it here.
-        BrowserParts.Size(slider.Slot, 420f, DashTheme.ControlHeight);
+        var sliderElement = BrowserParts.Height(slider.Slot, DashTheme.ControlHeight);
+        sliderElement.MinWidth.Value = 120f;
+        sliderElement.PreferredWidth.Value = 420f;
+        sliderElement.FlexibleWidth.Value = 1f;
         var valueSlot = sliderRow.AddSlot("Value");
         valueSlot.AttachComponent<RectTransform>();
         BrowserParts.Size(valueSlot, 56f, DashTheme.ControlHeight);
@@ -1912,8 +2052,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
             BrowserParts.Weight.Semibold, TextHorizontalAlignment.Right);
 
         var createRow = _createPage.AddSlot("CreateRow");
-        createRow.AttachComponent<RectTransform>();
-        BrowserParts.Height(createRow, 40f);
+        BrowserParts.PinBottom(createRow.AttachComponent<RectTransform>(), 0f, footerHeight);
         var createLayout = createRow.AttachComponent<HorizontalLayout>();
         createLayout.Spacing.Value = DashTheme.GapLarge;
         createLayout.ForceExpandWidth.Value = false;
@@ -1928,6 +2067,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         BrowserParts.Height(statusSlot, 40f);
         _createStatus = _parts.Label(statusSlot, "Pick a template, name it, then create and host.",
             DashTheme.FontSmall, DashTheme.TextMuted, BrowserParts.Weight.Regular);
+        _createStatus.WordWrap.Value = true;
 
         _createPage.ActiveSelf.Value = false;
         SelectTemplate(_template);
@@ -2055,6 +2195,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
     private void SelectMode(WorldMode mode)
     {
         _mode = mode;
+        BrowserParts.SetText(_modeHint, ModeHint(mode));
         PaintModePills();
         MarkDirty();
     }
@@ -2330,6 +2471,7 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
     }
 
     public bool HasFieldFocus => _focus != FieldFocus.None;
+    public string? CopyText => _focus == FieldFocus.Query ? _query : _focus == FieldFocus.NewWorldName ? _newWorldName : null;
 
     public bool ConsumeChar(char c)
     {
@@ -2362,14 +2504,14 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         if (_focus == FieldFocus.Query)
         {
             if (_query.Length > 0)
-                _query = _query.Substring(0, _query.Length - 1);
+                _query = Lumora.Core.Input.TextElements.RemoveLast(_query);
             _gridPage = 0;
             UpdateQueryLabel();
             _dataDirty = true;
             return true;
         }
         if (_newWorldName.Length > 0)
-            _newWorldName = _newWorldName.Substring(0, _newWorldName.Length - 1);
+            _newWorldName = Lumora.Core.Input.TextElements.RemoveLast(_newWorldName);
         UpdateNewWorldNameLabel();
         MarkDirty();
         return true;
@@ -2423,8 +2565,11 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
 
     private void OnHandlePress(UIInteractionContext context)
     {
+        _scroll?.StopScrolling();
         _handlePressY = context.LocalPoint.y;
         _handlePressScroll = _scroll?.AbsolutePosition.y ?? 0f;
+        _handleTarget = _handlePressScroll;
+        _handleDragging = false;
     }
 
     private void OnHandleDrag(UIInteractionContext context)
@@ -2447,7 +2592,20 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         // explicit canvas dirty, which would re-tessellate the whole grid on every drag frame.
         float deltaY = context.LocalPoint.y - _handlePressY;
         float scrolled = _handlePressScroll - deltaY * (maxScroll / travel);
-        _scroll.AbsolutePosition = new float2(0f, System.Math.Clamp(scrolled, 0f, maxScroll));
+        _handleTarget = System.Math.Clamp(scrolled, 0f, maxScroll);
+        _handleDragging = true;
+        float shown = DashScrollbar.Follow(_scroll.AbsolutePosition.y, _handleTarget, World);
+        _scroll.AbsolutePosition = new float2(0f, System.Math.Clamp(shown, 0f, maxScroll));
+    }
+
+    // Let go, the list lands where the last drag frame put the handle, not where the release jolted it.
+    private void OnHandleRelease(UIInteractionContext context)
+    {
+        if (!_handleDragging)
+            return;
+        _handleDragging = false;
+        if (_scroll != null && !_scroll.IsDestroyed)
+            _scroll.AbsolutePosition = new float2(0f, _handleTarget);
     }
 
     private void UpdateScrollHandle()
@@ -2559,15 +2717,24 @@ public sealed class WorldsScreen : WidgetScreen, IDashboardKeyInput
         "LocalHome" => "Home Space",
         "Grid" => "Grid Space",
         "Scratch" => "Scratch Space",
+        "Shaders" => "Shader Gallery",
         _ => template,
     };
 
     private static string PrettyMode(WorldMode mode) => mode switch
     {
-        WorldMode.Builder => "Builder (full editing)",
-        WorldMode.Social => "Social (no editing)",
-        WorldMode.Event => "Event (view only)",
+        WorldMode.Builder => "Builder",
+        WorldMode.Social => "Social",
+        WorldMode.Event => "Event",
         _ => mode.ToString(),
+    };
+
+    private static string ModeHint(WorldMode mode) => mode switch
+    {
+        WorldMode.Builder => "Full editing",
+        WorldMode.Social => "No editing",
+        WorldMode.Event => "View only",
+        _ => string.Empty,
     };
 
     private readonly struct CardData

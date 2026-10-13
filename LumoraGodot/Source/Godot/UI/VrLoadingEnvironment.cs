@@ -2,8 +2,10 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
+using Lumora.Core.Components.UI;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Source.Godot.UI;
@@ -21,7 +23,7 @@ namespace Lumora.Source.Godot.UI;
 public partial class VrLoadingEnvironment : Node3D
 {
 	private const string DomeShaderPath = "res://Shaders/LoadingDome.gdshader";
-	private const string FontPath = "res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf";
+	private const string FontPath = "res://Assets/Fonts/Lato/Lato-Regular.ttf";
 
 	private const float DomeRadius = 30f;
 	private const float PanelDistance = 1.4f;
@@ -45,14 +47,17 @@ public partial class VrLoadingEnvironment : Node3D
 	private const int PrioritySweep = -85;
 	private const int PriorityLabel = -80;
 
-	private static readonly Color BackdropColor = new(0.05f, 0.04f, 0.10f, 0.94f);
-	private static readonly Color AccentColor = new(0.47f, 0.37f, 0.94f);
-	private static readonly Color BarBorderColor = new(0.227f, 0.185f, 0.421f);
-	private static readonly Color BarTrackColor = new(0.10f, 0.08f, 0.20f);
+	private static readonly Color BackdropColor = LoadingScreen.ThemeColor(DashTheme.Panel);
+	private static readonly Color AccentColor = LoadingScreen.ThemeColor(DashTheme.Accent);
+	private static readonly Color BarBorderColor = LoadingScreen.ThemeColor(DashTheme.Surface);
+	private static readonly Color BarTrackColor = LoadingScreen.ThemeColor(DashTheme.Field);
 	private static readonly Color SweepColor = new(1f, 1f, 1f, 0.28f);
-	private static readonly Color StatusColor = new(0.8f, 0.8f, 0.9f);
-	private static readonly Color DimColor = new(0.6f, 0.6f, 0.7f);
-	private static readonly Color VersionColor = new(0.5f, 0.5f, 0.62f);
+	private static readonly Color StatusColor = LoadingScreen.ThemeColor(DashTheme.Text);
+	private static readonly Color DimColor = LoadingScreen.ThemeColor(DashTheme.TextDim);
+	private static readonly Color VersionColor = LoadingScreen.ThemeColor(DashTheme.TextMuted);
+	private readonly List<(StandardMaterial3D Material, Color Color)> _fadeMaterials = new();
+	private readonly List<(Label3D Label, Color Color)> _fadeLabels = new();
+	private ShaderMaterial? _domeShaderMaterial;
 
 	private Camera3D? _camera;
 	private Viewport? _xrViewport;
@@ -72,6 +77,7 @@ public partial class VrLoadingEnvironment : Node3D
 	private bool _yawSeeded;
 	private bool _built;
 	private bool _dismissed;
+	private bool _failed;
 	private bool _visibilityLogged;
 	private double _clock;
 
@@ -90,7 +96,25 @@ public partial class VrLoadingEnvironment : Node3D
 
 	public void SetProgress(float percentage)
 	{
-		_targetProgress = Mathf.Clamp(percentage, 0f, 100f);
+		if (!_failed && float.IsFinite(percentage))
+			_targetProgress = Mathf.Max(_targetProgress, Mathf.Clamp(percentage, 0f, 100f));
+	}
+
+	public void ShowError(string message)
+	{
+		SetStatus(message);
+		_failed = true;
+		_targetProgress = _currentProgress;
+	}
+
+	public void SetOpacity(float opacity)
+	{
+		opacity = Mathf.Clamp(opacity, 0f, 1f);
+		_domeShaderMaterial?.SetShaderParameter("opacity", opacity);
+		foreach (var (material, color) in _fadeMaterials)
+			material.AlbedoColor = new Color(color, color.A * opacity);
+		foreach (var (label, color) in _fadeLabels)
+			label.Modulate = new Color(color, color.A * opacity);
 	}
 
 	// Start the bar where the 2D one already is instead of sweeping up from zero when we attach
@@ -137,7 +161,7 @@ public partial class VrLoadingEnvironment : Node3D
 		if (!_visibilityLogged || Visible != live)
 		{
 			_visibilityLogged = true;
-			LumoraLogger.Log(live
+			LumoraLogger.Debug(live
 				? "VrLoadingEnvironment: showing in headset"
 				: "VrLoadingEnvironment: hidden (XR viewport not live)");
 		}
@@ -161,6 +185,7 @@ public partial class VrLoadingEnvironment : Node3D
 		// hung process shows a frozen one; that distinction is what the person in the headset needs.
 		if (_sweep != null)
 		{
+			_sweep.Visible = !_failed && _currentProgress < 100f;
 			var t = Mathf.PingPong((float)(_clock / SweepPeriodSec), 1f);
 			t = Mathf.SmoothStep(0f, 1f, t);
 			var travel = BarWidth - SweepWidth;
@@ -228,7 +253,7 @@ public partial class VrLoadingEnvironment : Node3D
 		}
 
 		if (_percentLabel != null)
-			_percentLabel.Text = $"{Mathf.RoundToInt(percentage)}%";
+			_percentLabel.Text = $"{(percentage >= 100f ? 100 : Mathf.FloorToInt(percentage))}%";
 	}
 
 	private void Build()
@@ -240,6 +265,7 @@ public partial class VrLoadingEnvironment : Node3D
 		{
 			var shaderMaterial = new ShaderMaterial { Shader = domeShader, RenderPriority = PriorityDome };
 			shaderMaterial.SetShaderParameter("accent_color", AccentColor);
+			_domeShaderMaterial = shaderMaterial;
 			domeMaterial = shaderMaterial;
 		}
 		else
@@ -256,6 +282,7 @@ public partial class VrLoadingEnvironment : Node3D
 				AlbedoColor = new Color(0.10f, 0.08f, 0.22f),
 				RenderPriority = PriorityDome,
 			};
+			_fadeMaterials.Add(((StandardMaterial3D)domeMaterial, ((StandardMaterial3D)domeMaterial).AlbedoColor));
 		}
 
 		_dome = new MeshInstance3D
@@ -299,7 +326,7 @@ public partial class VrLoadingEnvironment : Node3D
 		var font = LoadFont();
 		var labelZ = z + 0.011f;
 
-		AddLabel(_pivot, "Title", "LUMORA", 96, AccentColor, new Vector3(0f, y + 0.10f, labelZ), font);
+		AddLabel(_pivot, "Title", "Lumora", 96, StatusColor, new Vector3(0f, y + 0.10f, labelZ), font);
 		_statusLabel = AddLabel(_pivot, "Status", _status, 56, StatusColor, new Vector3(0f, y + 0.015f, labelZ), font);
 		_statusLabel.AutowrapMode = TextServer.AutowrapMode.Word;
 		_statusLabel.Width = (PanelWidth - 0.08f) / LabelPixelSize;
@@ -309,7 +336,7 @@ public partial class VrLoadingEnvironment : Node3D
 		ApplyProgress(_currentProgress);
 	}
 
-	private static MeshInstance3D AddQuad(Node3D parent, string name, Vector2 size, Vector3 position, Color color, int priority)
+	private MeshInstance3D AddQuad(Node3D parent, string name, Vector2 size, Vector3 position, Color color, int priority)
 	{
 		var quad = new MeshInstance3D
 		{
@@ -328,10 +355,11 @@ public partial class VrLoadingEnvironment : Node3D
 			CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
 		};
 		parent.AddChild(quad);
+		_fadeMaterials.Add(((StandardMaterial3D)quad.MaterialOverride, color));
 		return quad;
 	}
 
-	private static Label3D AddLabel(Node3D parent, string name, string text, int fontSize, Color color, Vector3 position, Font? font)
+	private Label3D AddLabel(Node3D parent, string name, string text, int fontSize, Color color, Vector3 position, Font? font)
 	{
 		var label = new Label3D
 		{
@@ -351,6 +379,7 @@ public partial class VrLoadingEnvironment : Node3D
 		if (font != null)
 			label.Font = font;
 		parent.AddChild(label);
+		_fadeLabels.Add((label, color));
 		return label;
 	}
 

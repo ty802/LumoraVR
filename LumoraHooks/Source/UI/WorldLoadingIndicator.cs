@@ -8,13 +8,8 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Source.Godot.UI;
 
-/// <summary>
-/// 2D loading indicator overlay that shows when joining a world.
-/// Displays progress and allows cancellation.
-/// </summary>
 public partial class WorldLoadingIndicator : CanvasLayer
 {
-    // UI elements
     private ColorRect _backgroundOverlay = null!;
     private PanelContainer _panel = null!;
     private Label _titleLabel = null!;
@@ -37,7 +32,7 @@ public partial class WorldLoadingIndicator : CanvasLayer
         CreateUI();
         SubscribeToEvents();
 
-        LumoraLogger.Log("WorldLoadingIndicator: Initialized");
+        LumoraLogger.Debug("WorldLoadingIndicator: Initialized");
     }
 
     public override void _ExitTree()
@@ -49,13 +44,11 @@ public partial class WorldLoadingIndicator : CanvasLayer
 
     private void CreateUI()
     {
-        // Semi-transparent background
         _backgroundOverlay = new ColorRect();
         _backgroundOverlay.Color = new Color(0, 0, 0, 0.6f);
         _backgroundOverlay.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         AddChild(_backgroundOverlay);
 
-        // Center panel
         _panel = new PanelContainer();
         _panel.CustomMinimumSize = new Vector2(450, 200);
         _panel.SetAnchorsPreset(Control.LayoutPreset.Center);
@@ -73,21 +66,18 @@ public partial class WorldLoadingIndicator : CanvasLayer
         vbox.AddThemeConstantOverride("separation", 15);
         margin.AddChild(vbox);
 
-        // Title - "Joining World"
         _titleLabel = new Label();
         _titleLabel.Text = "Joining World";
         _titleLabel.HorizontalAlignment = HorizontalAlignment.Center;
         _titleLabel.AddThemeFontSizeOverride("font_size", 22);
         vbox.AddChild(_titleLabel);
 
-        // Status text
         _statusLabel = new Label();
         _statusLabel.Text = "Connecting...";
         _statusLabel.HorizontalAlignment = HorizontalAlignment.Center;
         _statusLabel.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         vbox.AddChild(_statusLabel);
 
-        // Progress bar container
         var progressHBox = new HBoxContainer();
         progressHBox.AddThemeConstantOverride("separation", 10);
         vbox.AddChild(progressHBox);
@@ -107,7 +97,6 @@ public partial class WorldLoadingIndicator : CanvasLayer
         _percentLabel.HorizontalAlignment = HorizontalAlignment.Right;
         progressHBox.AddChild(_percentLabel);
 
-        // Cancel button
         var buttonContainer = new HBoxContainer();
         buttonContainer.Alignment = BoxContainer.AlignmentMode.Center;
         vbox.AddChild(buttonContainer);
@@ -178,7 +167,7 @@ public partial class WorldLoadingIndicator : CanvasLayer
         _cancelButton.Visible = true;
         Visible = true;
 
-        LumoraLogger.Log($"WorldLoadingIndicator: Showing for '{worldName}'");
+        LumoraLogger.Debug($"WorldLoadingIndicator: Showing for '{worldName}'");
     }
 
     // --- Generic progress (e.g. model import) ---
@@ -231,7 +220,7 @@ public partial class WorldLoadingIndicator : CanvasLayer
     {
         Visible = false;
         _currentOperation = null!;
-        LumoraLogger.Log("WorldLoadingIndicator: Hidden");
+        LumoraLogger.Debug("WorldLoadingIndicator: Hidden");
     }
 
     private void ShowError(string error)
@@ -241,7 +230,6 @@ public partial class WorldLoadingIndicator : CanvasLayer
         _cancelButton.Text = "Close";
         _cancelButton.Disabled = false;
 
-        // Auto-hide after 3 seconds
         GetTree().CreateTimer(3.0).Timeout += () =>
         {
             if (Visible && _cancelButton.Text == "Close")
@@ -261,10 +249,7 @@ public partial class WorldLoadingIndicator : CanvasLayer
         HideIndicator();
     }
 
-    /// <summary>
-    /// Ensure the indicator is created and added to scene tree.
-    /// Call this during engine initialization.
-    /// </summary>
+    // Call during engine init.
     public static void EnsureCreated()
     {
         if (_instance != null)
@@ -278,7 +263,7 @@ public partial class WorldLoadingIndicator : CanvasLayer
         indicator.Name = "WorldLoadingIndicator";
         sceneTree.Root.AddChild(indicator);
 
-        LumoraLogger.Log("WorldLoadingIndicator: Created and added to scene tree");
+        LumoraLogger.Debug("WorldLoadingIndicator: Created and added to scene tree");
     }
 }
 

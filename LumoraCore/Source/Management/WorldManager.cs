@@ -48,11 +48,23 @@ public class WorldManager : IDisposable
     // later - throttling during that boot window starved the userspace/home worlds to 10Hz with no
     // physics, so the pointer rig and the user's own Root never spawned (watchdog re-fired spawn
     // forever, leaking slots until the GPU died). The userspace world is never throttled, period. -xlinka
+    // A world whose focus is being held while it settles is about to be the one in view, so it drains at
+    // full rate with its physics and late pass rather than at the background rate. -xlinka
     private bool IsThrottledBackgroundWorld(World world)
         => world.Focus == World.WorldFocus.Background
            && _focusedWorld != null && !_focusedWorld.IsDestroyed
            && !ReferenceEquals(world, _focusedWorld)
-           && !ReferenceEquals(world, _userspaceWorld);
+           && !ReferenceEquals(world, _userspaceWorld)
+           && !ReferenceEquals(world, _setWorldFocus);
+
+    // A world that has just come up keeps its first focus request waiting while it settles (World.IsSettling),
+    // so the drain of its arrival runs behind the world the user is standing in instead of in front of them.
+    // Only a world's first focus waits, only while there is another live world to wait in, and never longer
+    // than SettleTimeoutSeconds. Joins, hosted worlds and opened saves all come through here. -xlinka
+    private const double SettleTimeoutSeconds = 15.0;
+    private readonly HashSet<World> _settledWorlds = new();
+    private World _settlingWorld = null!;
+    private double _settlingFor;
 
     public IWorldManagerHook Hook { get; set; } = null!;
 
@@ -67,6 +79,9 @@ public class WorldManager : IDisposable
     // so the loading overlay reads this to say what everyone is waiting on. -xlinka
     public World PendingFocusWorld => _setWorldFocus;
 
+    // The world whose focus is held right now while it settles, if any.
+    public World SettlingWorld => _settlingWorld;
+
     // The world the user is waiting on right now, if any: a held focus request first, otherwise the
     // world they are standing in while it is still building itself. Null when nothing is loading.
     public World LoadingWorld
@@ -74,7 +89,7 @@ public class WorldManager : IDisposable
         get
         {
             var queued = _setWorldFocus;
-            if (queued != null && !queued.IsDestroyed && queued.IsLoading)
+            if (queued != null && !queued.IsDestroyed && (queued.IsLoading || ReferenceEquals(queued, _settlingWorld)))
                 return queued;
             var focused = _focusedWorld;
             if (focused != null && !focused.IsDestroyed && focused.IsLoading)
@@ -88,11 +103,14 @@ public class WorldManager : IDisposable
         get => _userspaceWorld;
         set
         {
-            _userspaceWorld = value;
+            if (value != null && !ComponentExecutionPolicy.IsUserspace(value))
+                throw new InvalidOperationException("Only engine-created private userspace can own personal controls.");
+            _userspaceWorld = value!;
             if (_userspaceWorld != null)
             {
                 // Userspace is always a private overlay
                 PrivateOverlayWorld(_userspaceWorld);
+                Components.WorldLoadIndicator.Attach(_userspaceWorld);
             }
         }
     }
@@ -106,6 +124,21 @@ public class WorldManager : IDisposable
                 return _worlds.Count;
             }
         }
+    }
+
+    // Any world still assembling itself, focused or not.
+    public bool AnyWorldLoading()
+    {
+        lock (_worldsLock)
+        {
+            for (int i = 0; i < _worlds.Count; i++)
+            {
+                var world = _worlds[i];
+                if (!world.IsDestroyed && world.IsLoading)
+                    return true;
+            }
+        }
+        return false;
     }
 
     public IReadOnlyList<World> Worlds
@@ -233,6 +266,12 @@ public class WorldManager : IDisposable
         GroupHosting? group)
     {
         WorldTemplates.ApplyTemplate(w, templateName);
+        FinishSessionSetup(w, init, mode, group);
+    }
+
+    // Everything of the setup after the template, for both the one-call build and the staged one.
+    private static void FinishSessionSetup(World w, Action<World>? init, WorldMode mode, GroupHosting? group)
+    {
         init?.Invoke(w);
         // A NEW world gets the host-picked mode; a world LOADED by init (e.g. a saved world)
         // already has its WorldSettings (with its own mode) - don't create a second one or
@@ -274,7 +313,9 @@ public class WorldManager : IDisposable
             root.AttachComponent<Components.GroupHostRoster>();
     }
 
-    // Picks a free local UDP port and hosts under the machine name. Returns the new world, or null on failure.
+    private static string LocalHostName => Engine.Current?.LocalUserName ?? Environment.MachineName;
+
+    // Picks a free local UDP port and hosts under this machine's own name. Returns the new world, or null on failure.
     //
     // A group world always registers publicly, whichever group tier it is on: the browser's Groups filter
     // is how a member finds it and the door is what keeps everybody else out. Group+ is not offered by
@@ -285,10 +326,35 @@ public class WorldManager : IDisposable
     {
         ushort port = (ushort)(SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000);
         var announced = group != null ? SessionVisibility.Public : visibility;
-        var world = StartSession(worldName, port, Environment.MachineName, templateName, announced, System.Math.Max(1, maxUsers), null!, mode, group);
+        var world = StartTemplateSession(worldName, port, LocalHostName, templateName, announced, System.Math.Max(1, maxUsers), mode, group);
         if (world != null)
             SwitchToWorld(world);
         return world!;
+    }
+
+    // A new world built from its template into the world held before it runs, a few steps a frame, the way a
+    // saved world is loaded, so hosting one never freezes the frame it was asked for in. The mode and group
+    // setup land after the last step, still before the world runs. -xlinka
+    private World StartTemplateSession(string name, ushort port, string hostUserName, string templateName,
+        SessionVisibility visibility, int maxUsers, WorldMode mode, GroupHosting? group)
+    {
+        try
+        {
+            LumoraLogger.Log($"WorldManager: Starting session '{name}' on port {port} with template '{templateName}', visibility {visibility}, max {maxUsers}, mode {mode}");
+
+            var world = World.StartSessionDeferred(_engine, name, port, hostUserName, visibility, maxUsers, () => true,
+                (w, _) => WorldTemplates.ApplyTemplateStaged(w, templateName, () => FinishSessionSetup(w, null, mode, group)));
+
+            AddWorld(world);
+
+            LumoraLogger.Log($"WorldManager: Session '{name}' created on port {port}, building its content");
+            return world;
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Error($"WorldManager: Failed to start session '{name}': {ex}");
+            return null!;
+        }
     }
 
     // Builds it into a blank world (so a template's default content isn't duplicated) and loads the save; the
@@ -301,10 +367,10 @@ public class WorldManager : IDisposable
         var name = string.IsNullOrEmpty(worldName) ? System.IO.Path.GetFileNameWithoutExtension(path) : worldName;
         ushort port = (ushort)(SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000);
         // Read + decompress + parse on a task, integrate on the world thread once it lands.
-        var world = StartSessionDeferred(name, port, Environment.MachineName, "", SessionVisibility.Private,
+        var world = StartSessionDeferred(name, port, LocalHostName, "", SessionVisibility.Private,
             16,
             () => Persistence.WorldStorage.ReadTree(path),
-            (w, tree) => Persistence.WorldStorage.IntegrateTree(w, tree, path));
+            (w, tree) => Persistence.WorldStorage.IntegrateTreeStaged(w, tree, path));
         if (world != null)
             SwitchToWorld(world);
         return world!;
@@ -380,8 +446,7 @@ public class WorldManager : IDisposable
             }
         }
 
-        // Every world gets its own load readout; it stays hidden until there is something to say.
-        Components.WorldLoadIndicator.Attach(world);
+        GcPacer.WorldArriving();
 
         try
         {
@@ -399,7 +464,7 @@ public class WorldManager : IDisposable
 
         if (_focusedWorld == disconnectedWorld)
         {
-            LumoraLogger.Log("WorldManager: Disconnected world was focused, switching to fallback");
+            LumoraLogger.Debug("WorldManager: Disconnected world was focused, switching to fallback");
 
             World fallbackWorld = null!;
             lock (_worldsLock)
@@ -418,7 +483,7 @@ public class WorldManager : IDisposable
 
             if (fallbackWorld != null)
             {
-                LumoraLogger.Log($"WorldManager: Switching focus to fallback world '{fallbackWorld.WorldName.Value}'");
+                LumoraLogger.Debug($"WorldManager: Switching focus to fallback world '{fallbackWorld.WorldName.Value}'");
                 FocusWorld(fallbackWorld);
             }
             else
@@ -441,7 +506,7 @@ public class WorldManager : IDisposable
             if (!_destroyWorlds.Contains(world))
             {
                 _destroyWorlds.Add(world);
-                LumoraLogger.Log($"WorldManager: Queued world '{world.WorldName.Value}' for destruction");
+                LumoraLogger.Debug($"WorldManager: Queued world '{world.WorldName.Value}' for destruction");
             }
         }
     }
@@ -487,7 +552,7 @@ public class WorldManager : IDisposable
         // Add to managed worlds so it gets a WorldHook
         AddWorld(world);
 
-        LumoraLogger.Log($"WorldManager: Set world '{world.WorldName.Value}' as private overlay");
+        LumoraLogger.Debug($"WorldManager: Set world '{world.WorldName.Value}' as private overlay");
     }
 
     public void SwitchToWorld(World world)
@@ -502,6 +567,9 @@ public class WorldManager : IDisposable
             _worlds.Remove(world);
         }
         _backgroundUpdateAccum.Remove(world); // don't keep a dead world alive via the throttle accumulator
+        _settledWorlds.Remove(world);
+        if (ReferenceEquals(_settlingWorld, world))
+            _settlingWorld = null!;
 
         try
         {
@@ -522,7 +590,7 @@ public class WorldManager : IDisposable
         // focus request queued when it was created lands on a running world in the same frame.
         PumpPendingSessionStarts();
 
-        ProcessFocusChange();
+        ProcessFocusChange(delta);
 
         ProcessDestructions();
 
@@ -566,7 +634,16 @@ public class WorldManager : IDisposable
         LateUpdateWorlds(delta);
     }
 
-    private void ProcessFocusChange()
+    // Drops a held focus request for this world, if that is the one waiting. A cancelled join uses it.
+    public void CancelFocus(World world)
+    {
+        if (world != null && ReferenceEquals(_setWorldFocus, world))
+            _setWorldFocus = null!;
+        if (world != null && ReferenceEquals(_settlingWorld, world))
+            _settlingWorld = null!;
+    }
+
+    private void ProcessFocusChange(double delta)
     {
         World targetWorld = _setWorldFocus;
         _setWorldFocus = null!;
@@ -587,6 +664,14 @@ public class WorldManager : IDisposable
             return;
         }
 
+        if (targetWorld != null && targetWorld != _focusedWorld && HoldForSettle(targetWorld, delta))
+        {
+            _setWorldFocus = targetWorld;
+            return;
+        }
+        if (!ReferenceEquals(targetWorld, _settlingWorld))
+            _settlingWorld = null!;
+
         if (targetWorld != null && targetWorld != _focusedWorld)
         {
             if (_focusedWorld != null && !_focusedWorld.IsDestroyed)
@@ -598,13 +683,21 @@ public class WorldManager : IDisposable
                     _focusedWorld.RunSynchronously(() =>
                     {
                         user.IsPresent.Value = false;
+                        // Background worlds tick less often. Cancel a pending locomotion gesture
+                        // now, even when focus returns before the next background update.
+                        user.Root?.Slot?.GetComponent<Components.LocomotionController>()?.SuspendInput();
                     });
                 }
-                LumoraLogger.Log($"WorldManager: Unfocused world '{_focusedWorld.WorldName.Value}'");
+                LumoraLogger.Debug($"WorldManager: Unfocused world '{_focusedWorld.WorldName.Value}'");
             }
 
             _focusedWorld = targetWorld;
             _focusedWorld.Focus = World.WorldFocus.Focused;
+            // Point the tracking space at the new world now. The frame's input pass synced it to the world
+            // that was focused then, and this world's queued device positioners run in its update below:
+            // without this they place head and hands through the old world's root for one frame, and the
+            // character capsule follows them there. -xlinka
+            _engine?.InputInterface?.SyncTrackingSpaceToFocusedLocalUser();
             if (_focusedWorld.LocalUser != null)
             {
                 var user = _focusedWorld.LocalUser;
@@ -628,8 +721,39 @@ public class WorldManager : IDisposable
                 LumoraLogger.Error($"WorldManager: Error in WorldFocused event: {ex.Message}");
             }
 
-            LumoraLogger.Log($"WorldManager: Focused world '{_focusedWorld.WorldName.Value}'");
+            LumoraLogger.Debug($"WorldManager: Focused world '{_focusedWorld.WorldName.Value}'");
         }
+    }
+
+    private bool HoldForSettle(World world, double delta)
+    {
+        if (_settledWorlds.Contains(world))
+            return false;
+
+        if (!ReferenceEquals(_settlingWorld, world))
+        {
+            _settlingWorld = world;
+            _settlingFor = 0.0;
+        }
+        else
+        {
+            _settlingFor += delta;
+        }
+
+        bool canWait = world.State == World.WorldState.Running && !world.IsDestroyed
+                       && _focusedWorld != null && !_focusedWorld.IsDestroyed;
+        bool settling = canWait && world.IsSettling;
+        if (settling && _settlingFor < SettleTimeoutSeconds)
+            return true;
+
+        if (settling)
+            LumoraLogger.Warn($"WorldManager: '{world.WorldName.Value}' still settling after {SettleTimeoutSeconds:0} s ({world.DescribeSettle()}), focusing it anyway");
+        else if (_settlingFor > 0.0)
+            LumoraLogger.Log($"WorldManager: '{world.WorldName.Value}' settled in {_settlingFor:0.00} s");
+
+        _settledWorlds.Add(world);
+        _settlingWorld = null!;
+        return false;
     }
 
     private void ProcessDestructions()

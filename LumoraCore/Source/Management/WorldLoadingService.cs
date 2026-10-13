@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using Lumora.Core;
 using Lumora.Core.Components;
@@ -9,13 +10,12 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Management;
 
-/// <summary>
-/// Represents a world loading operation with progress tracking.
-/// </summary>
 public class WorldLoadingOperation
 {
     public string WorldName { get; set; } = null!;
     public Uri Address { get; set; } = null!;
+    // Every address the session can be reached at; Address is the first, kept for display.
+    public IReadOnlyList<Uri> Addresses { get; set; } = Array.Empty<Uri>();
     public World World { get; internal set; } = null!;
     public WorldLoadingPhase Phase { get; internal set; }
     public float Progress { get; internal set; }
@@ -27,9 +27,7 @@ public class WorldLoadingOperation
 
     internal TaskCompletionSource<World> CompletionSource { get; } = new();
 
-    /// <summary>
-    /// Task that completes when loading finishes. Returns the loaded World or null if failed/cancelled.
-    /// </summary>
+    // Resolves to null on failure or cancel.
     public Task<World> Task => CompletionSource.Task;
 
     public void Cancel()
@@ -39,9 +37,6 @@ public class WorldLoadingOperation
     }
 }
 
-/// <summary>
-/// Phases of world loading for progress indication.
-/// </summary>
 public enum WorldLoadingPhase
 {
     Connecting,           // 0-20%
@@ -51,44 +46,22 @@ public enum WorldLoadingPhase
     Ready                 // 100%
 }
 
-/// <summary>
-/// Service for loading worlds in the background with progress tracking.
-/// User stays in current world while new world loads.
-/// </summary>
+// The user stays in the current world while the new one loads.
 public class WorldLoadingService
 {
     private readonly Engine _engine;
     private WorldLoadingOperation _currentOperation = null!;
-    private SessionJoinIndicator _currentIndicator = null!;
 
-    /// <summary>
-    /// Fired when world loading progress updates.
-    /// </summary>
     public event Action<WorldLoadingOperation> OnLoadingProgress = null!;
 
-    /// <summary>
-    /// Fired when world loading starts.
-    /// </summary>
     public event Action<WorldLoadingOperation> OnLoadingStarted = null!;
 
-    /// <summary>
-    /// Fired when world loading completes successfully.
-    /// </summary>
     public event Action<WorldLoadingOperation> OnLoadingComplete = null!;
 
-    /// <summary>
-    /// Fired when world loading fails.
-    /// </summary>
     public event Action<WorldLoadingOperation> OnLoadingFailed = null!;
 
-    /// <summary>
-    /// Currently active loading operation, or null if none.
-    /// </summary>
     public WorldLoadingOperation CurrentOperation => _currentOperation;
 
-    /// <summary>
-    /// Whether a world is currently loading.
-    /// </summary>
     public bool IsLoading => _currentOperation != null && !_currentOperation.IsComplete && !_currentOperation.IsFailed;
 
     public WorldLoadingService(Engine engine)
@@ -96,15 +69,7 @@ public class WorldLoadingService
         _engine = engine;
     }
 
-    /// <summary>
-    /// Join a session with background loading and progress tracking.
-    /// User stays in current world until the new world is ready.
-    /// </summary>
-    /// <param name="name">World name</param>
-    /// <param name="address">Server address</param>
-    /// <param name="port">Server port</param>
-    /// <param name="focusWhenReady">If true, automatically focus the world when ready</param>
-    /// <returns>Loading operation for tracking progress, or null if already loading</returns>
+    // Null when a load is already running.
     public WorldLoadingOperation JoinSessionAsync(string name, string address, ushort port, bool focusWhenReady = true)
     {
         if (IsLoading)
@@ -117,21 +82,29 @@ public class WorldLoadingService
         return JoinSessionAsync(name, uri, focusWhenReady);
     }
 
-    /// <summary>
-    /// Join a session with background loading and progress tracking.
-    /// </summary>
     public WorldLoadingOperation JoinSessionAsync(string name, Uri uri, bool focusWhenReady = true)
+        => JoinSessionAsync(name, new[] { uri }, focusWhenReady);
+
+    // Every address a session advertised: the join tries them nearest first and falls through on failure,
+    // which is how a joiner outside the host's network ends up on Steam.
+    public WorldLoadingOperation JoinSessionAsync(string name, IReadOnlyList<Uri> uris, bool focusWhenReady = true)
     {
         if (IsLoading)
         {
             LumoraLogger.Warn("WorldLoadingService: Already loading a world");
             return null!;
         }
+        if (uris == null || uris.Count == 0)
+        {
+            LumoraLogger.Warn("WorldLoadingService: no address to join");
+            return null!;
+        }
 
         var operation = new WorldLoadingOperation
         {
             WorldName = name,
-            Address = uri,
+            Address = uris[0],
+            Addresses = uris,
             Phase = WorldLoadingPhase.Connecting,
             Progress = 0f,
             StatusMessage = "Connecting..."
@@ -139,10 +112,8 @@ public class WorldLoadingService
 
         _currentOperation = operation;
 
-        // Fire started event
         OnLoadingStarted?.Invoke(operation);
 
-        // Start loading in background
         _ = LoadWorldAsync(operation, focusWhenReady);
 
         return operation;
@@ -154,10 +125,9 @@ public class WorldLoadingService
         {
             LumoraLogger.Log($"WorldLoadingService: Starting load for '{operation.WorldName}' at {operation.Address}");
 
-            // Connecting (0-20%)
             UpdateProgress(operation, WorldLoadingPhase.Connecting, 0.05f, "Connecting to server...");
 
-            // Create world in background (not added to WorldManager yet)
+            // Not in the world manager until it is running.
             var world = new World();
             world.WorldName.Value = operation.WorldName;
             world.SessionID.Value = "Unknown"; // Will be set by server
@@ -165,24 +135,13 @@ public class WorldLoadingService
             world.LocalID = -1; // Will be assigned by server
             operation.World = world;
 
-            // Initialize world as client
             world.Initialize(isAuthority: false);
             UpdateProgress(operation, WorldLoadingPhase.Connecting, 0.15f, "Initializing world...");
 
-            // Create the 3D loading indicator NOW that the target world exists, so it's handed a non-null
-            // TargetWorld at creation time. Creating it earlier raced: the deferred attach hadn't run yet when
-            // we set the target, so the indicator woke with a null TargetWorld and instantly self-destructed. -xlinka
-            CreateSessionJoinIndicator(operation);
-
-            // Subscribe to state changes for progress tracking
             world.OnStateChanged += (oldState, newState) => OnWorldStateChanged(operation, oldState, newState);
 
-            // Update indicator with target world (session sync will be updated after connect)
-            UpdateIndicatorTarget(operation);
-
-            // Connect to server
             UpdateProgress(operation, WorldLoadingPhase.Connecting, 0.18f, "Establishing connection...");
-            var connected = await world.JoinSessionAsync(operation.Address);
+            var connected = await world.JoinSessionAsync(operation.Addresses);
 
             if (operation.IsCancelled)
             {
@@ -197,13 +156,8 @@ public class WorldLoadingService
                 return;
             }
 
-            // Update indicator with session sync now that connection is established
-            UpdateIndicatorTarget(operation);
-
-            // Waiting for JoinGrant (20-40%)
             UpdateProgress(operation, WorldLoadingPhase.WaitingForJoinGrant, 0.25f, "Requesting access...");
 
-            // Wait for world to finish loading (transitions through states)
             var timeout = TimeSpan.FromSeconds(60);
             var startTime = DateTime.UtcNow;
 
@@ -235,25 +189,37 @@ public class WorldLoadingService
                 return;
             }
 
-            // Ready (100%)
-            UpdateProgress(operation, WorldLoadingPhase.Ready, 1.0f, "Ready!");
-            operation.IsComplete = true;
-
             LumoraLogger.Log($"WorldLoadingService: World '{operation.WorldName}' loaded successfully");
 
-            // Destroy the 3D indicator
-            DestroySessionJoinIndicator();
-
-            // Add to WorldManager
             _engine.WorldManager?.AddWorld(world);
 
-            // Focus if requested
+            // Focus if requested. The world manager holds that request while the world settles; the join
+            // stays on screen, saying what it is waiting on, until the world is the one in view.
             if (focusWhenReady)
             {
                 _engine.WorldManager?.FocusWorld(world);
+                await WaitForFocusAsync(operation, world);
+                if (operation.IsCancelled)
+                {
+                    _engine.WorldManager?.CancelFocus(world);
+                    _engine.WorldManager?.DestroyWorld(world);
+                    return;
+                }
+                // Lost while its focus was held (disconnected, closed by the host): a failed join, not a Ready
+                // one, and its focus request must not land on what is left of it.
+                if (_engine.WorldManager?.FocusedWorld != world && (world.IsDestroyed || world.State != World.WorldState.Running))
+                {
+                    _engine.WorldManager?.CancelFocus(world);
+                    if (!world.IsDestroyed)
+                        _engine.WorldManager?.DestroyWorld(world);
+                    FailOperation(operation, "The world closed before it was ready");
+                    return;
+                }
             }
 
-            // Fire complete event
+            UpdateProgress(operation, WorldLoadingPhase.Ready, 1.0f, "Ready!");
+            operation.IsComplete = true;
+
             OnLoadingComplete?.Invoke(operation);
             operation.CompletionSource.TrySetResult(world);
         }
@@ -269,6 +235,28 @@ public class WorldLoadingService
             {
                 _currentOperation = null!;
             }
+        }
+    }
+
+    // Until the world is focused, the request goes to another world, or the world goes away. The world
+    // manager gives up holding after its own timeout, so the safety stop here is only for a manager
+    // that never processes the request at all.
+    private async Task WaitForFocusAsync(WorldLoadingOperation operation, World world)
+    {
+        var startTime = DateTime.UtcNow;
+        var safety = TimeSpan.FromSeconds(30);
+        while (!operation.IsCancelled && !world.IsDestroyed && world.State == World.WorldState.Running)
+        {
+            var manager = _engine.WorldManager;
+            if (manager == null || manager.FocusedWorld == world || manager.PendingFocusWorld != world)
+                return;
+            if (DateTime.UtcNow - startTime > safety)
+                return;
+
+            var waiting = world.DescribeSettle();
+            UpdateProgress(operation, WorldLoadingPhase.InitializingWorld, 0.97f,
+                string.IsNullOrEmpty(waiting) ? "Finishing up..." : $"Finishing up: {waiting}");
+            await Task.Delay(100);
         }
     }
 
@@ -316,98 +304,13 @@ public class WorldLoadingService
 
         LumoraLogger.Error($"WorldLoadingService: {error}");
 
-        // Destroy the 3D indicator
-        DestroySessionJoinIndicator();
-
         OnLoadingFailed?.Invoke(operation);
         operation.CompletionSource.TrySetResult(null!);
     }
 
-    /// <summary>
-    /// Cancel current loading operation.
-    /// </summary>
     public void CancelCurrentOperation()
     {
         _currentOperation?.Cancel();
-        DestroySessionJoinIndicator();
     }
 
-    /// <summary>
-    /// Create a 3D SessionJoinIndicator in the userspace world.
-    /// </summary>
-    private void CreateSessionJoinIndicator(WorldLoadingOperation operation)
-    {
-        // Clean up any existing indicator
-        DestroySessionJoinIndicator();
-
-        // Get the userspace world
-        var userspaceWorld = _engine?.WorldManager?.UserspaceWorld;
-        if (userspaceWorld == null)
-        {
-            LumoraLogger.Warn("WorldLoadingService: No userspace world available for 3D indicator");
-            return;
-        }
-
-        // Create indicator in userspace world
-        userspaceWorld.RunSynchronously(() =>
-        {
-            try
-            {
-                var indicatorSlot = userspaceWorld.AddSlot("SessionJoinIndicator");
-                var indicator = indicatorSlot.AttachComponent<SessionJoinIndicator>();
-
-                // Wire the target IN THE SAME callback, before the indicator's first update tick, so it never
-                // sees a null TargetWorld and destroys itself. SessionSync is null until the connection is up;
-                // the indicator picks it up lazily from TargetWorld.Session. -xlinka
-                indicator.TargetWorld = operation.World!;
-                indicator.SessionSync = operation.World?.Session?.Sync!;
-                _currentIndicator = indicator;
-
-                LumoraLogger.Log($"WorldLoadingService: Created 3D loading indicator in userspace for '{operation.WorldName}'");
-            }
-            catch (Exception ex)
-            {
-                LumoraLogger.Error($"WorldLoadingService: Failed to create 3D indicator: {ex.Message}");
-            }
-        });
-    }
-
-    /// <summary>
-    /// Update the indicator with target world and session sync after world is created.
-    /// </summary>
-    private void UpdateIndicatorTarget(WorldLoadingOperation operation)
-    {
-        if (_currentIndicator == null || operation?.World == null)
-            return;
-
-        _currentIndicator.TargetWorld = operation.World;
-        _currentIndicator.SessionSync = operation.World.Session?.Sync!;
-    }
-
-    /// <summary>
-    /// Destroy the current 3D SessionJoinIndicator.
-    /// </summary>
-    private void DestroySessionJoinIndicator()
-    {
-        if (_currentIndicator == null)
-            return;
-
-        try
-        {
-            var indicator = _currentIndicator;
-            _currentIndicator = null!;
-
-            // Destroy on the userspace world's thread
-            indicator.World?.RunSynchronously(() =>
-            {
-                indicator.Slot?.Destroy();
-            });
-
-            LumoraLogger.Log("WorldLoadingService: Destroyed 3D loading indicator");
-        }
-        catch (Exception ex)
-        {
-            LumoraLogger.Error($"WorldLoadingService: Error destroying indicator: {ex.Message}");
-        }
-    }
 }

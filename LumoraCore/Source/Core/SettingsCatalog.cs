@@ -62,6 +62,8 @@ public static class SettingsCatalog
 {
     public static readonly SettingRange MouseSensitivity = new(0.05f, 10f, 0.01f);
     public static readonly SettingRange MouseSmoothing = new(0f, 0.95f, 0.01f);
+    public static readonly SettingRange LaserSmoothing = new(0f, 1f, 0.05f);
+    public static readonly SettingRange HapticsStrength = new(0f, 1f, 0.05f);
     public static readonly SettingRange NoclipSpeed = new(1f, 30f, 0.5f);
     public static readonly SettingRange UserHeight = new(0.5f, 2.5f, 0.01f);
     // One shape for every volume: a normalized gain in 5% steps. Finer than that is a step nobody can
@@ -91,10 +93,20 @@ public static class SettingsCatalog
     public static readonly SettingRange NoiseGateHold = new(0f, 0.2f, 0.002f);
     public static readonly SettingRange NoiseGateRelease = new(0f, 0.2f, 0.002f);
     public static readonly SettingRange NormalizationThreshold = new(0.01f, 0.2f, 0.002f);
+    // The leveller's target as voiced speech RMS in dBFS, and the microphone gain ahead of it in dB.
+    // The gain spans the same -12..+24 the leveller itself does.
+    public static readonly SettingRange VoiceTargetLevel = new(-30f, -12f, 0.5f);
+    public static readonly SettingRange MicrophoneGain = new(-12f, 24f, 0.5f);
     public static readonly SettingRange RenderScale = new(0.5f, 2f, 0.05f);
+    public static readonly SettingRange FieldOfView = new(10f, 120f, 1f);
     public static readonly SettingRange Upscaler = new(0f, 2f);
     public static readonly SettingRange LodBias = new(0.25f, 4f, 0.05f);
     public static readonly SettingRange ShadowDistanceScale = new(0.25f, 4f, 0.05f);
+    // Point and spot lights casting at once, desktop and headset alike. Sixteen is already past the
+    // renderer's own cap of 64 shadow passes a frame, which is about ten point lights.
+    public static readonly SettingRange ShadowedLights = new(0f, 16f, 1f);
+    // Updates a second for a moving thing's shadow; 0 is every frame, otherwise at least 5.
+    public static readonly SettingRange MovingShadowRate = new(0f, 60f, 5f, 5f);
     public static readonly SettingRange Exposure = new(1f, 16f, 0.5f);
     public static readonly SettingRange Bloom = new(0f, 2f, 0.05f);
     // Off at 0. The renderer takes the strength on a wider scale; the applier maps it.
@@ -104,6 +116,7 @@ public static class SettingsCatalog
     public static readonly SettingRange Contrast = new(0.5f, 1.5f, 0.05f);
     public static readonly SettingRange Saturation = new(0f, 2f, 0.05f);
     public static readonly SettingRange SnapTurnAngle = new(10f, 90f, 5f);
+    public static readonly SettingRange PhotoTimerSeconds = new(2f, 30f, 1f);
     public static readonly SettingRange SmoothTurnSpeed = new(30f, 360f, 5f);
     public static readonly SettingRange ReticleSize = new(2f, 48f, 1f);
     // Off at 0, otherwise floored. Max is what the ENGINE accepts, which is what the slider must offer.
@@ -113,8 +126,18 @@ public static class SettingsCatalog
 
     public static readonly SettingRange ReticleThickness = new(1f, 8f, 0.5f);
 
+    // Seconds the pointer rests on something before its tooltip shows.
+    public static readonly SettingRange TooltipDelay = new(0.2f, 2f, 0.1f);
+
     // The tallest format the video service resolver is allowed to ask for. A 4k link decodes at four
     // times the cost of 1080p and a wall panel is not four times bigger, so this is a real lever rather
     // than a quality preference.
     public static readonly SettingRange VideoMaxHeight = new(360f, 2160f, 120f);
+
+    // Gigabytes of disk for downloaded and received assets. The floor still holds a busy world's worth; the
+    // ceiling is far past anything a session pulls down.
+    public static readonly SettingRange AssetCacheGigabytes = new(1f, 200f, 1f);
+
+    // How bright the desktop page draws the screen. Floored so the picture can never be dimmed away.
+    public static readonly SettingRange DesktopBrightness = new(0.2f, 1f, 0.05f);
 }

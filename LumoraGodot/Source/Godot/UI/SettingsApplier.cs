@@ -4,6 +4,7 @@
 using Godot;
 using Lumora.Core;
 using Lumora.Source.Godot.Bootstrap;
+using Lumora.Source.Godot.Rendering;
 
 namespace Lumora.Source.UI;
 
@@ -18,6 +19,9 @@ public partial class SettingsApplier : Node
 		EngineSettings.Load();
 		EngineSettings.Changed += Apply;
 		XRModeManager.ModeChanged += OnXrModeChanged;
+		// Turning or unfolding a phone hands the window a different panel.
+		if (AndroidDeviceMode.IsPhone)
+			GetTree().Root.SizeChanged += ApplyHandheldResolution;
 		Apply();
 	}
 
@@ -25,6 +29,8 @@ public partial class SettingsApplier : Node
 	{
 		EngineSettings.Changed -= Apply;
 		XRModeManager.ModeChanged -= OnXrModeChanged;
+		if (AndroidDeviceMode.IsPhone && GetTree()?.Root is { } root)
+			root.SizeChanged -= ApplyHandheldResolution;
 		base._ExitTree();
 	}
 
@@ -66,6 +72,12 @@ public partial class SettingsApplier : Node
 		LaunchArgs.HasFlag(LaunchArgs.DebugFlag) || LaunchArgs.ReadValue(FrameTimeLog.PathFlag) != null;
 	private bool _backgroundThrottled;
 
+	// A frame-log run measures the frame, so it draws with vsync off and no frame cap: a vsynced log is a
+	// log of the refresh interval and a capped one of the limiter. --Lumora-VSync still picks the swap
+	// for a run that wants to measure exactly that. -xlinka
+	private static readonly bool FrameLogRun = LaunchArgs.ReadValue(FrameTimeLog.PathFlag) != null;
+	private bool _frameLogRunNoted;
+
 	// VSYNC
 	//
 	// EngineSettings.VSync is the user's on/off. How the swap waits when it is on is a second choice,
@@ -99,7 +111,7 @@ public partial class SettingsApplier : Node
 			_appliedMaxFps = EngineSettings.MaxFps;
 			_appliedBackgroundFps = EngineSettings.BackgroundFps;
 			ApplyEffectiveFps();
-			Lumora.Core.Logging.Logger.Log($"Settings: fps limit -> {(EngineSettings.MaxFps == 0 ? "off" : EngineSettings.MaxFps.ToString())} (background {(EngineSettings.BackgroundFps == 0 ? "off" : EngineSettings.BackgroundFps.ToString())})");
+			Lumora.Core.Logging.Logger.Debug($"Settings: fps limit -> {(EngineSettings.MaxFps == 0 ? "off" : EngineSettings.MaxFps.ToString())} (background {(EngineSettings.BackgroundFps == 0 ? "off" : EngineSettings.BackgroundFps.ToString())})");
 		}
 
 		if (_appliedFullscreen != EngineSettings.Fullscreen)
@@ -116,7 +128,7 @@ public partial class SettingsApplier : Node
 		{
 			_appliedResolutionHeight = EngineSettings.ResolutionHeight;
 			ApplyResolution();
-			Lumora.Core.Logging.Logger.Log($"Settings: resolution -> {EngineSettings.DescribeResolutionHeight(EngineSettings.ResolutionHeight)}");
+			Lumora.Core.Logging.Logger.Debug($"Settings: resolution -> {EngineSettings.DescribeResolutionHeight(EngineSettings.ResolutionHeight)}");
 		}
 
 		if (_appliedRenderScale != EngineSettings.RenderScale)
@@ -130,14 +142,14 @@ public partial class SettingsApplier : Node
 			_appliedDynamicResolution = EngineSettings.DynamicResolution;
 			// Back to exactly what the user asked for the moment it is switched off.
 			ApplyRenderScaleCeiling();
-			Lumora.Core.Logging.Logger.Log($"Settings: dynamic resolution -> {(EngineSettings.DynamicResolution ? "on" : "off")}");
+			Lumora.Core.Logging.Logger.Debug($"Settings: dynamic resolution -> {(EngineSettings.DynamicResolution ? "on" : "off")}");
 		}
 
 		if (_appliedUpscaler != EngineSettings.Upscaler)
 		{
 			_appliedUpscaler = EngineSettings.Upscaler;
 			ApplyUpscaler();
-			Lumora.Core.Logging.Logger.Log($"Settings: upscaler -> {EngineSettings.DescribeUpscaler(EngineSettings.Upscaler)}");
+			Lumora.Core.Logging.Logger.Debug($"Settings: upscaler -> {EngineSettings.DescribeUpscaler(EngineSettings.Upscaler)}");
 		}
 
 		// The whole post stack lives on the same Environment, so one changed value rewrites the set
@@ -166,12 +178,18 @@ public partial class SettingsApplier : Node
 			}
 			_appliedPost = post;
 			Lumora.Godot.Hooks.SkyEnvironment.ApplyPostSettings(in post, this);
-			Lumora.Core.Logging.Logger.Log(
-				$"Settings: post -> {EngineSettings.DescribeTonemap(post.Tonemap)} "
+			string rendering = Lumora.Godot.Hooks.SkyEnvironment.DescribeRendering(this);
+			string postLine = $"Settings: post -> {EngineSettings.DescribeTonemap(post.Tonemap)} "
 				+ $"(white {post.WhitePoint:0.#}, bloom {post.Bloom:0.##}, ao {post.AmbientOcclusion:0.##}, "
 				+ $"ssil {(post.ScreenSpaceIndirectLighting ? "on" : "off")}, ssr {(post.ScreenSpaceReflections ? "on" : "off")}, "
 				+ $"contrast {post.Contrast:0.00}, saturation {post.Saturation:0.00}); "
-				+ Lumora.Godot.Hooks.SkyEnvironment.DescribeRendering(this));
+				+ rendering;
+			// Every slider tick lands here. The line earns the log only when what renders is not the
+			// environment the settings went into. -xlinka
+			if (rendering.Contains("DIFFERS", System.StringComparison.Ordinal))
+				Lumora.Core.Logging.Logger.Log(postLine);
+			else
+				Lumora.Core.Logging.Logger.Debug(postLine);
 		}
 
 		if (_appliedAntiAliasing != EngineSettings.AntiAliasing)
@@ -180,15 +198,9 @@ public partial class SettingsApplier : Node
 			var viewport = GetViewport();
 			if (viewport != null && !viewport.UseXR && !HeadsetOwnsFrameTiming())
 			{
-				viewport.Msaa3D = EngineSettings.AntiAliasing switch
-				{
-					>= 8 => Viewport.Msaa.Msaa8X,
-					>= 4 => Viewport.Msaa.Msaa4X,
-					>= 2 => Viewport.Msaa.Msaa2X,
-					_ => Viewport.Msaa.Disabled,
-				};
+                ViewportQuality.ApplyAntiAliasing(viewport, EngineSettings.AntiAliasing);
 			}
-			Lumora.Core.Logging.Logger.Log($"Settings: desktop anti-aliasing -> {EngineSettings.DescribeAntiAliasing(EngineSettings.AntiAliasing)}"
+			Lumora.Core.Logging.Logger.Debug($"Settings: desktop anti-aliasing -> {EngineSettings.DescribeAntiAliasing(EngineSettings.AntiAliasing)}"
 				+ (HeadsetOwnsFrameTiming() ? " (VR quality profile remains active)" : string.Empty));
 		}
 
@@ -208,14 +220,14 @@ public partial class SettingsApplier : Node
 			};
 			RenderingServer.PositionalSoftShadowFilterSetQuality(quality);
 			RenderingServer.DirectionalSoftShadowFilterSetQuality(quality);
-			Lumora.Core.Logging.Logger.Log($"Settings: shadow quality -> {(OS.HasFeature("android") ? "Hard (standalone)" : EngineSettings.DescribeShadowQuality(EngineSettings.ShadowQuality))}");
+			Lumora.Core.Logging.Logger.Debug($"Settings: shadow quality -> {(OS.HasFeature("android") ? "Hard (standalone)" : EngineSettings.DescribeShadowQuality(EngineSettings.ShadowQuality))}");
 		}
 
 		if (_appliedMeshLodThreshold != EngineSettings.MeshLodThreshold)
 		{
 			_appliedMeshLodThreshold = EngineSettings.MeshLodThreshold;
 			ApplyMeshLodThreshold(GetTree()?.Root, EngineSettings.MeshLodThreshold);
-			Lumora.Core.Logging.Logger.Log($"Settings: mesh LOD threshold -> {EngineSettings.DescribeMeshLodThreshold(EngineSettings.MeshLodThreshold)}");
+			Lumora.Core.Logging.Logger.Debug($"Settings: mesh LOD threshold -> {EngineSettings.DescribeMeshLodThreshold(EngineSettings.MeshLodThreshold)}");
 		}
 
 		// Master volume is the mixer's own gain now (AudioSystem folds it into the device output every
@@ -275,6 +287,7 @@ public partial class SettingsApplier : Node
 			return DisplayServer.VSyncMode.Disabled;
 
 		string choice = VSyncOverride
+			?? (FrameLogRun ? "off" : null)
 			?? (EngineSettings.VSync ? Settings.ReadValue<string>(VSyncModeKey, "fifo") : "off");
 
 		return (choice ?? "fifo").Trim().ToLowerInvariant() switch
@@ -299,7 +312,7 @@ public partial class SettingsApplier : Node
 		if (DisplayServer.WindowGetVsyncMode() != mode)
 			DisplayServer.WindowSetVsyncMode(mode);
 
-		Lumora.Core.Logging.Logger.Log($"Settings: vsync -> {DescribeVSync(mode)}"
+		Lumora.Core.Logging.Logger.Debug($"Settings: vsync -> {DescribeVSync(mode)}"
 			+ (VSyncOverride != null ? $" ({VSyncOverrideFlag}={VSyncOverride})" : string.Empty)
 			+ (HeadsetOwnsFrameTiming() ? " (headset paces the frame)" : string.Empty));
 	}
@@ -333,7 +346,12 @@ public partial class SettingsApplier : Node
 	private void ApplyResolution()
 	{
 		if (OS.HasFeature("android"))
-			return; // Eye resolution comes from OpenXR, never the desktop window preference.
+		{
+			// A headset's eye resolution comes from OpenXR, never the desktop window preference.
+			if (AndroidDeviceMode.IsPhone)
+				ApplyHandheldResolution();
+			return;
+		}
 
 		int height = EngineSettings.ResolutionHeight;
 		var screen = DisplayServer.ScreenGetSize(DisplayServer.WindowGetCurrentScreen());
@@ -361,6 +379,28 @@ public partial class SettingsApplier : Node
 		ApplyRenderScaleCeiling();
 	}
 
+	// A phone never renders the world at its panel's resolution. These panels are dense (the Fold's inner
+	// one is 2184x1968): far more 3D pixels than the GPU fills at a steady rate, and more than the eye
+	// separates at arm's length. The world gets at most three quarters of the panel and never more than
+	// 1080 lines; the interface stays native, and Render Scale and dynamic resolution work under that.
+	// -xlinka
+	private const int HandheldMaxRenderLines = 1080;
+	private const float HandheldMaxPanelFraction = 0.75f;
+
+	private void ApplyHandheldResolution()
+	{
+		var window = DisplayServer.WindowGetSize();
+		int lines = System.Math.Min(window.X, window.Y);
+		if (lines <= 0)
+			return;
+		float scale = System.Math.Min(HandheldMaxPanelFraction, (float)HandheldMaxRenderLines / lines);
+		bool changed = System.Math.Abs(scale - _resolutionScale) > 0.001f;
+		_resolutionScale = scale;
+		ApplyRenderScaleCeiling();
+		if (changed)
+			Lumora.Core.Logging.Logger.Log($"Settings: phone panel {window.X}x{window.Y}, world renders at {scale * 100f:0}% before Render Scale");
+	}
+
 	// The ceiling everything else works under: the user's Render Scale, narrowed by whatever the chosen
 	// resolution asks for. Dynamic resolution rides below this; with it off, this IS the scale.
 	private float RenderScaleCeiling => EngineSettings.RenderScale * _resolutionScale;
@@ -383,7 +423,8 @@ public partial class SettingsApplier : Node
 		if (root == null || root.UseXR || HeadsetOwnsFrameTiming())
 			return;
 
-		root.Scaling3DMode = EngineSettings.Upscaler switch
+		// Not offered on Android, and a choice synced from a PC must not turn FSR 2 on there.
+		root.Scaling3DMode = OS.HasFeature("android") ? Viewport.Scaling3DModeEnum.Bilinear : EngineSettings.Upscaler switch
 		{
 			1 => Viewport.Scaling3DModeEnum.Fsr,
 			2 => Viewport.Scaling3DModeEnum.Fsr2,
@@ -503,6 +544,7 @@ public partial class SettingsApplier : Node
 
 	private void SetBackground(bool background)
 	{
+		Lumora.Core.Engine.Current?.InputInterface?.ReportWindowFocus(!background);
 		if (_background == background)
 		{
 			return;
@@ -520,8 +562,14 @@ public partial class SettingsApplier : Node
 	// next to the settings it ran with, instead of leaving a 30 fps mystery for the profiler.
 	private void ApplyEffectiveFps()
 	{
-		int userCap = EngineSettings.MaxFps;
+		int userCap = FrameLogRun ? 0 : EngineSettings.MaxFps;
 		bool inVr = HeadsetOwnsFrameTiming();
+		if (FrameLogRun && !_frameLogRunNoted)
+		{
+			_frameLogRunNoted = true;
+			Lumora.Core.Logging.Logger.Log($"Settings: frame log run, vsync {DescribeVSync(ResolveVSyncMode())} and no frame cap"
+				+ (VSyncOverride != null ? $" ({VSyncOverrideFlag}={VSyncOverride})" : string.Empty));
+		}
 		// A desktop cap of 60 must not hold a 72/90/120 Hz headset below its refresh rate.
 		int effective = inVr ? 0 : userCap;
 		bool throttled = false;
@@ -541,13 +589,13 @@ public partial class SettingsApplier : Node
 		if (throttled != _backgroundThrottled)
 		{
 			_backgroundThrottled = throttled;
-			Lumora.Core.Logging.Logger.Log(throttled
+			Lumora.Core.Logging.Logger.Debug(throttled
 				? $"Settings: window unfocused, fps capped to {effective} until focus returns"
 				: "Settings: window focused, background fps cap lifted");
 		}
 		else if (_background && !throttled && ProfilingRun && EngineSettings.BackgroundFps > 0 && !inVr)
 		{
-			Lumora.Core.Logging.Logger.Log("Settings: window unfocused, background fps cap suspended for the profiling run");
+			Lumora.Core.Logging.Logger.Debug("Settings: window unfocused, background fps cap suspended for the profiling run");
 		}
 	}
 

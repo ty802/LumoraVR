@@ -40,6 +40,8 @@ internal static class SettingsMetrics
 
     public const float TitleHeight = 52f;
     public const float SidebarWidth = 172f;
+    public const float SidebarMinWidth = 120f;
+    public const float EntriesMinWidth = 240f;
     public const float PanelInset = 14f;
 
     // Binding rows carry six cells across, so they get their own column table instead of the shared
@@ -124,6 +126,9 @@ internal static class SettingsUI
         text.HorizontalAlignment.Value = align;
         text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         text.WordWrap.Value = false;
+        // Too long for its column even at the smallest size it may shrink to: cut it with an ellipsis
+        // instead of letting it run under the next column's control.
+        text.Ellipsis.Value = true;
         if (shrinkToFit)
         {
             text.AutoSizeHorizontal.Value = true;

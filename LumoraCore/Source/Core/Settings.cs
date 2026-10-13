@@ -9,30 +9,53 @@ using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// General hierarchical key-value config store (the engine's small "settings database").
-/// Keys are dotted paths (e.g.
-/// <c>Security.Ban.Blacklist.<id>.UserId</c>); subsystems that need durable config - bans,
-/// per-world security, etc. - read/write here instead of inventing their own files. Persisted as a
-/// single JSON map under the user's application data folder. Typed user/video/audio prefs stay in
-/// <see cref="EngineSettings"/>; this is for arbitrary keyed data.
-/// </summary>
+// The engine's settings database: one key-value store for everything durable, keys as dotted paths
+// (Engine.Video.VSync, Security.Ban.Blacklist.<id>.UserId, WebAccess.Sites.<host>). Subsystems keep
+// what they need here instead of inventing files of their own. Saved as one data tree in config.dat in
+// the data folder.
+//
+// Some keys follow the account rather than the machine (AccountSettings says which). Those carry the
+// time they last changed, and a removed one leaves that time behind as a tombstone, so another computer
+// signed into the same account can tell which side is newer and a removal reaches it too. -xlinka
 public static class Settings
 {
+    // Nested in the same file under names no setting can have, which also keeps them out of the way of
+    // builds that only read plain values.
+    private const string ChangedNode = "@changed";
+    private const string RemovedNode = "@removed";
+
     private static readonly object _lock = new();
     private static Dictionary<string, string>? _values;
+    private static Dictionary<string, long> _changed = new(StringComparer.Ordinal);
+    private static HashSet<string> _removed = new(StringComparer.Ordinal);
 
-    private static string StorePath => Lumora.Core.Persistence.PathResolver.Resolve("config.dat");
+    // A key whose value changed: by this machine (fromAccount false) or from the account (true).
+    public static event Action<string, bool>? Changed;
+
+    private static string StorePath => PathResolver.Resolve("config.dat");
+
+    // One account key as stored: Value null when it was removed, Changed in Unix milliseconds.
+    public readonly record struct AccountEntry(string Key, string? Value, long Changed);
 
     public static void WriteValue(string key, string value)
     {
         if (string.IsNullOrEmpty(key)) return;
+        value ??= "";
+        bool changed;
         lock (_lock)
         {
             EnsureLoaded();
-            _values![key] = value ?? "";
+            changed = !_values!.TryGetValue(key, out var old) || old != value;
+            _values[key] = value;
+            if (changed && AccountSettings.Follows(key))
+            {
+                _changed[key] = Now();
+                _removed.Remove(key);
+            }
             Save();
         }
+        if (changed)
+            Changed?.Invoke(key, false);
     }
 
     public static void WriteValue<T>(string key, T value)
@@ -69,15 +92,19 @@ public static class Settings
 
     public static void DeleteValue(string key)
     {
+        bool removed;
         lock (_lock)
         {
             EnsureLoaded();
-            if (_values!.Remove(key))
+            removed = RemoveLocked(key);
+            if (removed)
                 Save();
         }
+        if (removed)
+            Changed?.Invoke(key, false);
     }
 
-    /// <summary>Distinct immediate child segment names directly under <paramref name="root"/>.</summary>
+    // Distinct immediate child segment names directly under root.
     public static IEnumerable<string> ListSettings(string root)
     {
         lock (_lock)
@@ -98,26 +125,108 @@ public static class Settings
         }
     }
 
-    /// <summary>Remove every key at or under <paramref name="root"/>.</summary>
-    public static void ClearSettings(string root)
+    // Every whole key that starts with prefix, for keys whose last part has dots of its own (a host name).
+    public static List<string> KeysUnder(string prefix)
     {
         lock (_lock)
         {
             EnsureLoaded();
-            var prefix = root + ".";
-            var toRemove = new List<string>();
+            var keys = new List<string>();
             foreach (var key in _values!.Keys)
             {
-                if (key == root || key.StartsWith(prefix, StringComparison.Ordinal))
-                    toRemove.Add(key);
+                if (key.StartsWith(prefix, StringComparison.Ordinal))
+                    keys.Add(key);
             }
-            if (toRemove.Count == 0)
-                return;
-            foreach (var key in toRemove)
-                _values.Remove(key);
-            Save();
+            return keys;
         }
     }
+
+    // Remove every key at or under root.
+    public static void ClearSettings(string root)
+    {
+        var removed = new List<string>();
+        lock (_lock)
+        {
+            EnsureLoaded();
+            var prefix = root + ".";
+            foreach (var key in new List<string>(_values!.Keys))
+            {
+                if ((key == root || key.StartsWith(prefix, StringComparison.Ordinal)) && RemoveLocked(key))
+                    removed.Add(key);
+            }
+            if (removed.Count == 0)
+                return;
+            Save();
+        }
+        foreach (var key in removed)
+            Changed?.Invoke(key, false);
+    }
+
+    private static bool RemoveLocked(string key)
+    {
+        if (!_values!.Remove(key))
+            return false;
+        if (AccountSettings.Follows(key))
+        {
+            _changed[key] = Now();
+            _removed.Add(key);
+        }
+        return true;
+    }
+
+    // ACCOUNT
+
+    // Every account key this machine has a time for, removals included.
+    public static List<AccountEntry> AccountEntries()
+    {
+        lock (_lock)
+        {
+            EnsureLoaded();
+            var entries = new List<AccountEntry>(_changed.Count);
+            foreach (var (key, changed) in _changed)
+            {
+                if (!AccountSettings.Follows(key))
+                    continue;
+                entries.Add(new AccountEntry(key, _removed.Contains(key) ? null : _values!.GetValueOrDefault(key), changed));
+            }
+            return entries;
+        }
+    }
+
+    // Takes an entry from the account if it is newer than what this machine has. True when it changed
+    // anything here.
+    public static bool ApplyAccountEntry(AccountEntry entry)
+    {
+        if (string.IsNullOrEmpty(entry.Key) || !AccountSettings.Follows(entry.Key))
+            return false;
+        bool changed;
+        lock (_lock)
+        {
+            EnsureLoaded();
+            if (_changed.TryGetValue(entry.Key, out long mine) && mine >= entry.Changed)
+                return false;
+            _changed[entry.Key] = entry.Changed;
+            if (entry.Value == null)
+            {
+                changed = _values!.Remove(entry.Key);
+                _removed.Add(entry.Key);
+            }
+            else
+            {
+                changed = !_values!.TryGetValue(entry.Key, out var old) || old != entry.Value;
+                _values[entry.Key] = entry.Value;
+                _removed.Remove(entry.Key);
+            }
+            Save();
+        }
+        if (changed)
+            Changed?.Invoke(entry.Key, true);
+        return changed;
+    }
+
+    private static long Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    // FILE
 
     private static void EnsureLoaded()
     {
@@ -131,8 +240,23 @@ public static class Settings
             if (DataTreeConverter.LoadFromBytes(File.ReadAllBytes(path)) is DataTreeDictionary dictionary)
             {
                 foreach (var pair in dictionary.Children)
+                {
                     if (pair.Value is DataTreeValue value)
                         _values[pair.Key] = value.Extract<string>() ?? "";
+                }
+                if (dictionary.Children.TryGetValue(ChangedNode, out var changed) && changed is DataTreeDictionary times)
+                {
+                    foreach (var pair in times.Children)
+                    {
+                        if (pair.Value is DataTreeValue time && long.TryParse(time.Extract<string>(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long at))
+                            _changed[pair.Key] = at;
+                    }
+                }
+                if (dictionary.Children.TryGetValue(RemovedNode, out var removed) && removed is DataTreeDictionary gone)
+                {
+                    foreach (var key in gone.Children.Keys)
+                        _removed.Add(key);
+                }
             }
         }
         catch (Exception ex)
@@ -150,6 +274,20 @@ public static class Settings
             var dictionary = new DataTreeDictionary();
             foreach (var pair in _values!)
                 dictionary.Add(pair.Key, pair.Value);
+            if (_changed.Count > 0)
+            {
+                var times = new DataTreeDictionary();
+                foreach (var pair in _changed)
+                    times.Add(pair.Key, pair.Value.ToString(CultureInfo.InvariantCulture));
+                dictionary.Add(ChangedNode, times);
+            }
+            if (_removed.Count > 0)
+            {
+                var gone = new DataTreeDictionary();
+                foreach (var key in _removed)
+                    gone.Add(key, "1");
+                dictionary.Add(RemovedNode, gone);
+            }
             File.WriteAllBytes(path, DataTreeConverter.SaveToBytes(dictionary));
         }
         catch (Exception ex)

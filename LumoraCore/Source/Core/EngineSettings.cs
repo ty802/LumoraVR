@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Lumora.Core.Media;
 
 namespace Lumora.Core;
@@ -33,6 +34,22 @@ public static class EngineSettings
         set => SetValue(ref _mouseSmoothing, SettingsCatalog.MouseSmoothing.Clamp(value));
     }
 
+    // How much a VR laser's aim is steadied, 0 for the raw controller ray. The laser reads it as it casts.
+    private static float _laserSmoothing = 0.5f;
+    public static float LaserSmoothing
+    {
+        get => _laserSmoothing;
+        set => SetValue(ref _laserSmoothing, SettingsCatalog.LaserSmoothing.Clamp(value));
+    }
+
+    // Scales every controller vibration, 0 for none at all.
+    private static float _hapticsStrength = 1f;
+    public static float HapticsStrength
+    {
+        get => _hapticsStrength;
+        set => SetValue(ref _hapticsStrength, SettingsCatalog.HapticsStrength.Clamp(value));
+    }
+
     // Noclip flight speed in m/s. Only affects the noclip locomotion module.
     private static float _noclipSpeed = 6f;
     public static float NoclipSpeed
@@ -52,6 +69,57 @@ public static class EngineSettings
         set => SetValue(ref _preferredLocomotion, value ?? string.Empty);
     }
 
+    // PHOTOS
+
+    // The sizes a photo is taken at, and the one picked.
+    public static readonly (int Width, int Height)[] PhotoSizes = { (1920, 1080), (2560, 1440), (3840, 2160) };
+    private static int _photoSize;
+    public static int PhotoSize
+    {
+        get => _photoSize;
+        set => SetValue(ref _photoSize, System.Math.Clamp(value, 0, PhotoSizes.Length - 1));
+    }
+
+    private static Assets.ImageEncoding _photoEncoding = Assets.ImageEncoding.Webp;
+    public static Assets.ImageEncoding PhotoEncoding
+    {
+        get => _photoEncoding;
+        set => SetEnum(ref _photoEncoding, value);
+    }
+
+    // Seconds a timed photo counts down.
+    private static float _photoTimerSeconds = 5f;
+    public static float PhotoTimerSeconds
+    {
+        get => _photoTimerSeconds;
+        set => SetValue(ref _photoTimerSeconds, SettingsCatalog.PhotoTimerSeconds.Clamp(value));
+    }
+
+    // An L made with the left hand opens a viewfinder.
+    private static bool _handFrame = true;
+    public static bool HandFrame
+    {
+        get => _handFrame;
+        set => SetValue(ref _handFrame, value);
+    }
+
+    // Every photo also goes into the inventory's Photos folder.
+    private static bool _photosToInventory = true;
+    public static bool PhotosToInventory
+    {
+        get => _photosToInventory;
+        set => SetValue(ref _photosToInventory, value);
+    }
+
+    // The hand this user leads with, Left or Right. Everyone sees it on their user record; menus and scripts
+    // ask it which hand is which.
+    private static Input.Chirality _primaryHand = Input.Chirality.Right;
+    public static Input.Chirality PrimaryHand
+    {
+        get => _primaryHand;
+        set => SetEnum(ref _primaryHand, value == Input.Chirality.Left ? Input.Chirality.Left : Input.Chirality.Right);
+    }
+
     // AVATAR
 
     // Calibrated standing/eye height in metres. Drives the avatar auto-rescale (AvatarIK reads
@@ -61,6 +129,15 @@ public static class EngineSettings
     {
         get => _userHeight;
         set => SetValue(ref _userHeight, SettingsCatalog.UserHeight.Clamp(value));
+    }
+
+    // While somebody's avatar is still arriving on this machine, a glowing stand-in with a progress readout
+    // takes its place and the half-built avatar stays out of sight. Off shows the avatar as it builds.
+    private static bool _avatarArrival = true;
+    public static bool AvatarArrival
+    {
+        get => _avatarArrival;
+        set => SetValue(ref _avatarArrival, value);
     }
 
     // AUDIO
@@ -143,6 +220,75 @@ public static class EngineSettings
         set => SetValue(ref _defaultStreamBitrateKbps, SettingsCatalog.DefaultStreamBitrateKbps.ClampInt(value));
     }
 
+    // The device the last stream went out on, by id, so the picker opens on it next time. Empty leaves
+    // the picker on its first entry, which is system audio wherever the machine has it.
+    private static string _streamDevice = string.Empty;
+    public static string StreamDevice
+    {
+        get => _streamDevice;
+        set => SetValue(ref _streamDevice, value ?? string.Empty);
+    }
+
+    // Where a stream's sound goes: an output device by id, usually a virtual cable a streaming program
+    // listens to. Empty sends it nowhere.
+    private static string _streamOutputDevice = string.Empty;
+    public static string StreamOutputDevice
+    {
+        get => _streamOutputDevice;
+        set => SetValue(ref _streamOutputDevice, value ?? string.Empty);
+    }
+
+    // DESKTOP
+    //
+    // The desktop page: the monitor it shows (DesktopDisplay.Key, empty for the main one), whether it
+    // follows the mouse onto another monitor, and how bright the picture is drawn.
+    private static string _desktopMonitor = string.Empty;
+    public static string DesktopMonitor
+    {
+        get => _desktopMonitor;
+        set => SetValue(ref _desktopMonitor, value ?? string.Empty);
+    }
+
+    private static bool _desktopFollowCursor;
+    public static bool DesktopFollowCursor
+    {
+        get => _desktopFollowCursor;
+        set => SetValue(ref _desktopFollowCursor, value);
+    }
+
+    private static float _desktopBrightness = 1f;
+    public static float DesktopBrightness
+    {
+        get => _desktopBrightness;
+        set => SetValue(ref _desktopBrightness, SettingsCatalog.DesktopBrightness.Clamp(value));
+    }
+
+    // What the desktop portal hands back when screen sharing is allowed, given back next time instead of
+    // asking the user again. Only a Wayland desktop has one.
+    //
+    // It is single use: every share spends the token it was given and hands back the next. So it goes to
+    // disk the moment it arrives, from whatever thread brings it, and it is not a change: nothing applies
+    // it and nobody is asked to save it. A token that waited for "Exit and Save" would be a spent one on
+    // every other way out, and the user would be asked again each launch.
+    private static string _desktopPortalToken = string.Empty;
+    public static string DesktopPortalToken
+    {
+        get => System.Threading.Volatile.Read(ref _desktopPortalToken);
+        set
+        {
+            value ??= string.Empty;
+            System.Threading.Volatile.Write(ref _desktopPortalToken, value);
+            try
+            {
+                Settings.WriteValue(KeyDesktopPortalToken, value);
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Warn($"EngineSettings: failed to keep the screen-share token: {ex.Message}");
+            }
+        }
+    }
+
     // VOICE
     //
     // Local only: none of this replicates, because it describes this machine's microphone and nobody
@@ -216,12 +362,67 @@ public static class EngineSettings
         set => SetValue(ref _noiseGateRelease, SettingsCatalog.NoiseGateRelease.Clamp(value));
     }
 
-    // Peak the normalizer walks the captured signal toward when it is on.
+    // A peak target nothing reads: the leveller steers by VoiceTargetLevel. Kept so the saved key stays.
     private static float _normalizationThreshold = 0.05f;
     public static float NormalizationThreshold
     {
         get => _normalizationThreshold;
         set => SetValue(ref _normalizationThreshold, SettingsCatalog.NormalizationThreshold.Clamp(value));
+    }
+
+    // Voiced speech level the leveller steers a voice toward, RMS in dBFS. A new key rather than a new
+    // default on the old one: Commit writes every key, so every install already has the old peak target
+    // saved and a changed default there would have reached nobody. -xlinka
+    private static float _voiceTargetLevel = -18.5f;
+    public static float VoiceTargetLevel
+    {
+        get => _voiceTargetLevel;
+        set => SetValue(ref _voiceTargetLevel, SettingsCatalog.VoiceTargetLevel.Clamp(value));
+    }
+
+    // Fixed gain on the microphone ahead of the gate and the leveller, dB. For a capsule quieter than the
+    // leveller's own range, or for anyone running with normalizing off.
+    private static float _microphoneGain;
+    public static float MicrophoneGain
+    {
+        get => _microphoneGain;
+        set => SetValue(ref _microphoneGain, SettingsCatalog.MicrophoneGain.Clamp(value));
+    }
+
+    // The gain the leveller settled at on each input device, dB, so a microphone heard before starts at
+    // its own level instead of climbing from unity through the first words of every session. Machine
+    // local, per device id, and written when the device closes rather than on Commit: it is state the
+    // chain arrived at, not a choice anybody saves. NaN for a device never heard. -xlinka
+    public static float MicrophoneGainSeed(string deviceId)
+    {
+        if (string.IsNullOrEmpty(deviceId))
+            return float.NaN;
+        try
+        {
+            return Settings.ReadValue(KeyMicrophoneGainSeedPrefix + deviceId, float.NaN);
+        }
+        catch
+        {
+            return float.NaN;
+        }
+    }
+
+    public static void SetMicrophoneGainSeed(string deviceId, float gainDb)
+    {
+        if (string.IsNullOrEmpty(deviceId) || !float.IsFinite(gainDb))
+            return;
+        gainDb = MathF.Round(gainDb, 1);
+        // Half a decibel either way is the same microphone; not worth rewriting the store for.
+        if (MathF.Abs(MicrophoneGainSeed(deviceId) - gainDb) < 0.5f)
+            return;
+        try
+        {
+            Settings.WriteValue(KeyMicrophoneGainSeedPrefix + deviceId, gainDb);
+        }
+        catch (Exception ex)
+        {
+            Logging.Logger.Warn($"EngineSettings: failed to keep the microphone gain: {ex.Message}");
+        }
     }
 
     // MEDIA PLAYBACK
@@ -244,6 +445,21 @@ public static class EngineSettings
         get => _videoMaxHeight;
         set => SetValue(ref _videoMaxHeight, SettingsCatalog.VideoMaxHeight.ClampInt(value));
     }
+
+    // STORAGE
+
+    // Gigabytes of disk for assets this machine holds only because they came from elsewhere: downloads, and
+    // what peers or the cloud sent. Past it the file wanted longest ago is let go; it can be had again. Zero
+    // until someone sets it, which reads as the platform's default.
+    private static int _assetCacheGigabytes;
+    public static int AssetCacheGigabytes
+    {
+        get => _assetCacheGigabytes > 0 ? _assetCacheGigabytes : DefaultAssetCacheGigabytes;
+        set => SetValue(ref _assetCacheGigabytes, SettingsCatalog.AssetCacheGigabytes.ClampInt(value));
+    }
+
+    // A standalone headset or phone shares a small disk with everything else on it.
+    public static int DefaultAssetCacheGigabytes => Engine.UseConstrainedResources ? 4 : 10;
 
     // VIDEO
 
@@ -276,6 +492,16 @@ public static class EngineSettings
     {
         get => _fullscreen;
         set => SetValue(ref _fullscreen, value);
+    }
+
+    // The screen camera's vertical field of view in degrees. 90 was hard-coded before there was a setting,
+    // about 120 across a 16:9 window, which shrank everything in front of the user: the radial menu
+    // read as far away. -xlinka
+    private static float _fieldOfView = 75f;
+    public static float FieldOfView
+    {
+        get => _fieldOfView;
+        set => SetValue(ref _fieldOfView, SettingsCatalog.FieldOfView.Clamp(value));
     }
 
     private static float _renderScale = 1f;
@@ -346,6 +572,11 @@ public static class EngineSettings
         get => _maxTextureSize;
         set => SetValue(ref _maxTextureSize, SnapTextureSize(value));
     }
+
+    // Original on a desktop. 2048 on a standalone headset or phone: one memory holds pictures and
+    // everything else, and 2048 keeps a big world's textures well inside a Quest 2's share of its 6 GB
+    // once they are block compressed.
+    public static int DefaultMaxTextureSize => Engine.UseConstrainedResources ? 2048 : 0;
 
     public static int SnapTextureSize(int value)
     {
@@ -440,6 +671,15 @@ public static class EngineSettings
         set => SetValue(ref _smoothTurnSpeed, SettingsCatalog.SmoothTurnSpeed.Clamp(value));
     }
 
+    // Where smooth movement in VR takes forward from. Read live by the locomotion modules; a desktop
+    // always walks where the view faces.
+    private static MovementDirection _movementDirection = MovementDirection.Head;
+    public static MovementDirection MovementDirection
+    {
+        get => _movementDirection;
+        set => SetEnum(ref _movementDirection, value);
+    }
+
     // INTERFACE
 
     public enum GizmoControlStyle
@@ -464,9 +704,8 @@ public static class EngineSettings
         Off,
     }
 
-    // Desktop cursor. The platform layer's cursor drawer reads these through InterfaceSettings, which
-    // is a thin mirror over this so the Core settings UI can reach it at all (Core cannot see the
-    // platform assembly). -xlinka
+    // Shared desktop reticle settings: the dash reads them through InterfaceSettings and the world
+    // laser renders the same style at half the size.
     private static ReticleShape _reticleStyle = ReticleShape.Ring;
     public static ReticleShape ReticleStyle
     {
@@ -486,6 +725,39 @@ public static class EngineSettings
     {
         get => _reticleThickness;
         set => SetValue(ref _reticleThickness, SettingsCatalog.ReticleThickness.Clamp(value));
+    }
+
+    // Lengths read in feet and inches instead of metres. Only the text changes: every length is still
+    // kept in metres, so flipping this never moves a value.
+    private static bool _imperialUnits;
+    public static bool ImperialUnits
+    {
+        get => _imperialUnits;
+        set
+        {
+            if (_imperialUnits != value)
+                UnitsVersion++;
+            SetValue(ref _imperialUnits, value);
+        }
+    }
+
+    // Moves on every flip of the units. Text already showing a length checks it to know it has to be
+    // written again, though the value under it is the same.
+    public static int UnitsVersion { get; private set; }
+
+    // The label beside the pointer naming what it is on, shown once it has stayed there TooltipDelay seconds.
+    private static bool _tooltips = true;
+    public static bool Tooltips
+    {
+        get => _tooltips;
+        set => SetValue(ref _tooltips, value);
+    }
+
+    private static float _tooltipDelay = 0.6f;
+    public static float TooltipDelay
+    {
+        get => _tooltipDelay;
+        set => SetValue(ref _tooltipDelay, SettingsCatalog.TooltipDelay.Clamp(value));
     }
 
     // POST PROCESSING
@@ -591,11 +863,11 @@ public static class EngineSettings
     public static string DescribeShadowQuality(int value)
         => value >= 0 && value < ShadowQualityOptions.Length ? ShadowQualityOptions[value] : ShadowQualityOptions[1];
 
-    public static readonly int[] AntiAliasingOptions = { 0, 2, 4, 8 };
+    public static readonly int[] AntiAliasingOptions = { 0, 1, 2, 4, 8 };
 
-    // MSAA samples. Costs fill rate rather than frame logic, and in a headset the difference between
-    // 0 and 2 is the difference between crawling edges and a clean image, so it defaults on.
-    private static int _antiAliasing = 2;
+    // Desktop mode: 0 is off, 1 is FXAA, and 2/4/8 retain the saved MSAA sample counts.
+    // FXAA is the default for a new preference; headset rendering has its own quality profile.
+    private static int _antiAliasing = 1;
     public static int AntiAliasing
     {
         get => _antiAliasing;
@@ -613,11 +885,17 @@ public static class EngineSettings
         return best;
     }
 
-    public static string DescribeAntiAliasing(int value) => value <= 0 ? "Off" : $"{value}x MSAA";
+    public static string DescribeAntiAliasing(int value) => SnapAntiAliasing(value) switch
+    {
+        0 => "Off",
+        1 => "FXAA",
+        int samples => $"{samples}x MSAA",
+    };
 
-    // Multiplier on every directional light's shadow distance. Below 1 shrinks the cascade range,
-    // which is the cheapest real win on the shadow pass; above 1 buys distant shadows back. Applied
-    // by the light hooks on change, same shape as LodBias.
+    // Multiplier on every directional light's shadow distance and on how far past its range a point or
+    // spot light still gets a shadow. Below 1 shrinks the cascade range, which is the cheapest real win
+    // on the shadow pass; above 1 buys distant shadows back. Applied by the light hooks on change, same
+    // shape as LodBias.
     private static float _shadowDistanceScale = 1f;
     public static float ShadowDistanceScale
     {
@@ -625,14 +903,54 @@ public static class EngineSettings
         set => SetValue(ref _shadowDistanceScale, SettingsCatalog.ShadowDistanceScale.Clamp(value));
     }
 
+    // How many point and spot lights may cast a shadow at once, picked by how near and bright each is
+    // to the viewer; the rest still light, unshadowed. Each one is up to six scene passes every frame
+    // something in its range moves, so this is the shadow cost of a world full of lamps. A headset gets
+    // its own, lower figure: two eyes at 90 Hz on the same budget a monitor gets at 60. 0 turns point and
+    // spot shadows off. -xlinka
+    private static int _shadowedLights = 4;
+    public static int ShadowedLights
+    {
+        get => _shadowedLights;
+        set => SetValue(ref _shadowedLights, SettingsCatalog.ShadowedLights.ClampInt(value));
+    }
+
+    private static int _shadowedLightsVR = 2;
+    public static int ShadowedLightsVR
+    {
+        get => _shadowedLightsVR;
+        set => SetValue(ref _shadowedLightsVR, SettingsCatalog.ShadowedLights.ClampInt(value));
+    }
+
+    // Times a second the shadow of something that keeps moving (a fan, a turntable, a spinning sign) is
+    // brought up to date, 0 for every frame. A point light re-renders all six faces whenever anything it
+    // covers moves, so one spinner kept every lamp around it rendering every frame; at this rate the lamps
+    // sit on their cached shadow in between and the moving thing's shadow steps instead. Avatars and what
+    // people hold are never slowed. -xlinka
+    private static int _movingShadowRate = 15;
+    public static int MovingShadowRate
+    {
+        get => _movingShadowRate;
+        set => SetValue(ref _movingShadowRate, SettingsCatalog.MovingShadowRate.ClampOptionalInt(value));
+    }
+
     // PERSISTENCE - values live-apply for preview; they are written to the shared binary config
     // store (Settings -> config.dat) only on Commit, which the exit screen's "Exit and Save" calls.
 
     private const string KeyMouseSensitivity = "Engine.Input.MouseSensitivity";
     private const string KeyMouseSmoothing = "Engine.Input.MouseSmoothing";
+    private const string KeyLaserSmoothing = "Engine.Input.LaserSmoothing";
+    private const string KeyHapticsStrength = "Engine.Input.HapticsStrength";
     private const string KeyNoclipSpeed = "Engine.Input.NoclipSpeed";
     private const string KeyPreferredLocomotion = "Engine.Input.PreferredLocomotion";
+    private const string KeyPrimaryHand = "Engine.Input.PrimaryHand";
+    private const string KeyPhotoSize = "Engine.Photos.Size";
+    private const string KeyPhotoEncoding = "Engine.Photos.Encoding";
+    private const string KeyPhotoTimerSeconds = "Engine.Photos.TimerSeconds";
+    private const string KeyHandFrame = "Engine.Photos.HandFrame";
+    private const string KeyPhotosToInventory = "Engine.Photos.ToInventory";
     private const string KeyUserHeight = "Engine.Avatar.UserHeight";
+    private const string KeyAvatarArrival = "Engine.Avatar.Arrival";
     private const string KeyMasterVolume = "Engine.Audio.MasterVolume";
     private const string KeySoundEffectVolume = "Engine.Audio.SoundEffectVolume";
     private const string KeyMultimediaVolume = "Engine.Audio.MultimediaVolume";
@@ -642,6 +960,14 @@ public static class EngineSettings
     private const string KeyDefaultStreamBitrateKbps = "Engine.Audio.DefaultStreamBitrateKbps";
     private const string KeyAudioInputDevice = "Engine.Audio.InputDevice";
     private const string KeyAudioOutputDevice = "Engine.Audio.OutputDevice";
+    private const string KeyStreamDevice = "Engine.Audio.StreamDevice";
+    private const string KeyStreamOutputDevice = "Engine.Audio.StreamOutputDevice";
+    // The camera keeps its own settings under this prefix, all of them following the account.
+    public const string CameraKeyPrefix = "Engine.Camera.";
+    private const string KeyDesktopMonitor = "Engine.Desktop.Monitor";
+    private const string KeyDesktopFollowCursor = "Engine.Desktop.FollowCursor";
+    private const string KeyDesktopBrightness = "Engine.Desktop.Brightness";
+    private const string KeyDesktopPortalToken = "Engine.Desktop.PortalToken";
     private const string KeyMicrophoneMuted = "Engine.Audio.MicrophoneMuted";
     private const string KeyVoiceNormalization = "Engine.Audio.VoiceNormalization";
     private const string KeyNoiseSuppression = "Engine.Audio.NoiseSuppression";
@@ -650,8 +976,12 @@ public static class EngineSettings
     private const string KeyNoiseGateHold = "Engine.Audio.NoiseGateHold";
     private const string KeyNoiseGateRelease = "Engine.Audio.NoiseGateRelease";
     private const string KeyNormalizationThreshold = "Engine.Audio.NormalizationThreshold";
+    private const string KeyVoiceTargetLevel = "Engine.Audio.VoiceTargetLevel";
+    private const string KeyMicrophoneGain = "Engine.Audio.MicrophoneGain";
+    private const string KeyMicrophoneGainSeedPrefix = "Engine.Audio.MicrophoneGainSeed.";
     private const string KeyVideoCookiesBrowser = "Engine.Media.VideoCookiesBrowser";
     private const string KeyVideoMaxHeight = "Engine.Media.VideoMaxHeight";
+    private const string KeyAssetCacheGigabytes = "Engine.Storage.AssetCacheGigabytes";
     private const string KeyVSync = "Engine.Video.VSync";
     private const string KeyMaxFps = "Engine.Video.MaxFps";
     private const string KeyBackgroundFps = "Engine.Video.BackgroundFps";
@@ -660,11 +990,16 @@ public static class EngineSettings
     private const string KeyDynamicResolution = "Engine.Video.DynamicResolution";
     private const string KeyUpscaler = "Engine.Video.Upscaler";
     private const string KeyResolutionHeight = "Engine.Video.ResolutionHeight";
+    private const string KeyFieldOfView = "Engine.Video.FieldOfView";
     private const string KeyMaxTextureSize = "Engine.Video.MaxTextureSize";
+    private const string KeyMobileTextureCeiling = "Engine.Video.MobileTextureCeiling";
     private const string KeyReflectionsEnabled = "Engine.Video.ReflectionsEnabled";
     private const string KeyLodBias = "Engine.Video.LodBias";
     private const string KeyMeshLodThreshold = "Engine.Video.MeshLodThreshold";
     private const string KeyShadowDistanceScale = "Engine.Video.ShadowDistanceScale";
+    private const string KeyShadowedLights = "Engine.Video.ShadowedLights";
+    private const string KeyShadowedLightsVR = "Engine.Video.ShadowedLightsVR";
+    private const string KeyMovingShadowRate = "Engine.Video.MovingShadowRate";
     private const string KeyTonemap = "Engine.Video.Tonemap";
     private const string KeyExposure = "Engine.Video.Exposure";
     private const string KeyBloom = "Engine.Video.Bloom";
@@ -678,10 +1013,44 @@ public static class EngineSettings
     private const string KeyTurnMode = "Engine.Comfort.TurnMode";
     private const string KeySnapTurnAngle = "Engine.Comfort.SnapTurnAngle";
     private const string KeySmoothTurnSpeed = "Engine.Comfort.SmoothTurnSpeed";
+    private const string KeyMovementDirection = "Engine.Comfort.MovementDirection";
     private const string KeyReticleStyle = "Engine.Interface.ReticleStyle";
     private const string KeyGizmoControls = "Engine.Interface.GizmoControls";
     private const string KeyReticleSize = "Engine.Interface.ReticleSize";
     private const string KeyReticleThickness = "Engine.Interface.ReticleThickness";
+    private const string KeyImperialUnits = "Engine.Interface.ImperialUnits";
+    private const string KeyTooltips = "Engine.Interface.Tooltips";
+    private const string KeyTooltipDelay = "Engine.Interface.TooltipDelay";
+
+    // Reads every value again, for when the account brought newer ones. On the main thread: what listens
+    // to Changed reaches into the windowing and the renderer.
+    public static void Reload()
+    {
+        _loaded = false;
+        Load();
+    }
+
+    // Which settings follow the account to every computer it signs in on, and which stay with this one.
+    // What depends on the hardware in front of you stays: devices, the graphics, master volume (headphones
+    // differ), how the microphone is cleaned up, which monitor and browser. What is about how you like
+    // to play goes with you.
+    private static readonly HashSet<string> AccountKeys = new(StringComparer.Ordinal)
+    {
+        KeyMouseSensitivity, KeyMouseSmoothing, KeyNoclipSpeed, KeyPreferredLocomotion, KeyPrimaryHand,
+        KeyLaserSmoothing, KeyHapticsStrength,
+        KeyPhotoSize, KeyPhotoEncoding, KeyPhotoTimerSeconds, KeyHandFrame, KeyPhotosToInventory,
+        KeyUserHeight, KeyAvatarArrival,
+        KeySoundEffectVolume, KeyMultimediaVolume, KeyVoiceVolume, KeyUIVolume, KeyWhisperAttenuationVolume,
+        KeyDefaultStreamBitrateKbps,
+        KeyVideoMaxHeight,
+        KeyDesktopFollowCursor, KeyDesktopBrightness,
+        KeyTurnMode, KeySnapTurnAngle, KeySmoothTurnSpeed, KeyMovementDirection,
+        KeyReticleStyle, KeyGizmoControls, KeyReticleSize, KeyReticleThickness,
+        KeyImperialUnits, KeyTooltips, KeyTooltipDelay,
+    };
+
+    public static bool FollowsAccount(string key)
+        => AccountKeys.Contains(key) || key.StartsWith(CameraKeyPrefix, StringComparison.Ordinal);
 
     public static void Load()
     {
@@ -693,9 +1062,18 @@ public static class EngineSettings
         {
             _mouseSensitivity = SettingsCatalog.MouseSensitivity.Clamp(Settings.ReadValue(KeyMouseSensitivity, _mouseSensitivity));
             _mouseSmoothing = SettingsCatalog.MouseSmoothing.Clamp(Settings.ReadValue(KeyMouseSmoothing, _mouseSmoothing));
+            _laserSmoothing = SettingsCatalog.LaserSmoothing.Clamp(Settings.ReadValue(KeyLaserSmoothing, _laserSmoothing));
+            _hapticsStrength = SettingsCatalog.HapticsStrength.Clamp(Settings.ReadValue(KeyHapticsStrength, _hapticsStrength));
             _noclipSpeed = SettingsCatalog.NoclipSpeed.Clamp(Settings.ReadValue(KeyNoclipSpeed, _noclipSpeed));
             _preferredLocomotion = Settings.ReadValue(KeyPreferredLocomotion, _preferredLocomotion) ?? string.Empty;
+            _primaryHand = ReadEnum(KeyPrimaryHand, _primaryHand) == Input.Chirality.Left ? Input.Chirality.Left : Input.Chirality.Right;
+            _photoSize = System.Math.Clamp(Settings.ReadValue(KeyPhotoSize, _photoSize), 0, PhotoSizes.Length - 1);
+            _photoEncoding = ReadEnum(KeyPhotoEncoding, _photoEncoding);
+            _photoTimerSeconds = SettingsCatalog.PhotoTimerSeconds.Clamp(Settings.ReadValue(KeyPhotoTimerSeconds, _photoTimerSeconds));
+            _handFrame = Settings.ReadValue(KeyHandFrame, _handFrame);
+            _photosToInventory = Settings.ReadValue(KeyPhotosToInventory, _photosToInventory);
             _userHeight = SettingsCatalog.UserHeight.Clamp(Settings.ReadValue(KeyUserHeight, _userHeight));
+            _avatarArrival = Settings.ReadValue(KeyAvatarArrival, _avatarArrival);
             _masterVolume = SettingsCatalog.MasterVolume.Clamp(Settings.ReadValue(KeyMasterVolume, _masterVolume));
             _soundEffectVolume = SettingsCatalog.SoundEffectVolume.Clamp(Settings.ReadValue(KeySoundEffectVolume, _soundEffectVolume));
             _multimediaVolume = SettingsCatalog.MultimediaVolume.Clamp(Settings.ReadValue(KeyMultimediaVolume, _multimediaVolume));
@@ -705,6 +1083,12 @@ public static class EngineSettings
             _defaultStreamBitrateKbps = SettingsCatalog.DefaultStreamBitrateKbps.ClampInt(Settings.ReadValue(KeyDefaultStreamBitrateKbps, _defaultStreamBitrateKbps));
             _audioInputDevice = Settings.ReadValue(KeyAudioInputDevice, _audioInputDevice) ?? string.Empty;
             _audioOutputDevice = Settings.ReadValue(KeyAudioOutputDevice, _audioOutputDevice) ?? string.Empty;
+            _streamDevice = Settings.ReadValue(KeyStreamDevice, _streamDevice) ?? string.Empty;
+            _streamOutputDevice = Settings.ReadValue(KeyStreamOutputDevice, _streamOutputDevice) ?? string.Empty;
+            _desktopMonitor = Settings.ReadValue(KeyDesktopMonitor, _desktopMonitor) ?? string.Empty;
+            _desktopFollowCursor = Settings.ReadValue(KeyDesktopFollowCursor, _desktopFollowCursor);
+            _desktopBrightness = SettingsCatalog.DesktopBrightness.Clamp(Settings.ReadValue(KeyDesktopBrightness, _desktopBrightness));
+            _desktopPortalToken = Settings.ReadValue(KeyDesktopPortalToken, _desktopPortalToken) ?? string.Empty;
             _microphoneMuted = Settings.ReadValue(KeyMicrophoneMuted, _microphoneMuted);
             _voiceNormalization = Settings.ReadValue(KeyVoiceNormalization, _voiceNormalization);
             _noiseSuppression = Settings.ReadValue(KeyNoiseSuppression, _noiseSuppression);
@@ -713,8 +1097,12 @@ public static class EngineSettings
             _noiseGateHold = SettingsCatalog.NoiseGateHold.Clamp(Settings.ReadValue(KeyNoiseGateHold, _noiseGateHold));
             _noiseGateRelease = SettingsCatalog.NoiseGateRelease.Clamp(Settings.ReadValue(KeyNoiseGateRelease, _noiseGateRelease));
             _normalizationThreshold = SettingsCatalog.NormalizationThreshold.Clamp(Settings.ReadValue(KeyNormalizationThreshold, _normalizationThreshold));
+            _voiceTargetLevel = SettingsCatalog.VoiceTargetLevel.Clamp(Settings.ReadValue(KeyVoiceTargetLevel, _voiceTargetLevel));
+            _microphoneGain = SettingsCatalog.MicrophoneGain.Clamp(Settings.ReadValue(KeyMicrophoneGain, _microphoneGain));
             _videoCookiesBrowser = ReadEnum(KeyVideoCookiesBrowser, _videoCookiesBrowser);
             _videoMaxHeight = SettingsCatalog.VideoMaxHeight.ClampInt(Settings.ReadValue(KeyVideoMaxHeight, _videoMaxHeight));
+            int assetCache = Settings.ReadValue(KeyAssetCacheGigabytes, 0);
+            _assetCacheGigabytes = assetCache <= 0 ? 0 : SettingsCatalog.AssetCacheGigabytes.ClampInt(assetCache);
             _vsync = Settings.ReadValue(KeyVSync, _vsync);
             int fps = Settings.ReadValue(KeyMaxFps, _maxFps);
             _maxFps = SettingsCatalog.MaxFps.ClampOptionalInt(fps);
@@ -722,15 +1110,29 @@ public static class EngineSettings
             _backgroundFps = SettingsCatalog.BackgroundFps.ClampOptionalInt(bgFps);
             _fullscreen = Settings.ReadValue(KeyFullscreen, _fullscreen);
             _renderScale = SettingsCatalog.RenderScale.Clamp(Settings.ReadValue(KeyRenderScale, _renderScale));
+            _fieldOfView = SettingsCatalog.FieldOfView.Clamp(Settings.ReadValue(KeyFieldOfView, _fieldOfView));
             _dynamicResolution = Settings.ReadValue(KeyDynamicResolution, _dynamicResolution);
             _upscaler = SettingsCatalog.Upscaler.ClampInt(Settings.ReadValue(KeyUpscaler, _upscaler));
             _resolutionHeight = System.Math.Max(0, Settings.ReadValue(KeyResolutionHeight, _resolutionHeight));
-            _maxTextureSize = SnapTextureSize(Settings.ReadValue(KeyMaxTextureSize, _maxTextureSize));
+            _maxTextureSize = SnapTextureSize(Settings.ReadValue(KeyMaxTextureSize, DefaultMaxTextureSize));
+            // Builds before this saved Original on phones and headsets without anyone choosing it, and
+            // there a picture's memory is the same memory everything else runs in. Once, an Original saved
+            // that way becomes the mobile default; Original chosen after that stays.
+            if (Engine.UseConstrainedResources && !Settings.ReadValue(KeyMobileTextureCeiling, false))
+            {
+                if (_maxTextureSize == 0)
+                    _maxTextureSize = DefaultMaxTextureSize;
+                Settings.WriteValue(KeyMaxTextureSize, _maxTextureSize);
+                Settings.WriteValue(KeyMobileTextureCeiling, true);
+            }
             _reflectionsEnabled = Settings.ReadValue(KeyReflectionsEnabled, _reflectionsEnabled);
             _lodBias = SettingsCatalog.LodBias.Clamp(Settings.ReadValue(KeyLodBias, _lodBias));
             float meshLod = Settings.ReadValue(KeyMeshLodThreshold, _meshLodThreshold);
             _meshLodThreshold = SettingsCatalog.MeshLodThreshold.ClampOptional(meshLod);
             _shadowDistanceScale = SettingsCatalog.ShadowDistanceScale.Clamp(Settings.ReadValue(KeyShadowDistanceScale, _shadowDistanceScale));
+            _shadowedLights = SettingsCatalog.ShadowedLights.ClampInt(Settings.ReadValue(KeyShadowedLights, _shadowedLights));
+            _shadowedLightsVR = SettingsCatalog.ShadowedLights.ClampInt(Settings.ReadValue(KeyShadowedLightsVR, _shadowedLightsVR));
+            _movingShadowRate = SettingsCatalog.MovingShadowRate.ClampOptionalInt(Settings.ReadValue(KeyMovingShadowRate, _movingShadowRate));
             _tonemap = System.Math.Clamp(Settings.ReadValue(KeyTonemap, _tonemap), 0, TonemapOptions.Length - 1);
             _exposure = SettingsCatalog.Exposure.Clamp(Settings.ReadValue(KeyExposure, _exposure));
             _bloom = SettingsCatalog.Bloom.Clamp(Settings.ReadValue(KeyBloom, _bloom));
@@ -744,11 +1146,19 @@ public static class EngineSettings
             _turnMode = ReadEnum(KeyTurnMode, _turnMode);
             _snapTurnAngle = SettingsCatalog.SnapTurnAngle.Clamp(Settings.ReadValue(KeySnapTurnAngle, _snapTurnAngle));
             _smoothTurnSpeed = SettingsCatalog.SmoothTurnSpeed.Clamp(Settings.ReadValue(KeySmoothTurnSpeed, _smoothTurnSpeed));
+            _movementDirection = ReadEnum(KeyMovementDirection, _movementDirection);
             _reticleStyle = ReadEnum(KeyReticleStyle, _reticleStyle);
             _gizmoControls = ReadEnum(KeyGizmoControls, GizmoControlStyle.ContextMenu);
             if (!Enum.IsDefined(_gizmoControls)) _gizmoControls = GizmoControlStyle.ContextMenu;
             _reticleSize = SettingsCatalog.ReticleSize.Clamp(Settings.ReadValue(KeyReticleSize, _reticleSize));
             _reticleThickness = SettingsCatalog.ReticleThickness.Clamp(Settings.ReadValue(KeyReticleThickness, _reticleThickness));
+            // A reload can bring the other units from the account, and that counts as a flip too.
+            bool imperial = Settings.ReadValue(KeyImperialUnits, _imperialUnits);
+            if (imperial != _imperialUnits)
+                UnitsVersion++;
+            _imperialUnits = imperial;
+            _tooltips = Settings.ReadValue(KeyTooltips, _tooltips);
+            _tooltipDelay = SettingsCatalog.TooltipDelay.Clamp(Settings.ReadValue(KeyTooltipDelay, _tooltipDelay));
             Changed?.Invoke();
         }
         catch (Exception ex)
@@ -769,9 +1179,18 @@ public static class EngineSettings
         {
             Settings.WriteValue(KeyMouseSensitivity, _mouseSensitivity);
             Settings.WriteValue(KeyMouseSmoothing, _mouseSmoothing);
+            Settings.WriteValue(KeyLaserSmoothing, _laserSmoothing);
+            Settings.WriteValue(KeyHapticsStrength, _hapticsStrength);
             Settings.WriteValue(KeyNoclipSpeed, _noclipSpeed);
             Settings.WriteValue(KeyPreferredLocomotion, _preferredLocomotion);
+            Settings.WriteValue(KeyPrimaryHand, _primaryHand.ToString());
+            Settings.WriteValue(KeyPhotoSize, _photoSize);
+            Settings.WriteValue(KeyPhotoEncoding, _photoEncoding.ToString());
+            Settings.WriteValue(KeyPhotoTimerSeconds, _photoTimerSeconds);
+            Settings.WriteValue(KeyHandFrame, _handFrame);
+            Settings.WriteValue(KeyPhotosToInventory, _photosToInventory);
             Settings.WriteValue(KeyUserHeight, _userHeight);
+            Settings.WriteValue(KeyAvatarArrival, _avatarArrival);
             Settings.WriteValue(KeyMasterVolume, _masterVolume);
             Settings.WriteValue(KeySoundEffectVolume, _soundEffectVolume);
             Settings.WriteValue(KeyMultimediaVolume, _multimediaVolume);
@@ -781,6 +1200,11 @@ public static class EngineSettings
             Settings.WriteValue(KeyDefaultStreamBitrateKbps, _defaultStreamBitrateKbps);
             Settings.WriteValue(KeyAudioInputDevice, _audioInputDevice);
             Settings.WriteValue(KeyAudioOutputDevice, _audioOutputDevice);
+            Settings.WriteValue(KeyStreamDevice, _streamDevice);
+            Settings.WriteValue(KeyStreamOutputDevice, _streamOutputDevice);
+            Settings.WriteValue(KeyDesktopMonitor, _desktopMonitor);
+            Settings.WriteValue(KeyDesktopFollowCursor, _desktopFollowCursor);
+            Settings.WriteValue(KeyDesktopBrightness, _desktopBrightness);
             Settings.WriteValue(KeyMicrophoneMuted, _microphoneMuted);
             Settings.WriteValue(KeyVoiceNormalization, _voiceNormalization);
             Settings.WriteValue(KeyNoiseSuppression, _noiseSuppression);
@@ -789,13 +1213,17 @@ public static class EngineSettings
             Settings.WriteValue(KeyNoiseGateHold, _noiseGateHold);
             Settings.WriteValue(KeyNoiseGateRelease, _noiseGateRelease);
             Settings.WriteValue(KeyNormalizationThreshold, _normalizationThreshold);
+            Settings.WriteValue(KeyVoiceTargetLevel, _voiceTargetLevel);
+            Settings.WriteValue(KeyMicrophoneGain, _microphoneGain);
             Settings.WriteValue(KeyVideoCookiesBrowser, _videoCookiesBrowser.ToString());
             Settings.WriteValue(KeyVideoMaxHeight, _videoMaxHeight);
+            Settings.WriteValue(KeyAssetCacheGigabytes, _assetCacheGigabytes);
             Settings.WriteValue(KeyVSync, _vsync);
             Settings.WriteValue(KeyMaxFps, _maxFps);
             Settings.WriteValue(KeyBackgroundFps, _backgroundFps);
             Settings.WriteValue(KeyFullscreen, _fullscreen);
             Settings.WriteValue(KeyRenderScale, _renderScale);
+            Settings.WriteValue(KeyFieldOfView, _fieldOfView);
             Settings.WriteValue(KeyDynamicResolution, _dynamicResolution);
             Settings.WriteValue(KeyUpscaler, _upscaler);
             Settings.WriteValue(KeyResolutionHeight, _resolutionHeight);
@@ -804,6 +1232,9 @@ public static class EngineSettings
             Settings.WriteValue(KeyLodBias, _lodBias);
             Settings.WriteValue(KeyMeshLodThreshold, _meshLodThreshold);
             Settings.WriteValue(KeyShadowDistanceScale, _shadowDistanceScale);
+            Settings.WriteValue(KeyShadowedLights, _shadowedLights);
+            Settings.WriteValue(KeyShadowedLightsVR, _shadowedLightsVR);
+            Settings.WriteValue(KeyMovingShadowRate, _movingShadowRate);
             Settings.WriteValue(KeyTonemap, _tonemap);
             Settings.WriteValue(KeyExposure, _exposure);
             Settings.WriteValue(KeyBloom, _bloom);
@@ -817,10 +1248,14 @@ public static class EngineSettings
             Settings.WriteValue(KeyTurnMode, _turnMode.ToString());
             Settings.WriteValue(KeySnapTurnAngle, _snapTurnAngle);
             Settings.WriteValue(KeySmoothTurnSpeed, _smoothTurnSpeed);
+            Settings.WriteValue(KeyMovementDirection, _movementDirection.ToString());
             Settings.WriteValue(KeyReticleStyle, _reticleStyle.ToString());
             Settings.WriteValue(KeyGizmoControls, _gizmoControls.ToString());
             Settings.WriteValue(KeyReticleSize, _reticleSize);
             Settings.WriteValue(KeyReticleThickness, _reticleThickness);
+            Settings.WriteValue(KeyImperialUnits, _imperialUnits);
+            Settings.WriteValue(KeyTooltips, _tooltips);
+            Settings.WriteValue(KeyTooltipDelay, _tooltipDelay);
         }
         catch (Exception ex)
         {

@@ -33,6 +33,11 @@ public interface IPermissionActor
     // The allocation byte this user mints ids in. 0 until the host-authored value syncs across.
     byte AllocationByte { get; }
 
+    // The host's second byte: what it makes for itself while the world is frozen, kept apart from the
+    // authority byte the world's own content is minted in. Host-assigned like AllocationByte, 0 for
+    // everyone else, so a client can never name one.
+    byte ItemAllocationByte => 0;
+
     // Name for denial logging; falls back to the id when there is no name yet.
     string? DisplayName { get; }
 
@@ -102,6 +107,10 @@ public interface IPermissionTarget
     // Whether this element sits at or under the actor's own root.
     bool IsUnderActorRoot(IPermissionActor actor);
 
+    // Whether this element is somewhere in what the actor is holding: the held object or anything it carries
+    // along. Holding puts it under the actor's root without making it theirs.
+    bool IsCarriedBy(IPermissionActor actor) => false;
+
     // The nearest copy-protection marker at or above this element, or null. Only ever read on the copy
     // path (an explicit user action), so the walk it costs never lands on a per-write path.
     IPermissionCopyProtection? CopyProtection { get; }
@@ -123,6 +132,10 @@ public interface IPermissionGrabSurface
     // The user recorded as holding it right now, or null. On the authority this is always the PRE-batch
     // holder, because validation runs before any record in the batch is decoded.
     IPermissionActor? CurrentHolder { get; }
+
+    // The user who let go of it and is still putting it down (a socket or a surface easing it into place
+    // after the hand is gone), or null. Counts only while nobody holds it, and never for the holder ref.
+    IPermissionActor? Placer => null;
 
     // Classify a write against this surface as part of the grab protocol, or not.
     GrabWriteKind ClassifyGrabWrite(IPermissionTarget? member);

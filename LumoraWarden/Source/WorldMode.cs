@@ -13,7 +13,8 @@ public enum WorldMode
     Builder,
 
     // Social space: the authored world is frozen for EVERYONE (including the host) - no building,
-    // no dev tools, no inspectors. Users keep their own avatar and may bring their own items.
+    // no dev tools, no inspectors. Its props can still be picked up and its hinges turned. Users keep
+    // their own avatar and may bring their own items.
     Social,
 
     // Like Social but stricter: users can't spawn items either - view and interact only.

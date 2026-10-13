@@ -110,11 +110,14 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
     public const string KindNote = "sessionnote";
     public const string KindUser = "sessionuser";
     public const string KindChoice = "sessionchoice";
+    public const string KindProse = "sessionprose";
 
     private const float HeaderHeight = 36f;
+    private const int TabCount = 3;
     private const float TabWidth = 118f;
     private const float TabTrackPad = 3f;
     private const float HeaderChipWidth = 78f;
+    private const float TitleMinWidth = 160f;
     private const float ScrollbarGap = 6f;
     private const float RefreshInterval = 0.25f;
     private const float FeedbackSeconds = 1.8f;
@@ -147,15 +150,27 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
     private bool _settingsHostedForGroup;
     private bool _settingsAuthority;
 
+    private Slot? _header;
+    private Slot? _headerInner;
+    private RectTransform? _tabTrack;
+    private RectTransform? _chips;
+    private int _headerRows;
     private Text? _worldTitle;
     private SessionHeaderChip? _modeChip;
     private SessionHeaderChip? _roleChip;
+    private Slot? _previewRow;
+    private Worlds.ArtBlock? _previewArt;
+    private Worlds.ThumbnailCache? _previewCache;
+    private Text? _previewFacts;
+    private Text? _previewDescription;
 
     private Slot? _settingsPage;
     private ListingView? _settingsView;
+    private readonly SettingsRowFit _settingsFit = new();
     private DashScrollbar? _settingsBar;
     private Slot? _usersPage;
     private ListingView? _usersView;
+    private readonly SettingsRowFit _usersFit = new();
     private DashScrollbar? _usersBar;
     private Slot? _permissionsPage;
     private SessionPermissionsPanel? _permissionsPanel;
@@ -190,6 +205,7 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
         // rebinding rows on every host edit.
         _permissionsPanel?.Detach();
         _permissionsPanel = null;
+        _previewCache?.Clear();
         base.OnDestroy();
     }
 
@@ -202,6 +218,14 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
         if (!Slot.ActiveSelf.Value)
             return;
 
+        FitHeader();
+        // The settings rows take their shape from the list's width, so a new width measures them again.
+        if (_settingsView != null && _settingsPage != null && _settingsPage.ActiveSelf.Value
+            && _settingsFit.Update(SettingsUI.Rect(_settingsView.Slot).LocalComputeRect.width))
+            _settingsView.Refresh();
+        if (_usersView != null && _usersPage != null && _usersPage.ActiveSelf.Value
+            && _usersFit.Update(SettingsUI.Rect(_usersView.Slot).LocalComputeRect.width))
+            _usersView.Refresh();
         RefreshScrollbars();
         if (_permissionsPage != null && _permissionsPage.ActiveSelf.Value)
             _permissionsPanel?.Tick(delta);
@@ -250,6 +274,7 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
 
     private void RebuildForFocusedWorld()
     {
+        if (!ReferenceEquals(_world, FocusedWorld)) _previewCache?.Clear();
         _world = FocusedWorld;
         ApplyHeader();
         RebuildSettings();
@@ -285,7 +310,7 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
 
     protected override void BuildContent(UIBuilder builder)
     {
-        _dashboard = Slot.GetComponentInParents<Dashboard>();
+        _dashboard = Dashboard.Of(Slot);
         _fonts.Regular = _dashboard?.Font.Target;
         _fonts.Semibold = _dashboard?.FontSemibold.Target;
         _fonts.Bold = _dashboard?.FontBold.Target;
@@ -306,6 +331,10 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
         header.AttachComponent<RectTransform>();
         SetFixedHeight(header, HeaderHeight);
         var headerInner = SettingsUI.Fill(header, "Inner", ContentLeft, 0f, ContentRight, 0f);
+        _header = header;
+        _headerInner = headerInner;
+
+        BuildPreview(root);
 
         var contentHost = root.AddSlot("Content");
         contentHost.AttachComponent<RectTransform>();
@@ -313,11 +342,12 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
         hostElement.FlexibleWidth.Value = 1f;
         hostElement.FlexibleHeight.Value = 1f;
 
-        var track = BuildTabTrack(headerInner, 3);
+        var track = BuildTabTrack(headerInner);
         AddTab(track, contentHost, "Settings", SessionLocale.TabSettings, BuildSettingsPage);
         AddTab(track, contentHost, "Users", SessionLocale.TabUsers, BuildUsersPage);
         AddTab(track, contentHost, "Permissions", SessionLocale.TabPermissions, BuildPermissionsPage);
-        BuildWorldTitle(headerInner, TabTrackPad * 2f + TabWidth * 3f);
+        BuildWorldTitle(headerInner);
+        LayoutHeader(1);
 
         if (!_localeHooked)
         {
@@ -353,21 +383,24 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
 
     // HEADER
 
+    private static float TabsWidth => TabTrackPad * 2f + TabWidth * TabCount;
+    private static float ChipsWidth => HeaderChipWidth * 2f + DashTheme.Gap;
+
     // A segmented control: one sunken track, the current tab lit in the accent, the others bare words.
-    private Slot BuildTabTrack(Slot header, int count)
+    // The tabs split the track's lane evenly, so the track can be its own width or the window's.
+    private Slot BuildTabTrack(Slot header)
     {
-        float width = TabTrackPad * 2f + TabWidth * count;
-        var track = SettingsUI.Child(header, "Tabs", float2.Zero, new float2(0f, 1f), float2.Zero, new float2(width, 0f));
+        var track = SettingsUI.Child(header, "Tabs", float2.Zero, new float2(0f, 1f), float2.Zero, new float2(TabsWidth, 0f));
         SettingsUI.Panel(track, DashTheme.Field, DashTheme.Outline, DashTheme.RadiusControl + TabTrackPad);
-        return track;
+        _tabTrack = SettingsUI.Rect(track);
+        return SettingsUI.Fill(track, "Lane", TabTrackPad, TabTrackPad, TabTrackPad, TabTrackPad);
     }
 
     private void AddTab(Slot track, Slot contentHost, string name, LocaleText label, Action<Slot> buildPage)
     {
         int index = _tabs.Count;
-        float left = TabTrackPad + TabWidth * index;
-        var host = SettingsUI.Child(track, name, float2.Zero, new float2(0f, 1f),
-            new float2(left, TabTrackPad), new float2(left + TabWidth, -TabTrackPad));
+        var host = SettingsUI.Child(track, name, new float2(index / (float)TabCount, 0f),
+            new float2((index + 1) / (float)TabCount, 1f), float2.Zero, float2.Zero);
         var chip = SettingsChip.Build(host, _fonts.Medium, DashTheme.FontBody, DashTheme.RadiusControl);
         ListingStyle.SetText(chip.Text, label.Resolve());
         chip.Button.Clicked += (_, _) => SelectTab(index);
@@ -387,22 +420,73 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
         buildPage(page);
     }
 
-    private void BuildWorldTitle(Slot header, float tabsWidth)
+    private void BuildWorldTitle(Slot header)
     {
-        var chips = SettingsUI.Child(header, "Chips", new float2(1f, 0.5f), new float2(1f, 0.5f),
-            new float2(-(HeaderChipWidth * 2f + DashTheme.Gap), -DashTheme.ChipHeight * 0.5f),
-            new float2(0f, DashTheme.ChipHeight * 0.5f));
+        var chips = SettingsUI.Child(header, "Chips", new float2(1f, 0.5f), new float2(1f, 0.5f), float2.Zero, float2.Zero);
+        _chips = SettingsUI.Rect(chips);
         _modeChip = SessionHeaderChip.Build(chips, "Mode", _fonts.Medium, 0f, HeaderChipWidth);
         _roleChip = SessionHeaderChip.Build(chips, "Role", _fonts.Medium, HeaderChipWidth + DashTheme.Gap, HeaderChipWidth);
 
         _worldTitle = SettingsUI.Label(header, "World", _fonts.Strong, DashTheme.FontHeading, DashTheme.Text,
-            TextHorizontalAlignment.Right, float2.Zero, float2.One,
-            new float2(tabsWidth + DashTheme.GapLarge, 0f),
-            new float2(-(HeaderChipWidth * 2f + DashTheme.Gap + DashTheme.GapLarge), 0f), shrinkToFit: true);
+            TextHorizontalAlignment.Right, float2.Zero, float2.One, float2.Zero, float2.Zero, shrinkToFit: true);
+    }
+
+    // One row while the tabs, a readable title and both chips fit side by side. Narrower, the title and the
+    // chips take a row of their own and the tabs span the window below them.
+    private void FitHeader()
+    {
+        if (_headerInner == null)
+            return;
+        float width = SettingsUI.Rect(_headerInner).LocalComputeRect.width;
+        if (width <= 0f)
+            return;
+        int rows = width >= TabsWidth + TitleMinWidth + ChipsWidth + DashTheme.GapLarge * 2f ? 1 : 2;
+        if (rows != _headerRows)
+            LayoutHeader(rows);
+    }
+
+    private void LayoutHeader(int rows)
+    {
+        _headerRows = rows;
+        if (_header != null)
+            SetFixedHeight(_header, rows == 1 ? HeaderHeight : HeaderHeight * 2f + DashTheme.Gap);
+        float row = HeaderHeight * 0.5f;
+        float chip = DashTheme.ChipHeight * 0.5f;
+        var titleRect = _worldTitle?.Slot.GetComponent<RectTransform>();
+        if (rows == 1)
+        {
+            if (_tabTrack != null)
+                Place(_tabTrack, float2.Zero, new float2(0f, 1f), float2.Zero, new float2(TabsWidth, 0f));
+            if (_chips != null)
+                Place(_chips, new float2(1f, 0.5f), new float2(1f, 0.5f), new float2(-ChipsWidth, -chip), new float2(0f, chip));
+            if (titleRect != null)
+                Place(titleRect, float2.Zero, float2.One, new float2(TabsWidth + DashTheme.GapLarge, 0f),
+                    new float2(-(ChipsWidth + DashTheme.GapLarge), 0f));
+        }
+        else
+        {
+            if (_tabTrack != null)
+                Place(_tabTrack, float2.Zero, new float2(1f, 0f), float2.Zero, new float2(0f, HeaderHeight));
+            if (_chips != null)
+                Place(_chips, float2.One, float2.One, new float2(-ChipsWidth, -row - chip), new float2(0f, -row + chip));
+            if (titleRect != null)
+                Place(titleRect, new float2(0f, 1f), float2.One, new float2(0f, -HeaderHeight),
+                    new float2(-(ChipsWidth + DashTheme.GapLarge), 0f));
+        }
+        var align = rows == 1 ? TextHorizontalAlignment.Right : TextHorizontalAlignment.Left;
+        if (_worldTitle != null && _worldTitle.HorizontalAlignment.Value != align)
+            _worldTitle.HorizontalAlignment.Value = align;
+    }
+
+    private static void Place(RectTransform rect, in float2 anchorMin, in float2 anchorMax, in float2 offsetMin, in float2 offsetMax)
+    {
+        SettingsUI.SetAnchors(rect, anchorMin, anchorMax);
+        SettingsUI.SetOffsets(rect, offsetMin, offsetMax);
     }
 
     private void ApplyHeader()
     {
+        ApplyPreview();
         var world = _world;
         bool live = world != null && !world.IsDestroyed;
         if (_worldTitle != null)
@@ -423,6 +507,45 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
                 _roleChip.Set((world!.IsAuthority ? SessionLocale.Hosting : SessionLocale.Guest).Resolve(),
                     DashTheme.Field, DashTheme.TextDim);
         }
+    }
+
+    private void BuildPreview(Slot root)
+    {
+        var parts = new Worlds.BrowserParts { Regular = _fonts.Body, Semibold = _fonts.Medium, Bold = _fonts.Strong };
+        _previewCache = new Worlds.ThumbnailCache(this, root.AddSlot("PreviewAssets"));
+        _previewRow = root.AddSlot("WorldPreview");
+        _previewRow.AttachComponent<RectTransform>();
+        SetFixedHeight(_previewRow, 88f);
+        var row = SettingsUI.Fill(_previewRow, "Inner", ContentLeft, 0f, ContentRight, 0f);
+        var image = SettingsUI.Child(row, "Image", float2.Zero, new float2(0f, 1f), float2.Zero, new float2(156f, 0f));
+        _previewArt = new Worlds.ArtBlock(parts, image, DashTheme.RadiusControl, 28f, 156f / 88f, 0f);
+        var info = SettingsUI.Fill(row, "Info", 156f + DashTheme.GapLarge, 0f, 0f, 0f);
+        var facts = info.AddSlot("Facts");
+        Worlds.BrowserParts.PinTop(facts.AttachComponent<RectTransform>(), 4f, 32f);
+        _previewFacts = parts.Label(facts, string.Empty, DashTheme.FontBody, DashTheme.Text, Worlds.BrowserParts.Weight.Semibold, wrap: true);
+        var description = info.AddSlot("Description");
+        Worlds.BrowserParts.PinBottom(description.AttachComponent<RectTransform>(), 4f, 40f);
+        _previewDescription = parts.Label(description, string.Empty, DashTheme.FontSmall, DashTheme.TextDim, Worlds.BrowserParts.Weight.Regular, wrap: true);
+    }
+
+    private void ApplyPreview()
+    {
+        if (_previewRow == null || _previewArt == null || _previewCache == null) return;
+        var world = _world;
+        bool live = world != null && !world.IsDestroyed;
+        Worlds.BrowserParts.SetActive(_previewRow, live);
+        if (!live) return;
+        var current = world!;
+        _previewCache.OfferBase64("current", current.PreviewThumbnailBase64, ApplyPreview);
+        _previewArt.SetPlaceholder(current.Mode, WorldDisplayName(current));
+        _previewArt.SetTexture(_previewCache.Get("current"));
+        string access = current.Configuration != null ? AccessLabels.Label(current.Configuration.AccessLevel.Value).Resolve() : string.Empty;
+        string users = $"{current.GetAllUsers().Count} / {current.Configuration?.MaxUsers.Value ?? 16} users";
+        Worlds.BrowserParts.SetText(_previewFacts, string.IsNullOrEmpty(access) ? users : access + " · " + users);
+        string description = current.Session?.Metadata?.Description ?? string.Empty;
+        string host = current.Session?.Metadata?.HostUsername ?? string.Empty;
+        Worlds.BrowserParts.SetText(_previewDescription, !string.IsNullOrWhiteSpace(description) ? description
+            : !string.IsNullOrWhiteSpace(host) ? "Hosted by " + host : string.Empty);
     }
 
     // TABS
@@ -492,16 +615,17 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
     private void BuildSettingsPage(Slot page)
     {
         _settingsPage = page;
-        var labels = new SettingsLabelTemplate(_fonts);
+        var labels = new SettingsLabelTemplate(_fonts) { Fit = _settingsFit };
         var templates = new ListingTemplateMapper { DefaultHeight = SettingsMetrics.RowHeight };
         templates.Map<ListingHeader>(new SettingsSectionTemplate(_fonts));
-        templates.Map<ListingToggle>(new SettingsToggleTemplate(_fonts));
-        templates.Map<ListingSlider>(new SettingsSliderTemplate(_fonts));
-        templates.Map<ListingAction>(new SettingsActionTemplate(_fonts));
+        templates.Map<ListingToggle>(new SettingsToggleTemplate(_fonts) { Fit = _settingsFit });
+        templates.Map<ListingSlider>(new SettingsSliderTemplate(_fonts) { Fit = _settingsFit });
+        templates.Map<ListingAction>(new SettingsActionTemplate(_fonts) { Fit = _settingsFit });
         templates.Map<ListingLabel>(labels);
         templates.Fallback(labels);
-        templates.MapKind(KindChoice, new SessionChoiceTemplate(_fonts));
-        templates.MapKind(KindNote, new PermNoteTemplate(_fonts));
+        templates.MapKind(KindChoice, new SessionChoiceTemplate(_fonts) { Fit = _settingsFit });
+        templates.MapKind(KindNote, new PermNoteTemplate(_fonts) { Fit = _settingsFit });
+        templates.MapKind(KindProse, new SettingsProseTemplate(_fonts) { Fit = _settingsFit });
         _settingsView = AttachListing(page, "Settings", templates, _settingsItems, out var bar);
         _settingsBar = bar;
     }
@@ -551,7 +675,10 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
         _settingsItems.AddRoot(new ListingLabel("world.description", SessionLocale.Description,
             () => string.IsNullOrWhiteSpace(config.Description.Value)
                 ? SessionLocale.NoDescription.Resolve()
-                : config.Description.Value));
+                : config.Description.Value)
+        {
+            Kind = KindProse,
+        });
         AddSlider(world, "world.maxusers", SessionLocale.MaxUsers, default, 1f, 64f, 1f,
             () => config.MaxUsers.Value, v => config.MaxUsers.Value = (int)MathF.Round(v),
             v => ((int)MathF.Round(v)).ToString());
@@ -789,9 +916,9 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
         _usersPage = page;
         var templates = new ListingTemplateMapper { DefaultHeight = SessionUserRowTemplate.RowHeight };
         templates.Map<ListingHeader>(new SettingsSectionTemplate(_fonts));
-        templates.MapKind(KindUser, new SessionUserRowTemplate(_fonts, this));
-        templates.MapKind(KindNote, new PermNoteTemplate(_fonts));
-        templates.Fallback(new SettingsLabelTemplate(_fonts));
+        templates.MapKind(KindUser, new SessionUserRowTemplate(_fonts, this) { Fit = _usersFit });
+        templates.MapKind(KindNote, new PermNoteTemplate(_fonts) { Fit = _usersFit });
+        templates.Fallback(new SettingsLabelTemplate(_fonts) { Fit = _usersFit });
         _usersView = AttachListing(page, "Users", templates, _userItems, out var bar);
         _usersBar = bar;
     }

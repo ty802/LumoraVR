@@ -99,34 +99,78 @@ internal static class PermMetrics
     public static float CellsLeft => SettingsMetrics.RowInset + LabelWidth + CellGap;
 }
 
-// A single line of quiet text with no row behind it. The intro and the empty-roster line live here
-// rather than in a label row: they are prose, not settings, and a pill around a sentence reads as a
-// control nobody can press. Shrink-to-fit, never wrap, so a long world name cannot push the line into
-// its neighbour's row the way the old notes did. -xlinka
+// Quiet text with no row behind it. The intro, the role guide, the legend and the empty-roster line live
+// here rather than in a label row: they are prose, not settings, and a pill around a sentence reads as a
+// control nobody can press. With the list's fit a note wraps to as many lines as it was measured for, up
+// to ProseLines, so the row grows instead of the sentence running into its neighbour's row the way the
+// old notes did. Without one it is a single line that shrinks to fit. -xlinka
 internal sealed class PermNoteTemplate : ListingRowTemplate
 {
+    // Above and below the lines: one line keeps the note's old height.
+    private const float NotePad = (PermMetrics.NoteHeight - SettingsMetrics.HintHeight) * 0.5f;
+
     private readonly SettingsFonts _fonts;
 
     public PermNoteTemplate(SettingsFonts fonts) => _fonts = fonts;
 
+    public SettingsRowFit? Fit { get; init; }
+
     public override float Height => PermMetrics.NoteHeight;
     public override bool UsesRowBackground => false;
     public override void ConfigureRow(Slot row, ListingStyle style) { }
+
+    private static float TextWidth(SettingsRowFit fit) => fit.Width - SettingsMetrics.RowInset * 2f;
+
+    private static float HeightOf(SettingsRowFit fit, int lines)
+        => lines <= 1 ? PermMetrics.NoteHeight : lines * fit.LineHeight + NotePad * 2f;
+
+    public override float HeightFor(ListingItem item)
+    {
+        if (Fit == null)
+            return Height;
+        int lines = Fit.MeasureLines(_fonts.Body, item.Label, DashTheme.FontSmall, TextWidth(Fit), SettingsRowFit.ProseLines);
+        return HeightOf(Fit, lines);
+    }
 
     public override ListingRow Build(ListingView view, UIBuilder builder, Slot row)
     {
         var text = SettingsUI.Label(row, "Note", _fonts.Body, DashTheme.FontSmall, DashTheme.TextMuted,
             TextHorizontalAlignment.Left, float2.Zero, float2.One,
             new float2(SettingsMetrics.RowInset, 0f), new float2(-SettingsMetrics.RowInset, 0f),
-            shrinkToFit: true);
-        return new NoteRow { Text = text };
+            shrinkToFit: Fit == null);
+        text.WordWrap.Value = Fit != null;
+        return new NoteRow { Text = text, Fit = Fit };
     }
 
     private sealed class NoteRow : ListingRow
     {
         public required Text Text;
+        public SettingsRowFit? Fit;
 
-        public override void Bind(ListingItem item) => ListingStyle.SetText(Text, item.Label);
+        private string? _measured;
+        private float _measuredWidth;
+
+        public override void Bind(ListingItem item)
+        {
+            string label = item.Label;
+            ListingStyle.SetText(Text, label);
+            if (Fit is not { Measured: true })
+                return;
+            float width = TextWidth(Fit);
+            if (_measuredWidth == width && string.Equals(_measured, label, StringComparison.Ordinal))
+                return;
+            // A note that now takes another line count than its row was placed for (a world name arriving
+            // late) asks for the list to be measured again.
+            int lines = Fit.MeasureLines(Text.Font.Target, label, DashTheme.FontSmall, width, SettingsRowFit.ProseLines);
+            _measured = Text.Font.Target?.Asset is { IsValid: true } ? label : null;
+            _measuredWidth = width;
+            var rect = SettingsUI.Rect(Slot);
+            float placed = rect.OffsetMax.Value.y - rect.OffsetMin.Value.y;
+            if (MathF.Abs(placed - HeightOf(Fit, lines)) > 0.5f)
+                Fit.MarkStale();
+        }
+
+        public override void Unbind() => _measured = null;
     }
 }
 
@@ -185,6 +229,17 @@ internal sealed class PermSegments
             _chips.Add(chip);
         }
     }
+
+    // With a fit, the settings strips' line grid: more options than fit at a readable width wrap.
+    public void Layout(SettingsRowFit? fit, int count)
+    {
+        if (fit == null)
+            Layout(count);
+        else
+            SettingsSegments.Arrange(SettingsUI.Rect(_strip), _chips, fit, count, StripSpan);
+    }
+
+    public static float BlockHeight(SettingsRowFit? fit, int count) => SettingsSegments.BlockHeight(fit, count, StripSpan);
 
     // Fractional anchors so any option count fills the band exactly; a fixed pill width either overflows
     // the column or leaves a gap that changes with the count.
@@ -432,9 +487,15 @@ internal sealed class PermSwitchCell
 // two escalations. Role pills and the escalations only exist for the host, and never on the host's own
 // row: the engine never reassigns or escalates against the host, so offering it would be a control that
 // cannot fire.
+//
+// Narrower than the role strip and the escalations need beside the name, they move to a line under it
+// and shrink to the row if that line is still too wide, so the host's controls never cover the name.
 internal sealed class PermUserRowTemplate : ListingRowTemplate
 {
     private const int MaxRoles = 6;
+    private const float StackTop = 46f;
+    private const float StackBottom = 10f;
+    private const float StackGap = 12f;
 
     private readonly SettingsFonts _fonts;
     private readonly SessionPermissionsPanel _panel;
@@ -447,9 +508,35 @@ internal sealed class PermUserRowTemplate : ListingRowTemplate
         _relay = relay;
     }
 
+    // Set by the list so a row can tell how wide it is; without one every row keeps one line.
+    public SettingsRowFit? Fit { get; init; }
+
     public override float Height => PermMetrics.UserRowHeight;
     public override bool UsesRowBackground => false;
     public override void ConfigureRow(Slot row, ListingStyle style) { }
+
+    public override float HeightFor(ListingItem item) => HeightOf(Stacks(Fit, _panel, item.Tag as User));
+
+    private static float HeightOf(bool stacked)
+        => stacked ? StackTop + PermMetrics.ControlBand + StackBottom : PermMetrics.UserRowHeight;
+
+    // The strip, Kick and Ban from the strip's left edge to the row's right inset.
+    private static float ControlsWidth => PermMetrics.StripRight + PermMetrics.StripWidth - PermMetrics.BanRight;
+
+    private static bool HasControls(SessionPermissionsPanel panel, User? user)
+        => user != null && !user.IsDestroyed && panel.IsHost && !panel.IsHostUser(user);
+
+    // Whether the host's controls go under the name: only rows that have them, and only once the row is
+    // narrower than the name, the group mark and the controls side by side.
+    private static bool Stacks(SettingsRowFit? fit, SessionPermissionsPanel panel, User? user)
+    {
+        if (fit is not { Measured: true } || !HasControls(panel, user))
+            return false;
+        float right = panel.IsGroupActor(user)
+            ? PermMetrics.GroupMarkRight + PermMetrics.GroupMarkWidth
+            : PermMetrics.StripRight + PermMetrics.StripWidth;
+        return fit.Width < SettingsMetrics.RowInset + PermMetrics.NameWidth + StackGap + right;
+    }
 
     public override ListingRow Build(ListingView view, UIBuilder builder, Slot row)
     {
@@ -498,6 +585,7 @@ internal sealed class PermUserRowTemplate : ListingRowTemplate
         var listingRow = new UserRow
         {
             Background = background,
+            NameColumn = nameColumn,
             Name = name,
             You = you,
             HostTag = hostTag,
@@ -509,6 +597,7 @@ internal sealed class PermUserRowTemplate : ListingRowTemplate
             GroupDot = groupDot,
             GroupText = groupText,
             Panel = _panel,
+            Fit = Fit,
         };
 
         var strip = PermSegments.Band(row, "Roles", PermMetrics.StripRight, PermMetrics.StripWidth);
@@ -553,6 +642,7 @@ internal sealed class PermUserRowTemplate : ListingRowTemplate
     private sealed class UserRow : ListingRow
     {
         public required RoundedPanel Background;
+        public required Slot NameColumn;
         public required Text Name;
         public required Tag You;
         public required Tag HostTag;
@@ -564,11 +654,66 @@ internal sealed class PermUserRowTemplate : ListingRowTemplate
         public required RoundedPanel GroupDot;
         public required Text GroupText;
         public required SessionPermissionsPanel Panel;
+        public SettingsRowFit? Fit;
 
         public Slot Strip = null!;
         public PermSegments Roles = null!;
         public SettingsChip Kick = null!;
         public SettingsChip Ban = null!;
+
+        // Beside the name the parts sit where Build put them. Stacked, the top band keeps the name, the
+        // refusals and the group mark, and the strip, Kick and Ban take the line under it.
+        private void Arrange(bool stacked, bool roster)
+        {
+            float inset = SettingsMetrics.RowInset;
+            float band = PermMetrics.UserRowHeight;
+            float half = PermMetrics.ControlBand * 0.5f;
+            if (!stacked)
+            {
+                Box(NameColumn, float2.Zero, new float2(0f, 1f), new float2(inset, 0f), new float2(inset + PermMetrics.NameWidth, 0f));
+                Box(Refusals, float2.Zero, float2.One, new float2(PermMetrics.RefusalLeft, 0f),
+                    new float2(-(PermMetrics.GroupMarkRight + PermMetrics.GroupMarkWidth + 12f), 0f));
+                Box(GroupMark, new float2(1f, 0.5f), new float2(1f, 0.5f),
+                    new float2(-(PermMetrics.GroupMarkRight + PermMetrics.GroupMarkWidth), -PermMetrics.TagBand * 0.5f),
+                    new float2(-PermMetrics.GroupMarkRight, PermMetrics.TagBand * 0.5f));
+                Box(Strip, new float2(1f, 0.5f), new float2(1f, 0.5f),
+                    new float2(-(PermMetrics.StripRight + PermMetrics.StripWidth), -half), new float2(-PermMetrics.StripRight, half));
+                Box(Kick.Slot, new float2(1f, 0.5f), new float2(1f, 0.5f),
+                    new float2(-(PermMetrics.KickRight + PermMetrics.KickWidth), -half), new float2(-PermMetrics.KickRight, half));
+                Box(Ban.Slot, new float2(1f, 0.5f), new float2(1f, 0.5f),
+                    new float2(-(PermMetrics.BanRight + PermMetrics.BanWidth), -half), new float2(-PermMetrics.BanRight, half));
+                return;
+            }
+
+            // Tags only show on the host's own row and on yours, neither of which has controls, so the
+            // refusals can start where the tags would have been.
+            var top = new float2(0f, 1f);
+            var topRight = float2.One;
+            Box(NameColumn, top, top, new float2(inset, -band), new float2(inset + PermMetrics.NameWidth, 0f));
+            float markRoom = roster ? PermMetrics.GroupMarkWidth + 12f : 0f;
+            Box(Refusals, top, topRight, new float2(PermMetrics.YouLeft, -band), new float2(-(inset + markRoom), 0f));
+            Box(GroupMark, topRight, topRight,
+                new float2(-(inset + PermMetrics.GroupMarkWidth), -(band + PermMetrics.TagBand) * 0.5f),
+                new float2(-inset, -(band - PermMetrics.TagBand) * 0.5f));
+
+            float line = (Fit?.Width ?? 0f) - inset * 2f;
+            float scale = ControlsWidth > line && line > 0f ? line / ControlsWidth : 1f;
+            float y0 = -(StackTop + PermMetrics.ControlBand);
+            float y1 = -StackTop;
+            float banRight = PermMetrics.BanRight;
+            float kickRight = PermMetrics.BanRight + (PermMetrics.KickRight - PermMetrics.BanRight) * scale;
+            float stripRight = PermMetrics.BanRight + (PermMetrics.StripRight - PermMetrics.BanRight) * scale;
+            Box(Ban.Slot, topRight, topRight, new float2(-(banRight + PermMetrics.BanWidth * scale), y0), new float2(-banRight, y1));
+            Box(Kick.Slot, topRight, topRight, new float2(-(kickRight + PermMetrics.KickWidth * scale), y0), new float2(-kickRight, y1));
+            Box(Strip, topRight, topRight, new float2(-(stripRight + PermMetrics.StripWidth * scale), y0), new float2(-stripRight, y1));
+        }
+
+        private static void Box(Slot slot, in float2 anchorMin, in float2 anchorMax, in float2 offsetMin, in float2 offsetMax)
+        {
+            var rect = SettingsUI.Rect(slot);
+            SettingsUI.SetAnchors(rect, anchorMin, anchorMax);
+            SettingsUI.SetOffsets(rect, offsetMin, offsetMax);
+        }
 
         public override void Bind(ListingItem item)
         {
@@ -576,6 +721,16 @@ internal sealed class PermUserRowTemplate : ListingRowTemplate
             ListingStyle.SetText(Name, item.Label);
 
             var user = item.Tag as User;
+            bool stacked = Stacks(Fit, Panel, user);
+            Arrange(stacked, user != null && !user.IsDestroyed && Panel.IsGroupActor(user));
+            // Controls that came or went since the list measured this row (this machine took or lost the
+            // session, a roster changed) leave it placed for the other shape: the list measures again.
+            if (Fit != null)
+            {
+                var rect = SettingsUI.Rect(Slot);
+                if (MathF.Abs(rect.OffsetMax.Value.y - rect.OffsetMin.Value.y - HeightOf(stacked)) > 0.5f)
+                    Fit.MarkStale();
+            }
             if (user == null || user.IsDestroyed)
             {
                 ListingStyle.SetActive(You.Slot, false);
@@ -613,7 +768,7 @@ internal sealed class PermUserRowTemplate : ListingRowTemplate
             ListingStyle.SetActive(Ban.Slot, controls);
             // The role still reads as text wherever the pills are gone, so a guest sees what a role IS
             // even though they cannot reach for it. The host's own row already carries the Host tag, so
-            // it gets no role text: "Host  Host" was the first thing the owner noticed.
+            // it gets no role text, which would read "Host  Host".
             ListingStyle.SetActive(RoleText.Slot, !controls && !isHostRow);
 
             var role = Panel.RoleOf(user);
@@ -671,11 +826,14 @@ internal sealed class PermPillRowTemplate : SettingsRowTemplate
     public PermPillRowTemplate(SettingsFonts fonts, SessionPermissionRelay relay) : base(fonts)
         => _relay = relay;
 
+    protected override float ControlHeight(ListingItem item)
+        => PermSegments.BlockHeight(Fit, (item as ListingChoice)?.Options.Count ?? 0);
+
     public override ListingRow Build(ListingView view, UIBuilder builder, Slot row)
     {
         var shell = BuildShell(row, clickable: false);
         var strip = PermSegments.Strip(shell.Control);
-        var listingRow = new PillRow { Shell = shell };
+        var listingRow = new PillRow { Shell = shell, Fit = Fit };
         listingRow.Segments = new PermSegments(strip, Fonts, _relay, listingRow, _relay.OnPillPressed);
         listingRow.Segments.Grow(InitialSegments);
         return listingRow;
@@ -685,6 +843,7 @@ internal sealed class PermPillRowTemplate : SettingsRowTemplate
     {
         public required SettingsRowShell Shell;
         public PermSegments Segments = null!;
+        public SettingsRowFit? Fit;
 
         public override void Bind(ListingItem item)
         {
@@ -692,7 +851,7 @@ internal sealed class PermPillRowTemplate : SettingsRowTemplate
             var choice = item as ListingChoice;
             int count = choice?.Options.Count ?? 0;
             Segments.Grow(count);
-            Segments.Layout(count);
+            Segments.Layout(Fit, count);
             int selected = choice?.Read() ?? -1;
             bool dimmed = (item as PermChoiceItem)?.Dimmed?.Invoke() ?? false;
             for (int i = 0; i < count; i++)

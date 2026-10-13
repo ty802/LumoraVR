@@ -165,10 +165,15 @@ public sealed class WorldSettings : Component
         // the host AND to a Running world so the create-time seed in StartSession doesn't fire this before the
         // session even exists (the initial beacon comes from the session metadata as before). A client just
         // receives the synced value and never touches the beacon. -xlinka
+        // IsPublic follows too: it is seeded once at creation and Discord presence reads it.
         AccessLevel.OnChanged += _ =>
         {
-            if (World != null && World.IsAuthority && World.State == World.WorldState.Running)
-                World.Session?.SetVisibility(ToVisibility(AccessLevel.Value, HostGroupId.Value.Length > 0));
+            if (World == null || !World.IsAuthority || World.State != World.WorldState.Running)
+                return;
+            var visibility = ToVisibility(AccessLevel.Value, HostGroupId.Value.Length > 0);
+            using (WorldConfigEdit.Enter())
+                IsPublic.Value = visibility == SessionVisibility.Public;
+            World.Session?.SetVisibility(visibility);
         };
     }
 

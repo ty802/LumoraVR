@@ -21,12 +21,12 @@ public sealed class PermissionEngine
 
         public Scope(IPermissionActor? actor, bool systemBypass)
         {
-            _previousActor = s_currentActor.Value;
-            _previousBypassDepth = s_systemBypassDepth.Value;
-            s_currentActor.Value = actor;
+            _previousActor = s_currentActor;
+            _previousBypassDepth = s_systemBypassDepth;
+            s_currentActor = actor;
             if (systemBypass)
             {
-                s_systemBypassDepth.Value = _previousBypassDepth + 1;
+                s_systemBypassDepth = _previousBypassDepth + 1;
             }
         }
 
@@ -37,8 +37,8 @@ public sealed class PermissionEngine
                 return;
             }
 
-            s_currentActor.Value = _previousActor;
-            s_systemBypassDepth.Value = _previousBypassDepth;
+            s_currentActor = _previousActor;
+            s_systemBypassDepth = _previousBypassDepth;
             _disposed = true;
         }
     }
@@ -52,11 +52,10 @@ public sealed class PermissionEngine
         public AuthoredContentScope(bool armed)
         {
             _armed = armed;
-            // An unarmed scope must not so much as READ the counter: the inert singleton is constructed
-            // during this class's static init, before the ThreadLocal field it would touch exists. -xlinka
-            _previousDepth = armed ? s_authoredContentDepth.Value : 0;
+            // An unarmed scope does not touch the counter: the inert singleton is shared by every thread.
+            _previousDepth = armed ? s_authoredContentDepth : 0;
             if (armed)
-                s_authoredContentDepth.Value = _previousDepth + 1;
+                s_authoredContentDepth = _previousDepth + 1;
         }
 
         public void Dispose()
@@ -64,7 +63,7 @@ public sealed class PermissionEngine
             if (_disposed)
                 return;
             if (_armed)
-                s_authoredContentDepth.Value = _previousDepth;
+                s_authoredContentDepth = _previousDepth;
             _disposed = true;
         }
     }
@@ -126,9 +125,11 @@ public sealed class PermissionEngine
         };
     }
 
-    private static readonly ThreadLocal<IPermissionActor?> s_currentActor = new();
-    private static readonly ThreadLocal<int> s_systemBypassDepth = new();
-    private static readonly ThreadLocal<int> s_authoredContentDepth = new();
+    // Per thread, read on every gated write and set around every script node call: plain thread statics, a
+    // field read where a ThreadLocal was a lookup. -xlinka
+    [ThreadStatic] private static IPermissionActor? s_currentActor;
+    [ThreadStatic] private static int s_systemBypassDepth;
+    [ThreadStatic] private static int s_authoredContentDepth;
 
     private readonly IPermissionWorldFacts _world;
     private readonly IPermissionIdSpace _ids;
@@ -231,8 +232,8 @@ public sealed class PermissionEngine
     // Social/Event lockdown. When set, the authored world is frozen for EVERYONE (including the host
     // and admins): only a user's OWN runtime objects (avatar, spawned items) may be mutated. World
     // content is created under the authority id, so no user "owns" it and all editing of it is
-    // denied - there's no role that escapes this and no live toggle. Set from the world mode by
-    // ApplyMode.
+    // denied - there's no role that escapes this and no live toggle. Its grabbable things may still be
+    // picked up and its hinges turned, by the ordinary grab rules. Set from the world mode by ApplyMode.
     public bool SocialLock { get; set; }
 
     public PermissionEngine(IPermissionWorldFacts world, IPermissionIdSpace ids)
@@ -502,7 +503,39 @@ public sealed class PermissionEngine
 
     public IDisposable EnterActor(IPermissionActor? actor) => new Scope(actor, systemBypass: false);
 
-    public IDisposable EnterSystemBypass() => new Scope(s_currentActor.Value, systemBypass: true);
+    // What EnterActor's scope saves and puts back, for a caller that sets the actor thousands of times a frame
+    // and keeps the saved state itself: a script's node calls. Every SetActor is undone by Restore with the
+    // mark it returned, innermost first. -xlinka
+    public readonly struct ActorMark
+    {
+        internal readonly IPermissionActor? Actor;
+        internal readonly int Bypass;
+
+        internal ActorMark(IPermissionActor? actor, int bypass)
+        {
+            Actor = actor;
+            Bypass = bypass;
+        }
+    }
+
+    public static ActorMark SetActor(IPermissionActor? actor)
+    {
+        var mark = new ActorMark(s_currentActor, s_systemBypassDepth);
+        s_currentActor = actor;
+        return mark;
+    }
+
+    public static void Restore(in ActorMark mark)
+    {
+        s_currentActor = mark.Actor;
+        s_systemBypassDepth = mark.Bypass;
+    }
+
+    // Whether the gate already takes this thread's changes for that actor, with no scope open that lifts it.
+    public static bool IsActingAs(IPermissionActor? actor)
+        => ReferenceEquals(s_currentActor, actor) && s_systemBypassDepth == 0 && s_authoredContentDepth == 0;
+
+    public IDisposable EnterSystemBypass() => new Scope(s_currentActor, systemBypass: true);
 
     // A much narrower door than EnterSystemBypass, for the world's OWN authored logic running on the
     // authority: a button in the world flipping a light it was built alongside. Under the Social/Event
@@ -533,7 +566,7 @@ public sealed class PermissionEngine
     // Whether the calling thread is inside a scope that opens the gate: a system bypass or an authored
     // content scope. A script runtime refuses to start a call inside one, or the script would run with
     // the scope's rights instead of its author's.
-    public static bool IsGateOpenOnThisThread => s_systemBypassDepth.Value > 0 || s_authoredContentDepth.Value > 0;
+    public static bool IsGateOpenOnThisThread => s_systemBypassDepth > 0 || s_authoredContentDepth > 0;
 
     // Whether anything on the ownership chain reads as a user's: under their root, which covers what
     // they wear and what they are holding. The authority mints user roots, so authority-authored alone
@@ -789,7 +822,7 @@ public sealed class PermissionEngine
             return true;
         }
 
-        if (s_systemBypassDepth.Value > 0 || IsSystemMutation(request))
+        if (s_systemBypassDepth > 0 || IsSystemMutation(request))
         {
             return true;
         }
@@ -813,7 +846,7 @@ public sealed class PermissionEngine
 
         var actor = request.IsNetwork
             ? request.Actor
-            : request.Actor ?? s_currentActor.Value ?? world.LocalActor;
+            : request.Actor ?? s_currentActor ?? world.LocalActor;
         if (actor == null)
         {
             reason = "no actor for datamodel mutation";
@@ -891,6 +924,22 @@ public sealed class PermissionEngine
             ownsTarget = true;
         }
 
+        // Taking one's own entry back out of a list: a user counted into a zone's list of who is inside, by its
+        // own machine, has to be able to count itself out again. The entry is the user's own the same strong
+        // way a registry key is, minted in its byte when it was added, and the list keys a removal with the
+        // removed entry's id. Removal alone: putting entries in stays the list owner's and the role's call,
+        // and nobody takes out an entry someone else added. -xlinka
+        bool ownsRemovedEntry = !ownsTarget && request.Surface == PermissionSurface.List &&
+            (request.Action & PermissionAction.CollectionRemove) != 0 &&
+            (request.Action & (PermissionAction.CollectionAdd | PermissionAction.CollectionInsert | PermissionAction.CollectionSet |
+                PermissionAction.CollectionClear | PermissionAction.CollectionResize | PermissionAction.Create)) == 0 &&
+            _ids.TryGetElementId(request.Key, out var entryId) &&
+            OwnsId(actor, entryId);
+        if (ownsRemovedEntry)
+        {
+            ownsTarget = true;
+        }
+
         // SAVE-COPY / EXPORT. Neither one changes the world, so they are settled here, before the freeze
         // (which only speaks about mutations) and before the role check (whose foreign masks are only one
         // of the three things a copy has to satisfy). A request that carries nothing else is finished
@@ -915,7 +964,7 @@ public sealed class PermissionEngine
         // freeze is the only gate it is meant to lift: everything before this point (system bypass, actor
         // resolution, registered rules) has already run, and nothing after it is skipped for a target this
         // scope does not cover.
-        if (s_authoredContentDepth.Value > 0
+        if (s_authoredContentDepth > 0
             && world.IsAuthority
             && (request.Action & ~(PermissionAction.Mutation | PermissionAction.Read | PermissionAction.CollectionEnumerate)) == 0
             && IsAuthorityAuthored(request.Target ?? request.Parent))
@@ -923,11 +972,25 @@ public sealed class PermissionEngine
             return true;
         }
 
+        // Owned only by holding it: a held foreign object rides under the holder's root, and so does
+        // everything it carries along, and OwnsTarget reads all of that as ownership. Worked out once for
+        // the freeze and for the role question below. -xlinka
+        bool carriedOnly = ownsTarget && (request.Action & PermissionAction.Mutation) != 0
+            && IsCarriedOnly(in request, actor, ownsRegistryKey || ownsRemovedEntry);
+
         // Social/Event floor: the authored world is frozen for EVERYONE incl. the host. Only a user's
         // own runtime objects may be mutated; world content (authority-owned) is foreign to all and
-        // denied regardless of role. This is the unbypassable lock - no role escapes it, no live toggle.
-        if (SocialLock && !ownsTarget && (request.Action & PermissionAction.Mutation) != 0)
+        // denied regardless of role, held or not. This is the unbypassable lock - no role escapes it, no
+        // live toggle. The one way through it is picking up the world's own things: the writes the grab
+        // protocol makes on world content are judged by the same grab rules an open world uses, so props
+        // still go from hand to hand and hinges still turn. Every other edit of them stays frozen, and a
+        // user's things are nobody else's to pick up here. -xlinka
+        if (SocialLock && (!ownsTarget || carriedOnly) && (request.Action & PermissionAction.Mutation) != 0)
         {
+            if (IsWorldGrabWrite(in request, actor, world))
+            {
+                return true;
+            }
             reason = "editing is disabled in this world (social)";
             return Deny(request, reason, PermissionDenialKind.LockedWorld);
         }
@@ -935,8 +998,9 @@ public sealed class PermissionEngine
         // Grab interactions: a grabbable object opts into being picked up + moved by ANY user - that's an
         // interaction, not an ownership edit. Allow the grab-state refs (who holds it / its restore-parent)
         // and the reparent+pose, but ONLY for the user who is actually holding the thing. The host still
-        // owns the object and arbitrates the authoritative holder, and SocialLock above already froze this
-        // in event worlds. Ordinary edits to the object stay owner-gated by the role check below. -xlinka
+        // owns the object and arbitrates the authoritative holder, and in a frozen world the floor above
+        // lets only the world's own things through to here. Ordinary edits to the object stay owner-gated
+        // by the role check below. -xlinka
         if (IsAllowedGrabWrite(in request, actor, world, out bool grabTraffic))
         {
             return true;
@@ -946,12 +1010,11 @@ public sealed class PermissionEngine
         // without this, picking something up would hand you full edit rights over it for as long as you
         // held it (retune its throw limits, swap its material, rewrite its components). Everything a grab
         // legitimately writes was already allowed above, so anything still arriving here is an ordinary
-        // edit of someone else's property and must answer the role's FOREIGN question. Strips only the
-        // grab-flip: real per-byte ownership still reads as owned, so your own equipment is untouched, and
-        // a role that may edit foreign objects anyway (host, admin, builder) still can. -xlinka
-        if (ownsTarget && (request.Action & PermissionAction.Mutation) != 0
-            && IsHeldByActor(in request, actor)
-            && !OwnsIdStrong(actor, request.Target) && !OwnsIdStrong(actor, request.Parent))
+        // edit of someone else's property and must answer the role's FOREIGN question. That goes for what
+        // the held object carries along too, its child slots included. Strips only the grab-flip: real
+        // per-byte ownership still reads as owned, so your own equipment is untouched, and a role that may
+        // edit foreign objects anyway (host, admin, builder) still can. -xlinka
+        if (carriedOnly)
         {
             ownsTarget = false;
             if (!role.Allows(question, ownsTarget))
@@ -973,7 +1036,7 @@ public sealed class PermissionEngine
         {
             bool ownsTargetStrong = OwnsIdStrong(actor, request.Target) ||
                                     OwnsIdStrong(actor, request.Parent) ||
-                                    ownsRegistryKey;
+                                    ownsRegistryKey || ownsRemovedEntry;
             if (!ownsTargetStrong)
             {
                 // Strip the grab-flip signal and ask the role the real question, as if the actor were not
@@ -1026,7 +1089,7 @@ public sealed class PermissionEngine
     {
         var actor = request.IsNetwork
             ? request.Actor
-            : request.Actor ?? s_currentActor.Value ?? request.World?.LocalActor;
+            : request.Actor ?? s_currentActor ?? request.World?.LocalActor;
 
         if (LogDeniedMutations)
         {
@@ -1232,6 +1295,10 @@ public sealed class PermissionEngine
     //               or the holder-ref refusal would be worth nothing.
     //   GrabState - restore-parent and release velocities. Same rule as Transform: this is the hand-off,
     //               and it belongs to whoever is doing the handing.
+    //   Placing   - once the hand has let go, the releasing user keeps Transform and GrabState while the
+    //               thing it was let go into is still putting it down, and only while nobody holds it.
+    //               The claim is written in the release batch, by the holder, so it can only ever name
+    //               the user who just let go, and the next grab ends it.
     //
     // LOCAL WRITES are held to the weaker "held by nobody, or held by you" line. A client authors its own
     // grab optimistically and in pieces - the release clears the holder ref BEFORE it reparents, so at the
@@ -1271,6 +1338,9 @@ public sealed class PermissionEngine
         if (ReferenceEquals(holder, actor))
             return true;
 
+        if (holder == null && ReferenceEquals(surface.Placer, actor))
+            return true;
+
         if (!request.IsNetwork)
             return holder == null;
 
@@ -1279,6 +1349,24 @@ public sealed class PermissionEngine
 
         return surface.AllowsSteal && world.BatchClaimsGrab(surface, actor);
     }
+
+    // A write the grab protocol makes on the world's own content, for the Social/Event floor. The surface is
+    // authority-authored and sits in nobody's body unless someone is holding or placing it, and the grab
+    // rules above answer exactly as they do in an open world. -xlinka
+    private bool IsWorldGrabWrite(in PermissionRequest request, IPermissionActor actor, IPermissionWorldFacts world)
+    {
+        if (!IsAllowedGrabWrite(in request, actor, world, out _) || request.Parent is not IPermissionGrabSurface surface)
+            return false;
+        return IsAuthorityAuthored(request.Parent)
+            && (surface.CurrentHolder != null || surface.Placer != null || !BelongsToAUser(request.Parent));
+    }
+
+    // Whether the actor reads as owning the target only because it is holding it: the target hangs off a grab
+    // the actor holds or rides along under one, and is not the actor's own by its id.
+    private bool IsCarriedOnly(in PermissionRequest request, IPermissionActor actor, bool ownsRegistryKey)
+        => !ownsRegistryKey
+            && !OwnsIdStrong(actor, request.Target) && !OwnsIdStrong(actor, request.Parent)
+            && (IsHeldByActor(in request, actor) || (request.Target ?? request.Parent)?.IsCarriedBy(actor) == true);
 
     // Whether the thing being written to is, or hangs off, a grabbable this actor is holding right now.
     // Walks the ownership chain because a write to some other component on a held prop has that component
@@ -1398,12 +1486,19 @@ public sealed class PermissionEngine
             return false;
         }
 
+        byte owner = _ids.OwnerByte(id);
+        byte itemByte = actor.ItemAllocationByte;
+        if (_ids.IsValidOwnerByte(itemByte) && owner == itemByte)
+        {
+            return true;
+        }
+
         byte actorByte = actor.AllocationByte;
         if (!_ids.IsValidOwnerByte(actorByte))
         {
             actorByte = _ids.OwnerByte(actor.Id);
         }
 
-        return _ids.IsValidOwnerByte(actorByte) && _ids.OwnerByte(id) == actorByte;
+        return _ids.IsValidOwnerByte(actorByte) && owner == actorByte;
     }
 }

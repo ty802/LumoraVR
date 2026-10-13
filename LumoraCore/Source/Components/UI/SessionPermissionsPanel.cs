@@ -301,6 +301,8 @@ public sealed class SessionPermissionsPanel
     private readonly SettingsFonts _fonts = new();
     private ListingStyle _style = new ListingStyle();
     private ListingView? _view;
+    private RectTransform? _viewport;
+    private readonly SettingsRowFit _fit = new();
     private DashScrollbar? _scrollbar;
     private SessionPermissionRelay? _relay;
     private Slot? _host;
@@ -328,7 +330,7 @@ public sealed class SessionPermissionsPanel
         _style = style;
         _host = page;
 
-        var dashboard = page.GetComponentInParents<Dashboard>();
+        var dashboard = Dashboard.Of(page);
         _fonts.Regular = dashboard?.Font.Target;
         _fonts.Semibold = dashboard?.FontSemibold.Target;
         _fonts.Bold = dashboard?.FontBold.Target;
@@ -350,16 +352,17 @@ public sealed class SessionPermissionsPanel
         var viewport = SettingsUI.Fill(host, "Viewport", SettingsMetrics.PanelInset, SettingsMetrics.PanelInset,
             SettingsMetrics.PanelInset + DashScrollbar.Width + ScrollbarGap, 0f);
 
-        var labels = new SettingsLabelTemplate(_fonts);
+        var labels = new SettingsLabelTemplate(_fonts) { Fit = _fit };
         var templates = new ListingTemplateMapper { DefaultHeight = SettingsMetrics.RowHeight };
         templates.Map<ListingHeader>(new SettingsSectionTemplate(_fonts));
-        templates.Map<ListingSlider>(new SettingsSliderTemplate(_fonts));
+        templates.Map<ListingSlider>(new SettingsSliderTemplate(_fonts) { Fit = _fit });
         templates.Map<ListingLabel>(labels);
         templates.Fallback(labels);
-        templates.MapKind(KindNote, new PermNoteTemplate(_fonts));
-        templates.MapKind(KindUser, new PermUserRowTemplate(_fonts, this, _relay));
-        templates.MapKind(KindPills, new PermPillRowTemplate(_fonts, _relay));
+        templates.MapKind(KindNote, new PermNoteTemplate(_fonts) { Fit = _fit });
+        templates.MapKind(KindUser, new PermUserRowTemplate(_fonts, this, _relay) { Fit = _fit });
+        templates.MapKind(KindPills, new PermPillRowTemplate(_fonts, _relay) { Fit = _fit });
         templates.MapKind(KindMatrix, new PermMatrixRowTemplate(_fonts, this, _relay));
+        _viewport = SettingsUI.Rect(viewport);
         _view = ListingView.Attach(viewport, _style, templates, _items);
 
         // Same bar the Settings tab drives, over the listing's own ScrollRect rather than a form's. The
@@ -413,6 +416,9 @@ public sealed class SessionPermissionsPanel
         // quarter-second-late scrollbar reads as a stuck one. The call is two rect reads and equality-gated
         // writes. -xlinka
         RefreshScrollbar();
+        // The pill rows take their shape from the list's width, so a new width measures every row again.
+        if (_viewport != null && _fit.Update(_viewport.LocalComputeRect.width))
+            _view.Refresh();
 
         if (_rebuildQueued)
         {

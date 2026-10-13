@@ -25,11 +25,29 @@ internal sealed class SessionChoiceTemplate : SettingsRowTemplate
 
     public SessionChoiceTemplate(SettingsFonts fonts) : base(fonts) { }
 
+    protected override float ControlHeight(ListingItem item)
+        => SettingsSegments.BlockHeight(Fit, (item as ListingChoice)?.Options.Count ?? 0);
+
+    // The hint is read off the answer, so the height is measured for the answer standing now.
+    protected override void PrepareHint(ListingItem item) => ReadHint(item);
+
+    // True when the hint moved: another answer has another sentence, and maybe another line count.
+    private static bool ReadHint(ListingItem item)
+    {
+        if (item is not SessionChoiceItem { Hint: { } hint })
+            return false;
+        var text = hint();
+        if (text == item.DetailText)
+            return false;
+        item.DetailText = text;
+        return true;
+    }
+
     public override ListingRow Build(ListingView view, UIBuilder builder, Slot row)
     {
         var shell = BuildShell(row, clickable: false);
         var strip = SettingsSegments.Strip(shell.Control);
-        var listingRow = new ChoiceRow { Shell = shell, Segments = new SettingsSegments(strip, Fonts) };
+        var listingRow = new ChoiceRow { Shell = shell, Segments = new SettingsSegments(strip, Fonts), Fit = Fit };
         for (int i = 0; i < InitialSegments; i++)
             listingRow.Segments.Add(index => listingRow.Pick(index));
         return listingRow;
@@ -39,6 +57,7 @@ internal sealed class SessionChoiceTemplate : SettingsRowTemplate
     {
         public required SettingsRowShell Shell;
         public required SettingsSegments Segments;
+        public SettingsRowFit? Fit;
 
         public void Pick(int index)
         {
@@ -52,15 +71,15 @@ internal sealed class SessionChoiceTemplate : SettingsRowTemplate
 
         public override void Bind(ListingItem item)
         {
-            if (item is SessionChoiceItem { Hint: { } hint })
-                item.DetailText = hint();
+            if (ReadHint(item))
+                Fit?.MarkStale();
             Shell.Bind(item, useDetailAsHint: true);
 
             var choice = item as ListingChoice;
             int count = choice?.Options.Count ?? 0;
             Segments.Grow(count, index => Pick(index));
             int selected = choice?.Read() ?? -1;
-            Segments.Layout(count);
+            Segments.Layout(Fit, count);
             for (int i = 0; i < count; i++)
                 Segments.Paint(i, choice!.Options[i], i == selected, item.Interactable);
         }
@@ -74,10 +93,22 @@ internal sealed class SessionChoiceTemplate : SettingsRowTemplate
 // host's machine. The near group is your own ears (how loud they are to you, or not at all), which only
 // ever writes local state and so is on every row but your own. Roles are not changed here: the
 // Permissions tab lays every role out as a pill, which beats a button that cycles through them blind.
-// -xlinka
+//
+// A host's row wants close to a thousand units across. Narrower than the controls need beside the name,
+// they go on a line under it; narrower than that, each group gets its own line, and a line still too wide
+// scales its controls down to the row. The name and role are never under a button. -xlinka
 internal sealed class SessionUserRowTemplate : ListingRowTemplate
 {
     public const float RowHeight = 56f;
+
+    private const float NameTop = 7f;
+    private const float NameHeight = 21f;
+    private const float DetailTop = 30f;
+    private const float DetailHeight = 19f;
+    private const float StackTop = 52f;
+    private const float StackBottom = 10f;
+    // How far a line of controls under the name may shrink before its groups split onto a line each.
+    private const float MinScale = 0.85f;
 
     private const float NameWidth = 250f;
     private const float ControlGap = 6f;
@@ -104,17 +135,55 @@ internal sealed class SessionUserRowTemplate : ListingRowTemplate
     public override bool UsesRowBackground => false;
     public override void ConfigureRow(Slot row, ListingStyle style) { }
 
+    // Set by the list so a row can tell how wide it is; without one every row keeps one line.
+    public SettingsRowFit? Fit { get; init; }
+
+    public override float HeightFor(ListingItem item) => HeightOf(ShapeFor(Fit, _screen, item.Tag as User));
+
+    private static float HeightOf(int shape)
+        => shape == 0
+            ? RowHeight
+            : StackTop + shape * SettingsMetrics.ControlBand + (shape - 1) * SettingsMetrics.SegmentGap + StackBottom;
+
+    // Widths of what the row shows on the right, gaps included: the host's moderation (Respawn alone on
+    // your own row) and your own ears.
+    private static void Groups(SessionScreen screen, User user, out float moderation, out float ears)
+    {
+        moderation = screen.CanModerate(user)
+            ? BanWidth + KickWidth + RespawnWidth + SilenceWidth + MuteWidth + ControlGap * 4f
+            : user.IsLocal ? RespawnWidth : 0f;
+        ears = user.IsLocal ? 0f : BlockWidth + VolumeValueWidth + VolumeWidth + ControlGap * 2f;
+    }
+
+    private static float Both(float moderation, float ears)
+        => moderation + ears + (moderation > 0f && ears > 0f ? GroupGap : 0f);
+
+    // 0: beside the name. 1: one line under it. 2: a line under it for each group.
+    private static int ShapeFor(SettingsRowFit? fit, SessionScreen screen, User? user)
+    {
+        if (fit is not { Measured: true } || user == null || user.IsDestroyed)
+            return 0;
+        Groups(screen, user, out float moderation, out float ears);
+        float both = Both(moderation, ears);
+        float line = fit.Width - SettingsMetrics.RowInset * 2f;
+        if (both <= 0f || line - NameWidth - GroupGap >= both)
+            return 0;
+        return line >= both * MinScale || moderation <= 0f || ears <= 0f ? 1 : 2;
+    }
+
+    private static float ScaleFor(float line, float width) => width > line && width > 0f ? line / width : 1f;
+
     public override ListingRow Build(ListingView view, UIBuilder builder, Slot row)
     {
         var background = SettingsUI.Panel(row, DashTheme.Surface, DashTheme.Outline, DashTheme.RadiusControl);
 
         float left = SettingsMetrics.RowInset;
         var name = SettingsUI.Label(row, "Name", _fonts.Medium, DashTheme.FontBody, DashTheme.Text,
-            TextHorizontalAlignment.Left, new float2(0f, 0.5f), new float2(0f, 1f),
-            new float2(left, 0f), new float2(left + NameWidth, -7f), shrinkToFit: true);
+            TextHorizontalAlignment.Left, new float2(0f, 1f), new float2(0f, 1f),
+            new float2(left, -(NameTop + NameHeight)), new float2(left + NameWidth, -NameTop), shrinkToFit: true);
         var detail = SettingsUI.Label(row, "Detail", _fonts.Body, DashTheme.FontSmall, DashTheme.TextDim,
-            TextHorizontalAlignment.Left, new float2(0f, 0f), new float2(0f, 0.5f),
-            new float2(left, 7f), new float2(left + NameWidth, -2f), shrinkToFit: true);
+            TextHorizontalAlignment.Left, new float2(0f, 1f), new float2(0f, 1f),
+            new float2(left, -(DetailTop + DetailHeight)), new float2(left + NameWidth, -DetailTop), shrinkToFit: true);
 
         var listingRow = new UserRow
         {
@@ -122,6 +191,7 @@ internal sealed class SessionUserRowTemplate : ListingRowTemplate
             Name = name,
             Detail = detail,
             Screen = _screen,
+            Fit = Fit,
         };
 
         listingRow.Ban = Chip(row, "Ban", listingRow, user => _screen.RequestBan(user));
@@ -132,15 +202,15 @@ internal sealed class SessionUserRowTemplate : ListingRowTemplate
         listingRow.Block = Chip(row, "Block", listingRow, user => _screen.ToggleBlocked(user));
 
         listingRow.VolumeValue = SettingsUI.Label(row, "VolumeValue", _fonts.Body, DashTheme.FontSmall,
-            DashTheme.TextDim, TextHorizontalAlignment.Right, new float2(1f, 0.5f), new float2(1f, 0.5f),
+            DashTheme.TextDim, TextHorizontalAlignment.Right, float2.One, float2.One,
             float2.Zero, float2.Zero);
 
-        var volumeHost = SettingsUI.Child(row, "Volume", new float2(1f, 0.5f), new float2(1f, 0.5f),
+        var volumeHost = SettingsUI.Child(row, "Volume", float2.One, float2.One,
             float2.Zero, float2.Zero);
         builder.PushStyle();
         builder.ForegroundColor(DashTheme.Accent);
         builder.NestInto(volumeHost);
-        var slider = builder.Slider(1f, 0f, 1f, null, DashTheme.Field);
+        var slider = builder.Slider(1f, 0f, User.MaxLocalVolume, null, DashTheme.Field);
         builder.NestOut();
         builder.PopStyle();
         // Slider() sizes itself for a layout cell; this row anchors instead, so pin it to its host.
@@ -169,7 +239,7 @@ internal sealed class SessionUserRowTemplate : ListingRowTemplate
 
     private SettingsChip Chip(Slot row, string name, ListingRow listingRow, Action<User> press)
     {
-        var host = SettingsUI.Child(row, name, new float2(1f, 0.5f), new float2(1f, 0.5f), float2.Zero, float2.Zero);
+        var host = SettingsUI.Child(row, name, float2.One, float2.One, float2.Zero, float2.Zero);
         var chip = SettingsChip.Build(host, _fonts.Medium, DashTheme.FontSmall, DashTheme.RadiusControl);
         chip.Button.Clicked += (_, _) =>
         {
@@ -186,6 +256,7 @@ internal sealed class SessionUserRowTemplate : ListingRowTemplate
         public required Text Name;
         public required Text Detail;
         public required SessionScreen Screen;
+        public SettingsRowFit? Fit;
 
         public SettingsChip Ban = null!;
         public SettingsChip Kick = null!;
@@ -203,39 +274,72 @@ internal sealed class SessionUserRowTemplate : ListingRowTemplate
             ListingStyle.SetText(Name, item.Label);
 
             var user = item.Tag as User;
+            int shape = ShapeFor(Fit, Screen, user);
+            float inset = SettingsMetrics.RowInset;
+            float line = (Fit?.Width ?? 0f) - inset * 2f;
+            float nameWidth = shape == 0 ? NameWidth : line;
+            Span(Name.Slot, inset, NameTop, nameWidth, NameHeight);
+            Span(Detail.Slot, inset, DetailTop, nameWidth, DetailHeight);
+
             if (user == null || user.IsDestroyed)
             {
                 ListingStyle.SetText(Detail, string.Empty);
-                float none = SettingsMetrics.RowInset;
-                Place(Ban.Slot, false, 0f, ref none);
-                Place(Kick.Slot, false, 0f, ref none);
-                Place(Respawn.Slot, false, 0f, ref none);
-                Place(Silence.Slot, false, 0f, ref none);
-                Place(Mute.Slot, false, 0f, ref none);
-                Place(Block.Slot, false, 0f, ref none);
-                Place(VolumeValue.Slot, false, 0f, ref none);
-                Place(VolumeHost, false, 0f, ref none);
+                float none = inset;
+                Place(Ban.Slot, false, 0f, ref none, 0f, 1f);
+                Place(Kick.Slot, false, 0f, ref none, 0f, 1f);
+                Place(Respawn.Slot, false, 0f, ref none, 0f, 1f);
+                Place(Silence.Slot, false, 0f, ref none, 0f, 1f);
+                Place(Mute.Slot, false, 0f, ref none, 0f, 1f);
+                Place(Block.Slot, false, 0f, ref none, 0f, 1f);
+                Place(VolumeValue.Slot, false, 0f, ref none, 0f, 1f);
+                Place(VolumeHost, false, 0f, ref none, 0f, 1f);
                 return;
+            }
+
+            // A user whose controls changed since the list measured this row (this machine took or lost
+            // the session) is placed for another shape: the list measures again.
+            if (Fit != null)
+            {
+                var rect = SettingsUI.Rect(Slot);
+                if (MathF.Abs(rect.OffsetMax.Value.y - rect.OffsetMin.Value.y - HeightOf(shape)) > 0.5f)
+                    Fit.MarkStale();
             }
 
             bool hostUser = Screen.IsHostUser(user);
             bool moderate = Screen.CanModerate(user);
             ListingStyle.SetText(Detail, Screen.DescribeUser(user, hostUser));
 
-            float right = SettingsMetrics.RowInset;
-            Place(Ban.Slot, moderate, BanWidth, ref right);
-            Place(Kick.Slot, moderate, KickWidth, ref right);
+            Groups(Screen, user, out float moderation, out float earsWidth);
+            float top = shape == 0 ? (RowHeight - SettingsMetrics.ControlBand) * 0.5f : StackTop;
+            float scale = shape switch
+            {
+                1 => ScaleFor(line, Both(moderation, earsWidth)),
+                2 => ScaleFor(line, moderation),
+                _ => 1f,
+            };
+
+            float right = inset;
+            Place(Ban.Slot, moderate, BanWidth, ref right, top, scale);
+            Place(Kick.Slot, moderate, KickWidth, ref right, top, scale);
             // Your own row keeps Respawn: getting yourself out of a wall works solo too.
-            Place(Respawn.Slot, moderate || user.IsLocal, RespawnWidth, ref right);
-            Place(Silence.Slot, moderate, SilenceWidth, ref right);
-            Place(Mute.Slot, moderate, MuteWidth, ref right);
+            Place(Respawn.Slot, moderate || user.IsLocal, RespawnWidth, ref right, top, scale);
+            Place(Silence.Slot, moderate, SilenceWidth, ref right, top, scale);
+            Place(Mute.Slot, moderate, MuteWidth, ref right, top, scale);
 
             bool ears = !user.IsLocal;
-            if (ears && right > SettingsMetrics.RowInset)
-                right += GroupGap - ControlGap;
-            Place(Block.Slot, ears, BlockWidth, ref right);
-            Place(VolumeValue.Slot, ears, VolumeValueWidth, ref right);
-            Place(VolumeHost, ears, VolumeWidth, ref right, SettingsMetrics.SliderBand);
+            if (ears && shape == 2)
+            {
+                right = inset;
+                top += SettingsMetrics.ControlBand + SettingsMetrics.SegmentGap;
+                scale = ScaleFor(line, earsWidth);
+            }
+            else if (ears && right > inset)
+            {
+                right += (GroupGap - ControlGap) * scale;
+            }
+            Place(Block.Slot, ears, BlockWidth, ref right, top, scale);
+            Place(VolumeValue.Slot, ears, VolumeValueWidth, ref right, top, scale);
+            Place(VolumeHost, ears, VolumeWidth, ref right, top, scale, SettingsMetrics.SliderBand);
 
             if (moderate)
             {
@@ -257,7 +361,7 @@ internal sealed class SessionUserRowTemplate : ListingRowTemplate
                     Block.SetPaint(DashTheme.Surface, DashTheme.SurfaceHover, DashTheme.Outline, DashTheme.TextDim);
                 Block.SetInteractable(true);
 
-                ListingStyle.SetSlider(Volume, 0f, 1f, user.LocalVolume);
+                ListingStyle.SetSlider(Volume, 0f, User.MaxLocalVolume, user.LocalVolume);
                 ListingStyle.SetInteractable(Volume, !blocked);
                 ListingStyle.SetText(VolumeValue, SessionLocale.Percent(user.LocalVolume));
                 ListingStyle.SetTextColor(VolumeValue, blocked ? DashTheme.TextMuted : DashTheme.TextDim);
@@ -289,16 +393,24 @@ internal sealed class SessionUserRowTemplate : ListingRowTemplate
         }
 
         // Right to left off the row's edge, skipping whatever this row does not show, so a guest's row
-        // has no hole where the host's buttons would have been.
-        private static void Place(Slot slot, bool show, float width, ref float right,
+        // has no hole where the host's buttons would have been. top is the control line's top edge down
+        // from the row's top; scale shrinks a line that is wider than the row.
+        private static void Place(Slot slot, bool show, float width, ref float right, float top, float scale,
             float height = SettingsMetrics.ControlBand)
         {
             ListingStyle.SetActive(slot, show);
             if (!show)
                 return;
-            SettingsUI.SetOffsets(SettingsUI.Rect(slot), new float2(-(right + width), -height * 0.5f),
-                new float2(-right, height * 0.5f));
-            right += width + ControlGap;
+            width *= scale;
+            float middle = top + SettingsMetrics.ControlBand * 0.5f;
+            SettingsUI.SetOffsets(SettingsUI.Rect(slot), new float2(-(right + width), -(middle + height * 0.5f)),
+                new float2(-right, -(middle - height * 0.5f)));
+            right += width + ControlGap * scale;
         }
+
+        // A box hung from the row's top-left corner.
+        private static void Span(Slot slot, float left, float top, float width, float height)
+            => SettingsUI.SetOffsets(SettingsUI.Rect(slot), new float2(left, -(top + height)),
+                new float2(left + width, -top));
     }
 }

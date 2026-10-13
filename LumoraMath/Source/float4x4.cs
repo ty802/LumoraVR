@@ -6,19 +6,14 @@ using System.Runtime.InteropServices;
 
 namespace Lumora.Core.Math;
 
-/// <summary>
-/// 4x4 matrix of 32-bit floating point values.
-/// Pure C# implementation for 4x4 matrix math (LumoraMath).
-/// Used for transformations, projections, and linear algebra.
-/// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct float4x4 : IEquatable<float4x4>
 {
-    // Column-major storage (matching Godot and OpenGL conventions)
-    public float4 c0; // Column 0
-    public float4 c1; // Column 1
-    public float4 c2; // Column 2
-    public float4 c3; // Column 3
+    // Column-major.
+    public float4 c0;
+    public float4 c1;
+    public float4 c2;
+    public float4 c3;
 
     public static readonly float4x4 Identity = new float4x4(
         new float4(1, 0, 0, 0),
@@ -34,9 +29,6 @@ public struct float4x4 : IEquatable<float4x4>
         float4.Zero
     );
 
-    /// <summary>
-    /// Construct matrix from four column vectors.
-    /// </summary>
     public float4x4(float4 c0, float4 c1, float4 c2, float4 c3)
     {
         this.c0 = c0;
@@ -45,9 +37,7 @@ public struct float4x4 : IEquatable<float4x4>
         this.c3 = c3;
     }
 
-    /// <summary>
-    /// Construct matrix from 16 values (column-major order).
-    /// </summary>
+    // Arguments run column by column.
     public float4x4(
         float m00, float m10, float m20, float m30,
         float m01, float m11, float m21, float m31,
@@ -60,9 +50,6 @@ public struct float4x4 : IEquatable<float4x4>
         c3 = new float4(m03, m13, m23, m33);
     }
 
-    /// <summary>
-    /// Access matrix by column index.
-    /// </summary>
     public float4 this[int column]
     {
         get
@@ -89,9 +76,6 @@ public struct float4x4 : IEquatable<float4x4>
         }
     }
 
-    /// <summary>
-    /// Access matrix by [row, column].
-    /// </summary>
     public float this[int row, int column]
     {
         get => this[column][row];
@@ -103,9 +87,6 @@ public struct float4x4 : IEquatable<float4x4>
         }
     }
 
-    /// <summary>
-    /// Create a translation matrix.
-    /// </summary>
     public static float4x4 Translate(float3 translation)
     {
         return new float4x4(
@@ -116,9 +97,6 @@ public struct float4x4 : IEquatable<float4x4>
         );
     }
 
-    /// <summary>
-    /// Create a scale matrix.
-    /// </summary>
     public static float4x4 Scale(float3 scale)
     {
         return new float4x4(
@@ -129,17 +107,11 @@ public struct float4x4 : IEquatable<float4x4>
         );
     }
 
-    /// <summary>
-    /// Create a uniform scale matrix.
-    /// </summary>
     public static float4x4 Scale(float scale)
     {
         return Scale(new float3(scale, scale, scale));
     }
 
-    /// <summary>
-    /// Create a rotation matrix from a quaternion.
-    /// </summary>
     public static float4x4 Rotate(floatQ rotation)
     {
         float x = rotation.x;
@@ -169,86 +141,53 @@ public struct float4x4 : IEquatable<float4x4>
         );
     }
 
-    /// <summary>
-    /// Create a TRS (Translation, Rotation, Scale) matrix.
-    /// </summary>
     public static float4x4 TRS(float3 translation, floatQ rotation, float3 scale)
     {
         return Translate(translation) * Rotate(rotation) * Scale(scale);
     }
 
-    /// <summary>
-    /// Matrix multiplication.
-    /// </summary>
+    // Written out element by element: the indexed loop went through two switches per read and a column
+    // copy per write, and every transform in the world goes through here. Same sums in the same order, so
+    // the same bits come out. -xlinka
     public static float4x4 operator *(float4x4 a, float4x4 b)
     {
-        float4x4 result = default;
-        for (int col = 0; col < 4; col++)
-        {
-            for (int row = 0; row < 4; row++)
-            {
-                result[row, col] =
-                    a[row, 0] * b[0, col] +
-                    a[row, 1] * b[1, col] +
-                    a[row, 2] * b[2, col] +
-                    a[row, 3] * b[3, col];
-            }
-        }
-        return result;
+        return new float4x4(Column(a, b.c0), Column(a, b.c1), Column(a, b.c2), Column(a, b.c3));
     }
 
-    /// <summary>
-    /// Transform a float4 by this matrix.
-    /// </summary>
-    public static float4 operator *(float4x4 m, float4 v)
-    {
-        return new float4(
-            m[0, 0] * v.x + m[0, 1] * v.y + m[0, 2] * v.z + m[0, 3] * v.w,
-            m[1, 0] * v.x + m[1, 1] * v.y + m[1, 2] * v.z + m[1, 3] * v.w,
-            m[2, 0] * v.x + m[2, 1] * v.y + m[2, 2] * v.z + m[2, 3] * v.w,
-            m[3, 0] * v.x + m[3, 1] * v.y + m[3, 2] * v.z + m[3, 3] * v.w
-        );
-    }
+    private static float4 Column(in float4x4 a, in float4 b) => new float4(
+        a.c0.x * b.x + a.c1.x * b.y + a.c2.x * b.z + a.c3.x * b.w,
+        a.c0.y * b.x + a.c1.y * b.y + a.c2.y * b.z + a.c3.y * b.w,
+        a.c0.z * b.x + a.c1.z * b.y + a.c2.z * b.z + a.c3.z * b.w,
+        a.c0.w * b.x + a.c1.w * b.y + a.c2.w * b.z + a.c3.w * b.w);
 
-    /// <summary>
-    /// Transform a float3 position by this matrix (w=1).
-    /// </summary>
+    public static float4 operator *(float4x4 m, float4 v) => Column(m, v);
+
+    // w = 1, and the result is divided back by w.
     public float3 MultiplyPoint(float3 point)
     {
         float4 v = this * new float4(point.x, point.y, point.z, 1);
         return new float3(v.x / v.w, v.y / v.w, v.z / v.w);
     }
 
-    /// <summary>
-    /// Transform a float3 position by this matrix (w=1) - ref version.
-    /// </summary>
     public float3 MultiplyPoint(in float3 point)
     {
         float4 v = this * new float4(point.x, point.y, point.z, 1);
         return new float3(v.x / v.w, v.y / v.w, v.z / v.w);
     }
 
-    /// <summary>
-    /// Transform a float3 direction by this matrix (w=0).
-    /// </summary>
+    // w = 0: translation does not apply.
     public float3 MultiplyVector(float3 vector)
     {
         float4 v = this * new float4(vector.x, vector.y, vector.z, 0);
         return new float3(v.x, v.y, v.z);
     }
 
-    /// <summary>
-    /// Transform a float3 direction by this matrix (w=0) - ref version.
-    /// </summary>
     public float3 MultiplyVector(in float3 vector)
     {
         float4 v = this * new float4(vector.x, vector.y, vector.z, 0);
         return new float3(v.x, v.y, v.z);
     }
 
-    /// <summary>
-    /// Returns the transpose of this matrix.
-    /// </summary>
     public float4x4 Transposed
     {
         get
@@ -262,9 +201,6 @@ public struct float4x4 : IEquatable<float4x4>
         }
     }
 
-    /// <summary>
-    /// Returns the determinant of this matrix.
-    /// </summary>
     public float Determinant
     {
         get
@@ -288,20 +224,15 @@ public struct float4x4 : IEquatable<float4x4>
         }
     }
 
-    /// <summary>
-    /// Returns the inverse of this matrix using affine transformation optimization.
-    /// Assumes the matrix is an affine transformation (bottom row is 0,0,0,1).
-    /// </summary>
+    // Affine only: assumes the bottom row is 0,0,0,1. A singular matrix gives the identity.
     public float4x4 Inverse
     {
         get
         {
-            // Extract the 3x3 rotation/scale part
             float m00 = c0.x, m01 = c1.x, m02 = c2.x;
             float m10 = c0.y, m11 = c1.y, m12 = c2.y;
             float m20 = c0.z, m21 = c1.z, m22 = c2.z;
 
-            // Calculate determinant of 3x3 matrix
             float det = m00 * (m11 * m22 - m12 * m21)
                       - m01 * (m10 * m22 - m12 * m20)
                       + m02 * (m10 * m21 - m11 * m20);
@@ -315,11 +246,10 @@ public struct float4x4 : IEquatable<float4x4>
                 System.Math.Max(System.Math.Max(System.Math.Abs(m11), System.Math.Abs(m12)),
                     System.Math.Max(System.Math.Max(System.Math.Abs(m20), System.Math.Abs(m21)), System.Math.Abs(m22))));
             if (size <= 0f || !float.IsFinite(det) || System.Math.Abs(det) <= 1e-7f * size * size * size)
-                return Identity; // Return identity if matrix is singular
+                return Identity;
 
             float invDet = 1.0f / det;
 
-            // Calculate inverse of 3x3 rotation/scale part
             float i00 = (m11 * m22 - m12 * m21) * invDet;
             float i01 = (m02 * m21 - m01 * m22) * invDet;
             float i02 = (m01 * m12 - m02 * m11) * invDet;
@@ -330,7 +260,7 @@ public struct float4x4 : IEquatable<float4x4>
             float i21 = (m01 * m20 - m00 * m21) * invDet;
             float i22 = (m00 * m11 - m01 * m10) * invDet;
 
-            // Calculate inverse translation: -inv(R) * T
+            // -inv(R) * T
             float tx = c3.x, ty = c3.y, tz = c3.z;
             float i03 = -(i00 * tx + i01 * ty + i02 * tz);
             float i13 = -(i10 * tx + i11 * ty + i12 * tz);

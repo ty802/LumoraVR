@@ -7,7 +7,7 @@ namespace Lumora.Core.Math;
 /// Axis-aligned bounding box (AABB).
 /// Stores minimum and maximum points.
 /// </summary>
-public struct BoundingBox
+public struct BoundingBox : System.IEquatable<BoundingBox>
 {
     /// <summary>Minimum point of the bounding box</summary>
     public float3 Min;
@@ -125,4 +125,12 @@ public struct BoundingBox
                  Max.y < other.Min.y || Min.y > other.Max.y ||
                  Max.z < other.Min.z || Min.z > other.Max.z);
     }
+
+    // Without it every write of a box field compared the two through reflection, boxing both: a tenth of the
+    // time it took to copy a slot holding one.
+    public bool Equals(BoundingBox other) => Min.Equals(other.Min) && Max.Equals(other.Max);
+
+    public override bool Equals(object? obj) => obj is BoundingBox other && Equals(other);
+
+    public override int GetHashCode() => System.HashCode.Combine(Min, Max);
 }

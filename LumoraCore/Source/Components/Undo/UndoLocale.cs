@@ -24,6 +24,7 @@ public static class UndoLocale
     public static readonly LocaleText SpawnItem = LocaleText.Keyed("Undo.Step.SpawnItem", "Spawn Item");
     public static readonly LocaleText SpawnLight = LocaleText.Keyed("Undo.Step.SpawnLight", "Spawn Light");
     public static readonly LocaleText SpawnShape = LocaleText.Keyed("Undo.Step.SpawnShape", "Spawn Shape");
+    public static readonly LocaleText SplitConvexHulls = LocaleText.Keyed("Undo.Step.SplitConvexHulls", "Split Into Convex Hulls");
     public static readonly LocaleText ImportShader = LocaleText.Keyed("Undo.Step.ImportShader", "Import Shader");
 
     public static readonly LocaleText Move = LocaleText.Keyed("Undo.Step.Move", "Move");
@@ -39,6 +40,8 @@ public static class UndoLocale
     public static readonly LocaleText Glue = LocaleText.Keyed("Undo.Step.Glue", "Glue");
     public static readonly LocaleText GlueGroup = LocaleText.Keyed("Undo.Step.GlueGroup", "Glue Group");
     public static readonly LocaleText ApplyMaterial = LocaleText.Keyed("Undo.Step.ApplyMaterial", "Apply Material");
+    public static readonly LocaleText ConvertMaterials = LocaleText.Keyed("Undo.Step.ConvertMaterials", "Convert Materials");
+    public static readonly LocaleText ExtractMaterials = LocaleText.Keyed("Undo.Step.ExtractMaterials", "Extract Materials");
 
     public static readonly LocaleText ListAdd = LocaleText.Keyed("Undo.Step.ListAdd", "Add List Element");
     public static readonly LocaleText ListRemove = LocaleText.Keyed("Undo.Step.ListRemove", "Remove List Element");

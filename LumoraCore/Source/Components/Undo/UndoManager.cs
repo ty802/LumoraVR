@@ -48,6 +48,32 @@ public readonly struct UndoBatchScope : IDisposable
 [ComponentCategory("Users")]
 public class UndoManager : Component
 {
+    public static UndoManager? ForLocalUser(World? world)
+        => world?.LocalUser?.Root?.Slot?.GetComponentInChildren<UndoManager>();
+
+    public override void OnUpdate(float delta)
+    {
+        base.OnUpdate(delta);
+        if (!World.IsFocused || !ReferenceEquals(this, ForLocalUser(World)) || Helio.UI.TextInput.Focused != null)
+            return;
+        var input = Engine.Current?.InputInterface;
+        var actions = input?.Actions?.Editing;
+        if (actions == null) return;
+        bool shift = input!.Keyboard?.IsKeyPressed(Input.Key.LeftShift) == true
+            || input.Keyboard?.IsKeyPressed(Input.Key.RightShift) == true;
+        // Inline dash fields suppress action bindings too, but Ctrl+Z still belongs to this history.
+        if (input.Actions.TextFocusHeld && input.Keyboard is { } keyboard
+            && (keyboard.IsKeyPressed(Input.Key.LeftControl) || keyboard.IsKeyPressed(Input.Key.RightControl))
+            && !keyboard.IsKeyPressed(Input.Key.LeftAlt) && !keyboard.IsKeyPressed(Input.Key.RightAlt))
+        {
+            if (keyboard.IsKeyJustPressed(Input.Key.Y) || shift && keyboard.IsKeyJustPressed(Input.Key.Z)) Redo();
+            else if (keyboard.IsKeyJustPressed(Input.Key.Z)) Undo();
+            return;
+        }
+        if (actions.Redo.Pressed || actions.Undo.Pressed && shift) Redo();
+        else if (actions.Undo.Pressed) Undo();
+    }
+
     public const int DefaultMaxSteps = 100;
 
     // One list, not two. Steps [0.._performed) are applied, [_performed..) have been undone and are

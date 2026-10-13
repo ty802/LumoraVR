@@ -45,12 +45,14 @@ public sealed class SlotTransformUndoBatch : IUndoBatch, IUndoTargetQuery
     }
 
     // null when nothing actually changed, so a no-op action never lands in the history
-    public SlotTransformUndoBatch? Commit()
+    public SlotTransformUndoBatch? Commit() => Commit(0f);
+
+    internal SlotTransformUndoBatch? Commit(float tolerance)
     {
         if (_slot.IsDestroyed)
             return null;
         _after = Capture(_slot);
-        return PoseEquals(_before, _after) ? null : this;
+        return PoseEquals(_before, _after, tolerance) ? null : this;
     }
 
     public bool Undo() => Apply(_before);
@@ -78,11 +80,22 @@ public sealed class SlotTransformUndoBatch : IUndoBatch, IUndoTargetQuery
         Scale = slot.LocalScale.Value,
     };
 
-    private static bool PoseEquals(in Pose a, in Pose b)
-        => ReferenceEquals(a.Parent, b.Parent)
-        && a.Position.Equals(b.Position)
-        && a.Rotation.Equals(b.Rotation)
-        && a.Scale.Equals(b.Scale);
+    private static bool PoseEquals(in Pose a, in Pose b, float tolerance)
+    {
+        if (!ReferenceEquals(a.Parent, b.Parent))
+            return false;
+        if (tolerance <= 0f)
+            return a.Position.Equals(b.Position) && a.Rotation.Equals(b.Rotation) && a.Scale.Equals(b.Scale);
+
+        // Reparenting through a rotated/scaled holder introduces roundoff even if the hand never moves.
+        float squared = tolerance * tolerance;
+        float sign = floatQ.Dot(a.Rotation, b.Rotation) < 0f ? -1f : 1f;
+        var rotationDelta = new float4(a.Rotation.x - sign * b.Rotation.x, a.Rotation.y - sign * b.Rotation.y,
+            a.Rotation.z - sign * b.Rotation.z, a.Rotation.w - sign * b.Rotation.w);
+        return (a.Position - b.Position).LengthSquared <= squared
+            && (a.Scale - b.Scale).LengthSquared <= squared
+            && rotationDelta.LengthSquared <= squared;
+    }
 
     private bool Apply(in Pose pose)
     {

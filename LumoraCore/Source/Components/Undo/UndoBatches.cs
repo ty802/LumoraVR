@@ -36,6 +36,10 @@ public static class UndoGraveyard
         return graveyard == null || graveyard.IsDestroyed ? null : graveyard;
     }
 
+    // What is parked here has been destroyed as far as anyone looking is concerned; only undo can see it.
+    public static bool IsGraveyard(Slot? slot)
+        => slot != null && slot.Parent is { IsRootSlot: true } && slot.SlotName.Value == SlotName;
+
     // Called when a manager tears down. The pen is shared, so it only goes when the last parked slot
     // has gone with it - and only the authority swings the axe, or every peer that saw the same user
     // leave would send its own destroy for the same slot.
@@ -230,7 +234,9 @@ public sealed class UserScaleUndoBatch : IUndoBatch
     {
         if (_userRoot == null || _userRoot.IsDestroyed)
             return false;
+        var feet = _userRoot.FeetPosition;
         _userRoot.GlobalScale = scale;
+        _userRoot.ShiftBy(feet - _userRoot.FeetPosition);
         return true;
     }
 

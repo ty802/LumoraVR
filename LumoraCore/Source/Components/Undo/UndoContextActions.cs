@@ -33,23 +33,44 @@ public class UndoContextActions : ContextMenuItemSource
             }
         }
 
-        page.AddItem(new ContextMenuItem
+        // Both stay up after a press, so stepping back through several changes is one press each.
+        var undoItem = new ContextMenuItem
         {
             Group = ContextMenuGroup.History,
-            Label = Label(UndoLocale.Undo, undo.CanUndo ? undo.NextUndoDescription : LocaleText.Empty, undoDirection: true),
-            IsEnabled = undo.CanUndo,
             FillColor = new[] { 0.32f, 0.10f, 0.10f, 0.92f },
+            KeepsOpen = true,
             OnPressed = _ => undo.Undo(),
-        });
+            Refresh = item => Show(item, undo, undoDirection: true),
+        };
+        Show(undoItem, undo, undoDirection: true);
+        page.AddItem(undoItem);
 
-        page.AddItem(new ContextMenuItem
+        var redoItem = new ContextMenuItem
         {
             Group = ContextMenuGroup.History,
-            Label = Label(UndoLocale.Redo, undo.CanRedo ? undo.NextRedoDescription : LocaleText.Empty, undoDirection: false),
-            IsEnabled = undo.CanRedo,
             FillColor = new[] { 0.10f, 0.16f, 0.32f, 0.92f },
+            KeepsOpen = true,
             OnPressed = _ => undo.Redo(),
-        });
+            Refresh = item => Show(item, undo, undoDirection: false),
+        };
+        Show(redoItem, undo, undoDirection: false);
+        page.AddItem(redoItem);
+    }
+
+    // The next step's name and whether there is one, as the manager has them now; true when either moved.
+    private static bool Show(ContextMenuItem item, UndoManager undo, bool undoDirection)
+    {
+        if (undo.IsDestroyed)
+            return false;
+        bool can = undoDirection ? undo.CanUndo : undo.CanRedo;
+        string label = undoDirection
+            ? Label(UndoLocale.Undo, can ? undo.NextUndoDescription : LocaleText.Empty, undoDirection: true)
+            : Label(UndoLocale.Redo, can ? undo.NextRedoDescription : LocaleText.Empty, undoDirection: false);
+        if (item.IsEnabled == can && item.Label == label)
+            return false;
+        item.IsEnabled = can;
+        item.Label = label;
+        return true;
     }
 
     // A radial slice is narrow, so the step name only earns its place when it is short enough to

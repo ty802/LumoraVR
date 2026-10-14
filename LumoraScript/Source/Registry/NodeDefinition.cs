@@ -28,6 +28,9 @@ public sealed class NodeDefinition
     // An event the host raises on a clock, every "seconds".
     public bool TakesInterval { get; }
 
+    // Call Script Function: an await whose ports are its own "sig", like a function node's.
+    public bool IsScriptCall { get; }
+
     // How many inputs a variadic node's two-input overloads stretch to; 0 for any other node.
     public int MaxInputs { get; }
 
@@ -35,6 +38,10 @@ public sealed class NodeDefinition
 
     internal readonly List<NodeOverload> Overloads = new();
     internal readonly Dictionary<string, NodeOverload> Closed = new(StringComparer.Ordinal);
+
+    // A function node's shapes by the signature that made them, kept apart from Closed: they are a graph's own
+    // ports, not choices of the node's to step through.
+    internal readonly Dictionary<string, NodeOverload> Shaped = new(StringComparer.Ordinal);
     internal readonly object Lock = new();
 
     internal NodeDefinition(string name, string path, NodeKind kind, Capability capability, int version, Type clrType,
@@ -52,6 +59,7 @@ public sealed class NodeDefinition
         if (TakesSource && clrType.GetCustomAttributes(typeof(SourcedEventAttribute), false) is [SourcedEventAttribute sourced, ..])
             SourceType = sourced.SourceType;
         TakesInterval = kind == NodeKind.Event && Attribute.IsDefined(clrType, typeof(TimedEventAttribute), inherit: false);
+        IsScriptCall = clrType == typeof(CallScriptFunction);
         if (kind == NodeKind.Value && clrType.GetCustomAttributes(typeof(VariadicAttribute), false) is [VariadicAttribute variadic, ..])
             MaxInputs = variadic.MaxInputs;
     }

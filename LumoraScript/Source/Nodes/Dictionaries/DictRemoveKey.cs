@@ -3,10 +3,17 @@
 
 namespace Lumora.Script;
 
-// Takes out key and its value; removed is false when the dictionary did not have it.
+// Takes out key and its value; removed is false when the dictionary did not have it, which is no failure,
+// since the key is gone either way. No dictionary fails.
 [Node("Dictionaries/Remove Key")]
 public sealed class DictRemoveKey<TKey, TValue> : ActionNode where TKey : notnull
 {
     [return: Port("removed")]
-    public static bool Run(ScriptDictionary<TKey, TValue>? dictionary, TKey? key) => dictionary != null && dictionary.Remove(key);
+    public static bool Run(ScriptContextBase ctx, ScriptDictionary<TKey, TValue>? dictionary, TKey? key)
+    {
+        if (dictionary != null)
+            return dictionary.Remove(key);
+        ctx.Fail("no dictionary");
+        return false;
+    }
 }

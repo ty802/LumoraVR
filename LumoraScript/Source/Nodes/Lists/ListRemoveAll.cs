@@ -3,10 +3,16 @@
 
 namespace Lumora.Script;
 
-// Takes out every item equal to item; removed is how many went.
+// Takes out every item equal to item; removed is how many went. None is no failure; no list is.
 [Node("Lists/Remove All")]
 public sealed class ListRemoveAll<T> : ActionNode
 {
     [return: Port("removed")]
-    public static int Run(ScriptList<T>? list, T item) => list?.RemoveAll(item) ?? 0;
+    public static int Run(ScriptContextBase ctx, ScriptList<T>? list, T item)
+    {
+        if (list != null)
+            return list.RemoveAll(item);
+        ctx.Fail("no list");
+        return 0;
+    }
 }

@@ -9,8 +9,10 @@ namespace Lumora.Core.Scripting;
 
 // One texel as it is stored, at a pixel counted from the top left of mip level mip: 0 to 1 a channel for
 // an ordinary picture, and past 1 where a half-float one holds more. ok is false, and the colour clear
-// black, for a pixel outside the picture, a level it does not keep here, or a texture with no pixels to
-// read. The pixels are this machine's copy, whose size can differ from another machine's.
+// black, for a pixel outside the picture, a level it does not keep here, a texture with no pixels to
+// read, or while a loaded picture's pixels come back from its file: the first read starts that and they
+// are there a moment later. The pixels are this machine's copy, whose size can differ from another
+// machine's.
 [Node("Assets/Get Texture Pixel", Capability.WorldRead)]
 public sealed class GetTexturePixel : ReadNode
 {

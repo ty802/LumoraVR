@@ -21,7 +21,7 @@ public sealed class RebakeProbesUnder : ActionNode
     {
         refused = 0;
         root ??= ctx.World.RootSlot;
-        if (!ScriptReads.Visible(ctx, root))
+        if (!ScriptReads.Reached(ctx, root, "root"))
             return 0;
         var probes = new List<ReflectionProbe>();
         root.GetComponentsInChildren(probes);

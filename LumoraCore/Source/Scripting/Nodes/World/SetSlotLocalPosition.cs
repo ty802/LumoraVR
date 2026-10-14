@@ -12,7 +12,7 @@ public sealed class SetSlotLocalPosition : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? slot, float3 position)
     {
-        if (ScriptReads.Visible(ctx, slot))
+        if (ScriptReads.Reached(ctx, slot))
             ScriptWrites.Write(ctx, slot!.LocalPosition, ScriptWrites.Finite(position, "position"));
     }
 }

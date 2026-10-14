@@ -11,13 +11,13 @@ namespace Lumora.Core.Scripting;
 
 // Tints what a slot shows: its text renderer, else its UI text, else the main colour of the first
 // material its mesh renderer draws with that has one. A material is shared by everything drawn with it,
-// so tinting one tints them all.
+// so tinting one tints them all. A slot with nothing to tint fails.
 [Node("World/Components/Set Color", Capability.WorldWrite)]
 public sealed class SetColor : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? slot, color color)
     {
-        if (!ScriptReads.Visible(ctx, slot))
+        if (!ScriptReads.Reached(ctx, slot))
             return;
         if (slot!.GetComponent<TextRenderer>() is { IsDestroyed: false } renderer)
         {
@@ -30,7 +30,10 @@ public sealed class SetColor : ActionNode
             return;
         }
         if (slot.GetComponent<MeshRenderer>() is not { IsDestroyed: false } mesh)
+        {
+            ctx.Fail($"{ScriptReads.Named(slot)} has nothing to tint");
             return;
+        }
         for (int i = 0; i < mesh.Materials.Count; i++)
         {
             if (MainColor(mesh.Materials[i]) is { } main)
@@ -39,6 +42,7 @@ public sealed class SetColor : ActionNode
                 return;
             }
         }
+        ctx.Fail($"no material on {ScriptReads.Named(slot)} has a main colour");
     }
 
     private static Sync<colorHDR>? MainColor(IAssetProvider<MaterialAsset>? material) => material switch

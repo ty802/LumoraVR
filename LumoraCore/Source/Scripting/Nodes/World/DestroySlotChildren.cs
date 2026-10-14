@@ -14,7 +14,7 @@ public sealed class DestroySlotChildren : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? slot, bool keepAssets = false)
     {
-        if (ScriptReads.Visible(ctx, slot))
+        if (ScriptReads.Reached(ctx, slot))
             ScriptSlotWrites.DestroyChildren(ctx, slot!, keepAssets);
     }
 }

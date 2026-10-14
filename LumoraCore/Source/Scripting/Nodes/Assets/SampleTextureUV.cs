@@ -10,7 +10,8 @@ namespace Lumora.Core.Scripting;
 // The texture's colour at uv, blended from the four nearest texels of mip level mip: 0,0 is the top left
 // corner and 1,1 the bottom right, the way meshes lay pictures on. Past the edge the wrap decides:
 // repeat, clamp to the edge, mirror, or clear black past it. ok is false, and the colour clear black, for
-// a level it does not keep here or a texture with no pixels to read.
+// a level it does not keep here, a texture with no pixels to read, or while a loaded picture's pixels
+// come back from its file: the first read starts that and they are there a moment later.
 [Node("Assets/Sample Texture UV", Capability.WorldRead)]
 public sealed class SampleTextureUV : ReadNode
 {

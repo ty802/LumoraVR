@@ -16,7 +16,7 @@ public sealed class SetSlotLocalMatrix : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? slot, float4x4 matrix)
     {
-        if (!ScriptReads.Visible(ctx, slot))
+        if (!ScriptReads.Reached(ctx, slot))
             return;
         matrix.Decompose(out var position, out var rotation, out var scale);
         ScriptWrites.Finite(position, "position");

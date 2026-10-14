@@ -12,10 +12,10 @@ namespace Lumora.Core.Scripting;
 // saying why; denied when the person asked about the address's host said no or did not answer. With reuse
 // on, a texture already on the slot from the same address is handed back instead of a second one.
 //
-// A local:// address needs nobody's leave. An http or https one needs the leave of the user at the machine
-// running the script, the same leave web requests ask for: the host's user for a Shared script, each
-// person on their own machine for a Local one. Addresses on a local network or this machine, and any other
-// kind of address, are refused. Only on the world's own content from a world script, on its author's own
+// A local:// or lumora:/// address needs nobody's leave. An http or https one needs the leave of the user at
+// the machine running the script, the same leave web requests ask for: the host's user for a Shared script, each
+// person on their own machine for a Local one, a local address or this machine included. An address no
+// socket can open, and any other kind of address, is refused. Only on the world's own content from a world script, on its author's own
 // things from a person's script, and on what a Local script made on its machine; never the world root, a
 // protected slot, or anything in someone's body or hands. Every machine in the session loads the picture
 // once something uses it.

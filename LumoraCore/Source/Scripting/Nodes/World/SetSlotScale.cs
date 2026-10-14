@@ -13,7 +13,7 @@ public sealed class SetSlotScale : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? slot, float3 scale)
     {
-        if (!ScriptReads.Visible(ctx, slot))
+        if (!ScriptReads.Reached(ctx, slot))
             return;
         ScriptWrites.Scale(scale);
         var parent = slot!.Parent;

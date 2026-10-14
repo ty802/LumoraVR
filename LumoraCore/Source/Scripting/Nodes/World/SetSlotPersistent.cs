@@ -13,7 +13,7 @@ public sealed class SetSlotPersistent : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? slot, bool persistent)
     {
-        if (ScriptReads.Visible(ctx, slot))
+        if (ScriptReads.Reached(ctx, slot))
             ScriptSlotWrites.SetPersistent(ctx, slot!, persistent);
     }
 }

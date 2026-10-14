@@ -18,7 +18,7 @@ public sealed class DestroySlot : ActionNode
     {
         if (!keepAssets)
             ScriptWrites.Destroy(ctx, slot);
-        else if (ScriptReads.Visible(ctx, slot))
+        else if (ScriptReads.Reached(ctx, slot))
             ScriptSlotWrites.DestroyKeepingAssets(ctx, slot!);
     }
 }

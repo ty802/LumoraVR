@@ -3,9 +3,16 @@
 
 namespace Lumora.Script;
 
-// Empties the dictionary and gives the room its keys and values took back to the budget.
+// Empties the dictionary and gives the room its keys and values took back to the budget. No dictionary
+// fails.
 [Node("Dictionaries/Clear")]
 public sealed class DictClear<TKey, TValue> : ActionNode where TKey : notnull
 {
-    public static void Run(ScriptDictionary<TKey, TValue>? dictionary) => dictionary?.Clear();
+    public static void Run(ScriptContextBase ctx, ScriptDictionary<TKey, TValue>? dictionary)
+    {
+        if (dictionary == null)
+            ctx.Fail("no dictionary");
+        else
+            dictionary.Clear();
+    }
 }

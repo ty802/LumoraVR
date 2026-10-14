@@ -61,15 +61,67 @@ public static class ScriptCodecs
     public static readonly ScriptGuidCodec Guid = new();
 
     // One of an enum's names. It rides an i32 lane, or an i64 for an enum as wide as a long.
+    //
+    // Most enums carry their number straight across without boxing it, which every node call taking or making
+    // a hand or a body part used to do twice. An enum over uint or ulong keeps the checked conversion, which
+    // refuses a number past the signed range as it always has.
     public static ScriptScalarCodec<TEnum> Enum<TEnum>() where TEnum : struct, Enum
     {
         var underlying = System.Enum.GetUnderlyingType(typeof(TEnum));
         bool wide = underlying == typeof(long) || underlying == typeof(ulong);
-        return new ScriptScalarCodec<TEnum>(wide ? WasmValueType.I64 : WasmValueType.I32,
-            raw => (TEnum)System.Enum.ToObject(typeof(TEnum), wide ? unchecked((long)raw) : unchecked((int)(uint)raw)),
-            value => wide ? unchecked((ulong)Convert.ToInt64(value, Invariant)) : unchecked((uint)Convert.ToInt32(value, Invariant)),
+        bool direct = underlying == typeof(int) || underlying == typeof(long) || underlying == typeof(short)
+            || underlying == typeof(sbyte) || underlying == typeof(byte) || underlying == typeof(ushort);
+        bool signed = underlying == typeof(sbyte) || underlying == typeof(short);
+        Func<ulong, TEnum> fromLane = direct
+            ? raw => EnumFromBits<TEnum>(wide ? unchecked((long)raw) : unchecked((int)(uint)raw))
+            : raw => (TEnum)System.Enum.ToObject(typeof(TEnum), wide ? unchecked((long)raw) : unchecked((int)(uint)raw));
+        Func<TEnum, ulong> toLane = direct
+            ? value => wide ? unchecked((ulong)EnumBits(value, signed)) : unchecked((uint)(int)EnumBits(value, signed))
+            : value => wide ? unchecked((ulong)Convert.ToInt64(value, Invariant)) : unchecked((uint)Convert.ToInt32(value, Invariant));
+        return new ScriptScalarCodec<TEnum>(wide ? WasmValueType.I64 : WasmValueType.I32, fromLane, toLane,
             (string s, out TEnum v) => System.Enum.TryParse(s, ignoreCase: true, out v),
             value => value.ToString());
+    }
+
+    // The enum's own number, widened the way its underlying type widens.
+    private static long EnumBits<TEnum>(TEnum value, bool signed) where TEnum : struct, Enum
+    {
+        switch (System.Runtime.CompilerServices.Unsafe.SizeOf<TEnum>())
+        {
+            case 1:
+                return signed ? System.Runtime.CompilerServices.Unsafe.As<TEnum, sbyte>(ref value) : System.Runtime.CompilerServices.Unsafe.As<TEnum, byte>(ref value);
+            case 2:
+                return signed ? System.Runtime.CompilerServices.Unsafe.As<TEnum, short>(ref value) : System.Runtime.CompilerServices.Unsafe.As<TEnum, ushort>(ref value);
+            case 4:
+                return System.Runtime.CompilerServices.Unsafe.As<TEnum, int>(ref value);
+            default:
+                return System.Runtime.CompilerServices.Unsafe.As<TEnum, long>(ref value);
+        }
+    }
+
+    // The low bits of a number as the enum, as many as the enum is wide.
+    private static TEnum EnumFromBits<TEnum>(long bits) where TEnum : struct, Enum
+    {
+        switch (System.Runtime.CompilerServices.Unsafe.SizeOf<TEnum>())
+        {
+            case 1:
+            {
+                byte narrow = unchecked((byte)bits);
+                return System.Runtime.CompilerServices.Unsafe.As<byte, TEnum>(ref narrow);
+            }
+            case 2:
+            {
+                short narrow = unchecked((short)bits);
+                return System.Runtime.CompilerServices.Unsafe.As<short, TEnum>(ref narrow);
+            }
+            case 4:
+            {
+                int narrow = unchecked((int)bits);
+                return System.Runtime.CompilerServices.Unsafe.As<int, TEnum>(ref narrow);
+            }
+            default:
+                return System.Runtime.CompilerServices.Unsafe.As<long, TEnum>(ref bits);
+        }
     }
 
     private static ScriptScalarCodec<T> Integer<T>(WasmValueType lane, Func<ulong, T> fromLane, Func<T, ulong> toLane,

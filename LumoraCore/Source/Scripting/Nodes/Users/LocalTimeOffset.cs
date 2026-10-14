@@ -15,8 +15,12 @@ public sealed class LocalTimeOffset : ReadNode
     [return: Port("offset")]
     public static TimeSpan Run(ScriptContext ctx, out DateTime now)
     {
-        if (!ctx.IsLocal)
-            throw new UnauthorizedAccessException("only a Local script reads its machine's time zone; a Shared script runs on the host");
+        if (!ctx.OffHost)
+        {
+            ctx.TurnDown("only a Local script reads its machine's time zone; a Shared script runs on the host");
+            now = default;
+            return default;
+        }
         var utc = DateTime.UtcNow;
         now = utc.ToLocalTime();
         return TimeZoneInfo.Local.GetUtcOffset(utc);

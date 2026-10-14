@@ -13,7 +13,7 @@ public sealed class SetSlotRotation : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? slot, floatQ rotation)
     {
-        if (!ScriptReads.Visible(ctx, slot))
+        if (!ScriptReads.Reached(ctx, slot))
             return;
         var unit = ScriptWrites.Unit(rotation);
         var parent = slot!.Parent;

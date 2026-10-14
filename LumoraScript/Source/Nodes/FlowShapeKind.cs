@@ -17,5 +17,9 @@ public enum FlowShapeKind : byte
     Range,
     ListEach,
     Scope,
-    Change
+    Change,
+    Watch,
+    Follow,
+    FrameDelta,
+    Drive
 }

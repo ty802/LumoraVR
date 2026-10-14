@@ -11,7 +11,8 @@ namespace Lumora.Core.Scripting;
 // Vibrates the controller of whichever of this machine's own hands has target: the hand holding it, or the
 // hand it sits in. The script's own object when target is empty. Only this machine's hands are ever found,
 // so on anyone else's machine the same script finds their own hand or nothing. pulsed says whether a hand
-// was found and took the pulse. Strength and seconds as Haptic Pulse.
+// was found and took the pulse. Strength and seconds as Haptic Pulse. No hand holding it is no failure, since
+// another machine's may; no target, or no controller in the hand that holds it, is.
 [Node("Input/Haptic Pulse Holder", Capability.Input)]
 public sealed class HolderPulse : ActionNode
 {
@@ -20,10 +21,10 @@ public sealed class HolderPulse : ActionNode
     {
         var input = ScriptInput.Of(ctx);
         var slot = target ?? ctx.Self;
-        if (input == null || !ScriptReads.Visible(ctx, slot))
+        if (!ScriptReads.Reached(ctx, slot, "target"))
             return false;
-        var side = SideHolding(ctx.World.LocalUser?.Root, slot!);
-        return side != Chirality.None && HapticPulse.Pulse(input, side, strength, seconds);
+        var side = SideHolding(ctx.World.LocalUser?.Root, slot);
+        return side != Chirality.None && HapticPulse.Pulse(ctx, input, side, strength, seconds);
     }
 
     // Walks up from slot: a grabbed thing answers for the hand its grabber is on, anything else for the hand

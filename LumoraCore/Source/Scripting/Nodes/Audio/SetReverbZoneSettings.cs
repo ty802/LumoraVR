@@ -14,7 +14,7 @@ public sealed class SetReverbZoneSettings : ActionNode
 {
     public static void Run(ScriptContext ctx, ReverbZone? zone, ReverbSettings settings)
     {
-        if (ScriptReads.Visible(ctx, zone))
+        if (ScriptReads.Reached(ctx, zone, "reverb zone"))
             ScriptReverb.Write(ctx, zone!.Fields, settings);
     }
 }

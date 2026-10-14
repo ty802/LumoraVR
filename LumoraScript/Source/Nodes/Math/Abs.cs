@@ -8,7 +8,7 @@ using Lumora.Wasm;
 namespace Lumora.Script;
 
 // The smallest integer has no positive twin and comes back as itself, where Math.Abs would throw.
-// Vectors and colors go lane by lane.
+// Vectors, colors and the four numbers of a rotation go lane by lane; a rotation is not normalised after.
 [Node("Math/Abs")]
 public sealed class Abs : ValueNode
 {
@@ -28,4 +28,7 @@ public sealed class Abs : ValueNode
 
     [Wasm(WasmOp.F32Abs, Lanes = 4)]
     public static colorHDR Run(colorHDR value) => new(Run(value.r), Run(value.g), Run(value.b), Run(value.a));
+
+    [Wasm(WasmOp.F32Abs, Lanes = 4)]
+    public static floatQ Run(floatQ value) => new(Run(value.x), Run(value.y), Run(value.z), Run(value.w));
 }

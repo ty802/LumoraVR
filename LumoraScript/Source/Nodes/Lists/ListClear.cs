@@ -3,9 +3,15 @@
 
 namespace Lumora.Script;
 
-// Empties the list and gives the room its items took back to the budget.
+// Empties the list and gives the room its items took back to the budget. No list fails.
 [Node("Lists/Clear")]
 public sealed class ListClear<T> : ActionNode
 {
-    public static void Run(ScriptList<T>? list) => list?.Clear();
+    public static void Run(ScriptContextBase ctx, ScriptList<T>? list)
+    {
+        if (list == null)
+            ctx.Fail("no list");
+        else
+            list.Clear();
+    }
 }

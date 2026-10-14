@@ -15,7 +15,7 @@ public sealed class SetSlotChildIndex : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? slot, int index)
     {
-        if (ScriptReads.Visible(ctx, slot))
+        if (ScriptReads.Reached(ctx, slot))
             ScriptSlotWrites.SetChildIndex(ctx, slot!, index);
     }
 }

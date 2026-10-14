@@ -9,7 +9,7 @@ namespace Lumora.Core.Scripting;
 // Writes a named variable through the scope above slot, into every component that holds it, as the
 // script's author. Each holder is judged first and none is written unless all may be. found is false when
 // nothing of that name and type is there; written is false as well when every holder is driven or read
-// only. A refusal is counted and leaves both false.
+// only. A refusal is counted and leaves both false. The call fails whenever written is false.
 [Node("Variables/Scoped/Write Variable", Capability.WorldWrite)]
 public sealed class WriteScopedVariable<T> : ActionNode
 {
@@ -23,6 +23,9 @@ public sealed class WriteScopedVariable<T> : ActionNode
             return false;
         var result = ScriptScopedVariables.Write(ctx, scope, name, value);
         found = result is not (VariableWriteResult.NotFound or VariableWriteResult.TypeMismatch);
-        return result == VariableWriteResult.Success;
+        if (result == VariableWriteResult.Success)
+            return true;
+        ctx.Fail(ScriptScopedVariables.Unwritten(result, name));
+        return false;
     }
 }

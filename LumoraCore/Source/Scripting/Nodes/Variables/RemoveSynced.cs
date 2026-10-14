@@ -12,10 +12,18 @@ public sealed class RemoveSynced : ActionNode
 {
     public static void Run(ScriptContext ctx, string? name)
     {
-        if (ctx.IsLocal)
+        if (ctx.OffHost)
             throw new UnauthorizedAccessException("a Local script reads synced values; a Shared script keeps them");
-        if (string.IsNullOrEmpty(name) || ctx.Host is not { IsDestroyed: false } host || !ctx.World.IsAuthority)
+        if (string.IsNullOrEmpty(name))
+        {
+            ctx.Fail("no name");
             return;
+        }
+        if (ctx.Host is not { IsDestroyed: false } host || !ctx.World.IsAuthority)
+        {
+            ctx.Fail("this script keeps no synced values here");
+            return;
+        }
         host.RemoveSynced(name);
     }
 }

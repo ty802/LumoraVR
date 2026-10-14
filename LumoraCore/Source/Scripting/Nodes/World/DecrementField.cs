@@ -16,7 +16,10 @@ public sealed class DecrementField<T> : ActionNode where T : struct, INumber<T>
     {
         written = false;
         if (field == null || field.IsDestroyed)
+        {
+            ctx.Fail(field == null ? "no field" : "the field is gone");
             return default;
+        }
         var next = unchecked(field.Value - T.One);
         ScriptWrites.Write(ctx, field, next);
         written = true;

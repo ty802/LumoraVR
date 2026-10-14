@@ -11,7 +11,7 @@ public sealed class ClearReference : ActionNode
 {
     public static void Run(ScriptContext ctx, ISyncRef? reference)
     {
-        if (ScriptReads.VisibleElement(ctx, reference as IWorldElement))
+        if (ScriptReads.ReachedElement(ctx, reference as IWorldElement, "reference"))
             ScriptWrites.WriteReference(ctx, reference, null);
     }
 }

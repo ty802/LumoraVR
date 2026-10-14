@@ -3,9 +3,15 @@
 
 namespace Lumora.Script;
 
-// Puts item at the end. Without a list nothing happens.
+// Puts item at the end. Without a list nothing happens, and the call fails.
 [Node("Lists/Add")]
 public sealed class ListAdd<T> : ActionNode
 {
-    public static void Run(ScriptList<T>? list, T item) => list?.Add(item);
+    public static void Run(ScriptContextBase ctx, ScriptList<T>? list, T item)
+    {
+        if (list == null)
+            ctx.Fail("no list");
+        else
+            list.Add(item);
+    }
 }

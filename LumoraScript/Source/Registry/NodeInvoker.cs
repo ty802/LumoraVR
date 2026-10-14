@@ -72,6 +72,7 @@ public sealed class NodeInvoker
 
         try
         {
+            context.TakeTurnedDown();
             using (context.EnterCall(_overload))
             {
                 if (_compiled != null)
@@ -79,10 +80,17 @@ public sealed class NodeInvoker
                 else
                     InvokeReflected(arguments, results, context);
             }
+            if (context.TakeTurnedDown() is { } reason)
+            {
+                Array.Clear(results);
+                context.Fail(reason);
+                context.OnRefused(_overload, new UnauthorizedAccessException(reason));
+            }
         }
         catch (UnauthorizedAccessException refusal)
         {
             Array.Clear(results);
+            context.Fail(refusal.Message);
             context.OnRefused(_overload, refusal);
         }
 
@@ -93,9 +101,10 @@ public sealed class NodeInvoker
     private static T? ResolveHandle<T>(ScriptContextBase context, int handle) where T : class
         => context.GetLive(handle) as T;
 
-    // An await's ticket, from the await number the module passes ahead of the inputs.
+    // An await's ticket, from the await number the module passes ahead of the inputs, in the call of a waiting
+    // Function the module named just before, if any.
     private static AwaitTicket OpenTicket(ScriptContextBase context, int index)
-        => (context.Awaits ?? throw new ScriptLimitException("this script cannot wait on anything")).Open(index);
+        => (context.Awaits ?? throw new ScriptLimitException("this script cannot wait on anything")).Open(index, context.TakeWord());
 
     private bool Awaits => _overload.Definition.Kind == NodeKind.Await;
 

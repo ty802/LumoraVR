@@ -3,11 +3,22 @@
 
 namespace Lumora.Script;
 
-// Takes out the item at index and moves the rest back. Outside the list nothing changes and removed is
-// false.
+// Takes out the item at index and moves the rest back. Outside the list nothing changes, removed is false
+// and the call fails, as it does without a list.
 [Node("Lists/Remove At")]
 public sealed class ListRemoveAt<T> : ActionNode
 {
     [return: Port("removed")]
-    public static bool Run(ScriptList<T>? list, int index) => list != null && list.RemoveAt(index);
+    public static bool Run(ScriptContextBase ctx, ScriptList<T>? list, int index)
+    {
+        if (list == null)
+        {
+            ctx.Fail("no list");
+            return false;
+        }
+        if (list.RemoveAt(index))
+            return true;
+        ctx.Fail($"index {index} is outside the list of {list.Count}");
+        return false;
+    }
 }

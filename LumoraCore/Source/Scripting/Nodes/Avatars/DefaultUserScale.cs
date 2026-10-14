@@ -5,8 +5,9 @@ using Lumora.Script;
 
 namespace Lumora.Core.Scripting;
 
-// The scale a user returns to when their scale is reset: 1, brought inside the range their role allows.
-// 1 for a user the script cannot see. Their scale now is Users/Root Slot into World/Slots/Scale.
+// The scale a user returns to when their scale is reset: their worn avatar's own scale, or 1, brought inside
+// the range their role allows. 1 for a user the script cannot see. Their scale now is Users/Root Slot into
+// World/Slots/Scale.
 [Node("Avatars/Default Scale", Capability.UsersRead)]
 public sealed class DefaultUserScale : ReadNode
 {
@@ -15,6 +16,7 @@ public sealed class DefaultUserScale : ReadNode
     {
         if (!ScriptReads.Visible(ctx, user))
             return 1f;
-        return ctx.World.DataModelPermissions?.ClampScale(user, 1f) ?? 1f;
+        float scale = Components.Avatar.AvatarScale.DefaultFor(user!.Root);
+        return ctx.World.DataModelPermissions?.ClampScale(user, scale) ?? scale;
     }
 }

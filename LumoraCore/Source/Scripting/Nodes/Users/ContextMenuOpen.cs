@@ -1,7 +1,6 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-using Lumora.Core.Components.UI;
 using Lumora.Script;
 
 namespace Lumora.Core.Scripting;
@@ -13,9 +12,9 @@ public sealed class ContextMenuOpen : ReadNode
     [return: Port("open")]
     public static bool Run(ScriptContext ctx, User? user)
     {
-        if (!ScriptReads.Visible(ctx, user) || ScriptReads.RootOf(user)?.Slot is not { IsDestroyed: false } body)
+        if (!ScriptReads.Visible(ctx, user) || ScriptReads.RootOf(user) is not { Slot: { IsDestroyed: false } } root)
             return false;
-        var menu = body.GetComponentInChildren<ContextMenuSystem>();
+        var menu = root.ContextMenu;
         return menu is { IsDestroyed: false } && menu.IsOpen.Value;
     }
 }

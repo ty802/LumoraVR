@@ -13,10 +13,18 @@ public sealed class WriteSynced<T> : ActionNode where T : IEquatable<T>
 {
     public static void Run(ScriptContext ctx, string? name, T value)
     {
-        if (ctx.IsLocal)
+        if (ctx.OffHost)
             throw new UnauthorizedAccessException("a Local script reads synced values; a Shared script keeps them");
-        if (!ScriptSynced.CheckName(name) || ctx.Host is not { IsDestroyed: false } host || !ctx.World.IsAuthority)
+        if (!ScriptSynced.CheckName(name))
+        {
+            ctx.Fail("no name");
             return;
+        }
+        if (ctx.Host is not { IsDestroyed: false } host || !ctx.World.IsAuthority)
+        {
+            ctx.Fail("this script keeps no synced values here");
+            return;
+        }
         if (host.WriteSynced(name!, ScriptSynced.TypeName<T>(), ScriptSynced.Format(value)) && host.Synced.Count == ScriptSynced.WarnValues + 1)
             ctx.Warn(ScriptWarning.SyncedValues, $"more than {ScriptSynced.WarnValues} synced values on one object");
     }

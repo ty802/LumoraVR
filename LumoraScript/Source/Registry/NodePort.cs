@@ -15,13 +15,15 @@ public sealed class NodePort
     public ScriptType Type { get; }
     public object? Default { get; }
     public bool HasDefault { get; }
+    public bool IsSetting { get; }
 
-    public NodePort(string name, ScriptType type, object? defaultValue, bool hasDefault)
+    public NodePort(string name, ScriptType type, object? defaultValue, bool hasDefault, bool isSetting = false)
     {
         Name = name;
         Type = type;
         Default = defaultValue;
         HasDefault = hasDefault;
+        IsSetting = isSetting;
     }
 
     public static string NormalizeName(string name)

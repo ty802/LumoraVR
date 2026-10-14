@@ -8,7 +8,7 @@ using Lumora.Wasm;
 namespace Lumora.Script;
 
 // Integer division by zero traps, the same as the C# body throwing; the call ends at this node. Vectors
-// go lane by lane, and a number over a vector divides it by each lane. A span of time divided past the
+// and colours go lane by lane, and a number over a vector divides it by each lane. A span of time divided past the
 // longest there is holds at it; a NaN length, such as zero over zero, is zero.
 [Node("Math/Divide")]
 public sealed class Divide : ValueNode
@@ -40,4 +40,10 @@ public sealed class Divide : ValueNode
     [Wasm(WasmOp.I32DivU)] public static uint Run(uint a, uint b) => a / b;
     [Wasm(WasmOp.I64DivU)] public static ulong Run(ulong a, ulong b) => a / b;
     public static TimeSpan Run(TimeSpan a, double b) => ClampedTime.Span(a.Ticks / b);
+
+    [Wasm(WasmOp.F32Div, Lanes = 4)]
+    public static color Run(color a, color b) => new(a.r / b.r, a.g / b.g, a.b / b.b, a.a / b.a);
+
+    [Wasm(WasmOp.F32Div, Lanes = 4)]
+    public static colorHDR Run(colorHDR a, colorHDR b) => new(a.r / b.r, a.g / b.g, a.b / b.b, a.a / b.a);
 }

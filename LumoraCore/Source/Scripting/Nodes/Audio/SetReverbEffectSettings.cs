@@ -13,7 +13,7 @@ public sealed class SetReverbEffectSettings : ActionNode
 {
     public static void Run(ScriptContext ctx, ReverbEffect? effect, ReverbSettings settings)
     {
-        if (ScriptReads.Visible(ctx, effect))
+        if (ScriptReads.Reached(ctx, effect, "reverb effect"))
             ScriptReverb.Write(ctx, effect!.Fields, settings);
     }
 }

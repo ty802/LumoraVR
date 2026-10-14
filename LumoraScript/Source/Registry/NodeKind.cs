@@ -20,5 +20,22 @@ public enum NodeKind : byte
     Constant,
 
     // Starts work the host answers later; each answer runs one of its exits as a call of its own.
-    Await
+    Await,
+
+    // A value worked out from what the node remembers as well as its inputs, by a shape the compiler lowers.
+    Memory,
+
+    // Holds a field at a value worked out every frame, on every machine running the script.
+    Drive,
+
+    // A point on a wire, data or flow, that the compiler reads straight through and never lowers.
+    Relay,
+
+    // A function of the graph's own: the node its body starts from, the Return that hands back what it gives,
+    // and the two ways to use it, a call in flow and a pure call in data. Their ports are the node's own
+    // "sig" (FunctionSignature), not the class's.
+    Function,
+    Return,
+    CallFunction,
+    EvaluateFunction
 }

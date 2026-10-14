@@ -12,7 +12,7 @@ public sealed class SetSlotTag : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? slot, string? tag)
     {
-        if (ScriptReads.Visible(ctx, slot))
+        if (ScriptReads.Reached(ctx, slot))
             ScriptSlotWrites.Write(ctx, slot!, slot!.Tag, tag ?? string.Empty);
     }
 }

@@ -8,7 +8,8 @@ namespace Lumora.Core.Scripting;
 
 // Write Variable, and Create Variable when there is nothing of that name and type to write. written is
 // true once the variable holds value either way, created when it was made now. Making it follows Create
-// Variable's rules; a variable that is there but will not take the write is left as it is.
+// Variable's rules; a variable that is there but will not take the write is left as it is. The call fails
+// whenever written is false.
 [Node("Variables/Scoped/Write Or Create Variable", Capability.WorldStructure)]
 public sealed class WriteOrCreateScopedVariable<T> : ActionNode
 {
@@ -24,8 +25,13 @@ public sealed class WriteOrCreateScopedVariable<T> : ActionNode
         if (result == VariableWriteResult.Success)
             return true;
         if (result is not (VariableWriteResult.NotFound or VariableWriteResult.TypeMismatch))
+        {
+            ctx.Fail(ScriptScopedVariables.Unwritten(result, name));
             return false;
+        }
         created = ScriptScopedVariables.Create(ctx, slot, path, value, onSlot, saved, out _);
+        if (!created)
+            ctx.Fail($"the variable '{name}' could not be made");
         return created;
     }
 }

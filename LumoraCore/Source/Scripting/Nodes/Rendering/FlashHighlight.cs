@@ -23,7 +23,7 @@ public sealed class FlashHighlight : ActionNode
     public static int Run(ScriptContext ctx, Slot? root, color color, float seconds = 0.5f, bool meshes = true, bool colliders = true,
         bool hidden = false, bool follow = true)
     {
-        if (!ScriptReads.Visible(ctx, root))
+        if (!ScriptReads.Reached(ctx, root, "root"))
             return 0;
         int shown = ScriptDrawingLayer.For(ctx.World).AddFlash(root!, ScriptDrawings.Shade(color), ScriptDrawings.Seconds(seconds),
             meshes, colliders, hidden, follow);

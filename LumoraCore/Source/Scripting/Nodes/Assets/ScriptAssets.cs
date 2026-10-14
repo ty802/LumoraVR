@@ -10,8 +10,9 @@ namespace Lumora.Core.Scripting;
 
 // What the asset nodes read: the asset a provider the script can see has loaded on this machine.
 // Pixels are this machine's copy, rows from the top, each mip level half the size of the one before. A
-// new picture is swapped in off the world thread, so a level is read once and has to match its size to
-// be read at all: one caught half swapped reads as nothing until it is whole. -xlinka
+// loaded picture hands its pixels to the renderer and keeps none, so the first read decodes them again
+// from its file off the world thread and reads as nothing until they land; reads after that find them
+// while the script keeps reading. A level has to match its size to be read at all. -xlinka
 internal static class ScriptAssets
 {
     public static TextureAsset? Texture(ScriptContext ctx, IAssetProvider<TextureAsset>? provider)
@@ -25,10 +26,13 @@ internal static class ScriptAssets
         level = default;
         if (texture == null || mip < 0 || mip >= 31)
             return false;
-        var levels = texture.MipLevels;
-        int width = texture.Width;
-        int height = texture.Height;
-        bool half = texture.PixelFormat == TextureFormatKind.RGBA16F;
+        var pixels = texture.TryGetPixels();
+        if (pixels == null)
+            return false;
+        var levels = pixels.Levels;
+        int width = pixels.Width;
+        int height = pixels.Height;
+        bool half = pixels.IsHalf;
         if (mip >= levels.Length || width <= 0 || height <= 0)
             return false;
         int levelWidth = System.Math.Max(1, width >> mip);
@@ -38,15 +42,6 @@ internal static class ScriptAssets
             return false;
         level = new Level(bytes, levelWidth, levelHeight, half);
         return true;
-    }
-
-    // Levels from the top that are whole.
-    public static int LevelCount(TextureAsset texture)
-    {
-        int count = 0;
-        while (TryLevel(texture, count, out _))
-            count++;
-        return count;
     }
 
     public readonly struct Level

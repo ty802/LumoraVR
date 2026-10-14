@@ -12,7 +12,7 @@ public sealed class SetSlotOrderOffset : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? slot, long offset)
     {
-        if (ScriptReads.Visible(ctx, slot))
+        if (ScriptReads.Reached(ctx, slot))
             ScriptSlotWrites.Write(ctx, slot!, slot!.OrderOffset, offset);
     }
 }

@@ -15,5 +15,13 @@ namespace Lumora.Core.Scripting;
 public sealed class UnpackGraph : ActionNode
 {
     [return: Port("space")]
-    public static Component? Run(ScriptContext ctx, Component? script) => ScriptGraphEditing.UnpackFor(ctx, script as ScriptHost);
+    public static Component? Run(ScriptContext ctx, Component? script)
+    {
+        if (script is not (null or ScriptHost))
+        {
+            ctx.Fail($"the component on {ScriptReads.Named(script)} is not a script");
+            return null;
+        }
+        return ScriptGraphEditing.UnpackFor(ctx, script as ScriptHost);
+    }
 }

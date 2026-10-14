@@ -10,7 +10,7 @@ public sealed class SetSlotActive : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? slot, bool active)
     {
-        if (ScriptReads.Visible(ctx, slot))
+        if (ScriptReads.Reached(ctx, slot))
             ScriptWrites.Write(ctx, slot!.ActiveSelf, active);
     }
 }

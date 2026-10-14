@@ -17,13 +17,18 @@ public sealed class NodeOverload
 {
     public NodeDefinition Definition { get; }
     public IReadOnlyList<ScriptType> TypeArguments { get; }
-    public IReadOnlyList<NodePort> Inputs { get; }
-    public IReadOnlyList<NodePort> Outputs { get; }
+    // Invocation parameters, including settings. Their order is part of the saved signature and ABI.
+    public PortList Inputs { get; }
+    public PortList Outputs { get; }
     public IReadOnlyList<string> FlowInputs { get; }
     public IReadOnlyList<string> FlowOutputs { get; }
     public MethodInfo? Method { get; }
     public bool TakesContext { get; }
     public byte? InlineOpcode { get; }
+
+    // Written inline by its node's [WasmBody] writer instead of called.
+    public Action<WasmBodyWriter>? InlineBody { get; private init; }
+
     public FlowShape? Shape { get; }
     public Type? PayloadType { get; }
 
@@ -31,9 +36,12 @@ public sealed class NodeOverload
     // or its inlined instruction, is the two-input one's.
     public NodeOverload? Folds { get; }
 
-    // What a graph writes in "sig" to pick this overload: the type arguments for a generic node, the
-    // input types otherwise.
+    // What a graph writes in "sig" to pick this overload: the type arguments for a generic node, a function
+    // node's ports spelled out, the input types otherwise.
     public string Signature { get; }
+
+    // A function node's ports, as its "sig" declares them; null for any other node.
+    public FunctionSignature? FunctionSignature { get; }
 
     public string ImportName { get; }
     public WasmFuncType? ImportType { get; }
@@ -44,7 +52,7 @@ public sealed class NodeOverload
     {
         Definition = binary.Definition;
         TypeArguments = binary.TypeArguments;
-        Inputs = inputs;
+        Inputs = inputs as PortList ?? new PortList(inputs);
         Outputs = binary.Outputs;
         FlowInputs = binary.FlowInputs;
         FlowOutputs = binary.FlowOutputs;
@@ -52,7 +60,7 @@ public sealed class NodeOverload
         TakesContext = binary.TakesContext;
         InlineOpcode = binary.InlineOpcode;
         Folds = binary;
-        Signature = string.Join(",", inputs.Select(i => i.Type.Name));
+        Signature = string.Join(",", Inputs.Select(i => i.Type.Name));
         ImportName = binary.ImportName;
         ImportType = binary.ImportType;
     }
@@ -66,19 +74,22 @@ public sealed class NodeOverload
         for (int i = 2; i < count; i++)
         {
             var name = lettered ? ((char)('a' + i)).ToString() : $"{binary.Inputs[1].Name}{i}";
-            inputs.Add(new NodePort(name, first.Type, first.Default, first.HasDefault));
+            inputs.Add(new NodePort(name, first.Type, first.Default, first.HasDefault, first.IsSetting));
         }
         return new NodeOverload(binary, inputs);
     }
 
     internal NodeOverload(NodeDefinition definition, IReadOnlyList<ScriptType> typeArguments, IReadOnlyList<NodePort> inputs,
         IReadOnlyList<NodePort> outputs, IReadOnlyList<string> flowInputs, IReadOnlyList<string> flowOutputs,
-        MethodInfo? method, bool takesContext, byte? inlineOpcode, FlowShape? shape, Type? payloadType)
+        MethodInfo? method, bool takesContext, byte? inlineOpcode, FlowShape? shape, Type? payloadType,
+        Action<WasmBodyWriter>? inlineBody = null, FunctionSignature? function = null)
     {
+        InlineBody = inlineBody;
+        FunctionSignature = function;
         Definition = definition;
         TypeArguments = typeArguments;
-        Inputs = inputs;
-        Outputs = outputs;
+        Inputs = inputs as PortList ?? new PortList(inputs);
+        Outputs = outputs as PortList ?? new PortList(outputs);
         FlowInputs = flowInputs;
         FlowOutputs = flowOutputs;
         Method = method;
@@ -95,7 +106,7 @@ public sealed class NodeOverload
         for (int i = 0; i < typeArguments.Count; i++)
             typeArgs[i] = typeArguments[i].Name;
 
-        Signature = definition.IsGeneric ? string.Join(",", typeArgs) : string.Join(",", inputTypes);
+        Signature = function?.Canonical ?? (definition.IsGeneric ? string.Join(",", typeArgs) : string.Join(",", inputTypes));
         ImportName = definition.IsGeneric
             ? $"{definition.Name}<{string.Join(",", typeArgs)}>({string.Join(",", inputTypes)})"
             : $"{definition.Name}({string.Join(",", inputTypes)})";
@@ -108,7 +119,7 @@ public sealed class NodeOverload
                 : new WasmFuncType(LanesOf(inputs), LanesOf(outputs));
     }
 
-    public bool IsHostCall => Method != null && InlineOpcode == null;
+    public bool IsHostCall => Method != null && InlineOpcode == null && InlineBody == null;
 
     // Built once, by whichever thread asks first: a compile on a worker makes the ones its graph links.
     public NodeInvoker Invoker => Folds?.Invoker ?? LazyInitializer.EnsureInitialized(ref _invoker, () => new NodeInvoker(this));
@@ -131,6 +142,13 @@ public sealed class NodeOverload
                 return i;
         }
         return -1;
+    }
+
+    // Only parameters that can receive a data wire. InputIndex also finds editable settings.
+    public int ConnectableInputIndex(string name)
+    {
+        int index = InputIndex(name);
+        return index >= 0 && !Inputs[index].IsSetting ? index : -1;
     }
 
     public override string ToString() => ImportName;

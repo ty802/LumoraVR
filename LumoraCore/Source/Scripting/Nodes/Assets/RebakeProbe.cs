@@ -14,7 +14,7 @@ public sealed class RebakeProbe : ActionNode
 {
     public static void Run(ScriptContext ctx, ReflectionProbe? probe)
     {
-        if (!ScriptReads.Visible(ctx, probe))
+        if (!ScriptReads.Reached(ctx, probe, "probe"))
             return;
         ScriptWrites.Check(ctx, probe!.BakeGeneration);
         probe.Rebake();

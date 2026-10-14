@@ -11,7 +11,7 @@ public sealed class SetEnabled : ActionNode
 {
     public static void Run(ScriptContext ctx, Component? component, bool enabled)
     {
-        if (ScriptReads.Visible(ctx, component))
+        if (ScriptReads.Reached(ctx, component))
             ScriptWrites.Write(ctx, component!.Enabled, enabled);
     }
 }

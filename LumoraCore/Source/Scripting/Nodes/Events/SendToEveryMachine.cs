@@ -13,9 +13,9 @@ public sealed class SendToEveryMachine : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? target, string? message, float value = 0f)
     {
-        if (ctx.IsLocal)
+        if (ctx.OffHost)
             throw new UnauthorizedAccessException("a Local script sends to the host instead");
-        if (!ScriptReads.Visible(ctx, target) || !ctx.World.IsAuthority)
+        if (!ScriptReads.Reached(ctx, target, "target") || !ctx.World.IsAuthority)
             return;
         ctx.CountMessage();
         ScriptMessages.ToEveryMachine(ctx.Principal, target!, ScriptMessages.Text(message), value);

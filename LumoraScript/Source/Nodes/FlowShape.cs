@@ -11,8 +11,10 @@ namespace Lumora.Script;
 // or the toggle's state; Item is a For Each's current item, and Source what it walks. Query is the
 // inputs a searching For Each hands its host, in order. Reverse is a For's count-down input; Start, End
 // and Step are a range loop's inputs. A list For Each walks the list on Input. Enter and Leave name the
-// action nodes a scope opens and closes with. Helper names the value node a Change works its difference
-// out with, and PreviousFirst whether that node takes the earlier value first.
+// action nodes a scope opens and closes with. Helper names the value node a Change, a Follow or a
+// FrameDelta works its answer out with, and PreviousFirst whether that node takes the earlier value first.
+// Speed is a Follow's rate input, scaled by SpeedScale, and Stages how many times it eases in a row; Target is
+// the field input a Drive holds.
 public sealed class FlowShape
 {
     public FlowShapeKind Kind { get; }
@@ -30,6 +32,15 @@ public sealed class FlowShape
     public string? Leave { get; init; }
     public string? Helper { get; init; }
     public bool PreviousFirst { get; init; }
+    public int Speed { get; init; } = -1;
+    public float SpeedScale { get; init; } = 1f;
+    public int Stages { get; init; } = 1;
+    public int Target { get; init; } = -1;
+    // A drive's on input: while it is false the field is let go.
+    public int Switch { get; init; } = -1;
+    // A holding drive's fields that hear the writes it refuses: the value tried, and how many tries.
+    public int Heard { get; init; } = -1;
+    public int HeardCount { get; init; } = -1;
 
     internal FlowShape(FlowShapeKind kind, int input, int[] exits, int output, int item = -1, EachSource source = default,
         int[]? query = null)

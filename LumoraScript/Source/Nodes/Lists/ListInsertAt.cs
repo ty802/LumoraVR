@@ -4,10 +4,21 @@
 namespace Lumora.Script;
 
 // Puts item at index and moves the rest along; an index equal to the count adds at the end. Anywhere else
-// nothing changes and inserted is false.
+// nothing changes, inserted is false and the call fails, as it does without a list.
 [Node("Lists/Insert At")]
 public sealed class ListInsertAt<T> : ActionNode
 {
     [return: Port("inserted")]
-    public static bool Run(ScriptList<T>? list, int index, T item) => list != null && list.Insert(index, item);
+    public static bool Run(ScriptContextBase ctx, ScriptList<T>? list, int index, T item)
+    {
+        if (list == null)
+        {
+            ctx.Fail("no list");
+            return false;
+        }
+        if (list.Insert(index, item))
+            return true;
+        ctx.Fail($"index {index} is outside the list of {list.Count}");
+        return false;
+    }
 }

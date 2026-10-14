@@ -7,9 +7,9 @@ using Lumora.Wasm;
 
 namespace Lumora.Script;
 
-// What a FlowNode's Build writes into: its ports, and exactly one shape. The shapes are a closed set on
-// purpose, each one lowered by the compiler, so a flow node cannot invent control flow the dispatch
-// loop does not understand. -xlinka
+// What a FlowNode's, a MemoryNode's or a DriveNode's Build writes into: its ports, and exactly one shape.
+// The shapes are a closed set on purpose, each one lowered by the compiler, so a node cannot invent control
+// flow the dispatch loop does not understand, or memory the instance does not keep. -xlinka
 public sealed class FlowBuilder
 {
     internal readonly List<NodePort> Inputs = new();
@@ -29,6 +29,12 @@ public sealed class FlowBuilder
     public FlowInput<T> Input<T>(string name, T defaultValue)
     {
         Inputs.Add(new NodePort(NodePort.NormalizeName(name), ScriptTypes.Get(typeof(T)), defaultValue, hasDefault: true));
+        return new FlowInput<T>(Inputs.Count - 1);
+    }
+
+    public FlowInput<T> Setting<T>(string name)
+    {
+        Inputs.Add(new NodePort(NodePort.NormalizeName(name), ScriptTypes.Get(typeof(T)), null, hasDefault: false, isSetting: true));
         return new FlowInput<T>(Inputs.Count - 1);
     }
 
@@ -165,6 +171,59 @@ public sealed class FlowBuilder
         {
             Helper = helper,
             PreviousFirst = previousFirst,
+        });
+
+    // Runs changed when value differs from the last time flow came through, else same; previous is the value
+    // from that last time. The first time through there is nothing to differ from: it only remembers, and
+    // runs same.
+    public void Watch<T>(FlowInput<T> value, FlowExit changed, FlowExit same, FlowOutput<T> previous)
+        => SetShape(new FlowShape(FlowShapeKind.Watch, value.Index, new[] { changed.Index, same.Index }, previous.Index));
+
+    // A value that follows value over time. The value node named helper takes where it is, where it heads,
+    // speed times speedScale and the seconds since it last moved, and gives where it is now. With two stages
+    // a hidden middle follows value and the result follows the middle, which eases in as well as out. The
+    // first time it starts where value is; worked out again in the same frame it does not move twice.
+    public void Follow<T>(FlowInput<T> value, FlowInput<float> speed, FlowOutput<T> result, string helper, int stages = 1,
+        float speedScale = 1f)
+    {
+        if (stages is < 1 or > 2)
+            throw new ArgumentOutOfRangeException(nameof(stages), "a follow eases in one stage or two");
+        SetShape(new FlowShape(FlowShapeKind.Follow, value.Index, Array.Empty<int>(), result.Index)
+        {
+            Speed = speed.Index,
+            Helper = helper,
+            Stages = stages,
+            SpeedScale = speedScale,
+        });
+    }
+
+    // How much value has changed since the frame it was last worked out, through the helper the way a Change
+    // works it out. Worked out again in the same frame it gives the same answer; the first time, none.
+    public void FrameDelta<T>(FlowInput<T> value, FlowOutput<T> delta, string helper, bool previousFirst)
+        => SetShape(new FlowShape(FlowShapeKind.FrameDelta, value.Index, Array.Empty<int>(), delta.Index)
+        {
+            Helper = helper,
+            PreviousFirst = previousFirst,
+        });
+
+    // Holds the field on target at value, on every machine, every frame the script runs.
+    public void Drive<TField, T>(FlowInput<TField> target, FlowInput<T> value)
+        => SetShape(new FlowShape(FlowShapeKind.Drive, value.Index, Array.Empty<int>(), -1) { Target = target.Index });
+
+    // A drive that holds its field only while on is true, and lets it go while it is false.
+    public void Drive<TField, T>(FlowInput<TField> target, FlowInput<T> value, FlowInput<bool> on)
+        => SetShape(new FlowShape(FlowShapeKind.Drive, value.Index, Array.Empty<int>(), -1) { Target = target.Index, Switch = on.Index });
+
+    // The same, and with heard bound it refuses every other write, telling heard what was tried and counting
+    // the tries in heardCount.
+    public void Drive<TField, T, TCount>(FlowInput<TField> target, FlowInput<T> value, FlowInput<bool> on, FlowInput<TField> heard,
+        FlowInput<TCount> heardCount)
+        => SetShape(new FlowShape(FlowShapeKind.Drive, value.Index, Array.Empty<int>(), -1)
+        {
+            Target = target.Index,
+            Switch = on.Index,
+            Heard = heard.Index,
+            HeardCount = heardCount.Index,
         });
 
     private void SetShape(FlowShape shape)

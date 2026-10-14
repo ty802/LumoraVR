@@ -6,7 +6,7 @@ using Lumora.Script;
 namespace Lumora.Core.Scripting;
 
 // Writes a field as the script's author, judged by the gate like the author's own write. written is false
-// when there was no field or the write was refused, which is counted; If on it runs the failed case.
+// when there was no field or the write was refused, which is counted; the call fails then as well.
 [Node("World/Fields/Set Field", Capability.WorldWrite)]
 public sealed class SetField<T> : ActionNode
 {
@@ -14,7 +14,10 @@ public sealed class SetField<T> : ActionNode
     {
         written = false;
         if (field == null || field.IsDestroyed)
+        {
+            ctx.Fail(field == null ? "no field" : "the field is gone");
             return;
+        }
         ScriptWrites.Write(ctx, field, value);
         written = true;
     }

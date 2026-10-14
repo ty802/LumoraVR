@@ -17,8 +17,11 @@ public sealed class DateToUniversal : ReadNode
     {
         if (date.Kind == DateTimeKind.Utc)
             return date;
-        if (!ctx.IsLocal)
-            throw new UnauthorizedAccessException("only a Local script reads its machine's time zone; a Shared script runs on the host");
+        if (!ctx.OffHost)
+        {
+            ctx.TurnDown("only a Local script reads its machine's time zone; a Shared script runs on the host");
+            return default;
+        }
         return date.ToUniversalTime();
     }
 }

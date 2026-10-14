@@ -17,5 +17,13 @@ namespace Lumora.Core.Scripting;
 public sealed class PackGraph : ActionNode
 {
     [return: Port("slot")]
-    public static Slot? Run(ScriptContext ctx, Component? graph) => ScriptGraphEditing.PackFor(ctx, graph as ScriptGraphSpace);
+    public static Slot? Run(ScriptContext ctx, Component? graph)
+    {
+        if (graph is not (null or ScriptGraphSpace))
+        {
+            ctx.Fail($"the component on {ScriptReads.Named(graph)} is not a graph");
+            return null;
+        }
+        return ScriptGraphEditing.PackFor(ctx, graph as ScriptGraphSpace);
+    }
 }

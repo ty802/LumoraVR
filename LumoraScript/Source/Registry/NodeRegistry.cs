@@ -57,6 +57,9 @@ public sealed class NodeRegistry
         overload = null!;
         error = string.Empty;
 
+        if (FunctionSignature.IsFunctionNode(definition.Kind) || definition.IsScriptCall)
+            return TryShapeFunction(definition, signature, out overload, out error);
+
         if (definition.IsGeneric)
         {
             if (string.IsNullOrEmpty(signature))
@@ -91,6 +94,98 @@ public sealed class NodeRegistry
             return true;
         error = string.IsNullOrEmpty(error) ? $"{definition.Name} has no overload ({canonical})" : error;
         return false;
+    }
+
+    // A function node takes the ports its own "sig" spells, whatever they are, so its shapes are made as graphs
+    // ask for them rather than read from the class. No "sig" is no ports, so a fresh one can be placed. Each
+    // shape is kept by the signature that made it, up to a bound, so an open graph asking every frame makes
+    // nothing new.
+    private const int MaxShapedPerNode = 4096;
+
+    private static bool TryShapeFunction(NodeDefinition definition, string? signature, out NodeOverload overload, out string error)
+    {
+        overload = null!;
+        error = string.Empty;
+        if (string.IsNullOrWhiteSpace(signature))
+        {
+            overload = definition.Overloads[0];
+            return true;
+        }
+        lock (definition.Lock)
+        {
+            if (definition.Shaped.TryGetValue(signature, out overload!))
+                return true;
+        }
+        if (!FunctionSignature.TryParse(signature, out var parsed, out var why))
+        {
+            error = why!;
+            return false;
+        }
+        NodeOverload made;
+        try
+        {
+            made = FunctionShape(definition, parsed!);
+        }
+        catch (InvalidOperationException ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+        lock (definition.Lock)
+        {
+            if (definition.Shaped.Count >= MaxShapedPerNode)
+                definition.Shaped.Clear();
+            if (!definition.Shaped.TryGetValue(made.Signature, out overload!))
+            {
+                overload = made;
+                definition.Shaped[made.Signature] = made;
+            }
+            definition.Shaped[signature] = overload;
+        }
+        return true;
+    }
+
+    // A Function's arguments come out of it and its body runs from next; a Return takes what the function gives
+    // and ends the flow there; a call takes the arguments and gives the outputs, with flow or without. A call to
+    // another script's Function is an await: the slot to call on comes first, and its answer runs returned with
+    // the outputs or failed with the reason.
+    private static NodeOverload FunctionShape(NodeDefinition definition, FunctionSignature signature)
+    {
+        if (definition.IsScriptCall)
+        {
+            if (!ScriptTypes.TryGet("slot", out var slot))
+                throw new InvalidOperationException("calling another script needs the slot type, which this host does not have");
+            var takes = new List<NodePort> { new("target", slot, null, hasDefault: false) };
+            takes.AddRange(signature.Inputs);
+            var gives = new List<NodePort>(signature.Outputs) { new(CallTicket.ReasonPort, ScriptTypes.String, null, hasDefault: false) };
+            return new NodeOverload(definition, Array.Empty<ScriptType>(), takes, gives, new[] { "in" },
+                new[] { "next", CallTicket.ReturnedExit, CallTicket.FailedExit }, null, false, null, null, typeof(CallAnswer), function: signature);
+        }
+        IReadOnlyList<NodePort> none = Array.Empty<NodePort>();
+        IReadOnlyList<NodePort> inputs = signature.Inputs;
+        IReadOnlyList<NodePort> outputs = signature.Outputs;
+        string[] flowIn = { "in" };
+        string[] flowOut = { "next" };
+        string[] noFlow = Array.Empty<string>();
+        switch (definition.Kind)
+        {
+            case NodeKind.Function:
+                outputs = inputs;
+                inputs = none;
+                flowIn = noFlow;
+                break;
+            case NodeKind.Return:
+                inputs = outputs;
+                outputs = none;
+                flowOut = noFlow;
+                break;
+            case NodeKind.EvaluateFunction:
+                flowIn = noFlow;
+                flowOut = noFlow;
+                break;
+        }
+        return new NodeOverload(definition, Array.Empty<ScriptType>(), inputs, outputs, flowIn, flowOut, null, false, null, null, null,
+            function: signature);
     }
 
     // Three or more inputs of one type on a variadic node: its two-input overload for that type, folded.
@@ -156,15 +251,32 @@ public sealed class NodeRegistry
                 case NodeKind.Event:
                     definition.Overloads.Add(BuildEvent(definition, type));
                     break;
+                case NodeKind.Await when definition.IsScriptCall:
+                    // A host with no slots has no scripts on them to call; the node is not offered there.
+                    if (!ScriptTypes.TryGet("slot", out _))
+                        return;
+                    definition.Overloads.Add(FunctionShape(definition, FunctionSignature.Empty));
+                    break;
                 case NodeKind.Await:
                     definition.Overloads.Add(BuildAwait(definition, type));
                     break;
                 case NodeKind.Flow:
                     definition.Overloads.Add(BuildFlow(definition, type, Array.Empty<ScriptType>()));
                     break;
+                case NodeKind.Memory:
+                case NodeKind.Drive:
+                    definition.Overloads.Add(BuildShaped(definition, type, Array.Empty<ScriptType>()));
+                    break;
                 case NodeKind.Pulse:
+                case NodeKind.Relay:
                     definition.Overloads.Add(new NodeOverload(definition, Array.Empty<ScriptType>(), Array.Empty<NodePort>(),
                         Array.Empty<NodePort>(), new[] { "in" }, new[] { "next" }, null, false, null, null, null));
+                    break;
+                case NodeKind.Function:
+                case NodeKind.Return:
+                case NodeKind.CallFunction:
+                case NodeKind.EvaluateFunction:
+                    definition.Overloads.Add(FunctionShape(definition, FunctionSignature.Empty));
                     break;
                 default:
                     definition.Overloads.AddRange(BuildMethods(definition, type, Array.Empty<ScriptType>()));
@@ -205,6 +317,18 @@ public sealed class NodeRegistry
             return NodeKind.Constant;
         if (type == typeof(Pulse))
             return NodeKind.Pulse;
+        if (type == typeof(FlowRelay) || (type.IsGenericTypeDefinition && type == typeof(Relay<>)))
+            return NodeKind.Relay;
+        if (type == typeof(Function))
+            return NodeKind.Function;
+        if (type == typeof(Return))
+            return NodeKind.Return;
+        if (type == typeof(CallFunction))
+            return NodeKind.CallFunction;
+        if (type == typeof(EvaluateFunction))
+            return NodeKind.EvaluateFunction;
+        if (type == typeof(CallScriptFunction))
+            return NodeKind.Await;
         if (typeof(ValueNode).IsAssignableFrom(type))
             return NodeKind.Value;
         if (typeof(ReadNode).IsAssignableFrom(type))
@@ -213,6 +337,10 @@ public sealed class NodeRegistry
             return NodeKind.Action;
         if (typeof(FlowNode).IsAssignableFrom(type))
             return NodeKind.Flow;
+        if (typeof(MemoryNode).IsAssignableFrom(type))
+            return NodeKind.Memory;
+        if (typeof(DriveNode).IsAssignableFrom(type))
+            return NodeKind.Drive;
         if (PayloadOf(type, typeof(AwaitNode<>)) != null)
             return NodeKind.Await;
         if (EventPayloadOf(type) != null)
@@ -309,13 +437,18 @@ public sealed class NodeRegistry
                         Array.Empty<string>(), Array.Empty<string>(), null, false, null, null, null);
                     break;
                 case NodeKind.Constant:
+                case NodeKind.Relay:
                     overload = new NodeOverload(definition, arguments,
-                        new[] { new NodePort("value", arguments[0], null, hasDefault: false) },
+                        new[] { new NodePort("value", arguments[0], null, hasDefault: false, isSetting: definition.Kind == NodeKind.Constant) },
                         new[] { new NodePort("result", arguments[0], null, hasDefault: false) },
                         Array.Empty<string>(), Array.Empty<string>(), null, false, null, null, null);
                     break;
                 case NodeKind.Flow:
                     overload = BuildFlow(definition, closed, arguments);
+                    break;
+                case NodeKind.Memory:
+                case NodeKind.Drive:
+                    overload = BuildShaped(definition, closed, arguments);
                     break;
                 case NodeKind.Await:
                     overload = BuildAwait(definition, closed, arguments);
@@ -413,7 +546,7 @@ public sealed class NodeRegistry
             if (parameter.ParameterType.IsByRef)
                 throw new InvalidOperationException($"parameter '{parameter.Name}' is ref; only out is allowed");
             inputs.Add(Port(portName, parameter.ParameterType, parameter.HasDefaultValue ? parameter.DefaultValue : null,
-                parameter.HasDefaultValue, names));
+                parameter.HasDefaultValue, names, parameter.IsDefined(typeof(SettingAttribute), false)));
         }
 
         byte? inline = null;
@@ -427,11 +560,32 @@ public sealed class NodeRegistry
         bool flow = definition.Kind == NodeKind.Action;
         return new NodeOverload(definition, typeArguments, inputs, outputs,
             flow ? new[] { "in" } : Array.Empty<string>(),
-            flow ? new[] { "next" } : Array.Empty<string>(),
-            method, takesContext, inline, null, null);
+            flow ? new[] { ActionNode.NextExit, ActionNode.FailedExit } : Array.Empty<string>(),
+            method, takesContext, inline, null, null, Body(definition, method, inputs, outputs, takesContext, wasm != null));
     }
 
-    private static NodePort Port(string name, Type clrType, object? defaultValue, bool hasDefault, HashSet<string> names)
+    // The writer a [WasmBody] names: a static method of the node class taking a WasmBodyWriter. Only for a
+    // pure value overload of plain numbers, never one a variadic node folds, and never both inline forms.
+    private static Action<WasmBodyWriter>? Body(NodeDefinition definition, MethodInfo method, List<NodePort> inputs,
+        List<NodePort> outputs, bool takesContext, bool hasOpcode)
+    {
+        var body = method.GetCustomAttribute<WasmBodyAttribute>();
+        if (body == null)
+            return null;
+        if (definition.Kind != NodeKind.Value || takesContext || hasOpcode)
+            throw new InvalidOperationException("[WasmBody] is only for ValueNode overloads without [Wasm]");
+        if (inputs.Any(p => p.Type.IsHandle) || outputs.Any(p => p.Type.IsHandle))
+            throw new InvalidOperationException("[WasmBody] takes and gives plain numbers only");
+        if (definition.IsVariadic && inputs.Count == 2 && inputs[0].Type == inputs[1].Type)
+            throw new InvalidOperationException("[WasmBody] cannot go on an overload its variadic node folds");
+        var writer = method.DeclaringType!.GetMethod(body.Writer, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
+            null, new[] { typeof(WasmBodyWriter) }, null);
+        if (writer == null || writer.ReturnType != typeof(void))
+            throw new InvalidOperationException($"[WasmBody] names {body.Writer}, which is not a static void {body.Writer}(WasmBodyWriter)");
+        return (Action<WasmBodyWriter>)writer.CreateDelegate(typeof(Action<WasmBodyWriter>));
+    }
+
+    private static NodePort Port(string name, Type clrType, object? defaultValue, bool hasDefault, HashSet<string> names, bool isSetting = false)
     {
         var normalized = NodePort.NormalizeName(name);
         if (!names.Add(normalized))
@@ -440,7 +594,7 @@ public sealed class NodeRegistry
             throw new InvalidOperationException($"port '{normalized}' has type {clrType}, which scripts cannot carry");
         if (hasDefault && defaultValue == null && !type.IsHandle)
             defaultValue = type.DefaultValue;
-        return new NodePort(normalized, type, defaultValue, hasDefault);
+        return new NodePort(normalized, type, defaultValue, hasDefault, isSetting);
     }
 
     private static void CheckInline(NodeDefinition definition, WasmAttribute wasm, List<NodePort> inputs, List<NodePort> outputs, bool takesContext)
@@ -515,7 +669,7 @@ public sealed class NodeRegistry
                 throw new InvalidOperationException($"parameter '{parameter.Name}' is ref or out; what comes back comes with the answer");
             var portName = parameter.GetCustomAttribute<PortAttribute>()?.Name ?? parameter.Name ?? $"arg{i}";
             inputs.Add(Port(portName, parameter.ParameterType, parameter.HasDefaultValue ? parameter.DefaultValue : null,
-                parameter.HasDefaultValue, names));
+                parameter.HasDefaultValue, names, parameter.IsDefined(typeof(SettingAttribute), false)));
         }
         var outputs = new List<NodePort>();
         foreach (var property in PayloadProperties(payload))
@@ -572,6 +726,8 @@ public sealed class NodeRegistry
         node.Build(builder);
         if (builder.Shape == null)
             throw new InvalidOperationException("Build declared no shape");
+        if (builder.Shape.Kind is FlowShapeKind.Follow or FlowShapeKind.FrameDelta or FlowShapeKind.Drive)
+            throw new InvalidOperationException($"{builder.Shape.Kind} belongs to a memory or drive node, not a flow node");
 
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var port in builder.Inputs.Concat(builder.Outputs))
@@ -588,6 +744,41 @@ public sealed class NodeRegistry
 
         return new NodeOverload(definition, typeArguments, builder.Inputs.ToArray(), builder.Outputs.ToArray(),
             new[] { "in" }, builder.Exits.ToArray(), null, false, null, builder.Shape, null);
+    }
+
+    // A memory or a drive node: ports and shape from Build, the way a flow node's come, with no flow in or out.
+    private static NodeOverload BuildShaped(NodeDefinition definition, Type type, IReadOnlyList<ScriptType> typeArguments)
+    {
+        if (type.GetConstructor(Type.EmptyTypes) == null)
+            throw new InvalidOperationException("a memory or drive node needs a public parameterless constructor");
+
+        var builder = new FlowBuilder();
+        switch (Activator.CreateInstance(type))
+        {
+            case MemoryNode memory:
+                memory.Build(builder);
+                break;
+            case DriveNode drive:
+                drive.Build(builder);
+                break;
+        }
+        var shape = builder.Shape ?? throw new InvalidOperationException("Build declared no shape");
+        bool fits = definition.Kind == NodeKind.Drive
+            ? shape.Kind == FlowShapeKind.Drive
+            : shape.Kind is FlowShapeKind.Follow or FlowShapeKind.FrameDelta;
+        if (!fits)
+            throw new InvalidOperationException($"a {definition.Kind} node cannot have the {shape.Kind} shape");
+        if (builder.Exits.Count > 0)
+            throw new InvalidOperationException("a memory or drive node has no flow exits");
+
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var port in builder.Inputs.Concat(builder.Outputs))
+        {
+            if (!names.Add(port.Name))
+                throw new InvalidOperationException($"two ports are called '{port.Name}'");
+        }
+        return new NodeOverload(definition, typeArguments, builder.Inputs.ToArray(), builder.Outputs.ToArray(),
+            Array.Empty<string>(), Array.Empty<string>(), null, false, null, shape, null);
     }
 
     private static bool TryCanonicalSignature(string signature, out string canonical)

@@ -6,15 +6,18 @@ using System;
 namespace Lumora.Script;
 
 // Adds key with this value only when the dictionary does not have it yet; added is false, and the value
-// already there stays, when it does. A key that holds nothing is refused.
+// already there stays, when it does. A key that holds nothing is refused, and no dictionary fails.
 [Node("Dictionaries/Add Key")]
 public sealed class DictAddKey<TKey, TValue> : ActionNode where TKey : notnull
 {
     [return: Port("added")]
-    public static bool Run(ScriptDictionary<TKey, TValue>? dictionary, TKey? key, TValue value)
+    public static bool Run(ScriptContextBase ctx, ScriptDictionary<TKey, TValue>? dictionary, TKey? key, TValue value)
     {
         if (dictionary == null)
+        {
+            ctx.Fail("no dictionary");
             return false;
+        }
         if (key is null)
             throw new UnauthorizedAccessException("a dictionary key cannot be null");
         return dictionary.Add(key, value);

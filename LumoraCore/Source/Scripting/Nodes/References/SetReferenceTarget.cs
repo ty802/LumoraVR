@@ -15,7 +15,7 @@ public sealed class SetReferenceTarget<T> : ActionNode where T : class, IWorldEl
     public static void Run(ScriptContext ctx, ISyncRef? reference, T? target, out bool written)
     {
         written = false;
-        if (!ScriptReads.VisibleElement(ctx, reference as IWorldElement))
+        if (!ScriptReads.ReachedElement(ctx, reference as IWorldElement, "reference"))
             return;
         ScriptWrites.WriteReference(ctx, reference, ScriptReads.VisibleElement(ctx, target) ? target : null);
         written = true;

@@ -13,7 +13,7 @@ public sealed class SetSlotPosition : ActionNode
 {
     public static void Run(ScriptContext ctx, Slot? slot, float3 position)
     {
-        if (!ScriptReads.Visible(ctx, slot))
+        if (!ScriptReads.Reached(ctx, slot))
             return;
         ScriptWrites.Finite(position, "position");
         var parent = slot!.Parent;

@@ -35,6 +35,23 @@ public sealed class CompileResult
     // One per await node, with the export each answer runs.
     public IReadOnlyList<ScriptAwaitEntry> Awaits { get; init; } = Array.Empty<ScriptAwaitEntry>();
 
+    // One per Function node, with the export it lowers to.
+    public IReadOnlyList<ScriptFunctionEntry> Functions { get; init; } = Array.Empty<ScriptFunctionEntry>();
+
+    // One per Call Script Function node, with the import that starts its call.
+    public IReadOnlyList<ScriptCallEntry> ScriptCalls { get; init; } = Array.Empty<ScriptCallEntry>();
+
+    // One per drive node, in the order the drives function works them out.
+    public IReadOnlyList<ScriptDriveEntry> Drives { get; init; } = Array.Empty<ScriptDriveEntry>();
+
+    // When every drive is worked out from constants and stored values through plain-number math alone, the
+    // stored values they read; the drives come out the same for as long as those hold the same lanes. Null
+    // when any drive reads the world, the time, a handle or a remembered value.
+    public IReadOnlyList<string>? DriveSources { get; init; }
+
+    // Globals that keep a handle from one call to the next, so the thing it names is not let go between them.
+    public IReadOnlyList<string> HandleRoots { get; init; } = Array.Empty<string>();
+
     // The module as the engine's validator decoded it when the compiler checked its own output. Nothing
     // writes a module once it is decoded, so every instance of this graph runs this one, from any thread.
     internal WasmModule? Decoded { get; init; }

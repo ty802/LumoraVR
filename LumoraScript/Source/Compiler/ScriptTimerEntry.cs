@@ -3,5 +3,6 @@
 
 namespace Lumora.Script;
 
-// One Delay node: the export that runs what comes after it.
-public sealed record ScriptTimerEntry(string NodeId, string Export);
+// One Delay node: the export that runs what comes after it, which takes the word of the waiting Function's
+// call it was armed in when it carries one.
+public sealed record ScriptTimerEntry(string NodeId, string Export, bool CarriesWord = false);

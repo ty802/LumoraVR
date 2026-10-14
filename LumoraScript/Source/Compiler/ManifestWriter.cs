@@ -10,7 +10,8 @@ namespace Lumora.Script;
 // The "lumora.manifest" custom section: what a module needs and offers, readable without running it.
 // Events and their payloads, the Delay continuations, the awaits and what their answers carry, every
 // import with its capability, the binding
-// slots, the Displays and Pulses, the stored variables, and the hash of the graph it was built from.
+// slots, the Displays and Pulses, the stored variables, the Functions and their ports, the Functions of other
+// scripts it calls, and the hash of the graph it was built from.
 internal static class ManifestWriter
 {
     public const string FormatName = "loom.manifest/1";
@@ -18,7 +19,7 @@ internal static class ManifestWriter
     public static byte[] Write(string graphHash, IReadOnlyList<ScriptEventEntry> events, IReadOnlyList<ScriptTimerEntry> timers,
         IReadOnlyList<ScriptAwaitEntry> awaits, IReadOnlyList<NodeOverload> imports,
         IReadOnlyList<ScriptBindingEntry> bindings, IReadOnlyList<ScriptVariableEntry> variables,
-        IReadOnlyList<ScriptDisplayEntry> displays)
+        IReadOnlyList<ScriptDisplayEntry> displays, IReadOnlyList<ScriptFunctionEntry> functions, IReadOnlyList<ScriptCallEntry> calls)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
@@ -122,6 +123,31 @@ internal static class ManifestWriter
                 foreach (var export in variable.Exports)
                     writer.WriteStringValue(export);
                 writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("functions");
+            foreach (var function in functions)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("node", function.NodeId);
+                writer.WriteString("name", function.Name);
+                writer.WriteString("export", function.Export);
+                writer.WriteString("sig", function.Signature.Canonical);
+                writer.WriteBoolean("pure", function.Pure);
+                writer.WriteBoolean("async", function.Async);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("calls");
+            foreach (var call in calls)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("node", call.NodeId);
+                writer.WriteString("function", call.Function);
+                writer.WriteString("sig", call.Signature.Canonical);
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();

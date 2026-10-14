@@ -194,12 +194,23 @@ internal sealed class WasmFunctionCompiler
     private int _height;
     private int _maxHeight;
 
+    // A local.get copies nothing: the stack entry names the local it came from, and whoever reads the entry
+    // reads the local. The copy is made only when that local is about to be written while the entry still
+    // stands, or before an instruction that needs the value in its own slot (calls, branches, block ends).
+    // A local.set right after the instruction that made its value has that instruction write the local
+    // itself. -xlinka
+    private int[] _alias = new int[64];
+    private int _producer = -1;
+    // The furthest instruction anything jumps to: code from there on may be folded together.
+    private int _labelAt;
+
     private Frame[] _frames = new Frame[16];
     private int _depth;
 
     private readonly List<WasmInstr> _code = new();
     private readonly List<int> _offsets = new();
     private readonly List<int> _branchTable = new();
+    private readonly List<int> _moves = new();
     private readonly List<(int Instr, int Next)> _fixups = new();
     private readonly Dictionary<uint, int> _stubs = new();
     private uint[] _labels = new uint[16];
@@ -228,10 +239,13 @@ internal sealed class WasmFunctionCompiler
 
         _height = 0;
         _maxHeight = 0;
+        _producer = -1;
+        _labelAt = 0;
         _depth = 0;
         _code.Clear();
         _offsets.Clear();
         _branchTable.Clear();
+        _moves.Clear();
         _fixups.Clear();
         _emitting = true;
         _fuelIndex = -1;
@@ -262,6 +276,7 @@ internal sealed class WasmFunctionCompiler
             FrameSize = _localCount + _maxHeight + 1,
             Code = _code.ToArray(),
             BranchTable = _branchTable.ToArray(),
+            Moves = _moves.ToArray(),
         };
     }
 
@@ -276,7 +291,9 @@ internal sealed class WasmFunctionCompiler
             if (_height >= _limits.MaxOperandStack)
                 throw WasmValidator.Invalid("operand stack too deep");
             Array.Resize(ref _stack, _stack.Length * 2);
+            Array.Resize(ref _alias, _stack.Length);
         }
+        _alias[_height] = -1;
         _stack[_height++] = type;
         if (_height > _maxHeight)
             _maxHeight = _height;
@@ -330,6 +347,74 @@ internal sealed class WasmFunctionCompiler
             Push(popped[i]);
     }
 
+    // Where the entry at this height is read from: its local while it is one, else its own slot.
+    private int Source(int height) => height >= 0 && _alias[height] >= 0 ? _alias[height] : Slot(height);
+
+    private void Flush(int from)
+    {
+        for (int i = Math.Max(0, from); i < _height; i++)
+        {
+            if (_alias[i] < 0)
+                continue;
+            Emit(WasmIrOp.Copy, Slot(i), _alias[i]);
+            _alias[i] = -1;
+        }
+    }
+
+    private void Materialize(int local)
+    {
+        for (int i = 0; i < _height; i++)
+        {
+            if (_alias[i] != local)
+                continue;
+            Emit(WasmIrOp.Copy, Slot(i), local);
+            _alias[i] = -1;
+        }
+    }
+
+    // The value at source goes into the local: the instruction just emitted writes it there when it made that
+    // value, else a copy.
+    private void SetLocal(int local, int source)
+    {
+        if (source == local)
+            return;
+        if (_emitting && _producer >= 0 && _producer == _code.Count - 1 && _code[_producer].A == source && _labelAt < _code.Count)
+        {
+            var instr = _code[_producer];
+            instr.A = local;
+            _code[_producer] = instr;
+            _producer = -1;
+            return;
+        }
+        Emit(WasmIrOp.Copy, local, source);
+    }
+
+    // The constant the last instruction put in this slot, taken back out of the code so the instruction
+    // using it can carry it.
+    private bool TakeConstant(int slot, out long value)
+    {
+        value = 0;
+        int last = _code.Count - 1;
+        if (!_emitting || _producer != last || last < 0 || _labelAt > last || slot < _localCount)
+            return false;
+        var instr = _code[last];
+        if (instr.Op != WasmIrOp.Const || instr.A != slot)
+            return false;
+        value = instr.Imm;
+        Unemit(1);
+        return true;
+    }
+
+    private void Unemit(int count)
+    {
+        _code.RemoveRange(_code.Count - count, count);
+        _offsets.RemoveRange(_offsets.Count - count, count);
+        _producer = -1;
+    }
+
+    private static bool KeepsAliases(byte op)
+        => op is 0x01 or 0x10 or 0x11 or 0x1A or (>= 0x20 and <= 0x24) or (>= 0x41 and <= 0xC4) or 0xD0;
+
     private ref Frame Top => ref _frames[_depth - 1];
 
     private ref Frame Label(uint depth)
@@ -376,9 +461,35 @@ internal sealed class WasmFunctionCompiler
     {
         if (!_emitting)
             return -1;
+        if (op == WasmIrOp.Copy && Coalesce(a, b))
+            return _code.Count - 1;
         _code.Add(new WasmInstr { Op = op, A = a, B = b, C = c, Imm = imm });
         _offsets.Add(_opOffset);
         return _code.Count - 1;
+    }
+
+    // A copy straight after another copy joins it, unless something jumps in between them.
+    private bool Coalesce(int to, int from)
+    {
+        int last = _code.Count - 1;
+        if (last < 0 || _labelAt > last)
+            return false;
+        var previous = _code[last];
+        if (previous.Op == WasmIrOp.Copy)
+        {
+            _moves.Add(previous.A);
+            _moves.Add(previous.B);
+            previous = new WasmInstr { Op = WasmIrOp.Moves, B = _moves.Count - 2, C = 1 };
+        }
+        else if (previous.Op != WasmIrOp.Moves || previous.B + previous.C * 2 != _moves.Count)
+        {
+            return false;
+        }
+        _moves.Add(to);
+        _moves.Add(from);
+        previous.C++;
+        _code[last] = previous;
+        return true;
     }
 
     private int EmitFuel()
@@ -387,6 +498,7 @@ internal sealed class WasmFunctionCompiler
             return -1;
         CloseFuel();
         _fuelIndex = Emit(WasmIrOp.Fuel);
+        _labelAt = _fuelIndex;
         return _fuelIndex;
     }
 
@@ -423,6 +535,7 @@ internal sealed class WasmFunctionCompiler
 
     private void Patch(int instr, int target)
     {
+        _labelAt = Math.Max(_labelAt, target);
         var ins = _code[instr];
         if (ins.Op == WasmIrOp.Br)
             ins.A = target;
@@ -548,6 +661,8 @@ internal sealed class WasmFunctionCompiler
 
     private void Step(byte op)
     {
+        if (!KeepsAliases(op))
+            Flush(0);
         switch (op)
         {
             case 0x00:
@@ -649,6 +764,7 @@ internal sealed class WasmFunctionCompiler
                 if (function >= (uint)_module.FunctionTypeIndices.Length)
                     throw WasmValidator.Invalid("unknown function");
                 var type = _module.FunctionType(function);
+                Flush(_height - type.Parameters.Length);
                 int argumentBase = Slot(_height - type.Parameters.Length);
                 PopTypes(type.Parameters);
                 PushTypes(type.Results);
@@ -669,6 +785,7 @@ internal sealed class WasmFunctionCompiler
                 if (typeIndex >= (uint)_module.Types.Length)
                     throw WasmValidator.Invalid("unknown type");
                 var type = _module.Types[typeIndex];
+                Flush(_height - type.Parameters.Length - 1);
                 int indexSlot = Slot(_height - 1);
                 Pop(WasmValueType.I32);
                 int argumentBase = Slot(_height - type.Parameters.Length);
@@ -714,31 +831,34 @@ internal sealed class WasmFunctionCompiler
             {
                 uint local = ReadLocalIndex();
                 Push(_localTypes[local]);
-                Emit(WasmIrOp.Copy, Slot(_height - 1), (int)local);
+                _alias[_height - 1] = (int)local;
                 return;
             }
             case 0x21:
             {
                 uint local = ReadLocalIndex();
-                int source = Slot(_height - 1);
+                int source = Source(_height - 1);
                 Pop(_localTypes[local]);
-                Emit(WasmIrOp.Copy, (int)local, source);
+                Materialize((int)local);
+                SetLocal((int)local, source);
                 return;
             }
             case 0x22:
             {
                 uint local = ReadLocalIndex();
-                int source = Slot(_height - 1);
+                int source = Source(_height - 1);
                 Pop(_localTypes[local]);
+                Materialize((int)local);
+                SetLocal((int)local, source);
                 Push(_localTypes[local]);
-                Emit(WasmIrOp.Copy, (int)local, source);
+                _alias[_height - 1] = (int)local;
                 return;
             }
             case 0x23:
             {
                 uint global = ReadGlobalIndex();
                 Push(_module.GlobalTypes[global].ValueType);
-                Emit(WasmIrOp.GlobalGet, Slot(_height - 1), (int)global);
+                _producer = Emit(WasmIrOp.GlobalGet, Slot(_height - 1), (int)global);
                 return;
             }
             case 0x24:
@@ -747,8 +867,10 @@ internal sealed class WasmFunctionCompiler
                 var type = _module.GlobalTypes[global];
                 if (!type.Mutable)
                     throw WasmValidator.Invalid("global is immutable");
-                int source = Slot(_height - 1);
+                int source = Source(_height - 1);
                 Pop(type.ValueType);
+                if (Counter((int)global, source))
+                    return;
                 Emit(WasmIrOp.GlobalSet, (int)global, source);
                 return;
             }
@@ -812,19 +934,19 @@ internal sealed class WasmFunctionCompiler
             }
             case 0x41:
                 Push(WasmValueType.I32);
-                Emit(WasmIrOp.Const, Slot(_height - 1), imm: (uint)_r.ReadS32());
+                _producer = Emit(WasmIrOp.Const, Slot(_height - 1), imm: (uint)_r.ReadS32());
                 return;
             case 0x42:
                 Push(WasmValueType.I64);
-                Emit(WasmIrOp.Const, Slot(_height - 1), imm: _r.ReadS64());
+                _producer = Emit(WasmIrOp.Const, Slot(_height - 1), imm: _r.ReadS64());
                 return;
             case 0x43:
                 Push(WasmValueType.F32);
-                Emit(WasmIrOp.Const, Slot(_height - 1), imm: _r.ReadFixedU32());
+                _producer = Emit(WasmIrOp.Const, Slot(_height - 1), imm: _r.ReadFixedU32());
                 return;
             case 0x44:
                 Push(WasmValueType.F64);
-                Emit(WasmIrOp.Const, Slot(_height - 1), imm: (long)_r.ReadFixedU64());
+                _producer = Emit(WasmIrOp.Const, Slot(_height - 1), imm: (long)_r.ReadFixedU64());
                 return;
             case 0xD0:
                 Push(_r.ReadReferenceType());
@@ -967,6 +1089,7 @@ internal sealed class WasmFunctionCompiler
                 if (!_stubs.TryGetValue(label, out int stub))
                 {
                     stub = _code.Count;
+                    _labelAt = stub;
                     ref var frame = ref Label(label);
                     EmitCopies(source, frame.SlotBase, arity);
                     EmitBranchTo(ref frame);
@@ -1000,19 +1123,74 @@ internal sealed class WasmFunctionCompiler
     private void Unary(WasmIrOp op, WasmValueType input, WasmValueType output)
     {
         int slot = Slot(_height - 1);
+        int source = Source(_height - 1);
         Pop(input);
         Push(output);
-        Emit(op, slot, slot);
+        _producer = Emit(op, slot, source);
     }
 
     private void Binary(WasmIrOp op, WasmValueType input, WasmValueType output)
     {
-        int right = Slot(_height - 1);
-        int left = Slot(_height - 2);
+        int right = Source(_height - 1);
+        int left = Source(_height - 2);
+        int slot = Slot(_height - 2);
         Pop(input);
         Pop(input);
         Push(output);
-        Emit(op, left, left, right);
+        var folded = op switch
+        {
+            WasmIrOp.I32Add => WasmIrOp.I32AddImm,
+            WasmIrOp.F32Mul => WasmIrOp.F32MulImm,
+            _ => WasmIrOp.Unreachable,
+        };
+        if (folded != WasmIrOp.Unreachable)
+        {
+            if (TakeConstant(right, out long value))
+            {
+                _producer = Emit(folded, slot, left, imm: value);
+                return;
+            }
+            // Either order gives the same sum and the same product, unless both sides are NaN and the
+            // payload that wins depends on which came first: a NaN constant stays where it was.
+            if (!(op == WasmIrOp.F32Mul && float.IsNaN(BitConverter.UInt32BitsToSingle((uint)PeekConstant(left))))
+                && TakeConstant(left, out value))
+            {
+                _producer = Emit(folded, slot, right, imm: value);
+                return;
+            }
+        }
+        _producer = Emit(op, slot, left, right);
+    }
+
+    private long PeekConstant(int slot)
+    {
+        int last = _code.Count - 1;
+        return last >= 0 && _code[last].Op == WasmIrOp.Const && _code[last].A == slot ? _code[last].Imm : 0;
+    }
+
+    // global.get g, add a constant, global.set g: one step on the global itself.
+    private bool Counter(int global, int source)
+    {
+        int last = _code.Count - 1;
+        if (!_emitting || last < 1 || _labelAt > last - 1)
+            return false;
+        var add = _code[last];
+        var get = _code[last - 1];
+        if (add.Op != WasmIrOp.I32AddImm || add.A != source || add.B != source
+            || get.Op != WasmIrOp.GlobalGet || get.A != source || get.B != global)
+            return false;
+        Unemit(2);
+        Emit(WasmIrOp.GlobalAddI32, global, imm: add.Imm);
+        return true;
+    }
+
+    // Same bits under another type: a local stays the place to read them.
+    private void Reinterpret(WasmValueType input, WasmValueType output)
+    {
+        int alias = _height > Top.Height ? _alias[_height - 1] : -1;
+        Pop(input);
+        Push(output);
+        _alias[_height - 1] = alias;
     }
 
     private void StepNumeric(byte op)
@@ -1061,10 +1239,10 @@ internal sealed class WasmFunctionCompiler
             case 0xBA: Unary(ir, I64, F64); return;
             case 0xBB: Unary(ir, F32, F64); return;
             // Reinterpretation changes the type and never the bits, so it emits nothing.
-            case 0xBC: Pop(F32); Push(I32); return;
-            case 0xBD: Pop(F64); Push(I64); return;
-            case 0xBE: Pop(I32); Push(F32); return;
-            case 0xBF: Pop(I64); Push(F64); return;
+            case 0xBC: Reinterpret(F32, I32); return;
+            case 0xBD: Reinterpret(F64, I64); return;
+            case 0xBE: Reinterpret(I32, F32); return;
+            case 0xBF: Reinterpret(I64, F64); return;
             case 0xC0: Unary(ir, I32, I32); return;
             case 0xC1: Unary(ir, I32, I32); return;
             case >= 0xC2 and <= 0xC4: Unary(ir, I64, I64); return;

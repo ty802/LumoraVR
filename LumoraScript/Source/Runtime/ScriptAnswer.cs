@@ -4,5 +4,5 @@
 namespace Lumora.Script;
 
 // A ticket's answer, waiting for the thread that drives the instance: which await node, which of its
-// exits, and the payload for its outputs.
-public readonly record struct ScriptAnswer(string NodeId, string Exit, object Payload);
+// exits, the payload for its outputs, and the call of a waiting Function it runs on in, 0 for none.
+public readonly record struct ScriptAnswer(string NodeId, string Exit, object Payload, int Word = 0);

@@ -16,21 +16,33 @@ namespace Lumora.Script;
 //
 // MODULE LAYOUT
 //   import lumora:rt.str_utf8 (ptr, len) -> handle   makes the constant strings at start
+//   import lumora:rt.url_utf8 (ptr, len) -> handle   makes the constant addresses at start, when there are any
 //   import lumora.<overload>                         one per node overload that calls into C#
 //   import lumora:rt.delay (timer, seconds)          asks for a timer, when the graph has a Delay
 //   an await node's Start is a node import that takes the await's number ahead of its inputs
 //   import lumora:rt.now () -> seconds               the world's clock, when the graph has a Cooldown
 //   import lumora:rt.each_count/each_item            what a For Each walks, when the graph has one
 //   import lumora:rt.each_query (source, floats) -> handle   what a searching For Each found
-//   memory: [0, 1024) continuation stack, then the constant string bytes
-//   globals: one handle per constant string, then the lanes of every stored variable, Display and Pulse
-//   start: creates the constant strings
+//   import lumora:rt.call_script.<node id> (await, word, target, inputs)   starts a Call Script Function's call
+//   import lumora:rt.word (word)                     the waiting Function's call the next Delay or await is armed in
+//   import lumora:rt.call_open (await, word) -> word, call_end (word)   an async call's ticket, its first stretch done
+//   import lumora:rt.fn_arg (word, port, lane) -> i64   a waiting Function's argument read after a wait
+//   import lumora:rt.fn_done.<name> (word, outputs), fn_keep.<name> (word, inputs)   its Return, its arguments kept
+//   memory: [0, StackBytes) continuation stack, shared by a call and the Functions it calls, each one's
+//           part above its caller's, then the constant string and address bytes
+//   globals: one handle per constant string and address, then the lanes of every stored variable, Display, Pulse
+//            and drive, then what each Watch, Follow and Frame Delta remembers
+//   start: creates the constant strings and addresses
+//   functions: one per Function node, taking its arguments' lanes and where its stack starts, giving its
+//            outputs' lanes, exported as fn.<name> for whatever calls it from outside; one that waits takes
+//            the word of its call last and gives nothing back
 //   exports: on.<node id> per event, after.<node id> per Delay, await.<node id>.<exit> per exit an await's
 //            answer can run, taking the payload lanes, var.<node id>.<lane> per lane of a
 //            stored variable, Display or Pulse, show.<node id> per Display that needs no flow, each on
 //            its own so one that fails leaves the rest showing, trace.<node id>.<exit> per wired flow
-//            exit, counting the flow that leaves by it, and mem.<node id> per Once, Toggle and Cooldown,
-//            what it remembers, for a live swap to carry over -xlinka
+//            exit, counting the flow that leaves by it, mem.<node id> per Once, Toggle and Cooldown,
+//            what it remembers, for a live swap to carry over, and drives, which works out every drive's
+//            value into its globals, run every frame on every machine running the script -xlinka
 public sealed class ScriptCompiler
 {
     // What a script's module is read and checked against. The engine's own caps are for modules from
@@ -57,8 +69,10 @@ public sealed class ScriptCompiler
     public const string NodeModule = "lumora";
     public const string RuntimeModule = "lumora:rt";
     public const string StringImport = "str_utf8";
+    public const string UrlImport = "url_utf8";
     public const string TimerImport = "delay";
     public const string NowImport = "now";
+    public const string LiveImport = "live";
     public const string EachCountImport = "each_count";
     public const string EachItemImport = "each_item";
     public const string EachQueryImport = "each_query";
@@ -71,8 +85,23 @@ public sealed class ScriptCompiler
     public const string DisplayExportPrefix = "show.";
     public const string TraceExportPrefix = "trace.";
     public const string MemoryExportPrefix = "mem.";
+    public const string HandleRootPrefix = "held.";
+    public const string FunctionExportPrefix = "fn.";
+    public const string ScriptCallImportPrefix = "call_script.";
+    public const string WordImport = "word";
+    public const string CallOpenImport = "call_open";
+    public const string CallEndImport = "call_end";
+    public const string ArgumentImport = "fn_arg";
+    public const string FunctionDoneImportPrefix = "fn_done.";
+    public const string FunctionKeepImportPrefix = "fn_keep.";
+    public const string FailClearImport = "fail_clear";
+    public const string FailCheckImport = "fail_check";
+    public const string DrivesExport = "drives";
 
-    internal const int StackBytes = 1024;
+    // The continuation stack. A Function's calls stack theirs above their caller's, so it is deep enough for
+    // calls nested as deep as a script may go, and still leaves half of the first 64 KiB page for the
+    // constant texts.
+    internal const int StackBytes = 32768;
 
     // A search's source, then every float it can carry, unused ones zero.
     internal static readonly WasmFuncType EachQueryType = new(
@@ -83,8 +112,12 @@ public sealed class ScriptCompiler
     private readonly NodeRegistry _registry;
     private readonly List<CompileDiagnostic> _diagnostics = new();
     private readonly List<ResolvedNode> _nodes = new();
+    private readonly List<string> _handleRoots = new();
     private readonly Dictionary<string, ResolvedNode> _byId = new(StringComparer.Ordinal);
     private readonly List<ScriptBindingEntry> _bindings = new();
+
+    // Each exit that ran into a flow relay, and the relays it passed before reaching what runs.
+    private readonly List<(ResolvedNode Node, int Exit, List<ResolvedNode> Relays)> _relayed = new();
 
     private ScriptCompiler(ScriptGraph graph, NodeRegistry registry)
     {
@@ -128,12 +161,20 @@ public sealed class ScriptCompiler
 
         ResolveWires();
         ResolveConstants();
+        ResolveCalls();
         ResolveSteps();
+        SpliceRelays();
         if (HasErrors)
             return CompileResult.Failed(hash, _diagnostics);
 
+        MarkAsync();
+
         CheckFlowCycles();
         CheckDataCycles();
+        if (HasErrors)
+            return CompileResult.Failed(hash, _diagnostics);
+
+        CheckFunctions();
         if (HasErrors)
             return CompileResult.Failed(hash, _diagnostics);
 
@@ -205,7 +246,9 @@ public sealed class ScriptCompiler
                 continue;
             if (overload.Shape?.Kind == FlowShapeKind.Scope && !ResolveScopeHelpers(resolved))
                 continue;
-            if (overload.Shape?.Kind == FlowShapeKind.Change && !ResolveChangeHelper(resolved))
+            if (overload.Shape?.Kind is FlowShapeKind.Change or FlowShapeKind.FrameDelta && !ResolveChangeHelper(resolved))
+                continue;
+            if (overload.Shape?.Kind == FlowShapeKind.Follow && !ResolveFollowHelper(resolved))
                 continue;
             _nodes.Add(resolved);
             _byId.Add(node.Id, resolved);
@@ -269,9 +312,27 @@ public sealed class ScriptCompiler
         var type = node.Overload.Inputs[shape.Input].Type;
         if (!_registry.TryGetDefinition(shape.Helper ?? string.Empty, out var definition) || definition.Kind != NodeKind.Value
             || !_registry.TryResolve(definition, $"{type.Name},{type.Name}", out var helper, out _)
-            || helper.Outputs.Count != 1 || helper.Outputs[0].Type != type || helper.Method == null)
+            || helper.Outputs.Count != 1 || helper.Outputs[0].Type != type || helper.Method == null || helper.InlineBody != null)
         {
             Error(node.Id, $"cannot work out a change of {type.Name} on this build");
+            return false;
+        }
+        node.Helpers = new[] { helper };
+        return true;
+    }
+
+    // A Follow moves through a value node that takes where it is and where it heads, both its own type, then
+    // speed and the seconds since it last moved, and gives where it is now first.
+    private bool ResolveFollowHelper(ResolvedNode node)
+    {
+        var shape = node.Overload.Shape!;
+        var type = node.Overload.Inputs[shape.Input].Type;
+        if (!_registry.TryGetDefinition(shape.Helper ?? string.Empty, out var definition) || definition.Kind != NodeKind.Value
+            || !_registry.TryResolve(definition, $"{type.Name},{type.Name},float,float", out var helper, out _)
+            || helper.Outputs.Count == 0 || helper.Outputs[0].Type != type || helper.Method == null || helper.InlineOpcode != null
+            || helper.InlineBody != null)
+        {
+            Error(node.Id, $"cannot follow a {type.Name} on this build");
             return false;
         }
         node.Helpers = new[] { helper };
@@ -317,6 +378,11 @@ public sealed class ScriptCompiler
             if (input < 0)
             {
                 Error(to.Id, $"has no input '{wire.ToPort}'");
+                continue;
+            }
+            if (to.Overload.Inputs[input].IsSetting)
+            {
+                Error(to.Id, $"'{wire.ToPort}' is a setting: set it on the node instead of wiring it");
                 continue;
             }
             var produced = from.Overload.Outputs[output].Type;
@@ -410,6 +476,21 @@ public sealed class ScriptCompiler
                 case NodeKind.Event when node.Overload.Definition.TakesInterval:
                     ResolveInterval(node, used);
                     break;
+                case NodeKind.Drive:
+                    ResolveDriveTarget(node);
+                    break;
+                case NodeKind.Function:
+                    ResolveFunctionName(node, used);
+                    break;
+                case NodeKind.Return:
+                case NodeKind.CallFunction:
+                case NodeKind.EvaluateFunction:
+                    // Its Function is found once every Function has its name.
+                    used.Add("fn");
+                    break;
+                case NodeKind.Await when node.Overload.Definition.IsScriptCall:
+                    ResolveCalledName(node, used);
+                    break;
             }
 
             foreach (var key in node.Source.Values.Keys)
@@ -486,6 +567,68 @@ public sealed class ScriptCompiler
         node.Variable = variable;
     }
 
+    // A Function's "name", the node's id when it has none: what it is called by and exported as.
+    private void ResolveFunctionName(ResolvedNode node, HashSet<string> used)
+    {
+        node.FunctionName = node.Id;
+        if (!node.Source.Values.TryGetValue("name", out var name))
+            return;
+        used.Add("name");
+        if (name.Kind == GraphValueKind.String && name.String!.Length == 0)
+            return;
+        if (name.Kind != GraphValueKind.String || !NodePort.IsValidName(name.String))
+            Error(node.Id, "'name' is a plain identifier");
+        else
+            node.FunctionName = name.String;
+    }
+
+    // A Call Script Function's "function": the name of the Function it calls in another script, which only that
+    // script knows, so it is checked as the call is made.
+    private void ResolveCalledName(ResolvedNode node, HashSet<string> used)
+    {
+        if (!node.Source.Values.TryGetValue("function", out var name) || name.Kind != GraphValueKind.String
+            || string.IsNullOrEmpty(name.String))
+        {
+            Error(node.Id, "calls no Function yet; type its name in 'function'");
+            used.Add("function");
+            return;
+        }
+        used.Add("function");
+        if (!NodePort.IsValidName(name.String))
+            Error(node.Id, "'function' is a plain identifier, the name of a Function in the other script");
+        else
+            node.FunctionName = name.String;
+    }
+
+    // A Return, Call Function or Evaluate Function names its Function by node id in "fn", the way a Write Value
+    // names its Stored Value, and carries that Function's ports, copied when it was pointed there. Ports that
+    // differ mean the Function changed after, and wires made to the old ones cannot be trusted.
+    private void ResolveCalls()
+    {
+        foreach (var node in _nodes)
+        {
+            if (!FunctionSignature.FollowsFunction(node.Kind))
+                continue;
+            string does = node.Kind == NodeKind.Return ? "returns from" : "calls";
+            if (!node.Source.Values.TryGetValue("fn", out var target) || target.Kind != GraphValueKind.String)
+            {
+                Error(node.Id, $"{does} no Function yet; drag its fn onto one");
+                continue;
+            }
+            if (!_byId.TryGetValue(target.String!, out var function) || function.Kind != NodeKind.Function)
+            {
+                Error(node.Id, $"'fn' is '{target.String}', which is not a Function node");
+                continue;
+            }
+            if (function.Overload.Signature != node.Overload.Signature)
+            {
+                Error(node.Id, $"is out of date with {function.FunctionName}; drag its fn onto {function.FunctionName} again");
+                continue;
+            }
+            node.Function = function;
+        }
+    }
+
     // Increment and Decrement Value write their stored value plus or minus "by": each is given an Add or
     // Subtract node of its own, fed by the stored value and the step, and writes what that gives. It reads the
     // variable as the write runs, so steps in a loop build on each other.
@@ -512,6 +655,69 @@ public sealed class ScriptCompiler
         }
     }
 
+    // A relay is a point on a wire and nothing more. Every input it feeds reads what feeds it, every exit that
+    // runs it runs what it runs, and it leaves before cycles are checked or anything is lowered, so the module
+    // is the one the same graph makes without it. The exits that ran into one are kept, so its own exit can
+    // show the flow they count. -xlinka
+    private void SpliceRelays()
+    {
+        if (!_nodes.Any(n => n.Kind == NodeKind.Relay))
+            return;
+        foreach (var node in _nodes)
+        {
+            if (node.Kind == NodeKind.Relay)
+                continue;
+            for (int i = 0; i < node.Inputs.Length; i++)
+            {
+                if (node.Inputs[i]?.Node is { Kind: NodeKind.Relay } relay)
+                    node.Inputs[i] = Through(relay);
+            }
+            for (int exit = 0; exit < node.Exits.Length; exit++)
+            {
+                if (node.Exits[exit] is not { Kind: NodeKind.Relay } relay)
+                    continue;
+                var passed = new List<ResolvedNode>();
+                node.Exits[exit] = Onward(relay, passed);
+                _relayed.Add((node, exit, passed));
+            }
+        }
+        _nodes.RemoveAll(n => n.Kind == NodeKind.Relay);
+    }
+
+    // What a data relay passes on: what feeds the first relay along that no relay feeds.
+    private DataSource? Through(ResolvedNode relay)
+    {
+        var seen = new HashSet<ResolvedNode> { relay };
+        var source = relay.Inputs[0];
+        while (source?.Node is { Kind: NodeKind.Relay } next)
+        {
+            if (!seen.Add(next))
+            {
+                Error(next.Id, $"is part of a data cycle through {relay.Id}");
+                return null;
+            }
+            source = next.Inputs[0];
+        }
+        return source;
+    }
+
+    // Where a flow relay sends flow: the first node past it and any relays after it, or nowhere.
+    private ResolvedNode? Onward(ResolvedNode relay, List<ResolvedNode> passed)
+    {
+        ResolvedNode? next = relay;
+        while (next is { Kind: NodeKind.Relay })
+        {
+            if (passed.Contains(next))
+            {
+                Error(next.Id, "is on a flow cycle of relays alone, which never ends");
+                return null;
+            }
+            passed.Add(next);
+            next = next.Exits.Length > 0 ? next.Exits[0] : null;
+        }
+        return next;
+    }
+
     // A sourced event's "source": a bound object, never a constant, never compiled into anything.
     private void ResolveSource(ResolvedNode node, HashSet<string> used)
     {
@@ -533,6 +739,35 @@ public sealed class ScriptCompiler
             return;
         }
         node.SourceBinding = source.Binding;
+    }
+
+    // The field a drive holds: bound to the script and set on the node, never wired, so every machine finds
+    // it in the bindings it writes into.
+    private void ResolveDriveTarget(ResolvedNode node)
+    {
+        int target = node.Overload.Shape!.Target;
+        var source = node.Inputs[target];
+        if (source == null || source.Node != null || source.Constant is not { Binding: >= 0 } bound)
+        {
+            Error(node.Id, $"'{node.Overload.Inputs[target].Name}' is the field it holds, bound to the script");
+            return;
+        }
+        node.SourceBinding = bound.Binding;
+        node.HeardBinding = OptionalBinding(node, node.Overload.Shape.Heard);
+        node.HeardCountBinding = OptionalBinding(node, node.Overload.Shape.HeardCount);
+    }
+
+    // A field input a drive may leave unset; set, it is a field bound to the script.
+    private int OptionalBinding(ResolvedNode node, int input)
+    {
+        if (input < 0 || node.Inputs[input] is not { } source)
+            return -1;
+        if (source.Node == null && source.Constant is { Binding: >= 0 } bound)
+            return bound.Binding;
+        if (source.Node == null && source.Constant is { Binding: < 0 })
+            return -1;
+        Error(node.Id, $"'{node.Overload.Inputs[input].Name}' is a field bound to the script, or nothing");
+        return -1;
     }
 
     // A timed event's "seconds": a number, one a second when unset, never faster than MinIntervalSeconds.
@@ -664,7 +899,218 @@ public sealed class ScriptCompiler
             }
         }
 
-        static bool IsComputed(ResolvedNode node) => node.Kind is NodeKind.Value or NodeKind.Read or NodeKind.Constant;
+        static bool IsComputed(ResolvedNode node)
+            => node.Kind is NodeKind.Value or NodeKind.Read or NodeKind.Constant or NodeKind.Memory or NodeKind.EvaluateFunction;
+    }
+
+    // Which Functions wait: a Delay, an await or a call of a Function that waits anywhere in the body, every exit
+    // followed, the ones that run later included. Worked to a fixed point, so Functions calling each other
+    // settle. A call of one that waits waits for its answer like an await, and what follows it runs later.
+    private void MarkAsync()
+    {
+        var functions = _nodes.Where(n => n.Kind == NodeKind.Function).ToList();
+        if (functions.Count == 0)
+            return;
+        var bodies = new Dictionary<ResolvedNode, List<ResolvedNode>>();
+        foreach (var function in functions)
+            bodies[function] = LogicalFlow(function);
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var function in functions)
+            {
+                if (function.IsAsync)
+                    continue;
+                foreach (var node in bodies[function])
+                {
+                    string? reason = node.IsDelay || node.IsAwait ? TitleOf(node)
+                        : node.Kind == NodeKind.CallFunction && node.Function is { IsAsync: true } called ? $"it calls {called.FunctionName}, which waits"
+                        : null;
+                    if (reason == null)
+                        continue;
+                    function.IsAsync = true;
+                    function.WaitReason = reason;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        foreach (var node in _nodes)
+        {
+            if (node.Kind == NodeKind.CallFunction && node.Function is { IsAsync: true })
+                node.IsAsyncCall = true;
+        }
+    }
+
+    // Every node a flow that starts at root runs, now or later: through every exit, a Delay's and an answer's too.
+    private static List<ResolvedNode> LogicalFlow(ResolvedNode root)
+    {
+        var seen = new HashSet<ResolvedNode>();
+        var order = new List<ResolvedNode>();
+        var pending = new Stack<ResolvedNode>();
+        foreach (var exit in root.Exits)
+        {
+            if (exit != null)
+                pending.Push(exit);
+        }
+        while (pending.Count > 0)
+        {
+            var node = pending.Pop();
+            if (!seen.Add(node))
+                continue;
+            order.Add(node);
+            foreach (var next in node.Exits)
+            {
+                if (next != null)
+                    pending.Push(next);
+            }
+        }
+        return order;
+    }
+
+    private static string TitleOf(ResolvedNode node)
+    {
+        var path = node.Overload.Definition.Path;
+        int slash = path.LastIndexOf('/');
+        return slash >= 0 ? path[(slash + 1)..] : path;
+    }
+
+    // Functions as a whole: one name each; a Return only ever reached from its own Function's body, whatever waits
+    // come between; and an Evaluate only of a Function whose body is one Return of values that need no flow, which
+    // never comes back round to evaluating itself, since a value is worked out at once and has no If to stop it.
+    // On the way, which events and Functions reach each Delay, await and async call, so the flows that carry on
+    // after one inside a Function carry the word of its call. -xlinka
+    private void CheckFunctions()
+    {
+        var functions = _nodes.Where(n => n.Kind == NodeKind.Function).ToList();
+        if (functions.Count == 0 && !_nodes.Any(n => n.Kind == NodeKind.Return))
+            return;
+
+        var named = new Dictionary<string, ResolvedNode>(StringComparer.Ordinal);
+        foreach (var function in functions)
+        {
+            string name = function.FunctionName ?? function.Id;
+            if (!named.TryAdd(name, function))
+            {
+                Error(function.Id, $"is called '{name}' like {named[name].Id}; two Functions never share a name");
+                Error(named[name].Id, $"is called '{name}' like {function.Id}; two Functions never share a name");
+            }
+        }
+
+        // Every flow from where it starts, an event or a Function, through every exit. Only nodes some flow reaches
+        // are lowered, so a Return no flow reaches has to be found here.
+        var reachedBy = new Dictionary<ResolvedNode, List<ResolvedNode>>();
+        foreach (var root in _nodes)
+        {
+            if (root.Kind is not (NodeKind.Event or NodeKind.Function))
+                continue;
+            foreach (var node in LogicalFlow(root))
+            {
+                if (node.IsDelay || node.IsAwait || node.IsAsyncCall)
+                    (node.Owners ??= new HashSet<ResolvedNode>()).Add(root);
+                if (node.Kind != NodeKind.Return || node.Function is not { } owner)
+                    continue;
+                if (!reachedBy.TryGetValue(node, out var roots))
+                    reachedBy[node] = roots = new List<ResolvedNode>();
+                roots.Add(root);
+                if (root != owner)
+                {
+                    Error(node.Id, root.Kind == NodeKind.Function
+                        ? $"returns from {owner.FunctionName}, but runs in the body of {root.FunctionName}"
+                        : $"returns from {owner.FunctionName}, but runs in {root.Id}'s flow; a Return only ends its own Function's body");
+                }
+            }
+        }
+        foreach (var node in _nodes)
+        {
+            if (node.Kind == NodeKind.Return && node.Function is { } owner && !reachedBy.ContainsKey(node))
+                Error(node.Id, $"is never reached; run it from the body of {owner.FunctionName}");
+            if (node.IsDelay || node.IsAwait || node.IsAsyncCall)
+                node.CarriesWord = node.Owners?.Any(o => o.Kind == NodeKind.Function) == true;
+        }
+
+        // Pure: next goes straight to a Return of this Function, fed by its arguments and what needs no flow.
+        foreach (var function in functions)
+        {
+            if (function.Exits.Length > 0 && function.Exits[0] is { Kind: NodeKind.Return } only && only.Function == function
+                && NeedsNoFlow(only, new HashSet<ResolvedNode>(), function))
+                function.PureReturn = only;
+        }
+
+        var evaluates = new Dictionary<ResolvedNode, List<ResolvedNode>>();
+        foreach (var node in _nodes)
+        {
+            if (node.Kind != NodeKind.EvaluateFunction || node.Function is not { } target)
+                continue;
+            if (target.IsAsync)
+                Error(node.Id, $"{target.FunctionName} waits ({target.WaitReason}), so it cannot be evaluated as a value; use Call Function");
+            else if (!target.IsPure)
+                Error(node.Id, $"evaluates {target.FunctionName}, whose body runs flow; use Call Function, or have its next go straight to a Return");
+        }
+        foreach (var function in functions)
+        {
+            if (function.IsPure)
+                evaluates[function] = EvaluatedIn(function.PureReturn!);
+        }
+        foreach (var (function, inside) in evaluates)
+        {
+            foreach (var evaluate in inside)
+            {
+                if (evaluate.Function is { IsPure: true } target && Reaches(target, function))
+                    Error(evaluate.Id, $"makes {function.FunctionName} evaluate itself, which never ends; recurse with Call Function and an If");
+            }
+        }
+
+        // The Evaluate Function nodes a Return's values are worked out through.
+        static List<ResolvedNode> EvaluatedIn(ResolvedNode body)
+        {
+            var found = new List<ResolvedNode>();
+            var seen = new HashSet<ResolvedNode>();
+            var pending = new Stack<ResolvedNode>();
+            foreach (var input in body.Inputs)
+            {
+                if (input?.Node is { } source)
+                    pending.Push(source);
+            }
+            while (pending.Count > 0)
+            {
+                var node = pending.Pop();
+                if (!seen.Add(node) || node.Kind is not (NodeKind.Value or NodeKind.Read or NodeKind.Constant or NodeKind.Memory
+                        or NodeKind.EvaluateFunction))
+                    continue;
+                if (node.Kind == NodeKind.EvaluateFunction)
+                    found.Add(node);
+                foreach (var input in node.Inputs)
+                {
+                    if (input?.Node is { } source)
+                        pending.Push(source);
+                }
+            }
+            return found;
+        }
+
+        // Whether evaluating from leads, through the pure Functions it evaluates, to evaluating to.
+        bool Reaches(ResolvedNode from, ResolvedNode to)
+        {
+            var seen = new HashSet<ResolvedNode>();
+            var pending = new Stack<ResolvedNode>();
+            pending.Push(from);
+            while (pending.Count > 0)
+            {
+                var function = pending.Pop();
+                if (function == to)
+                    return true;
+                if (!seen.Add(function) || !evaluates.TryGetValue(function, out var inside))
+                    continue;
+                foreach (var evaluate in inside)
+                {
+                    if (evaluate.Function is { IsPure: true } next)
+                        pending.Push(next);
+                }
+            }
+            return false;
+        }
     }
 
     private CompileResult Emit(string hash)
@@ -673,6 +1119,9 @@ public sealed class ScriptCompiler
 
         int stringImport = module.ImportFunction(RuntimeModule, StringImport,
             new WasmFuncType(new[] { WasmValueType.I32, WasmValueType.I32 }, new[] { WasmValueType.I32 }));
+        int urlImport = AllConstants().Any(c => c.Value is Uri)
+            ? module.ImportFunction(RuntimeModule, UrlImport, new WasmFuncType(new[] { WasmValueType.I32, WasmValueType.I32 }, new[] { WasmValueType.I32 }))
+            : -1;
 
         var imports = new List<NodeOverload>();
         var importIndex = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -695,6 +1144,17 @@ public sealed class ScriptCompiler
                 node.HelperImports = node.Helpers.Select(h => h.IsHostCall ? Import(h) : -1).ToArray();
         }
 
+        // Each Call Script Function starts its call through an import of its own, typed for its ports.
+        var scriptCalls = new List<ScriptCallEntry>();
+        foreach (var node in _nodes.Where(n => n.Overload.Definition.IsScriptCall))
+        {
+            var type = new WasmFuncType(new[] { WasmValueType.I32, WasmValueType.I32 }.Concat(node.Overload.Inputs.SelectMany(p => p.Type.Lanes)).ToArray(),
+                Array.Empty<WasmValueType>());
+            var name = ScriptCallImportPrefix + node.Id;
+            node.ImportIndex = module.ImportFunction(RuntimeModule, name, type);
+            scriptCalls.Add(new ScriptCallEntry(node.Id, name, type, node.FunctionName!, node.Overload.FunctionSignature!, node.Overload));
+        }
+
         int timerImport = -1;
         var delays = _nodes.Where(n => n.IsDelay).ToList();
         for (int i = 0; i < delays.Count; i++)
@@ -705,12 +1165,13 @@ public sealed class ScriptCompiler
                 new WasmFuncType(new[] { WasmValueType.I32, WasmValueType.F32 }, Array.Empty<WasmValueType>()));
         }
 
-        var awaits = _nodes.Where(n => n.IsAwait).ToList();
+        // An async call waits for its Function's answer the way an await waits for its work.
+        var awaits = _nodes.Where(n => n.IsAwait || n.IsAsyncCall).ToList();
         for (int i = 0; i < awaits.Count; i++)
             awaits[i].AwaitIndex = i;
 
         int nowImport = -1;
-        if (_nodes.Any(n => n.Overload.Shape?.Kind == FlowShapeKind.Cooldown))
+        if (_nodes.Any(n => n.Overload.Shape?.Kind is FlowShapeKind.Cooldown or FlowShapeKind.Follow or FlowShapeKind.FrameDelta))
             nowImport = module.ImportFunction(RuntimeModule, NowImport, new WasmFuncType(Array.Empty<WasmValueType>(), new[] { WasmValueType.F64 }));
         int eachCount = -1, eachItem = -1;
         if (_nodes.Any(n => n.Overload.Shape?.Kind == FlowShapeKind.Each))
@@ -723,7 +1184,46 @@ public sealed class ScriptCompiler
         int eachQuery = -1;
         if (_nodes.Any(n => n.Overload.Shape is { Kind: FlowShapeKind.Each, Query.Length: > 0 }))
             eachQuery = module.ImportFunction(RuntimeModule, EachQueryImport, EachQueryType);
-        var runtime = new RuntimeImports(timerImport, nowImport, eachCount, eachItem, eachQuery);
+        int liveImport = -1;
+        if (_nodes.Any(n => n.Overload.Shape is { Kind: FlowShapeKind.Watch } watch && n.Overload.Inputs[watch.Input].Type.IsHandle))
+            liveImport = module.ImportFunction(RuntimeModule, LiveImport, new WasmFuncType(new[] { WasmValueType.I32 }, new[] { WasmValueType.I32 }));
+
+        // A waiting Function's calls: the word of the call the next Delay or await starts in, an async call's
+        // ticket and its first stretch run out, an argument read after a wait, and per Function its arguments
+        // kept and what its Return gives.
+        int wordImport = -1, callOpen = -1, callEnd = -1, argument = -1;
+        var waiting = _nodes.Where(n => n.Kind == NodeKind.Function && n.IsAsync).ToList();
+        if (waiting.Count > 0)
+            wordImport = module.ImportFunction(RuntimeModule, WordImport, new WasmFuncType(new[] { WasmValueType.I32 }, Array.Empty<WasmValueType>()));
+        if (_nodes.Any(n => n.IsAsyncCall))
+        {
+            callOpen = module.ImportFunction(RuntimeModule, CallOpenImport,
+                new WasmFuncType(new[] { WasmValueType.I32, WasmValueType.I32 }, new[] { WasmValueType.I32 }));
+            callEnd = module.ImportFunction(RuntimeModule, CallEndImport, new WasmFuncType(new[] { WasmValueType.I32 }, Array.Empty<WasmValueType>()));
+        }
+        if (waiting.Any(n => n.Overload.FunctionSignature!.Inputs.Count > 0))
+        {
+            argument = module.ImportFunction(RuntimeModule, ArgumentImport,
+                new WasmFuncType(new[] { WasmValueType.I32, WasmValueType.I32, WasmValueType.I32 }, new[] { WasmValueType.I64 }));
+        }
+        foreach (var node in waiting)
+        {
+            var signature = node.Overload.FunctionSignature!;
+            node.DoneImport = module.ImportFunction(RuntimeModule, FunctionDoneImportPrefix + node.FunctionName,
+                new WasmFuncType(new[] { WasmValueType.I32 }.Concat(signature.Outputs.SelectMany(p => p.Type.Lanes)).ToArray(), Array.Empty<WasmValueType>()));
+            if (signature.Inputs.Count > 0)
+                node.KeepImport = module.ImportFunction(RuntimeModule, FunctionKeepImportPrefix + node.FunctionName,
+                    new WasmFuncType(new[] { WasmValueType.I32 }.Concat(signature.Inputs.SelectMany(p => p.Type.Lanes)).ToArray(), Array.Empty<WasmValueType>()));
+        }
+        // An action with its failed exit wired: the module clears the call's failure before it and asks after it.
+        int failClear = -1, failCheck = -1;
+        if (_nodes.Any(n => n.FailedExit >= 0))
+        {
+            failClear = module.ImportFunction(RuntimeModule, FailClearImport, new WasmFuncType(Array.Empty<WasmValueType>(), Array.Empty<WasmValueType>()));
+            failCheck = module.ImportFunction(RuntimeModule, FailCheckImport, new WasmFuncType(Array.Empty<WasmValueType>(), new[] { WasmValueType.I32 }));
+        }
+        var runtime = new RuntimeImports(timerImport, nowImport, eachCount, eachItem, eachQuery, liveImport, wordImport, callOpen, callEnd, argument,
+            failClear, failCheck);
 
         // Every constant string, deduplicated, laid out after the continuation stack.
         var strings = new Dictionary<string, (int Offset, int Length, int Global)>(StringComparer.Ordinal);
@@ -737,6 +1237,21 @@ public sealed class ScriptCompiler
             strings.Add(text, (StackBytes + data.Count, utf8.Length, global));
             data.AddRange(utf8);
         }
+        // Every constant address after them, by its text, each read from the global its handle is made into.
+        var urls = new Dictionary<string, (int Offset, int Length, int Global)>(StringComparer.Ordinal);
+        foreach (var constant in AllConstants())
+        {
+            if (constant.Value is not Uri url)
+                continue;
+            if (!urls.TryGetValue(url.OriginalString, out var made))
+            {
+                var utf8 = Encoding.UTF8.GetBytes(url.OriginalString);
+                made = (StackBytes + data.Count, utf8.Length, module.AddGlobal(new WasmGlobalType(WasmValueType.I32, true), WasmConstInit.I32(0)));
+                urls.Add(url.OriginalString, made);
+                data.AddRange(utf8);
+            }
+            constant.Global = made.Global;
+        }
 
         uint pages = (uint)((StackBytes + data.Count + 65535) / 65536);
         module.AddMemory(pages, pages);
@@ -745,6 +1260,7 @@ public sealed class ScriptCompiler
 
         var variables = new List<ScriptVariableEntry>();
         var stringVariables = new List<(int Global, string Text)>();
+        var urlVariables = new List<(int Global, int From)>();
         foreach (var node in _nodes.Where(n => n.Kind == NodeKind.StoredVariable))
         {
             var type = node.Overload.Outputs[0].Type;
@@ -765,6 +1281,8 @@ public sealed class ScriptCompiler
             }
             if (initial.Value is string text)
                 stringVariables.Add((node.Globals[0], text));
+            else if (initial.Value is Uri)
+                urlVariables.Add((node.Globals[0], initial.Global));
             variables.Add(new ScriptVariableEntry(node.Id, node.VariableName ?? node.Id, type, exports));
         }
 
@@ -788,14 +1306,40 @@ public sealed class ScriptCompiler
                     node.Globals = new[] { module.AddGlobal(new WasmGlobalType(WasmValueType.F64, true), WasmConstInit.F64(-1e300)) };
                     break;
                 case FlowShapeKind.Change:
+                case FlowShapeKind.Watch:
                 {
                     // Whether it has run, then the lanes of what came in last. Not carried in a swap: an
-                    // edited graph's Change starts over.
-                    var lanes = node.Overload.Inputs[node.Overload.Shape!.Input].Type.Lanes;
+                    // edited graph's Change or Watch starts over.
+                    var watched = node.Overload.Inputs[node.Overload.Shape!.Input].Type;
+                    var lanes = watched.Lanes;
                     node.Globals = new int[lanes.Length + 1];
                     node.Globals[0] = module.AddGlobal(new WasmGlobalType(WasmValueType.I32, true), WasmConstInit.I32(0));
                     for (int lane = 0; lane < lanes.Length; lane++)
                         node.Globals[lane + 1] = module.AddGlobal(new WasmGlobalType(lanes[lane], true), ConstOf(lanes[lane], 0ul));
+                    // A kept thing stays held between calls, or its number is handed to another.
+                    if (watched.IsHandle)
+                    {
+                        string held = HandleRootPrefix + node.Id;
+                        module.Export(held, WasmExternKind.Global, node.Globals[1]);
+                        _handleRoots.Add(held);
+                    }
+                    continue;
+                }
+                case FlowShapeKind.Follow:
+                case FlowShapeKind.FrameDelta:
+                {
+                    // Whether it has run, the lanes of where it is (a Follow) or of the value last frame (a Frame
+                    // Delta), the clock when that was, then for a Frame Delta the change it gave then, and for a
+                    // two-stage Follow where its middle is.
+                    bool delta = kind == FlowShapeKind.FrameDelta || node.Overload.Shape!.Stages == 2;
+                    var lanes = node.Overload.Inputs[node.Overload.Shape!.Input].Type.Lanes;
+                    node.Globals = new int[2 + lanes.Length * (delta ? 2 : 1)];
+                    node.Globals[0] = module.AddGlobal(new WasmGlobalType(WasmValueType.I32, true), WasmConstInit.I32(0));
+                    for (int lane = 0; lane < lanes.Length; lane++)
+                        node.Globals[lane + 1] = module.AddGlobal(new WasmGlobalType(lanes[lane], true), ConstOf(lanes[lane], 0ul));
+                    node.Globals[lanes.Length + 1] = module.AddGlobal(new WasmGlobalType(WasmValueType.F64, true), WasmConstInit.F64(-1e300));
+                    for (int lane = 0; delta && lane < lanes.Length; lane++)
+                        node.Globals[lanes.Length + 2 + lane] = module.AddGlobal(new WasmGlobalType(lanes[lane], true), ConstOf(lanes[lane], 0ul));
                     continue;
                 }
                 default:
@@ -828,6 +1372,23 @@ public sealed class ScriptCompiler
                 traces.Add(new ScriptTraceEntry(node.Id, node.Overload.FlowOutputs[exit], export));
             }
         }
+        // A flow relay's exit counts the flow that reaches it, from the counters of the exits that run it; nothing
+        // of its own runs.
+        var relayed = new Dictionary<ResolvedNode, List<string>>();
+        foreach (var (node, exit, passed) in _relayed)
+        {
+            if (exit >= node.TraceGlobals.Length || node.TraceGlobals[exit] < 0)
+                continue;
+            string export = $"{TraceExportPrefix}{node.Id}.{exit}";
+            foreach (var relay in passed)
+            {
+                if (!relayed.TryGetValue(relay, out var exports))
+                    relayed[relay] = exports = new List<string>();
+                exports.Add(export);
+            }
+        }
+        foreach (var (relay, exports) in relayed)
+            traces.Add(new ScriptTraceEntry(relay.Id, relay.Overload.FlowOutputs[0], exports[0]) { Also = exports.Skip(1).ToArray() });
 
         var displays = new List<ScriptDisplayEntry>();
         var free = new List<ResolvedNode>();
@@ -858,14 +1419,90 @@ public sealed class ScriptCompiler
                 Warn(node.Id, "shows a value worked out from a flow's data after that flow is done; wire it straight to the output to show");
         }
 
-        if (strings.Count > 0)
+        // What each drive holds its field at, read the way a stored variable is, so a handle it holds stays
+        // alive until the next frame's drives replace it.
+        var drives = new List<ScriptDriveEntry>();
+        var driven = new List<ResolvedNode>();
+        foreach (var node in _nodes.Where(n => n.Kind == NodeKind.Drive))
+        {
+            var shape = node.Overload.Shape!;
+            var type = node.Overload.Inputs[shape.Input].Type;
+            if (!NeedsNoFlow(node, new HashSet<ResolvedNode>()))
+            {
+                Error(node.Id, "is worked out every frame on every machine, so its value can only come from what needs no event");
+                continue;
+            }
+            node.Globals = new int[type.LaneCount];
+            var exports = new string[type.LaneCount];
+            for (int lane = 0; lane < type.LaneCount; lane++)
+            {
+                node.Globals[lane] = module.AddGlobal(new WasmGlobalType(type.Lanes[lane], true), ConstOf(type.Lanes[lane], 0));
+                exports[lane] = $"{VariableExportPrefix}{node.Id}.{lane}";
+                module.Export(exports[lane], WasmExternKind.Global, node.Globals[lane]);
+            }
+            variables.Add(new ScriptVariableEntry(node.Id, "drive." + node.Id, type, exports));
+            string? onExport = null;
+            if (shape.Switch >= 0)
+            {
+                node.SwitchGlobal = module.AddGlobal(new WasmGlobalType(WasmValueType.I32, true), WasmConstInit.I32(1));
+                onExport = $"{VariableExportPrefix}{node.Id}.on";
+                module.Export(onExport, WasmExternKind.Global, node.SwitchGlobal);
+            }
+            drives.Add(new ScriptDriveEntry(node.Id, node.SourceBinding, node.Overload.Inputs[shape.Target].Type, type, exports, onExport,
+                node.HeardBinding, node.HeardCountBinding));
+            driven.Add(node);
+        }
+
+        List<string>? driveSources = driven.Count > 0 ? new List<string>() : null;
+        foreach (var node in driven)
+        {
+            var shape = node.Overload.Shape!;
+            var stored = new List<ResolvedNode>();
+            var seen = new HashSet<ResolvedNode>();
+            if (!SettlesOn(node.Inputs[shape.Input], seen, stored) || (shape.Switch >= 0 && !SettlesOn(node.Inputs[shape.Switch], seen, stored)))
+            {
+                driveSources = null;
+                break;
+            }
+            foreach (var variable in stored)
+            {
+                if (!driveSources!.Contains(variable.Id))
+                    driveSources.Add(variable.Id);
+            }
+        }
+
+        if (strings.Count > 0 || urls.Count > 0)
         {
             var start = module.AddFunction(WasmFuncType.Empty);
             foreach (var (_, (offset, length, global)) in strings)
                 start.I32Const(offset).I32Const(length).Call(stringImport).GlobalSet(global);
+            foreach (var (_, (offset, length, global)) in urls)
+                start.I32Const(offset).I32Const(length).Call(urlImport).GlobalSet(global);
             foreach (var (global, text) in stringVariables)
                 start.GlobalGet(strings[text].Global).GlobalSet(global);
+            foreach (var (global, from) in urlVariables)
+                start.GlobalGet(from).GlobalSet(global);
             module.SetStart(start.Index);
+        }
+
+        // Every Function's place in the module first, so a call anywhere, a Function calling itself included,
+        // knows what it calls before any body is written. One that waits takes the word of its call last and gives
+        // nothing back: its Return hands what it gives to the call's ticket.
+        var functions = new List<ScriptFunctionEntry>();
+        var bodies = new List<(ResolvedNode Node, WasmFunctionBuilder Function)>();
+        foreach (var node in _nodes.Where(n => n.Kind == NodeKind.Function))
+        {
+            var signature = node.Overload.FunctionSignature!;
+            var parameters = signature.Inputs.SelectMany(p => p.Type.Lanes).Append(WasmValueType.I32);
+            if (node.IsAsync)
+                parameters = parameters.Append(WasmValueType.I32);
+            var results = node.IsAsync ? Array.Empty<WasmValueType>() : signature.Outputs.SelectMany(p => p.Type.Lanes).ToArray();
+            var function = module.AddFunction(new WasmFuncType(parameters.ToArray(), results));
+            node.FunctionIndex = function.Index;
+            bodies.Add((node, function));
+            var export = FunctionExportPrefix + node.FunctionName;
+            module.Export(export, WasmExternKind.Function, function.Index);
+            functions.Add(new ScriptFunctionEntry(node.Id, node.FunctionName!, export, signature, node.IsPure, node.IsAsync));
         }
 
         var events = new List<ScriptEventEntry>();
@@ -883,24 +1520,29 @@ public sealed class ScriptCompiler
         var timers = new List<ScriptTimerEntry>();
         foreach (var node in delays)
         {
-            var function = module.AddFunction(WasmFuncType.Empty);
+            var function = module.AddFunction(node.CarriesWord
+                ? new WasmFuncType(new[] { WasmValueType.I32 }, Array.Empty<WasmValueType>())
+                : WasmFuncType.Empty);
             new EventFunctionEmitter(function, node, text => strings[text].Global, runtime, Error, direct).Emit();
             var export = TimerExportPrefix + node.Id;
             module.Export(export, WasmExternKind.Function, function.Index);
-            timers.Add(new ScriptTimerEntry(node.Id, export));
+            timers.Add(new ScriptTimerEntry(node.Id, export, node.CarriesWord));
         }
 
         // Each exit an await's answer can run is a function of its own, with the payload as its parameters,
-        // the way an event's is.
+        // the way an event's is, and an async call's next one with what its Function gave back. Inside a
+        // Function's flows the word of its call comes after them.
         var answered = new List<ScriptAwaitEntry>();
         foreach (var node in awaits)
         {
-            var parameters = node.Overload.Outputs.SelectMany(o => o.Type.Lanes).ToArray();
+            var parameters = node.Overload.Outputs.SelectMany(o => o.Type.Lanes);
+            if (node.CarriesWord)
+                parameters = parameters.Append(WasmValueType.I32);
             var exits = new List<string>();
             var exports = new List<string>();
-            for (int exit = 1; exit < node.Exits.Length; exit++)
+            for (int exit = node.IsAsyncCall ? 0 : 1; exit < (node.IsAsyncCall ? 1 : node.Exits.Length); exit++)
             {
-                var function = module.AddFunction(new WasmFuncType(parameters, Array.Empty<WasmValueType>()));
+                var function = module.AddFunction(new WasmFuncType(parameters.ToArray(), Array.Empty<WasmValueType>()));
                 new EventFunctionEmitter(function, node, text => strings[text].Global, runtime, Error, direct, exit).Emit();
                 var name = node.Overload.FlowOutputs[exit];
                 var export = $"{AwaitExportPrefix}{node.Id}.{name}";
@@ -908,20 +1550,33 @@ public sealed class ScriptCompiler
                 exits.Add(name);
                 exports.Add(export);
             }
-            answered.Add(new ScriptAwaitEntry(node.Id, exits, exports, node.Overload.PayloadType!, node.Overload));
+            answered.Add(new ScriptAwaitEntry(node.Id, exits, exports, node.IsAsyncCall ? typeof(CallAnswer) : node.Overload.PayloadType!,
+                node.Overload, node.CarriesWord));
         }
+
+        // A Function's body lowers the way an event's flow does, its arguments in place of a payload.
+        foreach (var (node, function) in bodies)
+            new EventFunctionEmitter(function, node, text => strings[text].Global, runtime, Error, direct).Emit();
 
         foreach (var node in free)
         {
             var function = module.AddFunction(WasmFuncType.Empty);
-            EventFunctionEmitter.EmitDisplays(function, new[] { node }, text => strings[text].Global, Error);
+            EventFunctionEmitter.EmitDisplays(function, new[] { node }, text => strings[text].Global, runtime, Error);
             module.Export(displays[shown[node]].Export!, WasmExternKind.Function, function.Index);
+        }
+
+        // Every drive in one function, so what several share is worked out once a frame.
+        if (driven.Count > 0)
+        {
+            var function = module.AddFunction(WasmFuncType.Empty);
+            EventFunctionEmitter.EmitDisplays(function, driven, text => strings[text].Global, runtime, Error);
+            module.Export(DrivesExport, WasmExternKind.Function, function.Index);
         }
 
         if (HasErrors)
             return CompileResult.Failed(hash, _diagnostics);
 
-        var manifest = ManifestWriter.Write(hash, events, timers, answered, imports, _bindings, variables, displays);
+        var manifest = ManifestWriter.Write(hash, events, timers, answered, imports, _bindings, variables, displays, functions, scriptCalls);
         module.AddCustomSection(ManifestSection, manifest);
         var bytes = module.ToBytes();
 
@@ -938,12 +1593,13 @@ public sealed class ScriptCompiler
 
         var tags = _graph.Nodes.Select(n => n.Id).ToArray();
         return new CompileResult(hash, bytes, manifest, _diagnostics, imports, events, timers, variables, _bindings, tags,
-            displays) { Decoded = decoded, Traces = traces, FlowMemory = memory, Awaits = answered };
+            displays) { Decoded = decoded, Traces = traces, FlowMemory = memory, Awaits = answered, Drives = drives, HandleRoots = _handleRoots.ToArray(), DriveSources = driveSources, Functions = functions, ScriptCalls = scriptCalls };
     }
 
     // Whether a value can be worked out at any time: from constants, stored values, and pure and read
-    // nodes over them, with no event's data and no action's output anywhere in it.
-    private static bool NeedsNoFlow(ResolvedNode node, HashSet<ResolvedNode> seen)
+    // nodes over them, evaluated Functions among them, with no event's data and no action's output anywhere
+    // in it. Within a Function's body that Function's arguments count too, since every call brings them.
+    private static bool NeedsNoFlow(ResolvedNode node, HashSet<ResolvedNode> seen, ResolvedNode? within = null)
     {
         foreach (var source in node.Inputs)
         {
@@ -951,15 +1607,21 @@ public sealed class ScriptCompiler
                 continue;
             switch (from.Kind)
             {
+                case NodeKind.Function when from == within:
+                    break;
                 case NodeKind.Event:
                 case NodeKind.Action:
                 case NodeKind.Flow:
                 case NodeKind.Await:
+                case NodeKind.Function:
+                case NodeKind.CallFunction:
                     return false;
                 case NodeKind.Value:
                 case NodeKind.Read:
                 case NodeKind.Constant:
-                    if (!NeedsNoFlow(from, seen))
+                case NodeKind.Memory:
+                case NodeKind.EvaluateFunction:
+                    if (!NeedsNoFlow(from, seen, within))
                         return false;
                     break;
             }
@@ -967,13 +1629,64 @@ public sealed class ScriptCompiler
         return true;
     }
 
-    // Whether a Display reads an event's payload or an action's output directly, through any Constants.
+    // Whether a value comes from constants and stored values through pure nodes over plain numbers alone, with
+    // the stored values it reads. A pure node with a handle in or out is not counted: what a handle names can
+    // go away while the lanes stay the same. An evaluated Function counts as what its Return's values come
+    // from, its arguments standing for the evaluation's own inputs.
+    private static bool SettlesOn(DataSource? source, HashSet<ResolvedNode> seen, List<ResolvedNode> stored)
+    {
+        if (source?.Node is not { } from || !seen.Add(from))
+            return true;
+        switch (from.Kind)
+        {
+            case NodeKind.Constant:
+                break;
+            case NodeKind.StoredVariable:
+                stored.Add(from);
+                return true;
+            case NodeKind.Function:
+                return true;
+            case NodeKind.EvaluateFunction:
+                if (from.Function?.PureReturn is not { } body)
+                    return false;
+                foreach (var input in body.Inputs)
+                {
+                    if (!SettlesOn(input, seen, stored))
+                        return false;
+                }
+                goto case NodeKind.Value;
+            case NodeKind.Value:
+                foreach (var port in from.Overload.Inputs)
+                {
+                    if (port.Type.IsHandle)
+                        return false;
+                }
+                foreach (var port in from.Overload.Outputs)
+                {
+                    if (port.Type.IsHandle)
+                        return false;
+                }
+                break;
+            default:
+                return false;
+        }
+        foreach (var input in from.Inputs)
+        {
+            if (!SettlesOn(input, seen, stored))
+                return false;
+        }
+        return true;
+    }
+
+    // Whether a Display reads an event's payload, a Function's argument or an action's or call's output
+    // directly, through any Constants.
     private static bool FedByFlow(ResolvedNode display)
     {
         var source = display.Inputs[0];
         while (source?.Node is { Kind: NodeKind.Constant } pass)
             source = pass.Inputs[0];
-        return source?.Node?.Kind is NodeKind.Event or NodeKind.Action or NodeKind.Flow or NodeKind.Await;
+        return source?.Node?.Kind is NodeKind.Event or NodeKind.Action or NodeKind.Flow or NodeKind.Await or NodeKind.Function
+            or NodeKind.CallFunction;
     }
 
     private IEnumerable<ConstantValue> AllConstants()

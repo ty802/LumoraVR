@@ -6,13 +6,16 @@ using System.Globalization;
 
 namespace Lumora.Script;
 
-// A constant already converted to the port's type. Strings become handle globals set by the start
-// function; a binding is the fixed handle of its slot.
+// A constant already converted to the port's type. Strings and addresses become handle globals set by
+// the start function; a binding is the fixed handle of its slot.
 internal sealed class ConstantValue
 {
     public ScriptType Type { get; }
     public object? Value { get; }
     public int Binding { get; }
+
+    // For an address, the global holding the handle the start function made of it.
+    public int Global { get; set; } = -1;
 
     private ulong[]? _raw;
 
@@ -145,6 +148,15 @@ internal sealed class ConstantValue
             case ScriptTypeKind.Handle when value.Kind == GraphValueKind.String && type == ScriptTypes.String:
                 constant = new(type, value.String, -1);
                 return true;
+            case ScriptTypeKind.Handle when value.Kind == GraphValueKind.String && type.ClrType == typeof(Uri):
+                // An address is written as its text, by the same rule Text To URL reads text by.
+                if (TextToUrl.Run(value.String, out _) is { } url)
+                {
+                    constant = new(type, url, -1);
+                    return true;
+                }
+                error = $"'{value.String}' is not a whole address";
+                return false;
             case ScriptTypeKind.Handle when value.Kind == GraphValueKind.Binding:
                 constant = new(type, null, value.Binding);
                 return true;

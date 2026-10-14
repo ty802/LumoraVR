@@ -58,6 +58,12 @@ internal enum WasmIrOp : ushort
     I64Store8,
     I64Store16,
     I64Store32,
+    // A constant folded into the instruction that used it, and a counter global stepped in place.
+    I32AddImm,
+    F32MulImm,
+    GlobalAddI32,
+    // Copies one after another, in order, as one instruction: pairs (to, from) in the function's Moves.
+    Moves,
 
     NumericBase = 128,
     I32Eqz = NumericBase,
@@ -219,6 +225,7 @@ internal sealed class WasmCompiledFunction
     public int FrameSize;
     public WasmInstr[] Code = System.Array.Empty<WasmInstr>();
     public int[] BranchTable = System.Array.Empty<int>();
+    public int[] Moves = System.Array.Empty<int>();
 }
 
 internal static class WasmOpcodes

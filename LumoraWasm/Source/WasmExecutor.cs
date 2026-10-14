@@ -323,6 +323,14 @@ internal sealed class WasmExecutor
                     case WasmIrOp.Copy:
                         s[fp + ins.A] = s[fp + ins.B];
                         break;
+                    case WasmIrOp.Moves:
+                    {
+                        int[] moves = function.Moves;
+                        int end = ins.B + ins.C * 2;
+                        for (int k = ins.B; k < end; k += 2)
+                            s[fp + moves[k]] = s[fp + moves[k + 1]];
+                        break;
+                    }
                     case WasmIrOp.Const:
                         s[fp + ins.A] = (ulong)ins.Imm;
                         break;
@@ -515,6 +523,15 @@ internal sealed class WasmExecutor
                     case WasmIrOp.I64Store32:
                         BinaryPrimitives.WriteUInt32LittleEndian(memory.AsSpan(Address(memory, s[fp + ins.A], ins.Imm, 4), 4), (uint)s[fp + ins.B]);
                         break;
+
+                    case WasmIrOp.I32AddImm: s[fp + ins.A] = (uint)s[fp + ins.B] + (uint)ins.Imm; break;
+                    case WasmIrOp.F32MulImm: s[fp + ins.A] = Bits(F32(s[fp + ins.B]) * F32((ulong)ins.Imm)); break;
+                    case WasmIrOp.GlobalAddI32:
+                    {
+                        var global = instance.Globals[ins.A];
+                        global.Value = (uint)global.Value + (uint)ins.Imm;
+                        break;
+                    }
 
                     case WasmIrOp.I32Eqz: s[fp + ins.A] = (uint)s[fp + ins.B] == 0 ? 1UL : 0UL; break;
                     case WasmIrOp.I32Eq: s[fp + ins.A] = (uint)s[fp + ins.B] == (uint)s[fp + ins.C] ? 1UL : 0UL; break;

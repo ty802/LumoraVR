@@ -41,6 +41,9 @@ public abstract class ScriptContextBase
     // Handles made since the instance started running and not released yet. A collect looks at these and
     // nothing else, so it costs what the call made, not the most the table ever held.
     private readonly List<int> _live = new();
+
+    // The roots of one collect, kept between calls: a collect runs after every call a script makes.
+    private readonly HashSet<int> _keep = new();
     private long _textBytes;
 
     private readonly int[] _warnings = new int[WarningKinds];
@@ -68,10 +71,47 @@ public abstract class ScriptContextBase
     // What the instance's await nodes have out and the answers waiting for it; set when the instance links.
     public ScriptAwaits? Awaits { get; internal set; }
 
+    // The call of a waiting Function the module said the next Delay or await starts in, taken by whichever
+    // comes first; 0 for none.
+    private int _word;
+
+    internal void SetWord(int word) => _word = word;
+
+    internal int TakeWord()
+    {
+        int word = _word;
+        _word = 0;
+        return word;
+    }
+
     public int RefusalCount { get; private set; }
 
     // What the last refusal was, for whoever is working out why a script did nothing.
     public string? LastRefusal { get; private set; }
+
+    // Why the action being called did not do what it was asked, the first reason it gave. Only asked for right
+    // after an action whose failed exit is wired, and cleared right before it.
+    private string? _failure;
+
+    // Why the last call that left by its failed exit failed, kept until another one does. It outlives the turn
+    // so a Display wired to it, which reads in a turn of its own, shows the failure being debugged. Empty
+    // until something has failed that way.
+    public string FailureReason { get; private set; } = string.Empty;
+
+    public void Fail(string reason) => _failure ??= string.IsNullOrEmpty(reason) ? "it failed" : reason;
+
+    internal void ClearFailure() => _failure = null;
+
+    internal bool TakeFailure()
+    {
+        if (_failure == null)
+            return false;
+        FailureReason = _failure;
+        _failure = null;
+        return true;
+    }
+
+    internal void ResetFailures() => _failure = null;
 
     // Seconds on the clock timers are due by. The world runtime answers world time, so a paused or
     // throttled world's timers follow it.
@@ -230,7 +270,8 @@ public abstract class ScriptContextBase
         if (_live.Count == 0)
             return;
 
-        var keep = new HashSet<int>();
+        var keep = _keep;
+        keep.Clear();
         foreach (int root in roots)
             keep.Add(root);
 
@@ -269,6 +310,26 @@ public abstract class ScriptContextBase
     // A searching For Each: the host searches once with the node's query floats and hands back what it
     // found, which the loop then walks through EachCount and EachItem. Nothing by default.
     protected internal virtual object? EachQuery(EachSource source, ReadOnlySpan<float> query) => null;
+
+    // A Call Script Function: run function, with these ports, in a script on target, and answer the ticket with
+    // what it gave back or why it could not. Never run in this call: the other script runs it in its own turn.
+    // The base knows no other scripts, so every call fails.
+    protected internal virtual void CallScriptFunction(CallTicket ticket, object? target, string function, FunctionSignature signature,
+        object?[] arguments)
+        => ticket.Fail("this script cannot call other scripts here");
+
+    // A node turning its own call down without throwing, for a refusal that can come every frame: the
+    // invoker answers it as it answers a thrown one.
+    private string? _turnedDown;
+
+    public void TurnDown(string reason) => _turnedDown = reason;
+
+    internal string? TakeTurnedDown()
+    {
+        var reason = _turnedDown;
+        _turnedDown = null;
+        return reason;
+    }
 
     // A node's write was refused by the host's permission gate. The node's outputs read as defaults and
     // the flow carries on: a refusal is an answer, not a crash.

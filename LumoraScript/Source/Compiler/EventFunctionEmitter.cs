@@ -41,7 +41,22 @@ namespace Lumora.Script;
 // function computes the rest on its own.
 //
 // TRACE: every step out of a node by a wired exit bumps that exit's counter first, the way it goes
-// whichever that is, so the editor can show flow moving along the very wire it took. -xlinka
+// whichever that is, so the editor can show flow moving along the very wire it took.
+//
+// A FUNCTION's body lowers the same way from its Function node, its arguments standing for a payload. Its
+// last parameter is where its continuation stack starts: a call passes the top of its own, so a body in a
+// dispatch loop stacks above its caller's and its pop state ends the call once it is back down to that start.
+// A Return works out what it hands back, takes the Displays as a call's end would, and returns; a body that
+// runs out without reaching one gives every output's default. A Call Function is a step like an action's, its
+// outputs kept for the whole call; an Evaluate Function is worked out like a pure node.
+//
+// A Function that WAITS (a Delay, an await, or a call of one that waits, anywhere in its body) gives nothing
+// back from its wasm function. Its last parameter is the word of its call, a ticket the host keeps: every Delay
+// and await its flows arm is armed in that call, the flows that carry on after them get the word back, and
+// its Return hands what it gives to the host under the word. A call of it is an async call: it opens the
+// ticket, runs the body's first stretch at once, tells the host that stretch is done, and ends the chain like
+// a Delay; what follows it runs as an answer of its own with what the Function gave back. After a wait the
+// body reads its arguments from what the host kept for the call. -xlinka
 internal sealed class EventFunctionEmitter
 {
     private enum StateKind : byte { Pop, Run, SequenceStep, RepeatCheck, ScopeLeave }
@@ -91,8 +106,22 @@ internal sealed class EventFunctionEmitter
     private int _loopDepth;
     private int _exitDepth;
 
-    // Root is the event node, the Delay whose continuation this is, or the await whose answer exit answer
-    // this is; null for the show function.
+    // Whether the flow runs as a dispatch loop, so _sp is the top of this call's continuation stack.
+    private bool _dispatching;
+
+    // A Function's body: the parameter holding where its continuation stack starts. -1 for anything else,
+    // whose stack starts at the bottom.
+    private readonly int _base = -1;
+
+    // The parameter holding the word of the waiting Function's call these flows run in, or -1 for flows that
+    // run in none.
+    private readonly int _word = -1;
+
+    // What follows an await's answer or an async call's return, its payload on the parameters.
+    private readonly bool _resumes;
+
+    // Root is the event node, the Delay whose continuation this is, the await whose answer exit answer
+    // this is, or the Function whose body this is; null for the show function.
     public EventFunctionEmitter(WasmFunctionBuilder function, ResolvedNode? root, Func<string, int> stringGlobal,
         RuntimeImports imports, Action<string?, string> error, IReadOnlyList<ResolvedNode> displays, int answer = 0)
     {
@@ -104,7 +133,8 @@ internal sealed class EventFunctionEmitter
         _displays = displays;
         _answer = answer;
 
-        bool carriesPayload = root != null && (root.Kind == NodeKind.Event || (root.IsAwait && answer > 0));
+        _resumes = root != null && ((root.IsAwait && answer > 0) || root.IsAsyncCall);
+        bool carriesPayload = root != null && (root.Kind is NodeKind.Event or NodeKind.Function || _resumes);
         _payload = new int[carriesPayload ? root!.Overload.Outputs.Count : 0][];
         int parameter = 0;
         for (int i = 0; i < _payload.Length; i++)
@@ -114,18 +144,31 @@ internal sealed class EventFunctionEmitter
                 lanes[l] = parameter++;
             _payload[i] = lanes;
         }
+        if (root?.Kind == NodeKind.Function)
+        {
+            _base = parameter++;
+            if (root.IsAsync)
+                _word = parameter;
+        }
+        else if (root != null && root.CarriesWord && (root.IsDelay || _resumes))
+        {
+            _word = parameter;
+        }
     }
 
-    // A show function: Displays that need no flow, computed and stored, one after another.
+    // A show function or the drives function: Displays or drives that need no flow, computed and stored, one
+    // after another, sharing what they have in common.
     public static void EmitDisplays(WasmFunctionBuilder function, IReadOnlyList<ResolvedNode> displays, Func<string, int> stringGlobal,
-        Action<string?, string> error)
+        RuntimeImports imports, Action<string?, string> error)
     {
-        var emitter = new EventFunctionEmitter(function, null, stringGlobal, RuntimeImports.None, error, displays);
+        var emitter = new EventFunctionEmitter(function, null, stringGlobal, imports, error, Array.Empty<ResolvedNode>());
         foreach (var display in displays)
         {
-            var value = emitter.Materialize(display, 0);
+            var value = emitter.Materialize(display, display.Kind == NodeKind.Drive ? display.Overload.Shape!.Input : 0);
             function.Mark(display.Tag);
             emitter.Store(value, display.Globals!);
+            if (display.Kind == NodeKind.Drive && display.SwitchGlobal >= 0)
+                emitter.Store(emitter.Materialize(display, display.Overload.Shape!.Switch), new[] { display.SwitchGlobal });
         }
     }
 
@@ -140,22 +183,28 @@ internal sealed class EventFunctionEmitter
             _inline.UnionWith(tree);
             _f.Mark(root.Tag);
             Trace(root, rootExit);
+            KeepArguments();
             _nest = 0;
             int end = OpenBlock();
             Chain(first, end);
             Close();
             StoreDisplays();
+            ReturnDefaults();
             return;
         }
 
         _state = _f.AddLocal(WasmValueType.I32);
         _sp = _f.AddLocal(WasmValueType.I32);
+        _dispatching = true;
 
         _pop = AddState(StateKind.Pop, null, 0);
         PlanFrom(first);
 
         _f.Mark(root.Tag);
         Trace(root, rootExit);
+        KeepArguments();
+        if (_base >= 0)
+            _f.LocalGet(_base).LocalSet(_sp);
         _f.I32Const(Target(first)).LocalSet(_state);
 
         int count = _states.Count;
@@ -181,6 +230,58 @@ internal sealed class EventFunctionEmitter
         _f.End();
         _f.End();
         StoreDisplays();
+        ReturnDefaults();
+    }
+
+    // A Function's body that ran out without reaching a Return gives every output's default, the value an
+    // unwired input of that type reads. A waiting one's call ends with the host, once nothing is under way.
+    private void ReturnDefaults()
+    {
+        if (_root?.Kind != NodeKind.Function || _root.IsAsync)
+            return;
+        foreach (var output in _root.Overload.FunctionSignature!.Outputs)
+            Load(new Location(null, null, ConstantValue.Default(output.Type)));
+    }
+
+    // A waiting Function's arguments, kept by the host for the flows of its call that run after a wait.
+    private void KeepArguments()
+    {
+        if (_root is not { Kind: NodeKind.Function, KeepImport: >= 0 } root)
+            return;
+        _f.LocalGet(_word);
+        foreach (var lanes in _payload)
+        {
+            foreach (int lane in lanes)
+                _f.LocalGet(lane);
+        }
+        _f.Call(root.KeepImport);
+    }
+
+    // The word of the waiting Function's call these flows run in, 0 for none.
+    private void LoadWord()
+    {
+        if (_word >= 0)
+            _f.LocalGet(_word);
+        else
+            _f.I32Const(0);
+    }
+
+    // Tells the host the next Delay or await it arms is armed in the call these flows run in.
+    private void PassWord()
+    {
+        if (_word >= 0)
+            _f.LocalGet(_word).Call(_imports.Word);
+    }
+
+    // Where a call made from here may start its continuation stack: just above this call's own.
+    private void LoadStackTop()
+    {
+        if (_dispatching)
+            _f.LocalGet(_sp);
+        else if (_base >= 0)
+            _f.LocalGet(_base);
+        else
+            _f.I32Const(0);
     }
 
     private void StoreDisplays()
@@ -209,9 +310,10 @@ internal sealed class EventFunctionEmitter
         {
             var (node, depth) = pending.Pop();
             if (depth > maxDepth || !tree.Add(node)
-                || node.Kind is not (NodeKind.Action or NodeKind.WriteVariable or NodeKind.Pulse or NodeKind.Flow or NodeKind.Await))
+                || node.Kind is not (NodeKind.Action or NodeKind.WriteVariable or NodeKind.Pulse or NodeKind.Flow or NodeKind.Await
+                    or NodeKind.CallFunction or NodeKind.Return))
                 return null;
-            if (node.IsDelay)
+            if (node.IsDelay || node.IsAsyncCall)
                 continue;
             if (node.IsAwait)
             {
@@ -219,7 +321,7 @@ internal sealed class EventFunctionEmitter
                     pending.Push((next, depth));
                 continue;
             }
-            int deeper = node.Kind == NodeKind.Flow ? depth + 2 : depth;
+            int deeper = node.Kind == NodeKind.Flow || node.FailedExit >= 0 ? depth + 2 : depth;
             foreach (var next in node.Exits)
             {
                 if (next != null)
@@ -272,6 +374,11 @@ internal sealed class EventFunctionEmitter
             _memo.Clear();
             switch (node.Kind)
             {
+                case NodeKind.Action when node.FailedExit >= 0:
+                    RunAction(node);
+                    _f.Call(_imports.FailCheck);
+                    Either(node, node.FailedExit, 0, label);
+                    return;
                 case NodeKind.Action:
                     RunAction(node);
                     Trace(node, 0);
@@ -292,6 +399,18 @@ internal sealed class EventFunctionEmitter
                     Trace(node, 0);
                     node = ExitOf(node, 0);
                     continue;
+                case NodeKind.CallFunction when node.IsAsyncCall:
+                    ArmCall(node);
+                    BranchTo(label);
+                    return;
+                case NodeKind.CallFunction:
+                    RunCall(node);
+                    Trace(node, 0);
+                    node = ExitOf(node, 0);
+                    continue;
+                case NodeKind.Return:
+                    RunReturn(node);
+                    return;
             }
 
             var shape = node.Overload.Shape!;
@@ -369,6 +488,10 @@ internal sealed class EventFunctionEmitter
                     Trace(node, shape.Exits[0]);
                     node = node.Exits[shape.Exits[0]];
                     continue;
+                case FlowShapeKind.Watch:
+                    _f.LocalGet(RunWatch(node));
+                    Either(node, shape.Exits[0], shape.Exits[1], label);
+                    return;
                 case FlowShapeKind.Sequence:
                 {
                     _f.Mark(node.Tag);
@@ -612,6 +735,8 @@ internal sealed class EventFunctionEmitter
     {
         var inputs = MaterializeAll(node);
         _f.Mark(node.Tag);
+        if (node.FailedExit >= 0)
+            _f.Call(_imports.FailClear);
         foreach (var input in inputs)
             Load(input);
         _f.Call(node.ImportIndex);
@@ -621,6 +746,69 @@ internal sealed class EventFunctionEmitter
             for (int lane = locals.Length - 1; lane >= 0; lane--)
                 _f.LocalSet(locals[lane]);
         }
+    }
+
+    // A Call Function: its arguments and where its stack may start, then what it gives back kept for the
+    // whole call, the way an action's outputs are.
+    private void RunCall(ResolvedNode node)
+    {
+        var inputs = MaterializeAll(node);
+        _f.Mark(node.Tag);
+        foreach (var input in inputs)
+            Load(input);
+        LoadStackTop();
+        _f.Call(node.Function!.FunctionIndex);
+        for (int o = node.Overload.Outputs.Count - 1; o >= 0; o--)
+        {
+            var locals = Persistent(node, o);
+            for (int lane = locals.Length - 1; lane >= 0; lane--)
+                _f.LocalSet(locals[lane]);
+        }
+    }
+
+    // A Return: what it hands back worked out, the Displays taken as a call's end takes them, and the call over.
+    // A waiting Function's Return hands it to the host for the call's ticket.
+    private void RunReturn(ResolvedNode node)
+    {
+        var inputs = MaterializeAll(node);
+        StoreDisplays();
+        _f.Mark(node.Tag);
+        if (node.Function is { IsAsync: true } function)
+        {
+            if (_word < 0)
+            {
+                _error(node.Id, $"returns from {function.FunctionName} in a flow that is not its call's");
+                return;
+            }
+            _f.LocalGet(_word);
+            foreach (var input in inputs)
+                Load(input);
+            _f.Call(function.DoneImport);
+        }
+        else
+        {
+            foreach (var input in inputs)
+                Load(input);
+        }
+        _f.Return();
+    }
+
+    // An async call: its ticket opened in the call these flows run in, the Function's first stretch run at once
+    // with the ticket's word, then the host told that stretch is done. What follows runs when it returns.
+    private void ArmCall(ResolvedNode node)
+    {
+        var inputs = MaterializeAll(node);
+        int word = Scratch(node, WasmValueType.I32);
+        _f.Mark(node.Tag);
+        _f.I32Const(node.AwaitIndex);
+        LoadWord();
+        _f.Call(_imports.CallOpen).LocalSet(word);
+        foreach (var input in inputs)
+            Load(input);
+        LoadStackTop();
+        _f.LocalGet(word);
+        _f.Call(node.Function!.FunctionIndex);
+        _f.LocalGet(word).Call(_imports.CallEnd);
     }
 
     // A Change: this value against the one kept from last time, through the helper into the output, and
@@ -664,6 +852,180 @@ internal sealed class EventFunctionEmitter
         Store(value, kept);
     }
 
+    // A Watch: previous is what was kept last time, changed whether any lane of this value differs from it,
+    // and then this value is kept in its place. The first time nothing is kept yet, so this value is kept
+    // first and nothing has changed. Answers the local holding changed.
+    private int RunWatch(ResolvedNode node)
+    {
+        var shape = node.Overload.Shape!;
+        var value = Materialize(node, shape.Input);
+        if (node.Overload.Inputs[shape.Input].Type.IsHandle)
+        {
+            // A thing that has left the world is watched as nothing.
+            int live = _f.AddLocal(WasmValueType.I32);
+            LoadLane(value, 0);
+            _f.Call(_imports.Live).LocalSet(live);
+            value = new Location(new[] { live }, null, null);
+        }
+        var previous = Persistent(node, shape.Output);
+        int ran = node.Globals[0];
+        var kept = node.Globals[1..];
+        var lanes = node.Overload.Inputs[shape.Input].Type.Lanes;
+        int changed = Scratch(node, WasmValueType.I32);
+
+        _f.Mark(node.Tag);
+        _f.GlobalGet(ran).Op(WasmOp.I32Eqz);
+        _f.If();
+        Store(value, kept);
+        _f.I32Const(1).GlobalSet(ran);
+        _f.End();
+
+        _f.I32Const(0);
+        for (int lane = 0; lane < kept.Length; lane++)
+        {
+            _f.GlobalGet(kept[lane]).LocalSet(previous[lane]);
+            LoadLane(value, lane);
+            _f.GlobalGet(kept[lane]);
+            _f.Op(lanes[lane] switch
+            {
+                WasmValueType.I64 => WasmOp.I64Ne,
+                WasmValueType.F32 => WasmOp.F32Ne,
+                WasmValueType.F64 => WasmOp.F64Ne,
+                _ => WasmOp.I32Ne,
+            });
+            _f.Op(WasmOp.I32Or);
+        }
+        _f.LocalSet(changed);
+        Store(value, kept);
+        return changed;
+    }
+
+    // A Follow: where it is moves toward the value through the helper by the seconds since it last moved,
+    // once a frame however often it is worked out; in two stages a middle moves toward the value first and
+    // where it is follows the middle. The first time it starts where the value is.
+    private void EmitFollow(ResolvedNode node, Location[] inputs, int[][] outputs)
+    {
+        var shape = node.Overload.Shape!;
+        var value = inputs[shape.Input];
+        var speed = inputs[shape.Speed];
+        int lanes = node.Overload.Inputs[shape.Input].Type.LaneCount;
+        int ran = node.Globals[0];
+        var at = node.Globals[1..(1 + lanes)];
+        int moved = node.Globals[1 + lanes];
+        var middle = shape.Stages == 2 ? node.Globals[(2 + lanes)..] : null;
+        var helper = node.Helpers[0];
+        int now = _f.AddLocal(WasmValueType.F64);
+
+        _f.Mark(node.Tag);
+        _f.Call(_imports.Now).LocalSet(now);
+        _f.GlobalGet(ran).Op(WasmOp.I32Eqz);
+        _f.If();
+        Store(value, at);
+        if (middle != null)
+            Store(value, middle);
+        _f.LocalGet(now).GlobalSet(moved);
+        _f.I32Const(1).GlobalSet(ran);
+        _f.End();
+
+        _f.LocalGet(now).GlobalGet(moved).Op(WasmOp.F64Ne);
+        _f.If();
+        if (middle != null)
+        {
+            Step(new Location(null, middle, null), value, middle);
+            Step(new Location(null, at, null), new Location(null, middle, null), at);
+        }
+        else
+        {
+            Step(new Location(null, at, null), value, at);
+        }
+        _f.LocalGet(now).GlobalSet(moved);
+        _f.End();
+
+        void Step(Location from, Location toward, int[] into)
+        {
+            Load(from);
+            Load(toward);
+            Load(speed);
+            if (shape.SpeedScale != 1f)
+                _f.F32Const(shape.SpeedScale).Op(WasmOp.F32Mul);
+            _f.LocalGet(now).GlobalGet(moved).Op(WasmOp.F64Sub).Op(WasmOp.F32DemoteF64);
+            _f.Call(node.HelperImports[0]);
+            PopInto(helper, into);
+        }
+
+        var result = outputs[shape.Output];
+        for (int lane = 0; lane < lanes; lane++)
+            _f.GlobalGet(at[lane]).LocalSet(result[lane]);
+    }
+
+    // A Frame Delta: the change since the value last frame, through the helper the way a Change works it
+    // out, worked out once a frame and given again for the rest of it. The first time the value is kept
+    // first, so the change is none.
+    private void EmitFrameDelta(ResolvedNode node, Location[] inputs, int[][] outputs)
+    {
+        var shape = node.Overload.Shape!;
+        var value = inputs[shape.Input];
+        int lanes = node.Overload.Inputs[shape.Input].Type.LaneCount;
+        int ran = node.Globals[0];
+        var last = node.Globals[1..(1 + lanes)];
+        int seen = node.Globals[1 + lanes];
+        var change = node.Globals[(2 + lanes)..];
+        var helper = node.Helpers[0];
+        var before = new Location(null, last, null);
+        var (first, second) = shape.PreviousFirst ? (before, value) : (value, before);
+        int now = _f.AddLocal(WasmValueType.F64);
+
+        _f.Mark(node.Tag);
+        _f.Call(_imports.Now).LocalSet(now);
+        _f.GlobalGet(ran).Op(WasmOp.I32Eqz);
+        _f.If();
+        Store(value, last);
+        _f.I32Const(1).GlobalSet(ran);
+        _f.End();
+
+        _f.LocalGet(now).GlobalGet(seen).Op(WasmOp.F64Ne);
+        _f.If();
+        if (helper.InlineOpcode is byte opcode)
+        {
+            for (int lane = 0; lane < lanes; lane++)
+            {
+                LoadLane(first, lane);
+                LoadLane(second, lane);
+                _f.Op(opcode).GlobalSet(change[lane]);
+            }
+        }
+        else
+        {
+            Load(first);
+            Load(second);
+            _f.Call(node.HelperImports[0]);
+            PopInto(helper, change);
+        }
+        Store(value, last);
+        _f.LocalGet(now).GlobalSet(seen);
+        _f.End();
+
+        var result = outputs[shape.Output];
+        for (int lane = 0; lane < lanes; lane++)
+            _f.GlobalGet(change[lane]).LocalSet(result[lane]);
+    }
+
+    // A helper's results off the stack: its first output into globals, anything after it dropped.
+    private void PopInto(NodeOverload helper, int[] globals)
+    {
+        for (int o = helper.Outputs.Count - 1; o >= 0; o--)
+        {
+            var type = helper.Outputs[o].Type;
+            for (int lane = type.LaneCount - 1; lane >= 0; lane--)
+            {
+                if (o == 0)
+                    _f.GlobalSet(globals[lane]);
+                else
+                    _f.Op(WasmOp.Drop);
+            }
+        }
+    }
+
     // A scope's opening, its enter node called with the scope's own inputs, and its closing.
     private void Enter(ResolvedNode node)
     {
@@ -697,12 +1059,17 @@ internal sealed class EventFunctionEmitter
         _f.GlobalGet(counter).I32Const(1).Op(WasmOp.I32Add).GlobalSet(counter);
     }
 
-    // Starts an await's work: its number, then its inputs, to its Start.
+    // Starts an await's work: its number, then its inputs, to its Start. A call to another script's Function
+    // passes the word of the flow it runs in between the two.
     private void ArmAwait(ResolvedNode node)
     {
         var inputs = MaterializeAll(node);
         _f.Mark(node.Tag);
+        if (!node.Overload.Definition.IsScriptCall)
+            PassWord();
         _f.I32Const(node.AwaitIndex);
+        if (node.Overload.Definition.IsScriptCall)
+            LoadWord();
         foreach (var input in inputs)
             Load(input);
         _f.Call(node.ImportIndex);
@@ -713,6 +1080,7 @@ internal sealed class EventFunctionEmitter
         var shape = node.Overload.Shape!;
         var seconds = Materialize(node, shape.Input);
         _f.Mark(node.Tag);
+        PassWord();
         _f.I32Const(node.TimerIndex);
         Load(seconds);
         _f.Call(_imports.Timer);
@@ -731,7 +1099,9 @@ internal sealed class EventFunctionEmitter
             return from == _root ? new Location(_payload[source.Output], null, null) : null;
         if (from.Kind == NodeKind.Await)
             return from == _root && _answer > 0 ? new Location(_payload[source.Output], null, null) : null;
-        if (from.Kind is NodeKind.Action or NodeKind.Flow && (_entry.ContainsKey(from) || _inline.Contains(from)))
+        if (from.Kind == NodeKind.Function || from.IsAsyncCall)
+            return from == _root ? new Location(_payload[source.Output], null, null) : null;
+        if (from.Kind is NodeKind.Action or NodeKind.Flow or NodeKind.CallFunction && (_entry.ContainsKey(from) || _inline.Contains(from)))
             return new Location(Persistent(from, source.Output), null, null);
         return null;
     }
@@ -763,9 +1133,15 @@ internal sealed class EventFunctionEmitter
 
             switch (node.Kind)
             {
+                case NodeKind.CallFunction when node.IsAsyncCall:
+                    // What follows an async call is its answer's business.
+                    _entry[node] = AddState(StateKind.Run, node, 0);
+                    continue;
                 case NodeKind.Action:
                 case NodeKind.WriteVariable:
                 case NodeKind.Pulse:
+                case NodeKind.CallFunction:
+                case NodeKind.Return:
                     _entry[node] = AddState(StateKind.Run, node, 0);
                     break;
                 case NodeKind.Flow when node.Overload.Shape!.Kind == FlowShapeKind.Sequence:
@@ -823,7 +1199,11 @@ internal sealed class EventFunctionEmitter
         switch (state.Kind)
         {
             case StateKind.Pop:
-                _f.LocalGet(_sp).Op(WasmOp.I32Eqz).BrIf(_exitDepth);
+                // Back down to where this call's stack started: the call is done.
+                if (_base >= 0)
+                    _f.LocalGet(_sp).LocalGet(_base).Op(WasmOp.I32Eq).BrIf(_exitDepth);
+                else
+                    _f.LocalGet(_sp).Op(WasmOp.I32Eqz).BrIf(_exitDepth);
                 _f.LocalGet(_sp).I32Const(4).Op(WasmOp.I32Sub).LocalTee(_sp);
                 _f.Memory(WasmOp.I32Load, 2, 0).LocalSet(_state);
                 _f.Br(_loopDepth);
@@ -865,6 +1245,20 @@ internal sealed class EventFunctionEmitter
     {
         switch (node.Kind)
         {
+            case NodeKind.Action when node.FailedExit >= 0:
+            {
+                RunAction(node);
+                int failed = Scratch(node, WasmValueType.I32);
+                _f.Call(_imports.FailCheck).LocalSet(failed);
+                _f.I32Const(Target(node.Exits[node.FailedExit]));
+                _f.I32Const(Target(ExitOf(node, 0)));
+                _f.LocalGet(failed);
+                _f.Select().LocalSet(_state);
+                TraceEither(node, node.FailedExit, 0, failed);
+                _f.Br(_loopDepth);
+                break;
+            }
+
             case NodeKind.Action:
                 RunAction(node);
                 Trace(node, 0);
@@ -887,6 +1281,21 @@ internal sealed class EventFunctionEmitter
                 ArmAwait(node);
                 Trace(node, 0);
                 Goto(ExitOf(node, 0), 0);
+                break;
+
+            case NodeKind.CallFunction when node.IsAsyncCall:
+                ArmCall(node);
+                Goto(null, 0);
+                break;
+
+            case NodeKind.CallFunction:
+                RunCall(node);
+                Trace(node, 0);
+                Goto(ExitOf(node, 0), 0);
+                break;
+
+            case NodeKind.Return:
+                RunReturn(node);
                 break;
 
             default:
@@ -985,6 +1394,16 @@ internal sealed class EventFunctionEmitter
                     RunChange(node);
                     Trace(node, shape.Exits[0]);
                     Goto(node.Exits[shape.Exits[0]], 0);
+                }
+                else if (shape.Kind == FlowShapeKind.Watch)
+                {
+                    int changed = RunWatch(node);
+                    _f.I32Const(Target(node.Exits[shape.Exits[0]]));
+                    _f.I32Const(Target(node.Exits[shape.Exits[1]]));
+                    _f.LocalGet(changed);
+                    _f.Select().LocalSet(_state);
+                    TraceEither(node, shape.Exits[0], shape.Exits[1], changed);
+                    _f.Br(_loopDepth);
                 }
                 else
                 {
@@ -1150,8 +1569,26 @@ internal sealed class EventFunctionEmitter
                     return new Location(null, null, ConstantValue.Default(consumer.Overload.Inputs[input].Type));
                 }
                 return new Location(_payload[source.Output], null, null);
+            case NodeKind.Function:
+                if (from == _root)
+                    return new Location(_payload[source.Output], null, null);
+                // After a wait in the Function's own call, from what the host kept for that call.
+                if (_word >= 0 && from.KeepImport >= 0 && _root?.Owners is { Count: 1 } owners && owners.Contains(from))
+                    return Argument(from, source.Output);
+                _error(consumer.Id, _word >= 0 && from.IsAsync
+                    ? $"reads {from.FunctionName}'s arguments after a wait that other flows reach too; keep them in a Stored Value"
+                    : $"reads {from.FunctionName}'s arguments outside its body; only the flow its next runs has them");
+                return new Location(null, null, ConstantValue.Default(consumer.Overload.Inputs[input].Type));
+            case NodeKind.CallFunction when from.IsAsyncCall:
+                if (from != _root)
+                {
+                    _error(consumer.Id, $"reads what {from.Id}'s call gives back outside what runs after it returns");
+                    return new Location(null, null, ConstantValue.Default(consumer.Overload.Inputs[input].Type));
+                }
+                return new Location(_payload[source.Output], null, null);
             case NodeKind.Action:
             case NodeKind.Flow:
+            case NodeKind.CallFunction:
                 if (!_entry.ContainsKey(from) && !_inline.Contains(from))
                 {
                     _error(consumer.Id, Later() is { } later
@@ -1165,14 +1602,42 @@ internal sealed class EventFunctionEmitter
         }
     }
 
-    // Where this function runs, when it runs after the call that set it up: after a Delay, or in an answer.
+    // Where this function runs, when it runs after the call that set it up: after a Delay, in an answer, or after
+    // an async call returned.
     private string? Later()
     {
         if (_root?.IsDelay == true)
             return $"after the Delay {_root.Id}";
         if (_root?.IsAwait == true && _answer > 0)
             return $"in {_root.Id}'s answer";
+        if (_root?.IsAsyncCall == true)
+            return $"after the call {_root.Id} returned";
         return null;
+    }
+
+    // One of a waiting Function's arguments, lane by lane from what the host kept for the call.
+    private Location Argument(ResolvedNode function, int port)
+    {
+        var type = function.Overload.Outputs[port].Type;
+        var locals = AllocateLanes(type);
+        for (int lane = 0; lane < locals.Length; lane++)
+        {
+            _f.LocalGet(_word).I32Const(port).I32Const(lane).Call(_imports.Argument);
+            switch (type.Lanes[lane])
+            {
+                case WasmValueType.I32:
+                    _f.Op(WasmOp.I32WrapI64);
+                    break;
+                case WasmValueType.F32:
+                    _f.Op(WasmOp.I32WrapI64).Op(WasmOp.F32ReinterpretI32);
+                    break;
+                case WasmValueType.F64:
+                    _f.Op(WasmOp.F64ReinterpretI64);
+                    break;
+            }
+            _f.LocalSet(locals[lane]);
+        }
+        return new Location(locals, null, null);
     }
 
     private int[][] Compute(ResolvedNode node)
@@ -1191,9 +1656,31 @@ internal sealed class EventFunctionEmitter
         }
 
         var inputs = MaterializeAll(node);
+        if (node.Kind == NodeKind.Memory)
+        {
+            if (node.Overload.Shape!.Kind == FlowShapeKind.Follow)
+                EmitFollow(node, inputs, outputs);
+            else
+                EmitFrameDelta(node, inputs, outputs);
+            _computing.Remove(node);
+            _memo[node] = outputs;
+            return outputs;
+        }
         _f.Mark(node.Tag);
         bool folds = node.Overload.Folds != null;
-        if (node.Overload.InlineOpcode is byte opcode)
+        if (node.Kind == NodeKind.EvaluateFunction)
+        {
+            foreach (var input in inputs)
+                Load(input);
+            LoadStackTop();
+            _f.Call(node.Function!.FunctionIndex);
+            for (int o = outputs.Length - 1; o >= 0; o--)
+            {
+                for (int lane = outputs[o].Length - 1; lane >= 0; lane--)
+                    _f.LocalSet(outputs[o][lane]);
+            }
+        }
+        else if (node.Overload.InlineOpcode is byte opcode)
         {
             int lanes = node.Overload.Inputs[0].Type.LaneCount;
             for (int lane = 0; lane < lanes; lane++)
@@ -1213,6 +1700,10 @@ internal sealed class EventFunctionEmitter
                     LoadLane(input, lane);
                 _f.Op(opcode).LocalSet(outputs[0][lane]);
             }
+        }
+        else if (node.Overload.InlineBody is { } body)
+        {
+            body(new WasmBodyWriter(_f, (input, lane) => LoadLane(inputs[input], lane), outputs));
         }
         else if (folds)
         {
@@ -1300,6 +1791,8 @@ internal sealed class EventFunctionEmitter
                     _f.I32Const(constant.Binding + 1);
                 else if (constant.Value is string text)
                     _f.GlobalGet(_stringGlobal(text));
+                else if (constant.Value is Uri)
+                    _f.GlobalGet(constant.Global);
                 else
                     _f.I32Const(0);
                 break;

@@ -56,6 +56,10 @@ public sealed class GraphValue
     public static GraphValue ParseJson(string json, GraphLimits? limits = null)
         => GraphReader.ReadValue(json, limits ?? GraphLimits.Default);
 
+    // Use the compiler's literal rules when an editor considers changing a port's type.
+    public bool TryValidate(ScriptType type, out string error)
+        => ConstantValue.TryConvert(this, type, out _, out error);
+
     public override string ToString() => Kind switch
     {
         GraphValueKind.Bool => Bool ? "true" : "false",

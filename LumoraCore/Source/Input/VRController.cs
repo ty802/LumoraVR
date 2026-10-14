@@ -25,8 +25,22 @@ public class VRController : InputDevice
     public Vector3 Velocity { get; set; }
     public Vector3 AngularVelocity { get; set; }
 
-    public bool TriggerPressed { get; set; }
     public float TriggerValue { get; set; }
+
+    // The trigger's own click, and whether the bound profile has a click path of its own for it.
+    // Elsewhere the click is the runtime cutting the value at a depth nothing here can see, so the deep
+    // level comes off the value instead.
+    public bool TriggerClick { get; set; }
+    public bool HasTriggerClick { get; set; }
+
+    // Hand tracking feeds the pinch in as the trigger, and a pinch has no deep level.
+    public bool TriggerIsPinch { get; set; }
+
+    // Latched once a frame in Advance, see TriggerLatch. Deep is only ever held under a held press.
+    public bool TriggerPressed => _trigger.Held;
+    public bool TriggerDeep => _trigger.Deep;
+    public bool TriggerDeepPressed => _trigger.DeepPressed;
+    public bool TriggerDeepReleased => _trigger.DeepReleased;
 
     // The analog squeeze is finger curl, not a press. On a handle with a force sensor it sits well
     // above zero from just holding the controller, so the press comes off the force there and off
@@ -63,6 +77,14 @@ public class VRController : InputDevice
     public bool SecondaryButtonPressed { get; set; }
     public bool MenuButtonPressed { get; set; }
 
+    // Extra controls on split gamepads such as Steam Frame. Unbound on two-face-button devices.
+    public bool FaceLeftPressed { get; set; }
+    public bool FaceUpPressed { get; set; }
+    public bool ShoulderPressed { get; set; }
+    public bool FaceLeftTouched { get; set; }
+    public bool FaceUpTouched { get; set; }
+    public bool ShoulderTouched { get; set; }
+
     // True when the bound profile has a primary face button. Without one the menu button carries
     // both the dash (hold) and the context menu (tap) through the charge below.
     public bool HasFaceButtons { get; set; }
@@ -72,11 +94,12 @@ public class VRController : InputDevice
     public bool MenuTapFired { get; private set; }
 
     private PressLatch _grip;
+    private TriggerLatch _trigger;
     private MenuChargeLatch _menuCharge;
 
     private float _hapticAmplitude;
     private float _hapticDuration;
-    private float _hapticFrequency = 1000f;
+    private float _hapticFrequency;
 
     public VRController(VRControllerSide side)
     {
@@ -91,6 +114,8 @@ public class VRController : InputDevice
         float gripSource = HasGripForce ? GripForce : GripValue;
         GripPressed = _grip.Update(gripSource, GripPressThreshold, GripReleaseThreshold);
 
+        _trigger.Update(TriggerValue, TriggerClick, HasTriggerClick, !TriggerIsPinch, deltaTime);
+
         bool sharesMenuAndDash = !HasFaceButtons;
         bool otherCharging = otherHand != null && otherHand.MenuCharge > 0f;
         _menuCharge.Update(sharesMenuAndDash && IsDeviceActive && MenuButtonPressed, deltaTime, otherCharging);
@@ -101,14 +126,23 @@ public class VRController : InputDevice
     public void ResetLatches()
     {
         _grip.Reset();
+        _trigger.Reset();
         _menuCharge.Reset();
         GripPressed = false;
         MenuHoldFired = false;
         MenuTapFired = false;
     }
 
-    public void TriggerHaptic(float amplitude, float duration, float frequency = 1000f)
+    // Every pulse for this hand lands here, scaled by the haptics strength in Settings, 0 being off.
+    // Pulses asked for in the same frame do not overwrite each other: the strongest one plays, so a
+    // hover tick beside a press cannot erase it. Frequency 0 leaves the choice to the runtime. -xlinka
+    public void TriggerHaptic(float amplitude, float duration, float frequency = 0f)
     {
+        amplitude *= EngineSettings.HapticsStrength;
+        if (!(amplitude > 0f) || !(duration > 0f))
+            return;
+        if (amplitude < _hapticAmplitude || (amplitude == _hapticAmplitude && duration <= _hapticDuration))
+            return;
         _hapticAmplitude = amplitude;
         _hapticDuration = duration;
         _hapticFrequency = frequency;

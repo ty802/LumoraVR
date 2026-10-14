@@ -13,6 +13,8 @@ public struct ControllerHandInputs
     public bool TriggerTouched;
     public float Grip;
     public bool ThumbTouched;
+    // The controller has reported a thumb touch at least once, so a thumb it does not report is lifted.
+    public bool SensesThumb;
     public float StickX;
 }
 
@@ -54,6 +56,9 @@ public static class HandPoseSynth
     public const float IndexTouchCurl = 0.15f;
     public const float ThumbTouchCurl = 0.45f;
     public const float ThumbGripGain = 0.6f;
+    // On a controller that senses the thumb, a thumb lifted off the buttons is up, grip or no grip. One
+    // that never reports a touch folds the thumb in with the squeeze as before.
+    public const float ThumbLiftedGripGain = 0.15f;
     public static readonly float[] GripCurlGain = { 0f, 0f, 1f, 1.08f, 1.15f };
 
     private struct FingerSpec
@@ -262,7 +267,9 @@ public static class HandPoseSynth
         float grip = System.Math.Clamp(inputs.Grip, 0f, 1f);
 
         curl01[(int)FingerType.Index] = MathF.Max(trigger, inputs.TriggerTouched ? IndexTouchCurl : 0f);
-        curl01[(int)FingerType.Thumb] = MathF.Max(inputs.ThumbTouched ? ThumbTouchCurl : 0f, grip * ThumbGripGain);
+        curl01[(int)FingerType.Thumb] = inputs.ThumbTouched || !inputs.SensesThumb
+            ? MathF.Max(inputs.ThumbTouched ? ThumbTouchCurl : 0f, grip * ThumbGripGain)
+            : grip * ThumbLiftedGripGain;
         for (int f = (int)FingerType.Middle; f <= (int)FingerType.Pinky; f++)
             curl01[f] = System.Math.Clamp(grip * GripCurlGain[f], 0f, 1f);
 

@@ -22,6 +22,10 @@ namespace Lumora.Core.Components.Avatar.IK;
 // values at runtime. -xlinka
 public sealed class FullBodyIKSolver
 {
+    public ImportedBodyAnimation? BodyAnimation;
+    public bool AnimatedHeadTracked, AnimatedLeftFootTracked, AnimatedRightFootTracked;
+    // Only supplied while grounded; each foot asks for its own surface after animation has posed it.
+    public Func<float3, float?>? AnimatedGroundHeight;
     public struct Target
     {
         public bool Valid;
@@ -41,6 +45,11 @@ public sealed class FullBodyIKSolver
         // rotation: the solver carries it through the bind foot pose so any bone axis convention works. The
         // gait sets this; tracked feet leave it false and supply the bone rotation directly.
         public bool FootFrameRotation;
+
+        // The pelvis counterpart: Rotation is a BODY-FRAME rotation (identity = upright, facing the body's
+        // forward) that the solver carries onto the hips bone through the bind pose. A seat's references
+        // arrive this way; a tracker calibrated onto the joint leaves it false and supplies the bone rotation.
+        public bool BodyFrameRotation;
 
         // 0..1 step swing height (procedural feet), used to curl the toe during the step.
         public float StepLift;
@@ -120,29 +129,36 @@ public sealed class FullBodyIKSolver
     public float TimeSeconds;
     public float IdleWeight;
     public float BreathingWeight = 1f;   // 0 disables; ~1 subtle chest rhythm
-    public float ArmSwingPhase;          // radians, advanced by the component with gait speed
-    public float ArmSwingWeight;         // 0..1, speed-faded by the component
 
     // LOCOMOTION ANIMATION.
     //
-    // The arms are a simulation rather than a sine (see HandMotion), so the solver needs to know what
-    // the body is doing rather than only how fast the phase is turning. All of it is pushed per solve
-    // by the component, which owns the smoothing.
-    public float3 BodyVelocity;          // body frame, metres per second: forward/right/up
-    public float RunBlend;               // 0 walking, 1 running; blends the hand feel between them
+    // An untracked arm is a pendulum the legs drive (see HandMotion): the component reads the stride off the
+    // feet and hands over where each arm is in its swing, how far it swings and how fast it settles, plus the
+    // body's change of speed for the arm's inertia. The pelvis and chest turns and the pelvis list come the
+    // same way. All of it is pushed per solve by the component, which owns the smoothing.
+    public float ArmSwingWeight;         // 0..1 how much the gait drives the arms, speed-faded
+    public float LeftArmDrive;           // -1..1 where the legs put each arm in its swing, forward positive
+    public float RightArmDrive;
+    public float ArmSwingAmplitude;      // radians of shoulder swing at full drive
+    public float ArmSwingFrequency = 2f; // Hz the arm settles at
+    public float3 BodyAcceleration;      // body frame, m/s^2: right/up/forward
+    public float RunBlend;               // 0 walking, 1 running
     public float AirBlend;               // 0 on the ground, 1 airborne or gliding
     public float SwayWeight = 1f;        // scales the standing sway
     public float HandMotionWeight = 1f;  // 0 disables the whole layer, for a seat or a cutscene
     public float DeltaTime = 1f / 60f;   // the simulation step
+    public float PelvisYaw;              // radians about up, positive turns the right hip forward
+    public float PelvisRoll;             // radians about the body forward, positive drops the right hip
+    public float ChestYaw;               // radians about up, the shoulders turning against the pelvis
 
-    // Head bob. The head is the one part of a body that a walk moves in a way the eye notices, and
-    // ours did not move at all: the avatar glided with a perfectly level skull. Applied to the head
-    // BONE, never to the view - a camera that bobs is a camera that makes people ill, and the person
-    // wearing the avatar is the one person who cannot see their own head anyway. -xlinka
-    public float HeadBobVertical;        // metres at full stride
-    public float HeadBobHorizontal;      // metres at full stride
-    public float HeadBobRoll;            // radians of lean at full stride
-    public float HeadBobWeight;          // 0..1, speed-faded by the component
+    // The head bone rides the body's bob and sway, never the view: a camera that bobs makes people ill, and
+    // the person wearing the avatar is the one person who never sees their own head. -xlinka
+    public float HeadFollowBody = 1f;       // share of the hips' bob and sway the head bone rides
+    public float HeadBobVertical = 0.08f;   // metres the head bone may ride off the view, up and down
+    public float HeadBobHorizontal = 0.03f; // and side to side
+    public float HeadBobRoll;               // radians the head leans this frame
+    public float HeadBobWeight;             // 0..1, speed-faded by the component
+    public float LocomotionWeight;          // 0..1 how much the body is walking, speed-faded by the component
 
     // How close two feet may come before they are pushed apart, in metres at avatar scale. Without it
     // a turn on the spot walks one foot straight through the other.
@@ -206,6 +222,11 @@ public sealed class FullBodyIKSolver
     // Share of a foot's remaining travel to its target that its upper leg moves by when the hips are placed from
     // the feet. The spine then decides how much of that the head lets through. -xlinka
     private const float HipFollowFootFraction = 0.1f;
+    // Share of the hip line's turn toward the feet that the hips take. The stride turns the pelvis itself
+    // (PelvisYaw); taken whole, a long step swung the hips twenty degrees. -xlinka
+    private const float HipLineFollow = 0.1f;
+    private const float MaxReachDrop = 0.2f;   // of standing height, the most the legs' reach pulls the hips down
+    private const float HipsHoldUnderHead = 0.8f; // share of the way the moving hips are held under the head
 
     private HumanoidRig _rig = null!;
     private bool _captured;
@@ -223,8 +244,12 @@ public sealed class FullBodyIKSolver
     // planted foot bone sits at its authored height instead of burying the paw in the floor. -xlinka
     public float LeftFootGroundClearance { get; private set; }
     public float RightFootGroundClearance { get; private set; }
-    private const float CrouchHipsMinFraction = 0.34f; // deep squat: hips descend toward the heels
+    // The hips never sit lower than this share of standing. A deeper crouch leans the chest out over the knees
+    // instead, which is what a body does; sinking the hips onto the heels folded the legs past the knee's range
+    // and flipped the knees on every crouched step. -xlinka
+    private const float CrouchHipsMinFraction = 0.46f;
     private const float CrouchSpineSlack = 0.92f;      // spine may shorten this much at full crouch (hunch + back-lean)
+    private const float CrouchMaxLean = 0.95f;         // rad (~54 deg) the chest may lean out over the knees
     // How far one vertebra may deviate from the one below it. Roughly what a human lumbar/thoracic
     // joint gives before the next one has to take over; loose enough that a deliberate hunch still
     // reads, tight enough that the chain cannot double back on itself.
@@ -238,14 +263,24 @@ public sealed class FullBodyIKSolver
     private float3 _curBodyForward = float3.Backward;
     private float3 _curBodyRight = float3.Right;
     private float _crouchLerp;                         // 0 standing .. 1 fully crouched
+    private float _armCrouch;                          // the same, eased, for the arms
+    private float _reachDrop, _reachDropVelocity;      // the stride's hip drop, eased
+    private const float ReachDropSmoothTime = 0.05f;   // s
 
-    // Crouching folds the arms IN FRONT of the body rather than leaving them hanging through the legs,
-    // and quiets the walk swing while they are there. Fractions of arm reach, so they scale with the
-    // avatar. Forward is the big one: it is what stops the hands intersecting the thighs. -xlinka
-    private const float CrouchArmForward = 0.34f;      // of arm reach, along body forward
-    private const float CrouchArmUp = 0.28f;           // of arm reach, up toward the chest
-    private const float CrouchArmIn = 0.08f;           // of arm reach, toward the body midline
-    private const float CrouchSwingDamp = 0.25f;       // walk swing left at full crouch
+    // Crouching brings the arms forward over the knees with the elbows bent rather than leaving them hanging
+    // through the thighs, and quiets the swing while they are there. Running bends the elbows and carries the
+    // hands up toward the chest, crossing in a little in front. Angles at the shoulder and the elbow, so they
+    // fit any arm. -xlinka
+    private const float CrouchArmLift = 0.2f;          // rad the shoulder swings forward at full crouch
+    private const float CrouchElbowBend = 0.45f;       // rad of extra elbow bend at full crouch
+    private const float CrouchSwingDamp = 0.4f;        // share of the swing left at full crouch
+    private const float RunElbowBend = 1.3f;           // rad (~75 deg) a running elbow holds
+    private const float RunElbowPump = 0.3f;           // rad more bend as the arm comes forward
+    private const float RunHandCross = 0.3f;           // rad the forearm turns in toward the midline in front
+    private const float RunElbowOut = 0.05f;           // rad the running upper arm rides out from the side
+    private const float WalkElbowFollow = 0.35f;       // elbow bend per radian of forward swing
+    private const float AirArmLift = 0.35f;            // rad the arms float forward and up off the ground
+    private const float ArmDamping = 0.75f;            // damping ratio of the arm's pendulum
 
     // Bind skeleton frame (upright bind pose, world): up from the feet to the head, forward from the left-right
     // lines of the hips, arms, feet and hands crossed with up and sign-fixed against the toes. The flat frame
@@ -308,6 +343,16 @@ public sealed class FullBodyIKSolver
     private readonly Dictionary<Slot, floatQ> _restRot = new();
 
     public bool IsReady => _captured && _rig != null && !_rig.IsDestroyed;
+
+    // Every bone the solve writes, in the order StoreDefaultLocalState keeps them. -xlinka
+    public static readonly BodyNode[] DrivenNodes =
+    {
+        BodyNode.Hips, BodyNode.Spine, BodyNode.Chest, BodyNode.UpperChest, BodyNode.Neck, BodyNode.Head,
+        BodyNode.LeftShoulder, BodyNode.LeftUpperArm, BodyNode.LeftLowerArm, BodyNode.LeftHand,
+        BodyNode.RightShoulder, BodyNode.RightUpperArm, BodyNode.RightLowerArm, BodyNode.RightHand,
+        BodyNode.LeftUpperLeg, BodyNode.LeftLowerLeg, BodyNode.LeftFoot, BodyNode.LeftToes,
+        BodyNode.RightUpperLeg, BodyNode.RightLowerLeg, BodyNode.RightFoot, BodyNode.RightToes,
+    };
 
     // Bone writes are LOCAL: every peer runs this solve from the replicated proxy poses, so
     // broadcasting the results would have each peer's float-noise-different skeleton fight every
@@ -417,6 +462,8 @@ public sealed class FullBodyIKSolver
         // Snapshot the default (bind) local transform of every bone we drive, then measure once so the
         // solver has valid lengths and standing metrics before the first solve.
         StoreDefaultLocalState();
+        StoreLegExtras();
+        _legsDetected = false;
         MeasureBind();
         CaptureRest();
 
@@ -429,12 +476,8 @@ public sealed class FullBodyIKSolver
     private void StoreDefaultLocalState()
     {
         _bones.Clear();
-        for (int i = 0; i < _spine.Count; i++)
-            AddBone(_spine[i]);
-        AddBone(_lShoulder); AddBone(_lUpper); AddBone(_lLower); AddBone(_lHand);
-        AddBone(_rShoulder); AddBone(_rUpper); AddBone(_rLower); AddBone(_rHand);
-        AddBone(_lHip); AddBone(_lKnee); AddBone(_lFoot); AddBone(_lToe);
-        AddBone(_rHip); AddBone(_rKnee); AddBone(_rFoot); AddBone(_rToe);
+        foreach (var node in DrivenNodes)
+            AddBone(_rig.TryGetBone(node));
 
         _bindLocalPos.Clear();
         _bindLocalRot.Clear();
@@ -467,6 +510,7 @@ public sealed class FullBodyIKSolver
             if (_bindLocalRot.TryGetValue(b, out var r))
                 b.LocalRotation.SetValueSilently(r, change: true);
         }
+        ResetLegExtras(DigitigradeBlend > 1e-4f);
     }
 
     // Measure bone lengths, standing heights and the bind skeleton frame from the UPRIGHT bind pose (which
@@ -543,11 +587,17 @@ public sealed class FullBodyIKSolver
         LowerSole(_rToe);
         _restStandHeight = hasFootRest ? System.Math.Max(hipsRestY - soleRestY, 0f) : 0f;
         _restHeadHeight = hasFootRest ? System.Math.Max(_bindHeadPos.y - soleRestY, 0f) : 0f;
+        // The soles carry the feet up by their thickness and the standing hips with them (see the floor-pin); the
+        // heights stay on the joints the avatar's scale and its crouch were read against.
+        if (hasFootRest)
+            soleRestY -= SoleDrop;
 
         // How far each foot BONE sits above the sole plane at rest. The gait plants the BONE this much
         // above the floor - planting it AT the floor buried the paws/soles by exactly this amount. -xlinka
         LeftFootGroundClearance = hasLFoot && hasFootRest ? System.Math.Max(_bindLFootPos.y - soleRestY, 0f) : 0f;
         RightFootGroundClearance = hasRFoot && hasFootRest ? System.Math.Max(_bindRFootPos.y - soleRestY, 0f) : 0f;
+
+        MeasureLegs();
     }
 
     // Bind skeleton orientation from bone POSITIONS: up runs from the feet average to the head, the left-right
@@ -641,6 +691,7 @@ public sealed class FullBodyIKSolver
         // Hands/feet are chain ends, so capture their rest rotation explicitly for the rotation blend.
         CaptureBoneRest(_lHand, null!);
         CaptureBoneRest(_rHand, null!);
+        CaptureLegRest();
     }
 
     private void AddSpineBone(BodyNode node)
@@ -756,6 +807,8 @@ public sealed class FullBodyIKSolver
             float drop = MathF.Max(0f, standHeadY - headTarget.Position.y);
             _crouchLerp = System.Math.Clamp(drop / (_restHeadHeight * 0.5f), 0f, 1f);
         }
+        // The arms fold into and out of a crouch over a few frames, not in step with a view that jumps.
+        _armCrouch += (_crouchLerp - _armCrouch) * (1f - MathF.Exp(-MathF.Max(DeltaTime, 0f) * 8f));
 
         SolveSpine(in headTarget, in pelvisTarget, in leftFoot, in rightFoot);
         TurnChestTowardHands(in leftHand, in rightHand, in headTarget);
@@ -783,6 +836,100 @@ public sealed class FullBodyIKSolver
 
         SolveLeg(_lHip, _lKnee, _lFoot, _lToe, _lToeRel, _lUpperLegLen, _lLowerLegLen, _bindLFootRot, in leftFoot);
         SolveLeg(_rHip, _rKnee, _rFoot, _rToe, _rToeRel, _rUpperLegLen, _rLowerLegLen, _bindRFootRot, in rightFoot);
+        ApplyBodyAnimation(headTarget, pelvisTarget, leftHand, rightHand, leftFoot, rightFoot, lArmSide, rArmSide);
+    }
+
+    private void ApplyBodyAnimation(in Target head, in Target pelvis, in Target leftHand, in Target rightHand,
+        in Target leftFoot, in Target rightFoot, float leftSide, float rightSide)
+    {
+        var source = BodyAnimation;
+        if (source == null || !source.IsAvailable || _rig == null) return;
+        bool tracking = source.KeepsTracking;
+        foreach (var node in DrivenNodes)
+        {
+            if (!source.Pose.TryGetValue(node, out var pose) || _rig.TryGetBone(node) is not { } bone) continue;
+            if (tracking && node == BodyNode.Hips && PelvisWeight(pelvis) >= .999f) continue;
+            bone.LocalRotation.SetValueSilently(floatQ.Slerp(bone.LocalRotation.Value, pose.Rotation, pose.Weight).Normalized, change: true);
+            if (pose.Position is { } position)
+                bone.LocalPosition.SetValueSilently(float3.Lerp(bone.LocalPosition.Value, position, pose.PositionWeight), change: true);
+        }
+        if (!tracking) return;
+
+        // Keep the authored stride and knee bend, but place its lowest sole on the actual floor.
+        // Capture these goals BEFORE matching the head: translating the hips to a crouched view
+        // otherwise carries the animated legs straight through the floor.
+        var groundedLeft = default(Target);
+        var groundedRight = default(Target);
+        if (source.ReplacesFeet && AnimatedGroundHeight != null)
+        {
+            float? leftGround = !AnimatedLeftFootTracked && _lFoot != null
+                ? AnimatedGroundHeight(_lFoot.GlobalPosition) : null;
+            float? rightGround = !AnimatedRightFootTracked && _rFoot != null
+                ? AnimatedGroundHeight(_rFoot.GlobalPosition) : null;
+            float leftSole = AnimatedSoleY(_lFoot, _lToe, LeftFootGroundClearance);
+            float rightSole = AnimatedSoleY(_rFoot, _rToe, RightFootGroundClearance);
+            float lowestSole = MathF.Min(leftSole, rightSole);
+            groundedLeft = AnimatedFootTarget(_lFoot, _lKnee, leftGround, leftSole, lowestSole);
+            groundedRight = AnimatedFootTarget(_rFoot, _rKnee, rightGround, rightSole, lowestSole);
+        }
+        floatQ leftToeRotation = _lToe?.GlobalRotation ?? floatQ.Identity;
+        floatQ rightToeRotation = _rToe?.GlobalRotation ?? floatQ.Identity;
+
+        // Restore live head/hand targets over the authored pose. Untracked legs retain their
+        // animation, with only the floor contact goals above correcting their placement.
+        if (AnimatedHeadTracked && _spine.Count > 0)
+        {
+            var headBone = _spine[^1];
+            if (PelvisWeight(pelvis) < .999f) WriteGlobalPosition(_spine[0], _spine[0].GlobalPosition + head.Position - headBone.GlobalPosition);
+            else
+            {
+                CaptureRest();
+                SolveSpine(head, pelvis, leftFoot, rightFoot);
+            }
+            WriteHeadFacing(headBone, head.Rotation);
+        }
+        CaptureRest();
+        if (leftHand.Valid && leftHand.PositionWeight > 0)
+            SolveArm(BodyNode.LeftUpperArm, _lShoulder, _lUpper, _lLower, _lHand, _lUpperArmLen, _lLowerArmLen, _lShoulderLen, leftHand, leftSide);
+        if (rightHand.Valid && rightHand.PositionWeight > 0)
+            SolveArm(BodyNode.RightUpperArm, _rShoulder, _rUpper, _rLower, _rHand, _rUpperArmLen, _rLowerArmLen, _rShoulderLen, rightHand, rightSide);
+        if (AnimatedLeftFootTracked) SolveLeg(_lHip, _lKnee, _lFoot, _lToe, _lToeRel, _lUpperLegLen, _lLowerLegLen, _bindLFootRot, leftFoot);
+        else if (groundedLeft.Valid)
+        {
+            SolveLeg(_lHip, _lKnee, _lFoot, _lToe, _lToeRel, _lUpperLegLen, _lLowerLegLen, _bindLFootRot, groundedLeft);
+            if (_lToe != null) WriteGlobalRotation(_lToe, leftToeRotation);
+        }
+        if (AnimatedRightFootTracked) SolveLeg(_rHip, _rKnee, _rFoot, _rToe, _rToeRel, _rUpperLegLen, _rLowerLegLen, _bindRFootRot, rightFoot);
+        else if (groundedRight.Valid)
+        {
+            SolveLeg(_rHip, _rKnee, _rFoot, _rToe, _rToeRel, _rUpperLegLen, _rLowerLegLen, _bindRFootRot, groundedRight);
+            if (_rToe != null) WriteGlobalRotation(_rToe, rightToeRotation);
+        }
+    }
+
+    private static float AnimatedSoleY(Slot? foot, Slot? toe, float clearance)
+    {
+        if (foot == null) return float.PositiveInfinity;
+        float sole = foot.GlobalPosition.y - clearance;
+        return toe == null ? sole : MathF.Min(sole, toe.GlobalPosition.y);
+    }
+
+    private static Target AnimatedFootTarget(Slot? foot, Slot? knee, float? floor, float sole, float lowestSole)
+    {
+        if (foot == null || knee == null || !floor.HasValue || !float.IsFinite(lowestSole))
+            return default;
+        var position = foot.GlobalPosition;
+        // Preserve the lift of a swinging foot; only the lower foot is in contact.
+        float lift = MathF.Max(0f, sole - lowestSole);
+        float offset = floor.Value + lift - sole;
+        position.y += offset;
+        var bend = knee.GlobalPosition + float3.Up * offset;
+        bend.y = MathF.Max(bend.y, floor.Value);
+        return new Target
+        {
+            Valid = true, Position = position, Rotation = foot.GlobalRotation,
+            PositionWeight = 1f, RotationWeight = 1f, HasBendGoal = true, BendGoal = bend,
+        };
     }
 
     // The solve frame from this frame's targets. Up is head over the pelvis when tracked, else head over the
@@ -796,7 +943,11 @@ public sealed class FullBodyIKSolver
         float3 rFootRef = FootReference(in rFoot, _bindRFootPos - _bindHeadPos, headPos);
         float3 feetAvg = (lFootRef + rFootRef) * 0.5f;
 
-        float3 up = pelvis.Valid ? headPos - pelvis.Position : headPos - feetAvg;
+        // A pelvis counts by its position weight, so one easing in or out moves the frame smoothly.
+        float pelvisWeight = PelvisWeight(in pelvis);
+        float3 up = headPos - feetAvg;
+        if (pelvisWeight > 0f)
+            up = float3.Lerp(up, headPos - pelvis.Position, pelvisWeight);
         if (up.LengthSquared < 1e-8f)
             up = float3.Up;
         up = up.Normalized;
@@ -804,13 +955,19 @@ public sealed class FullBodyIKSolver
         float3 headFwd = ForwardOf(head.Rotation * float3.Backward, head.Rotation * float3.Up, up);
         float3 lFwd = FootFacing(in lFoot, _bindLFootRot, up, headFwd);
         float3 rFwd = FootFacing(in rFoot, _bindRFootRot, up, headFwd);
-        if (float3.Dot(lFwd, headFwd) < 0f) lFwd = -lFwd;
-        if (float3.Dot(rFwd, headFwd) < 0f) rFwd = -rFwd;
+        // Only a bone rotation can face backwards by convention. A foot-frame rotation faces where it faces: on a
+        // quick turn on the spot the head runs more than a quarter turn ahead of a foot still planted the old way,
+        // and flipping that foot round turned the whole body a quarter turn in one frame and back the next. -xlinka
+        if (!lFoot.FootFrameRotation && float3.Dot(lFwd, headFwd) < 0f) lFwd = -lFwd;
+        if (!rFoot.FootFrameRotation && float3.Dot(rFwd, headFwd) < 0f) rFwd = -rFwd;
 
         float3 sum = float3.Zero;
-        if (pelvis.Valid)
-            sum += ForwardOf(pelvis.Rotation * float3.Backward, pelvis.Rotation * float3.Up, up);
-        sum += SlerpDirection(lFwd, rFwd, 0.5f);
+        if (pelvisWeight > 0f)
+            sum += PelvisFacing(in pelvis, up) * pelvisWeight;
+        // Two feet facing nearly opposite ways have no halfway that holds still from one frame to the next, which a
+        // fast turn on the spot reaches with one foot stepped round and the other not; the head settles it there.
+        float disagree = System.Math.Clamp((-float3.Dot(lFwd, rFwd) - 0.5f) / 0.4f, 0f, 1f);
+        sum += float3.Lerp(SlerpDirection(lFwd, rFwd, 0.5f), headFwd, disagree);
 
         float3 forward = RejectUnit(sum, up);
         if (forward.LengthSquared < 1e-8f)
@@ -827,7 +984,9 @@ public sealed class FullBodyIKSolver
         floatQ solveOrientation = BuildRotation(forward, up);
         floatQ skeletonOrientation = BuildRotation(_skeletonForward, _skeletonUp);
         SolveRotationOffset = (skeletonOrientation * solveOrientation.Inverse).Normalized;
-        SolveEffectorCenter = pelvis.Valid ? pelvis.Position : (headPos + feetAvg) * 0.5f;
+        SolveEffectorCenter = pelvisWeight > 0f
+            ? float3.Lerp((headPos + feetAvg) * 0.5f, pelvis.Position, pelvisWeight)
+            : (headPos + feetAvg) * 0.5f;
         SolveSkeletonCenter = _bindHipsPos;
 
         float3 flat = forward;
@@ -836,6 +995,28 @@ public sealed class FullBodyIKSolver
         float3 right = float3.Cross(_curBodyForward, float3.Up);
         _curBodyRight = right.LengthSquared > 1e-8f ? right.Normalized : float3.Right;
     }
+
+    private static float PelvisWeight(in Target pelvis)
+        => pelvis.Valid ? System.Math.Clamp(pelvis.PositionWeight, 0f, 1f) : 0f;
+
+    // Which way a pelvis target faces. A body-frame rotation faces along its own forward; a bone rotation faces
+    // along whatever bone-local direction was the skeleton forward at bind, as a bone-rotation foot does.
+    private float3 PelvisFacing(in Target pelvis, float3 up)
+    {
+        if (pelvis.BodyFrameRotation)
+            return ForwardOf(pelvis.Rotation * float3.Backward, pelvis.Rotation * float3.Up, up);
+        floatQ boneToBind = _bindHipsRot.Inverse;
+        return ForwardOf(pelvis.Rotation * (boneToBind * _skeletonForward), pelvis.Rotation * (boneToBind * _skeletonUp), up);
+    }
+
+    // The hips bone rotation a pelvis target asks for.
+    private floatQ PelvisBoneRotation(in Target pelvis)
+        => pelvis.BodyFrameRotation ? (pelvis.Rotation * _skeletonFrameFlatInv * _bindHipsRot).Normalized : pelvis.Rotation;
+
+    // A foot bone rotation as the foot-frame rotation that would give it, so a tracked foot and a foot from
+    // anywhere else can be blended as one kind of thing. Read off the last solve's bind measurement.
+    public floatQ FootFrameFromBone(bool left, floatQ boneRotation)
+        => (boneRotation * (left ? _bindLFootRot : _bindRFootRot).Inverse * _skeletonFrameFlatInv.Inverse).Normalized;
 
     // Where a foot counts for the solve frame: its target when something drives it, else the bind foot's offset
     // from the bind head hung under the live head, so an undriven pair still gives an upright frame.
@@ -1018,23 +1199,37 @@ public sealed class FullBodyIKSolver
         // Crouch floor for the BODY, derived so the SPINE NEVER COMPRESSES past its slack: crouch depth belongs to
         // the KNEES (the hips follow the head down toward the heels), and the head bottoms out a near-full spine
         // above the lowest the hips may go. -xlinka
-        if (!pelvisTarget.Valid && GroundY.HasValue && _restHeadHeight > 1e-4f && _restStandHeight > 1e-4f)
+        float pelvisWeight = PelvisWeight(in pelvisTarget);
+        if (pelvisWeight < 1f && GroundY.HasValue && _restHeadHeight > 1e-4f && _restStandHeight > 1e-4f)
         {
             float spineVertical = MathF.Max(_restHeadHeight - _restStandHeight, _restHeadHeight * 0.25f);
-            float minHeadY = GroundY.Value + _restStandHeight * CrouchHipsMinFraction + spineVertical * CrouchSpineSlack;
+            float minHeadY = GroundY.Value + _restStandHeight * CrouchHipsMinFraction
+                + spineVertical * CrouchSpineSlack * MathF.Cos(CrouchMaxLean);
             headPos.y = MathF.Max(headPos.y, minHeadY);
         }
 
         float3 hipsPos;
         float3 hipsForward = SolveForward;
-        if (pelvisTarget.Valid)
+        if (pelvisWeight >= 1f)
         {
             hipsPos = pelvisTarget.Position;
         }
         else
         {
             HipsFromFeet(in leftFoot, in rightFoot, out hipsPos, out floatQ hipTilt);
-            hipsForward = hipTilt * SolveForward;
+            hipsForward = floatQ.AxisAngleRad(SolveUp, PelvisYaw)
+                * (floatQ.Slerp(floatQ.Identity, hipTilt, HipLineFollow) * SolveForward);
+
+            // On the move the hips ride under the head where they stand, not wherever the feet average out: a
+            // running foot kicks up well behind the body after it leaves the ground, and a body that followed the
+            // feet sat its hips back, planted every landing far out in front and sank to reach it. -xlinka
+            float hold = System.Math.Clamp(LocomotionWeight, 0f, 1f) * HipsHoldUnderHead;
+            if (hold > 1e-4f)
+            {
+                float3 stand = headPos + SolveRotationOffset.Inverse * (_bindHipsPos - _bindHeadPos) - hipsPos;
+                stand.y = 0f;
+                hipsPos += stand * hold;
+            }
 
             // The head wins the spine: hips further than the chain reaches are pulled toward the head, and a head
             // close enough to fold the spine past its slack pushes the hips down instead, so the crouch goes to
@@ -1043,9 +1238,16 @@ public sealed class FullBodyIKSolver
             float dist = toHead.Length;
             if (dist > _spineTotalLength && dist > 1e-6f)
                 hipsPos = headPos - toHead * (_spineTotalLength / dist);
-            else if (dist < _spineTotalLength * CrouchSpineSlack)
-                hipsPos = PushAlong(hipsPos, headPos, -SolveUp, _spineTotalLength * CrouchSpineSlack);
+            else if (dist < _spineTotalLength)
+            {
+                // Down and back together, more back the deeper the crouch, so the chest leans out over the knees
+                // as the body goes down and straightens as it comes up, never all at once at the floor.
+                float lean = CrouchMaxLean * 0.75f * _crouchLerp;
+                float3 sink = -SolveUp * MathF.Cos(lean) - _curBodyForward * MathF.Sin(lean);
+                hipsPos = PushAlong(hipsPos, headPos, sink, _spineTotalLength);
+            }
 
+            float crouchedY = hipsPos.y;
             hipsPos += LocomotionOffset;
 
             // Stand the body at its NATURAL standing height above the floor when the feet aren't tracked, so
@@ -1058,20 +1260,51 @@ public sealed class FullBodyIKSolver
                 float stand = _restStandHeight > 1e-4f ? _restStandHeight : legLen * 0.9f;
                 if (stand > 1e-4f)
                 {
-                    float maxHipsY = GroundY.Value + stand;
+                    float maxHipsY = GroundY.Value + stand + SoleDrop;
                     float minHipsY = GroundY.Value + stand * CrouchHipsMinFraction;
                     hipsPos.y = System.Math.Clamp(hipsPos.y, minHipsY, maxHipsY);
 
                     // Crouch back-shift: as the head dips below standing, lean the hips back along the body forward
-                    // so the weight sits over the feet instead of the knees shooting forward through the floor.
+                    // so the weight sits over the feet instead of the knees shooting forward through the floor. The
+                    // crouch alone counts: a stride lowering the hips is not a reason to sit them back.
                     if (MoveBodyBackWhenCrouching > 0f)
                     {
-                        float drop = maxHipsY - hipsPos.y;
+                        float standY = maxHipsY - SoleDrop;
+                        float drop = standY - System.Math.Clamp(crouchedY, minHipsY, standY);
                         if (drop > 1e-4f)
                             hipsPos -= _curBodyForward * (drop * MoveBodyBackWhenCrouching);
                     }
+                    LeanForCrouch(ref hipsPos, headPos);
                 }
             }
+
+            // The stride's rise and fall: the hips come down as far as the planted feet need, and the head bone
+            // rides that and the sideways shift, the view never does. -xlinka
+            float reachDrop = EaseReachDrop(LegReachDrop(hipsPos, in leftFoot, in rightFoot));
+            hipsPos.y -= reachDrop;
+            float follow = MathF.Max(HeadFollowBody, 0f) * (1f - pelvisWeight);
+            if (follow > 1e-4f)
+            {
+                float3 ride = new float3(LocomotionOffset.x, 0f, LocomotionOffset.z) * follow;
+                float sideways = ride.Length;
+                float cap = MathF.Max(HeadBobHorizontal, 0f);
+                if (sideways > cap)
+                    ride *= cap / sideways;
+                float vertical = MathF.Max(HeadBobVertical, 0f);
+                ride.y = System.Math.Clamp((LocomotionOffset.y - reachDrop) * follow, -vertical, vertical);
+                headPos += ride;
+            }
+            // Whatever of the stride's drop the head did not ride, the spine cannot stretch to cover: the head bone
+            // comes down with the body that far and no further. A head out of the spine's reach for any other
+            // reason stays on the view.
+            float3 spineSpan = headPos - hipsPos;
+            float spanLength = spineSpan.Length;
+            float pull = MathF.Min(spanLength - _spineTotalLength, reachDrop + MathF.Max(-LocomotionOffset.y, 0f));
+            if (pull > 0f && spanLength > 1e-6f)
+                headPos = hipsPos + spineSpan * ((spanLength - pull) / spanLength);
+
+            if (pelvisWeight > 0f)
+                hipsPos = float3.Lerp(hipsPos, pelvisTarget.Position, pelvisWeight);
         }
 
         WriteGlobalPosition(_spine[0], hipsPos);
@@ -1108,53 +1341,136 @@ public sealed class FullBodyIKSolver
         FabrikSolver.ReconcilePinnedEnds(_spineJoints, _spineLengths, hipsPos, headPos);
 
         // Write spine bone positions + swing rotations (hips..neck; the head is handled separately below). The
-        // hips twist onto the hip line the feet turned; the rest keep the solve forward.
+        // hips twist onto the hip line the feet turned; the rest keep the solve forward. A pelvis target turns the
+        // hips by its rotation weight BEFORE the bones above are aimed, and those then aim from where the hips put
+        // them at the solved joints, so the head ends close to its target; turning the hips last swung the whole
+        // upper body off it. -xlinka
+        float pelvisTurn = pelvisWeight > 0f ? System.Math.Clamp(pelvisTarget.RotationWeight, 0f, 1f) : 0f;
         for (int i = 0; i < n - 1; i++)
         {
             var bone = _spine[i];
             MaybeWritePosition(bone, _spineJoints[i]);
-            ApplySpineSwing(bone, _spineJoints[i + 1] - _spineJoints[i], i == 0 ? hipsForward : SolveForward);
+            float3 start = i > 0 && pelvisTurn > 0f ? bone.GlobalPosition : _spineJoints[i];
+            ApplySpineSwing(bone, _spineJoints[i + 1] - start, i == 0 ? hipsForward : SolveForward);
+            if (i == 0 && pelvisTurn > 0f)
+                WriteGlobalRotation(bone, floatQ.Slerp(bone.GlobalRotation, PelvisBoneRotation(in pelvisTarget), pelvisTurn).Normalized);
+            if (i == 0 && pelvisTurn < 1f && MathF.Abs(PelvisRoll) > 1e-5f)
+                WriteGlobalRotation(bone, (floatQ.AxisAngleRad(_curBodyForward, PelvisRoll * (1f - pelvisTurn)) * bone.GlobalRotation).Normalized);
         }
+
+        // The shoulders turn against the pelvis, on the bone that carries them.
+        if (pelvisTurn < 1f && MathF.Abs(ChestYaw) > 1e-5f && ChestBone() is { } chestBone)
+            WriteGlobalRotation(chestBone, (floatQ.AxisAngleRad(SolveUp, ChestYaw * (1f - pelvisTurn)) * chestBone.GlobalRotation).Normalized);
 
         // Apply view yaw, pitch, and roll over the head bone's authored offset from the body facing.
         var head = _spine[n - 1];
         MaybeWritePosition(head, _spineJoints[n - 1]);
 
-        // HEAD BOB, on the bone and never on the view.
-        //
-        // A walking body's head rises and falls twice a stride and rolls a little toward the planted
-        // foot. Ours did neither: the skull stayed perfectly level and the whole walk read as a glide,
-        // which is one of the two or three things that give a procedural body away instantly.
-        //
-        // It is applied to the head BONE only. Moving the view with it would be motion sickness in a
-        // headset and a tax on everyone else's stomach on desktop, and the one person who cannot see
-        // their own head is the person wearing it. So: everybody else sees the bob, the wearer's
-        // camera stays where their neck actually is. -xlinka
+        // A walking head keeps the eyes level and looking where the view looks; the stride reaches it as the rise
+        // and fall it rides through the spine, plus whatever lean toward the planted foot the component asks for.
         floatQ headRotation = headTarget.Rotation;
-        if (HeadBobWeight > 1e-3f)
+        if (MathF.Abs(HeadBobRoll) > 1e-5f)
         {
-            float bob = HeadBobWeight;
-            // Twice a stride vertically, once a stride sideways: a body drops on each footfall but
-            // leans toward one foot then the other.
-            float vertical = MathF.Sin(ArmSwingPhase * 2f) * HeadBobVertical * bob;
-            float lateral = MathF.Sin(ArmSwingPhase) * HeadBobHorizontal * bob;
-            float roll = MathF.Sin(ArmSwingPhase) * HeadBobRoll * bob;
-
-            MaybeWritePosition(head, _spineJoints[n - 1] + float3.Up * vertical + _curBodyRight * lateral);
-
-            if (MathF.Abs(roll) > 1e-5f)
-            {
-                float3 axis = headRotation * float3.Backward;
-                if (axis.LengthSquared > 1e-8f)
-                    headRotation = floatQ.AxisAngleRad(axis.Normalized, roll) * headRotation;
-            }
+            float3 axis = headRotation * float3.Backward;
+            if (axis.LengthSquared > 1e-8f)
+                headRotation = floatQ.AxisAngleRad(axis.Normalized, HeadBobRoll) * headRotation;
         }
 
         WriteHeadFacing(head, headRotation);
+    }
 
-        // With a real pelvis tracker, the hips bone takes its rotation too.
-        if (pelvisTarget.Valid)
-            WriteGlobalRotation(_spine[0], pelvisTarget.Rotation);
+    // A crouch that would still fold the spine with the hips at their lowest leans the chest out over the knees:
+    // the hips sit back along the body until the spine is its length from the head again, no further than
+    // CrouchMaxLean. Only past that does the spine give: a straight chain pushed even a hair shorter buckles, and
+    // the first percent of a buckle turns the chest ten degrees in a frame. -xlinka
+    //
+    // Only a crouch leans, coming in with it. Standing, a spine a millimetre short of its length just bends; leaning
+    // for that set the hips a hand's width back whenever a stop nudged them in, and let them spring forward the
+    // frame it no longer was. -xlinka
+    private void LeanForCrouch(ref float3 hipsPos, float3 headPos)
+    {
+        float length = _spineTotalLength;
+        float3 toHead = headPos - hipsPos;
+        float weight = SmoothStep(CrouchLeanStart, CrouchLeanFull, _crouchLerp);
+        if (weight <= 1e-4f || length < 1e-4f || toHead.LengthSquared >= length * length)
+            return;
+        float vertical = MathF.Max(toHead.y, length * MathF.Cos(CrouchMaxLean));
+        float needed = MathF.Sqrt(MathF.Max(length * length - vertical * vertical, 0f));
+        float ahead = float3.Dot(new float3(toHead.x, 0f, toHead.z), _curBodyForward);
+        if (ahead < needed)
+            hipsPos -= _curBodyForward * ((needed - ahead) * weight);
+    }
+
+    private const float CrouchLeanStart = 0.08f;   // crouch amount the chest starts leaning out at
+    private const float CrouchLeanFull = 0.35f;    // and leans fully by
+
+    // How far the hips have to come down for every planted foot to stay inside its leg's reach with the knee still
+    // a touch bent. This is the stride's bob: lowest with both feet down and apart, highest as the body passes over
+    // the planted foot. A swinging foot pulls on the hips less the higher it is lifted. Only the part the stride's
+    // spread asks for counts: a body the head holds taller than its legs (a wearer taller than the avatar) keeps
+    // its height and stretches its legs, and a crouched one with room to spare does not move. -xlinka
+    private float LegReachDrop(float3 hipsPos, in Target leftFoot, in Target rightFoot)
+    {
+        if (_spine.Count == 0)
+            return 0f;
+        float3 hipsNow = _spine[0].GlobalPosition;
+        float dip = StrideDip * System.Math.Clamp(LocomotionWeight, 0f, 1f) * (1f - _crouchLerp);
+        float drop = MathF.Max(LegDrop(_lHip, _lFoot, _lUpperLegLen + _lLowerLegLen, hipsPos, hipsNow, in leftFoot, dip),
+            LegDrop(_rHip, _rFoot, _rUpperLegLen + _rLowerLegLen, hipsPos, hipsNow, in rightFoot, dip));
+        return MathF.Min(drop, _restStandHeight * MaxReachDrop);
+    }
+
+    // A walking body comes down as a leg would swing about its planted foot, whether or not that leg is anywhere near
+    // its reach: this share of the drop the reach circle gives over the foot's spread. Feet that sit on their soles
+    // leave the legs a little bent, and a bob that only came from legs at full stretch went flat. -xlinka
+    private const float StrideDip = 0.45f;
+
+    private static float LegDrop(Slot? hip, Slot? foot, float length, float3 hipsPos, float3 hipsNow, in Target target, float dip)
+    {
+        if (hip == null || foot == null || hip.IsDestroyed || foot.IsDestroyed || !target.Valid || length < 1e-4f)
+            return 0f;
+        // A lifted foot lets go of the hips within the first few frames of its swing.
+        float weight = System.Math.Clamp(target.PositionWeight, 0f, 1f) * MathF.Max(1f - 8f * target.StepLift, 0f);
+        if (weight < 1e-4f)
+            return 0f;
+        // Measured on the bind leg the skeleton still holds here: a leg standing at rest keeps its rest reach.
+        float rest = float3.Distance(hip.GlobalPosition, foot.GlobalPosition);
+        float limit = MathF.Min(rest + (length - rest) * 0.5f, length * 0.995f);
+        float3 joint = hipsPos + (hip.GlobalPosition - hipsNow);
+        float3 d = target.Position - joint;
+        float flat = MathF.Sqrt(d.x * d.x + d.z * d.z);
+        float height = MathF.Sqrt(MathF.Max(limit * limit - flat * flat, limit * limit * 0.04f));
+        float need = MathF.Min(joint.y - (target.Position.y + height), limit - height);
+        need = MathF.Max(need, (limit - height) * dip);
+        return need > 0f ? need * weight : 0f;
+    }
+
+    // A foot's pull comes on as it lands and lets go as it lifts, a frame or two either way at a run, and taken
+    // as it came that stepped the hips ten centimetres and more in one frame. Eased on the frame clock, a planted
+    // leg runs a hair long for those frames instead. -xlinka
+    private float EaseReachDrop(float target)
+    {
+        float dt = DeltaTime;
+        if (dt <= 1e-6f)
+            return _reachDrop;
+        float omega = 2f / ReachDropSmoothTime;
+        float x = omega * dt;
+        float decay = 1f / (1f + x + 0.48f * x * x + 0.235f * x * x * x);
+        float change = _reachDrop - target;
+        float carry = (_reachDropVelocity + omega * change) * dt;
+        _reachDropVelocity = (_reachDropVelocity - omega * carry) * decay;
+        _reachDrop = MathF.Max(target + (change + carry) * decay, 0f);
+        return _reachDrop;
+    }
+
+    // The spine bone the shoulders hang from.
+    private Slot? ChestBone()
+    {
+        var anchor = _lShoulder != null && !_lShoulder.IsDestroyed ? _lShoulder : _lUpper;
+        var parent = anchor?.Parent;
+        if (parent != null && _spine.Count > 1 && parent != _spine[0] && _spine.Contains(parent))
+            return parent;
+        return _spine.Count > 2 ? _spine[_spine.Count - 2] : null;
     }
 
     // Move point along dir (unit) by the smallest non-negative amount that puts it exactly `distance` from anchor.
@@ -1234,16 +1550,113 @@ public sealed class FullBodyIKSolver
 
     private float3 NaturalArmHang(float3 root, float armReach, float side)
     {
-        // Keep the wrist visibly beside and slightly behind the torso. This is intentionally component-based instead
-        // of a normalized direction: the arm should keep most of its vertical drop while still getting enough rear
-        // clearance for bulky paw meshes.
-        // Stay WITHIN the arm's reach so the two-bone solver bends the elbow (the old 0.86 down + 0.36 out + 0.62
-        // BACK summed to ~1.12x reach -> arm fully extended, straight, and yanked behind the torso). Down with a
-        // little outward and a little FORWARD = a relaxed by-the-side idle with a natural elbow bend.
+        // A relaxed arm hangs nearly straight, the elbow bent some twenty degrees, the hand just clear of the thigh
+        // and a little forward. The old hang pulled the hand in to three quarters of the reach, which bent the elbow
+        // past eighty degrees and stood it out from the side: the arms-out pose. -xlinka
         return root
-            + float3.Down * (armReach * 0.72f)
-            + _curBodyRight * (side * armReach * 0.16f)
-            + _curBodyForward * (armReach * 0.10f);
+            + float3.Down * (armReach * 0.955f)
+            + _curBodyRight * (side * armReach * 0.14f)
+            + _curBodyForward * (armReach * 0.12f);
+    }
+
+    // The untracked arm: the hang read as an upper arm and an elbow bend, then swung at the shoulder by the
+    // pendulum the legs drive, the elbow bending more as the arm comes forward, more again when running, and the
+    // whole arm brought forward and bent over the knees in a crouch. Returns the hand and gives the elbow, whose
+    // side of the limb is the bend plane. -xlinka
+    private float3 ProceduralArm(bool isLeft, float3 root, float3 hangEnd, float upperLen, float lowerLen, float side,
+        out float3 elbow)
+    {
+        ref var motion = ref (isLeft ? ref _leftHand : ref _rightHand);
+        float reach = upperLen + lowerLen;
+        float crouch = _armCrouch;
+        float air = System.Math.Clamp(AirBlend, 0f, 1f);
+        float run = System.Math.Clamp(RunBlend, 0f, 1f) * (1f - crouch);
+        float weight = System.Math.Clamp(HandMotionWeight, 0f, 1f);
+
+        float drive = System.Math.Clamp(isLeft ? LeftArmDrive : RightArmDrive, -1f, 1f);
+        float amplitude = MathF.Max(ArmSwingAmplitude, 0f) * System.Math.Clamp(ArmSwingWeight, 0f, 1f)
+            * (1f - (1f - CrouchSwingDamp) * crouch) * (1f - air);
+        float bias = CrouchArmLift * crouch + AirArmLift * air;
+        // A swing goes a little further back than forward.
+        float target = bias + drive * amplitude * (drive > 0f ? 0.75f : 1f);
+
+        float3 restOffset = float3.Zero;
+        if (IdleWeight > 1e-3f && SwayWeight > 1e-3f)
+        {
+            float t = TimeSeconds;
+            float phase = side > 0f ? 0.7f : 0f;
+            restOffset = new float3(
+                MathF.Sin(t * 0.37f + phase) * 0.020f,
+                MathF.Sin(t * 0.53f + phase) * 0.014f,
+                MathF.Sin(t * 0.31f + phase) * 0.018f) * (IdleWeight * SwayWeight);
+        }
+        var accel = new float3(BodyAcceleration.x * side, BodyAcceleration.y, BodyAcceleration.z);
+        motion.Step(target, ArmSwingFrequency, ArmDamping, in accel, reach, in restOffset, DeltaTime);
+
+        float swing = bias + (motion.Swing - bias) * weight;
+        float swung = amplitude > 1e-3f ? System.Math.Clamp((swing - bias) / amplitude, -1f, 1f) : 0f;
+
+        float3 hang = hangEnd - root;
+        float distance = hang.Length;
+        if (distance < 1e-5f || upperLen < 1e-5f || lowerLen < 1e-5f)
+        {
+            elbow = root + float3.Down * upperLen;
+            return root + float3.Down * (reach * 0.97f);
+        }
+        float3 hangDir = hang / distance;
+        distance = System.Math.Clamp(distance, MathF.Abs(upperLen - lowerLen) + reach * 0.02f, reach * 0.995f);
+        float shoulderAngle = MathF.Acos(System.Math.Clamp(
+            (upperLen * upperLen + distance * distance - lowerLen * lowerLen) / (2f * upperLen * distance), -1f, 1f));
+        float restBend = MathF.PI - MathF.Acos(System.Math.Clamp(
+            (upperLen * upperLen + lowerLen * lowerLen - distance * distance) / (2f * upperLen * lowerLen), -1f, 1f));
+
+        float walkBend = restBend + WalkElbowFollow * MathF.Max(swing - bias, 0f);
+        float runBend = MathF.Max(restBend, RunElbowBend + RunElbowPump * swung);
+        float bend = System.Math.Clamp(walkBend + (runBend - walkBend) * run + CrouchElbowBend * crouch + 0.35f * air,
+            0f, 2.4f);
+
+        // Swinging down toward forward is a turn about down x forward.
+        float3 swingAxis = float3.Cross(float3.Down, _curBodyForward);
+        swingAxis = swingAxis.LengthSquared > 1e-8f ? swingAxis.Normalized : _curBodyRight;
+        float3 upperDir = floatQ.AxisAngleRad(swingAxis, swing - shoulderAngle) * hangDir;
+        if (run > 1e-3f)
+        {
+            float3 outAxis = float3.Cross(upperDir, _curBodyRight * side);
+            if (outAxis.LengthSquared > 1e-8f)
+                upperDir = floatQ.AxisAngleRad(outAxis.Normalized, RunElbowOut * run) * upperDir;
+        }
+        float3 bendAxis = float3.Cross(upperDir, _curBodyForward);
+        bendAxis = bendAxis.LengthSquared > 1e-6f ? bendAxis.Normalized : swingAxis;
+        float3 forearmDir = floatQ.AxisAngleRad(bendAxis, bend) * upperDir;
+        if (run > 1e-3f)
+            forearmDir = floatQ.AxisAngleRad(float3.Up, side * RunHandCross * run * MathF.Max(swung, 0f)) * forearmDir;
+
+        elbow = root + upperDir * upperLen;
+        float3 hand = elbow + forearmDir * lowerLen;
+        hand += (_curBodyRight * (motion.Offset.x * side) + float3.Up * motion.Offset.y + _curBodyForward * motion.Offset.z)
+            * (reach * weight);
+
+        // KEEP THE HAND OUT OF THE BODY. A torso is a cylinder to within what anybody can see, and this costs a
+        // dot product. -xlinka
+        float lateral = float3.Dot(hand - _curBodyCentre, _curBodyRight) * side;
+        if (_torsoHalfWidth > 1e-4f && lateral < _torsoHalfWidth)
+            hand += _curBodyRight * ((_torsoHalfWidth - lateral) * side);
+        return hand;
+    }
+
+    // The procedural elbow's side of the limb, eased toward the computed pole as the hand target takes the arm over.
+    private static float3 BlendProceduralPole(float3 root, float3 goal, float3 pole, float3 elbow, float handWeight)
+    {
+        float3 limb = goal - root;
+        if (limb.LengthSquared < 1e-8f)
+            return pole;
+        float3 axis = limb.Normalized;
+        if (!TryPerpendicular(elbow - root, axis, out float3 own))
+            return pole;
+        float distance = MathF.Max((pole - root).Length, 1e-3f);
+        if (!TryPerpendicular(pole - root, axis, out float3 solved))
+            return root + own * distance;
+        return root + SwivelToward(axis, own, solved, System.Math.Clamp(handWeight, 0f, 1f)) * distance;
     }
 
     private floatQ NaturalHandRotation(Slot? lower, Slot? hand, float3 forearmDir, float side)
@@ -1283,7 +1696,9 @@ public sealed class FullBodyIKSolver
         float3 upProj = up - forward * float3.Dot(up, forward);
         if (upProj.LengthSquared < 1e-6f)
             return q1;
-        floatQ q2 = FabrikSolver.FromToRotation(curUp, upProj.Normalized);
+        // A half turn needs an axis, and only the forward keeps the forward where q1 put it. The plain fallback
+        // picked one off world up; a forward a little off +Z then flipped the whole solve frame end for end.
+        floatQ q2 = FabrikSolver.FromToRotation(curUp, upProj.Normalized, forward);
         return q2 * q1;
     }
 
@@ -1309,88 +1724,18 @@ public sealed class FullBodyIKSolver
         // A rig authored in a T or a wide A gets the computed by-the-side hang instead: that pose is what the
         // rigger needed, not an idle, and the wearer's arms are driven, so nothing should ever show it. -xlinka
         LimbRestPose restPose = rootNode == BodyNode.LeftUpperArm ? _lArmRest : _rArmRest;
+        float armReach = upperLen + lowerLen;
         float3 restEnd = _authoredArmsHang && restPose.Valid
             ? root + restPose.RootToEnd
-            : NaturalArmHang(root, upperLen + lowerLen, side);
+            : NaturalArmHang(root, armReach, side);
 
-        // Idle life for untracked arms: the walking counter-swing (opposite phase per side, along the
-        // body forward) plus a slow standing drift, so hanging hands are never statues. Amplitudes scale
-        // with the arm's reach (avatar-size independent) and fade out as the hand approaches tracked.
-        // Deltas on the REST goal only - nothing integrates, tracked hands are untouched. -xlinka
-        float armReach = upperLen + lowerLen;
-        if (pw < 0.999f && armReach > 1e-4f)
-        {
-            float life = 1f - pw;
-
-            // Crouch fold, before the idle motions so they ride the folded pose rather than the hanging one.
-            if (_crouchLerp > 1e-3f)
-            {
-                float c = _crouchLerp * life;
-                restEnd += _curBodyForward * (CrouchArmForward * armReach * c)
-                         + float3.Up * (CrouchArmUp * armReach * c)
-                         - _curBodyRight * (CrouchArmIn * armReach * c * side);
-            }
-
-            // THE ARM AS A WEIGHT ON A SHOULDER rather than a sine along forward. See HandMotion for
-            // why. The simulation runs in arm-reach units so one set of numbers fits every avatar,
-            // and the result is rotated into the body frame here.
-            if (HandMotionWeight > 1e-3f)
-            {
-                bool isLeft = rootNode == BodyNode.LeftUpperArm;
-                ref var motion = ref (isLeft ? ref _leftHand : ref _rightHand);
-
-                // A crouched walk barely swings the arms; they are up and braced, not hanging free.
-                float swingDamp = 1f - (1f - CrouchSwingDamp) * _crouchLerp;
-                float drive = ArmSwingWeight * swingDamp;
-
-                var parameters = HandMotionParameters.Lerp(
-                    HandMotionParameters.Lerp(HandMotionParameters.Walk, HandMotionParameters.Run,
-                        System.Math.Clamp(RunBlend, 0f, 1f)),
-                    HandMotionParameters.Air,
-                    System.Math.Clamp(AirBlend, 0f, 1f));
-
-                // Where the spring pulls. On the ground that is the hang itself, so zero; in the air
-                // the hands drift up and out, which is what a body does when its feet leave the floor.
-                float3 restTarget = float3.Zero;
-                if (AirBlend > 1e-3f)
-                    restTarget += new float3(0.18f * side, 0.22f, -0.05f) * AirBlend;
-
-                // The standing sway, as a force target rather than a separate additive motion, so it
-                // shares the same inertia as everything else and cannot fight it.
-                if (IdleWeight > 1e-3f && SwayWeight > 1e-3f)
-                {
-                    float t = TimeSeconds;
-                    float phase = side > 0f ? 0.7f : 0f;
-                    restTarget += new float3(
-                        MathF.Sin(t * 0.37f + phase) * 0.020f,
-                        MathF.Sin(t * 0.53f + phase) * 0.014f,
-                        MathF.Sin(t * 0.31f + phase) * 0.018f) * (IdleWeight * SwayWeight);
-                }
-
-                // Reach units, so the body's own speed means the same thing on any size of avatar.
-                float3 bodyVelocity = armReach > 1e-4f ? BodyVelocity / armReach : float3.Zero;
-
-                float phaseOffset = side > 0f ? MathF.PI : 0f;
-                motion.Step(in parameters, ArmSwingPhase + phaseOffset, drive,
-                    in bodyVelocity, in restTarget, DeltaTime);
-
-                float3 offset = motion.Offset * (armReach * HandMotionWeight * life);
-                restEnd += _curBodyForward * offset.z
-                         + _curBodyRight * (offset.x * side)
-                         + float3.Up * offset.y;
-
-                // KEEP THE HAND OUT OF THE BODY. A swing that crosses the torso is the single most
-                // obvious artefact in a procedural walk, and it happens on any avatar whose arms hang
-                // closer in than the simulation's own travel. Pushed out along the body's right axis
-                // rather than solved against real colliders: a torso is a cylinder to within the
-                // accuracy anybody can see, and this costs a dot product. -xlinka
-                float3 fromSpine = restEnd - _curBodyCentre;
-                float lateral = float3.Dot(fromSpine, _curBodyRight) * side;
-                float minimum = _torsoHalfWidth;
-                if (minimum > 1e-4f && lateral < minimum)
-                    restEnd += _curBodyRight * ((minimum - lateral) * side);
-            }
-        }
+        // An arm its hand does not fully own is the pendulum the legs drive, built from the hang as angles at the
+        // shoulder and the elbow; its elbow is the bend the tracked arm eases away from. -xlinka
+        bool procedural = pw < 0.999f && armReach > 1e-4f;
+        float3 proceduralElbow = default;
+        if (procedural)
+            restEnd = ProceduralArm(rootNode == BodyNode.LeftUpperArm, root, restEnd, upperLen, lowerLen, side,
+                out proceduralElbow);
 
         float3 goalPos = float3.Lerp(restEnd, target.Position, pw);
 
@@ -1422,6 +1767,8 @@ public sealed class FullBodyIKSolver
         // the shoulder frame for big ones, an elbow tracker over both, then the wrist roll past its dead zone.
         float3 pole = ComputeArmPole(root, goalPos, in restPose, upperLen + lowerLen, side, hand, pw, in target,
             out var poleDebug);
+        if (procedural)
+            pole = BlendProceduralPole(root, goalPos, pole, proceduralElbow, pw);
         if (rootNode == BodyNode.LeftUpperArm)
             LeftArmPole = poleDebug;
         else
@@ -1699,14 +2046,731 @@ public sealed class FullBodyIKSolver
         return t * t * (3f - 2f * t);
     }
 
-    // Analytic leg: the knee sits in the plane of hip->foot and the solve forward, on the forward side, by the
-    // law of cosines. A knee tracker replaces the forward with its own point. The foot bone then takes the target
-    // rotation in full, pitch included, so a heel strike or toe-off the gait produces reaches the mesh. -xlinka
+    // LEGS.
+    //
+    // The knee bends about a HINGE, the leg's own lateral axis: the body's right turned part of the way toward the
+    // foot's right, so a turned foot carries its knee with it. The knee always goes to the flexion side of that
+    // hinge, cross(hinge, hip->foot), which is continuous for every foot position a leg can reach. The old pole
+    // was the solve forward projected off the hip->foot axis; when a crouched step lifted the swing foot to hip
+    // height that axis lay along the forward, the projection collapsed and changed sign, and the knee snapped
+    // backward through the leg and back again on every step. -xlinka
+    public float KneeFootFollow = 0.65f;      // 0..1 of the foot's turn from the body that the knee hinge takes
+    private const float MaxKneeFootTurn = 1.22f; // rad (~70 deg) cap on that turn, so a foot left behind on a spin cannot invert it
+
+    // A swinging foot never rises past this far below its hip (fraction of the leg), eased in over a band. A
+    // crouch puts the hips low enough that a full step arc lifts the foot to hip height, and no stride does that.
+    public float SwingFootCeiling = 0.3f;
+    private const float SwingFootCeilingBand = 0.15f;
+
+    // DIGITIGRADE. See DigitigradeLeg for what counts and DigitigradeSolver for the fold. LegRequest is the
+    // avatar's leg mode; DigitigradeBlend eases between the rigid two-bone leg (0) and the folded digitigrade leg
+    // (1), so switching never pops. A leg that is not digitigrade only gets one when Digitigrade is asked for. -xlinka
+    public LegMode LegRequest = LegMode.Auto;
+    public float DigitigradeBlend;
+    public float DigitigradeHockShare = 0.9f;  // hock fold per radian of knee fold
+    private const float DigiKneeMin = 0.05f, DigiKneeMax = 2.6f;   // rad, knee fold range
+    private const float DigiHockMin = 0.14f, DigiHockMax = 2.85f;  // rad, hock fold range
+    private const float ForcedKneeRest = 0.44f, ForcedHockRest = 0.87f; // stance for a plantigrade leg on its toes
+    private const float DigiStretchStart = 0.95f;
+
+    // Both legs read digitigrade from the rig itself.
+    public bool DigitigradeDetected { get; private set; }
+    // A chain to fold exists on at least one side (detected, or a plantigrade leg asked to stand on its toes).
+    public bool HasDigitigradeChain => _lDigi != null || _rDigi != null;
+    public DigitigradeLeg? LeftDigitigrade => _lDigi;
+    public DigitigradeLeg? RightDigitigrade => _rDigi;
+
+    private DigitigradeLeg? _lDigi, _rDigi;
+    // Skinned legs beside the mapped ones (see SideLeg), posed in both leg modes.
+    private SideLeg? _lSide, _rSide;
+    public SideLeg? LeftSideLeg => _lSide;
+    public SideLeg? RightSideLeg => _rSide;
+    private bool _legsDetected;
+    private bool _legsForced;
+    private float3 _restHinge = float3.Right;
+
+    // Bones inside the legs that no BodyNode names (a hock between knee and foot, a toe beyond the toes) and the
+    // bones of a digitigrade chain beside the mapped legs. Reset with the rest so a stretch or a fold never
+    // carries into the next frame; the side chain only while it is ours, since constraints carry it otherwise.
+    private readonly List<Slot> _legExtraBones = new();
+    private readonly List<Slot> _digiExtraBones = new();
+    // Bind locals for those bones, kept across re-captures: they are not in the stored rest pose, so a capture
+    // after a solve must not take a solved pose for rest. Read from the skeleton's import rest when it has one.
+    private readonly Dictionary<Slot, (float3 Position, floatQ Rotation)> _extraBind = new();
+    private Dictionary<Slot, float4x4>? _skeletonRest;
+
+    private void StoreLegExtras()
+    {
+        _skeletonRest = null;
+        _solesMeasured = false;
+        _soleTries = 0;
+        _soleDropPerScale = 0f;
+        var skeleton = _rig.Slot?.GetComponent<SkeletonBuilder>()
+            ?? _rig.Slot?.GetComponentInChildren<SkeletonBuilder>()
+            ?? _rig.Slot?.GetComponentInParents<SkeletonBuilder>();
+        if (skeleton != null && !skeleton.IsDestroyed)
+        {
+            _skeletonRest = new Dictionary<Slot, float4x4>();
+            int count = System.Math.Min(skeleton.BoneSlots.Count, skeleton.RestPoseTransforms.Count);
+            for (int i = 0; i < count; i++)
+            {
+                var bone = skeleton.BoneSlots[i];
+                if (bone != null && !bone.IsDestroyed)
+                    _skeletonRest[bone] = skeleton.RestPoseTransforms[i];
+            }
+        }
+
+        _legExtraBones.Clear();
+        AddExtrasBetween(_lFoot, _lHip);
+        AddExtrasBetween(_lToe, _lFoot);
+        AddExtrasBetween(_rFoot, _rHip);
+        AddExtrasBetween(_rToe, _rFoot);
+        ResetBones(_legExtraBones);
+    }
+
+    private void AddExtrasBetween(Slot? descendant, Slot? ancestor)
+    {
+        if (descendant == null || ancestor == null || descendant.IsDestroyed || ancestor.IsDestroyed)
+            return;
+        var path = new List<Slot>();
+        var cursor = descendant.Parent;
+        int guard = 0;
+        while (cursor != null && !ReferenceEquals(cursor, ancestor) && guard++ < 64)
+        {
+            path.Add(cursor);
+            cursor = cursor.Parent;
+        }
+        if (!ReferenceEquals(cursor, ancestor))
+            return;
+        foreach (var bone in path)
+        {
+            if (!_bindLocalPos.ContainsKey(bone) && !_legExtraBones.Contains(bone))
+            {
+                RestLocal(bone);
+                _legExtraBones.Add(bone);
+            }
+        }
+    }
+
+    private (float3 Position, floatQ Rotation) RestLocal(Slot bone)
+    {
+        if (_bindLocalPos.TryGetValue(bone, out var p) && _bindLocalRot.TryGetValue(bone, out var r))
+            return (p, r);
+        if (_extraBind.TryGetValue(bone, out var known))
+            return known;
+        (float3, floatQ) rest = (bone.LocalPosition.Value, bone.LocalRotation.Value);
+        if (_skeletonRest != null && _skeletonRest.TryGetValue(bone, out var matrix))
+        {
+            matrix.Decompose(out var position, out var rotation, out _);
+            rest = (position, rotation.Normalized);
+        }
+        _extraBind[bone] = rest;
+        return rest;
+    }
+
+    private void ResetBones(List<Slot> bones)
+    {
+        foreach (var bone in bones)
+        {
+            if (bone == null || bone.IsDestroyed || !_extraBind.TryGetValue(bone, out var rest))
+                continue;
+            bone.LocalPosition.SetValueSilently(rest.Position, change: true);
+            bone.LocalRotation.SetValueSilently(rest.Rotation, change: true);
+        }
+    }
+
+    private void ResetLegExtras(bool digitigrade)
+    {
+        ResetBones(_legExtraBones);
+        if (digitigrade)
+            ResetBones(_digiExtraBones);
+    }
+
+    // World position of a bone with every bone below the nearest bone the solver resets put at its rest local, so
+    // a chain constraints or an earlier solve have posed still measures as authored.
+    // Shared by RestPosition and RestRotation, neither of which calls the other.
+    private readonly List<Slot> _restPath = new();
+
+    private float3 RestPosition(Slot bone)
+    {
+        var path = _restPath;
+        path.Clear();
+        var cursor = bone;
+        int guard = 0;
+        while (cursor != null && !_bindLocalPos.ContainsKey(cursor) && !ReferenceEquals(cursor, _rig.Slot) && guard++ < 64)
+        {
+            path.Add(cursor);
+            cursor = cursor.Parent;
+        }
+        if (cursor == null)
+            return bone.GlobalPosition;
+        float3 position = cursor.GlobalPosition;
+        floatQ rotation = cursor.GlobalRotation;
+        float3 scale = cursor.GlobalScale;
+        for (int i = path.Count - 1; i >= 0; i--)
+        {
+            var link = path[i];
+            var local = RestLocal(link);
+            position += rotation * (scale * local.Position);
+            rotation = (rotation * local.Rotation).Normalized;
+            scale *= link.LocalScale.Value;
+        }
+        return position;
+    }
+
+    private floatQ RestRotation(Slot bone)
+    {
+        var path = _restPath;
+        path.Clear();
+        var cursor = bone;
+        int guard = 0;
+        while (cursor != null && !_bindLocalPos.ContainsKey(cursor) && !ReferenceEquals(cursor, _rig.Slot) && guard++ < 64)
+        {
+            path.Add(cursor);
+            cursor = cursor.Parent;
+        }
+        if (cursor == null)
+            return bone.GlobalRotation;
+        floatQ rotation = cursor.GlobalRotation;
+        for (int i = path.Count - 1; i >= 0; i--)
+            rotation = (rotation * RestLocal(path[i]).Rotation).Normalized;
+        return rotation;
+    }
+
+    private bool IsSkinBone(Slot slot) => _skeletonRest == null || _skeletonRest.ContainsKey(slot);
+
+    private static bool IsHeld(Slot slot) => slot.LocalRotation.IsDriven;
+
+    private SideLeg? DetectSide(Chirality side)
+    {
+        if (_skeletonRest == null)
+            return null;
+        var found = SideLeg.Detect(_rig, side, _skeletonRest.Keys, RestPosition, RestRotation, IsSkinBone, IsHeld, _skeletonUp, _skeletonForward);
+        if (found == null || _rig.Slot == null)
+            return found;
+        // A chain physics swings (a long coat or skirt that ends by the ankle) is not a leg. Toes may jiggle.
+        foreach (var chain in _rig.Slot.GetComponentsInChildren<DynamicBoneChain>())
+        {
+            foreach (var bone in found.OwnBones)
+            {
+                if (!ReferenceEquals(bone, found.Toe) && Swings(chain, bone))
+                    return null;
+            }
+        }
+        return found;
+    }
+
+    // The chain's root only anchors it; everything after it is moved by the simulation.
+    private bool Swings(DynamicBoneChain chain, Slot bone)
+    {
+        if (chain.Bones.Count > 0)
+            return chain.Bones.Contains(bone) && !ReferenceEquals(bone, chain.Root.Target ?? chain.Bones[0]);
+        if (chain.Root.Target is not { IsDestroyed: false } root || ReferenceEquals(bone, root))
+            return false;
+        for (var cursor = bone.Parent; cursor != null && !ReferenceEquals(cursor, _rig.Slot); cursor = cursor.Parent)
+        {
+            if (ReferenceEquals(cursor, root))
+                return true;
+        }
+        return false;
+    }
+
+    private void DetectLegs()
+    {
+        bool force = LegRequest == LegMode.Digitigrade;
+        var left = DigitigradeLeg.Detect(_rig, Chirality.Left, RestPosition, IsSkinBone, _skeletonForward, _skeletonUp, false);
+        var right = DigitigradeLeg.Detect(_rig, Chirality.Right, RestPosition, IsSkinBone, _skeletonForward, _skeletonUp, false);
+        DigitigradeDetected = left != null && right != null;
+        var oldLeft = _lSide;
+        var oldRight = _rSide;
+        _lSide = left == null ? DetectSide(Chirality.Left) : null;
+        _rSide = right == null ? DetectSide(Chirality.Right) : null;
+        // Soles are measured once per avatar; a leg found again on a mode switch keeps what was read off it.
+        if (oldLeft != null && _lSide != null && ReferenceEquals(oldLeft.Foot, _lSide.Foot))
+            _lSide.HeelPerScale = oldLeft.HeelPerScale;
+        if (oldRight != null && _rSide != null && ReferenceEquals(oldRight.Foot, _rSide.Foot))
+            _rSide.HeelPerScale = oldRight.HeelPerScale;
+        if (force)
+        {
+            left ??= _lSide != null
+                ? DigitigradeLeg.Forced(_lSide.Thigh, _lSide.Knee, _lSide.Foot, _lSide.Toe)
+                : DigitigradeLeg.Detect(_rig, Chirality.Left, RestPosition, IsSkinBone, _skeletonForward, _skeletonUp, true);
+            right ??= _rSide != null
+                ? DigitigradeLeg.Forced(_rSide.Thigh, _rSide.Knee, _rSide.Foot, _rSide.Toe)
+                : DigitigradeLeg.Detect(_rig, Chirality.Right, RestPosition, IsSkinBone, _skeletonForward, _skeletonUp, true);
+        }
+        _lDigi = left;
+        _rDigi = right;
+        _legsForced = force;
+        _legsDetected = true;
+
+        _digiExtraBones.Clear();
+        AddSideExtras(_lSide);
+        AddSideExtras(_rSide);
+        AddDigiExtras(_lDigi);
+        AddDigiExtras(_rDigi);
+    }
+
+    private void AddSideExtras(SideLeg? leg)
+    {
+        if (leg == null)
+            return;
+        foreach (var bone in leg.OwnBones)
+        {
+            if (bone == null || bone.IsDestroyed || _bindLocalPos.ContainsKey(bone) || _legExtraBones.Contains(bone))
+                continue;
+            RestLocal(bone);
+            _legExtraBones.Add(bone);
+        }
+    }
+
+    // A side chain is posed by the solver whichever way the legs stand, rigid behind the mapped legs or folded,
+    // so it resets with the leg extras every frame. Left to the rig's own constraints it trailed the mapped legs
+    // by a frame, and every turn of the pelvis showed as a jerk in the visible leg. -xlinka
+    private void AddDigiExtras(DigitigradeLeg? leg)
+    {
+        if (leg == null)
+            return;
+        var into = leg.Kind == DigitigradeLeg.ChainKind.Parallel ? _legExtraBones : _digiExtraBones;
+        foreach (var bone in leg.OwnBones)
+        {
+            if (bone == null || bone.IsDestroyed || _bindLocalPos.ContainsKey(bone)
+                || _legExtraBones.Contains(bone) || _digiExtraBones.Contains(bone))
+                continue;
+            RestLocal(bone);
+            into.Add(bone);
+        }
+    }
+
+    public string DescribeLegs()
+        => $"detected={DigitigradeDetected} left=[{_lDigi?.Describe() ?? "plantigrade"}{(_lSide != null ? "; " + _lSide.Describe() : "")}]"
+           + $" right=[{_rDigi?.Describe() ?? "plantigrade"}{(_rSide != null ? "; " + _rSide.Describe() : "")}]";
+
+    // Bind measurements of the digitigrade chains, at the live scale. The fold angles are read in the bind leg
+    // plane: down the skeleton, forward along its facing.
+    private void MeasureLegs()
+    {
+        if (!_legsDetected || (LegRequest == LegMode.Digitigrade) != _legsForced)
+            DetectLegs();
+        MeasureLeg(_lDigi);
+        MeasureLeg(_rDigi);
+        MeasureSide(_lSide);
+        MeasureSide(_rSide);
+        MeasureSoles();
+    }
+
+    // How far the soles reach below the lowest foot joint at rest, read off the skinned feet: the mapped feet, a
+    // skinned leg beside them, a digitigrade chain's hock and all below. The sole plane was the joints alone, and
+    // planting those on the floor sank every paw and shoe by its own thickness. Taken once the meshes have loaded,
+    // against the rig's scale so it follows a resize. -xlinka
+    public float SoleDrop => _soleDropPerScale * RigScale();
+    private float _soleDropPerScale;
+    private bool _solesMeasured;
+    private int _soleTries;
+    private const int SoleWaitFrames = 900;
+
+    private float RigScale()
+    {
+        var s = _rig?.Slot?.GlobalScale ?? float3.One;
+        return (MathF.Abs(s.x) + MathF.Abs(s.y) + MathF.Abs(s.z)) / 3f;
+    }
+
+    private void MeasureSoles()
+    {
+        if (_solesMeasured || _rig?.Slot == null || _rig.Slot.IsDestroyed)
+            return;
+        var renderers = new List<SkinnedMeshRenderer>(_rig.Slot.GetComponentsInChildren<SkinnedMeshRenderer>());
+        bool loading = false;
+        foreach (var r in renderers)
+        {
+            if (r.MeshAsset.Target != null && !r.MeshAsset.IsAssetAvailable)
+                loading = true;
+        }
+        if (loading && ++_soleTries < SoleWaitFrames)
+            return;
+        _solesMeasured = true;
+
+        // Which side each foot root belongs to, and the mapped ankle its sole is measured from.
+        var feet = new Dictionary<Slot, int>();
+        void Root(Slot? foot, int side)
+        {
+            if (foot != null && !foot.IsDestroyed)
+                feet[foot] = side;
+        }
+        Root(_lFoot, 0);
+        Root(_lSide?.Foot, 0);
+        Root(_lDigi?.Hock, 0);
+        Root(_rFoot, 1);
+        Root(_rSide?.Foot, 1);
+        Root(_rDigi?.Hock, 1);
+        // Heights as the sole plane takes them, straight up, not along the body's own lean.
+        static float up(float3 p) => p.y;
+        float joints = float.MaxValue;
+        foreach (var joint in new[] { _lFoot, _rFoot, _lToe, _rToe })
+        {
+            if (joint != null && !joint.IsDestroyed)
+                joints = MathF.Min(joints, up(joint.GlobalPosition));
+        }
+        if (feet.Count == 0 || joints == float.MaxValue || _lFoot == null || _rFoot == null)
+            return;
+        float3 forward = new float3(_skeletonForward.x, 0f, _skeletonForward.z);
+        forward = forward.LengthSquared > 1e-8f ? forward.Normalized : float3.Backward;
+        float3 lAnkle = _lFoot.GlobalPosition, rAnkle = _rFoot.GlobalPosition;
+
+        var sideOf = new Dictionary<Slot, int>();
+        int SideOf(Slot bone)
+        {
+            if (sideOf.TryGetValue(bone, out int known))
+                return known;
+            int found = -1;
+            for (var cursor = bone; cursor != null && !ReferenceEquals(cursor, _rig.Slot); cursor = cursor.Parent)
+            {
+                if (feet.TryGetValue(cursor, out int side))
+                {
+                    found = side;
+                    break;
+                }
+            }
+            sideOf[bone] = found;
+            return found;
+        }
+
+        var points = new List<(float Height, float Ahead)>();
+        float lowL = float.MaxValue, lowR = float.MaxValue;
+        foreach (var r in renderers)
+        {
+            if (!r.Enabled.Value || !r.Slot.IsActive || !r.MeshAsset.IsAssetAvailable || r.MeshAsset.Asset?.MeshData is not { } mesh)
+                continue;
+            var positions = mesh.RawPositions;
+            var bindings = mesh.RawBoneBindings;
+            if (!mesh.HasBoneBindings || bindings == null || bindings.Length < mesh.VertexCount)
+                continue;
+            var byName = new Dictionary<string, Slot>();
+            if (r.Skeleton.Target is { } skeleton)
+            {
+                foreach (var slot in skeleton.BoneSlots)
+                {
+                    if (slot is { IsDestroyed: false } && slot.SlotName.Value is { } name)
+                        byName.TryAdd(name, slot);
+                }
+            }
+            // Each bone at rest under the mapped skeleton, times its bind pose, skins a vertex at rest. A mesh
+            // whose bind poses do not match its rest is drawn bent even standing still, so every weight counts.
+            var bones = new Slot?[mesh.BoneCount];
+            var toRest = new float4x4?[mesh.BoneCount];
+            for (int b = 0; b < mesh.BoneCount; b++)
+            {
+                if (byName.TryGetValue(mesh.GetBoneName(b) ?? string.Empty, out var bone))
+                    bones[b] = bone;
+            }
+            float4x4? ToRest(int b)
+            {
+                if (b < 0 || b >= bones.Length || bones[b] is not { } bone)
+                    return null;
+                return toRest[b] ??= float4x4.TRS(RestPosition(bone), RestRotation(bone), bone.GlobalScale) * mesh.GetBoneBindPose(b);
+            }
+            int count = System.Math.Min(positions.Length, mesh.VertexCount);
+            for (int i = 0; i < count; i++)
+            {
+                var binding = bindings[i];
+                var w = binding.boneWeights;
+                var ids = binding.boneIndices;
+                float best = w.x;
+                int heaviest = (int)ids.x;
+                if (w.y > best) { best = w.y; heaviest = (int)ids.y; }
+                if (w.z > best) { best = w.z; heaviest = (int)ids.z; }
+                if (w.w > best) { best = w.w; heaviest = (int)ids.w; }
+                if (best <= 0f || heaviest < 0 || heaviest >= bones.Length || bones[heaviest] is not { } owner)
+                    continue;
+                int side = SideOf(owner);
+                if (side < 0)
+                    continue;
+                float3 sum = float3.Zero;
+                float total = 0f;
+                void Add(float id, float weight)
+                {
+                    if (weight > 0f && ToRest((int)id) is { } matrix)
+                    {
+                        sum += matrix.MultiplyPoint(positions[i]) * weight;
+                        total += weight;
+                    }
+                }
+                Add(ids.x, w.x);
+                Add(ids.y, w.y);
+                Add(ids.z, w.z);
+                Add(ids.w, w.w);
+                if (total <= 1e-6f)
+                    continue;
+                float3 p = sum / total;
+                points.Add((up(p), float3.Dot(p - (side == 0 ? lAnkle : rAnkle), forward)));
+                if (_lSide != null && ReferenceEquals(owner, _lSide.Foot))
+                    lowL = MathF.Min(lowL, up(p));
+                if (_rSide != null && ReferenceEquals(owner, _rSide.Foot))
+                    lowR = MathF.Min(lowR, up(p));
+            }
+        }
+        float scale = MathF.Max(RigScale(), 1e-6f);
+        if (_lSide != null && lowL < float.MaxValue)
+            _lSide.HeelPerScale = MathF.Max(up(RestPosition(_lSide.Foot)) - lowL, 0f) / scale;
+        if (_rSide != null && lowR < float.MaxValue)
+            _rSide.HeelPerScale = MathF.Max(up(RestPosition(_rSide.Foot)) - lowR, 0f) / scale;
+        if (points.Count == 0)
+            return;
+        float lowest = float.MaxValue;
+        foreach (var point in points)
+            lowest = MathF.Min(lowest, point.Height);
+        float drop = joints - lowest;
+        float leg = _lHip != null && _lKnee != null
+            ? float3.Distance(_lHip.GlobalPosition, _lKnee.GlobalPosition) + float3.Distance(_lKnee.GlobalPosition, _lFoot.GlobalPosition)
+            : 0f;
+        // A sole far below the leg's own reach is bad skin data, not a thick paw.
+        if (drop <= 0f || (leg > 1e-4f && drop > leg * 0.3f))
+            return;
+        _soleDropPerScale = drop / scale;
+
+        // What of the foot rests on the floor at rest: everything within a band of the lowest point, from its back
+        // edge to its front edge against the ankle. The gait rolls the foot over these two edges.
+        float band = MathF.Max(leg * 0.02f, 1e-3f);
+        float front = float.MinValue, back = float.MaxValue;
+        foreach (var point in points)
+        {
+            if (point.Height > lowest + band)
+                continue;
+            front = MathF.Max(front, point.Ahead);
+            back = MathF.Min(back, point.Ahead);
+        }
+        if (front > back)
+        {
+            _soleFrontPerScale = MathF.Max(front, 0f) / scale;
+            _soleBackPerScale = MathF.Max(-back, 0f) / scale;
+        }
+        SoleRevision++;
+    }
+
+    // How much of the gait's heel-to-toe pitch the visible foot follows. A digitigrade chain whose ball is the mapped
+    // foot keeps its paw level and never turns on the pitch, so a pitched target only swung the paw about an edge
+    // it was not standing on and slid it along the floor. -xlinka
+    public float FootPitchShare(bool left)
+    {
+        var digi = left ? _lDigi : _rDigi;
+        if (digi == null || digi.Kind is not (DigitigradeLeg.ChainKind.SharedFoot or DigitigradeLeg.ChainKind.Parallel))
+            return 1f;
+        return 1f - System.Math.Clamp(DigitigradeBlend, 0f, 1f);
+    }
+
+    // The front and back edges of the resting sole against the ankle, at the live scale; zero before the soles are
+    // read. Revision moves each time they are read again.
+    public float SoleFront => _soleFrontPerScale * RigScale();
+    public float SoleBack => _soleBackPerScale * RigScale();
+    public int SoleRevision { get; private set; }
+    private float _soleFrontPerScale, _soleBackPerScale;
+
+    private static void MeasureSide(SideLeg? leg)
+    {
+        if (leg == null || !SideAlive(leg))
+            return;
+        leg.ThighLength = float3.Distance(leg.Thigh.GlobalPosition, leg.Knee.GlobalPosition);
+        leg.ShinLength = float3.Distance(leg.Knee.GlobalPosition, leg.Foot.GlobalPosition);
+    }
+
+    private static bool SideAlive(SideLeg leg)
+        => leg.Thigh is { IsDestroyed: false } && leg.Knee is { IsDestroyed: false } && leg.Foot is { IsDestroyed: false };
+
+    private void MeasureLeg(DigitigradeLeg? leg)
+    {
+        if (leg == null || !LegAlive(leg))
+            return;
+        // A chain on a skinned leg beside the mapped one hangs from bones something else may hold turned, so it is
+        // measured at rest under the mapped skeleton rather than where it hangs now.
+        bool beside = !_bindLocalPos.ContainsKey(leg.Thigh);
+        float3 h = beside ? RestPosition(leg.Thigh) : leg.Thigh.GlobalPosition;
+        float3 k = beside ? RestPosition(leg.Knee) : leg.Knee.GlobalPosition;
+        float3 a = beside ? RestPosition(leg.Hock) : leg.Hock.GlobalPosition;
+        float3 b = beside ? RestPosition(leg.Ball) : leg.Ball.GlobalPosition;
+        float3 down = -_skeletonUp;
+        float3 forward = _skeletonForward;
+        ref var shape = ref leg.Shape;
+        shape.Thigh = float3.Distance(h, k);
+        shape.Shin = float3.Distance(k, a);
+        shape.Metatarsal = float3.Distance(a, b);
+        float knee, hock;
+        if (leg.Kind == DigitigradeLeg.ChainKind.Forced)
+        {
+            knee = ForcedKneeRest;
+            hock = ForcedHockRest;
+        }
+        else
+        {
+            DigitigradeSolver.MeasureAngles(k - h, a - k, b - a, down, forward, out knee, out hock);
+        }
+        shape.KneeMin = MathF.Min(DigiKneeMin, MathF.Max(knee, 0f));
+        shape.KneeMax = MathF.Max(DigiKneeMax, knee);
+        shape.HockMin = MathF.Min(DigiHockMin, MathF.Max(hock, 0f));
+        shape.HockMax = MathF.Max(DigiHockMax, hock);
+        shape.KneeRest = System.Math.Clamp(knee, shape.KneeMin, shape.KneeMax);
+        shape.HockRest = System.Math.Clamp(hock, shape.HockMin, shape.HockMax);
+        shape.HockShare = DigitigradeHockShare;
+        leg.BallOffsetFlat = _skeletonFrameFlatInv * (b - a);
+        leg.BindBallRotation = beside ? RestRotation(leg.Ball) : leg.Ball.GlobalRotation;
+        leg.ToeInBall = leg.Toe != null && !leg.Toe.IsDestroyed
+            ? leg.Ball.GlobalRotation.Inverse * leg.Toe.GlobalRotation
+            : floatQ.Identity;
+    }
+
+    private static bool LegAlive(DigitigradeLeg leg)
+        => leg.Thigh is { IsDestroyed: false } && leg.Knee is { IsDestroyed: false }
+           && leg.Hock is { IsDestroyed: false } && leg.Ball is { IsDestroyed: false };
+
+    // Rest directions and rotations in the solve frame, as CaptureRest takes them for the mapped bones.
+    private void CaptureLegRest()
+    {
+        float3 right = float3.Cross(SolveForward, SolveUp);
+        _restHinge = right.LengthSquared > 1e-8f ? right.Normalized : _curBodyRight;
+        CaptureLegRest(_lDigi);
+        CaptureLegRest(_rDigi);
+        if (_lSide != null && SideAlive(_lSide))
+            CaptureRestChain(_lSide.Thigh, _lSide.Knee, _lSide.Foot, null!);
+        if (_rSide != null && SideAlive(_rSide))
+            CaptureRestChain(_rSide.Thigh, _rSide.Knee, _rSide.Foot, null!);
+    }
+
+    private void CaptureLegRest(DigitigradeLeg? leg)
+    {
+        if (leg == null || !LegAlive(leg))
+            return;
+        float3 h = leg.Thigh.GlobalPosition, k = leg.Knee.GlobalPosition, a = leg.Hock.GlobalPosition, b = leg.Ball.GlobalPosition;
+        leg.RestThighDir = Unit(k - h);
+        leg.RestShinDir = Unit(a - k);
+        leg.RestMetaDir = Unit(b - a);
+        leg.RestThighRot = leg.Thigh.GlobalRotation;
+        leg.RestShinRot = leg.Knee.GlobalRotation;
+        leg.RestHockRot = leg.Hock.GlobalRotation;
+        leg.RestKneeToHock = a - k;
+        leg.RestKneeToBall = b - k;
+    }
+
+    private static float3 Unit(float3 v) => v.LengthSquared > 1e-12f ? v.Normalized : float3.Down;
+
+    // The knee hinge for one leg target: the solve right turned about the solve up by part of the foot's turn.
+    private float3 KneeHinge(in Target target, floatQ bindFootRot)
+    {
+        float3 up = SolveUp;
+        float3 bodyForward = RejectUnit(SolveForward, up);
+        float3 right = float3.Cross(SolveForward, up);
+        right = right.LengthSquared > 1e-8f ? right.Normalized : _curBodyRight;
+        if (!target.Valid || KneeFootFollow <= 1e-4f || bodyForward.LengthSquared < 1e-8f)
+            return right;
+        float3 footForward = RejectUnit(FootFacing(in target, bindFootRot, up, SolveForward), up);
+        if (footForward.LengthSquared < 1e-8f)
+            return right;
+        float turn = System.Math.Clamp(SignedAngleAbout(up, bodyForward, footForward), -MaxKneeFootTurn, MaxKneeFootTurn);
+        float follow = System.Math.Clamp(KneeFootFollow, 0f, 1f) * System.Math.Clamp(target.RotationWeight, 0f, 1f);
+        return floatQ.AxisAngleRad(up, turn * follow) * right;
+    }
+
+    // Normal of the solved leg plane, signed like the hinge: from the bent joints when they bend, else the hinge
+    // made perpendicular to the leg.
+    private static float3 LegPlane(float3 root, float3 mid, float3 end, float3 hinge)
+    {
+        float3 normal = float3.Cross(end - mid, mid - root);
+        float3 axis = end - root;
+        if (normal.LengthSquared < 1e-10f * MathF.Max(axis.LengthSquared * axis.LengthSquared, 1e-12f))
+        {
+            float3 a = axis.LengthSquared > 1e-12f ? axis.Normalized : float3.Down;
+            normal = hinge - a * float3.Dot(hinge, a);
+            if (normal.LengthSquared < 1e-10f)
+                normal = hinge;
+        }
+        normal = normal.Normalized;
+        return float3.Dot(normal, hinge) < 0f ? -normal : normal;
+    }
+
+    // Swing from the rest direction onto the solved one, then roll about it so the rest hinge lies on the plane
+    // normal: the knee cap faces the way the leg bends instead of wherever the shortest swing left it.
+    private static floatQ HingeSwing(float3 restDir, float3 solvedDir, float3 restHinge, float3 plane)
+    {
+        floatQ swing = FabrikSolver.FromToRotation(restDir, solvedDir, restHinge);
+        if (solvedDir.LengthSquared < 1e-10f)
+            return swing;
+        float3 axis = solvedDir.Normalized;
+        float3 from = swing * restHinge;
+        from -= axis * float3.Dot(from, axis);
+        float3 to = plane - axis * float3.Dot(plane, axis);
+        if (from.LengthSquared < 1e-10f || to.LengthSquared < 1e-10f)
+            return swing;
+        float angle = SignedAngleAbout(axis, from.Normalized, to.Normalized);
+        return MathF.Abs(angle) < 1e-6f ? swing : (floatQ.AxisAngleRad(axis, angle) * swing).Normalized;
+    }
+
+    private void WriteHinged(Slot bone, float3 solvedDir, float3 plane)
+    {
+        if (bone == null || solvedDir.LengthSquared < 1e-10f)
+            return;
+        if (!_restDir.TryGetValue(bone, out var restDir) || !_restRot.TryGetValue(bone, out var restRot))
+            return;
+        WriteGlobalRotation(bone, (HingeSwing(restDir, solvedDir, _restHinge, plane) * restRot).Normalized);
+    }
+
+    // A hip that sits low enough puts the ceiling under the floor; it never pulls a swinging foot below where that
+    // foot last stood.
+    private float? _lPlantedY, _rPlantedY;
+
+    private static float3 CapSwingFoot(float3 goal, float3 root, float legLength, in Target target, float ceilingFraction,
+        float? plantedY)
+    {
+        if (!target.FootFrameRotation || target.StepLift <= 1e-4f || ceilingFraction <= 0f || legLength <= 1e-5f)
+            return goal;
+        float band = SwingFootCeilingBand * legLength;
+        float start = root.y - ceilingFraction * legLength - band;
+        if (plantedY.HasValue)
+            start = MathF.Max(start, plantedY.Value);
+        if (goal.y <= start)
+            return goal;
+        float soft = start + band * (1f - MathF.Exp(-(goal.y - start) / band));
+        goal.y += (soft - goal.y) * System.Math.Clamp(target.StepLift * 4f, 0f, 1f);
+        return goal;
+    }
+
+    // Analytic leg: the knee at the flexion side of the hinge by the law of cosines (a knee tracker gives its own
+    // point instead), the thigh and shin rolled onto the bend plane, and the foot bone given the target rotation
+    // in full, pitch included, so a heel strike or toe-off the gait produces reaches the mesh. A digitigrade leg
+    // then folds its own chain over the same target. -xlinka
     private void SolveLeg(Slot? hip, Slot? knee, Slot? foot, Slot? toe, floatQ toeRel,
         float upperLen, float lowerLen, floatQ bindFootRot, in Target target)
     {
         if (hip == null || knee == null || foot == null || !target.Valid)
             return;
+
+        bool left = ReferenceEquals(hip, _lHip);
+        if (target.FootFrameRotation && target.StepLift <= 1e-4f)
+        {
+            if (left)
+                _lPlantedY = target.Position.y;
+            else
+                _rPlantedY = target.Position.y;
+        }
+        var digi = left ? _lDigi : _rDigi;
+        var side = left ? _lSide : _rSide;
+        if (side != null && !SideAlive(side))
+            side = null;
+        float3 hinge = KneeHinge(in target, bindFootRot);
+        // With a skinned leg beside the mapped one, the mapped leg is a plain proxy and any fold belongs to the leg
+        // that shows.
+        SolveLegChain(left, hip, knee, foot, toe, toeRel, upperLen, lowerLen, bindFootRot, floatQ.Identity,
+            in target, hinge, side == null ? digi : null);
+        if (side != null)
+            SolveLegChain(left, side.Thigh, side.Knee, side.Foot, side.OwnsToe ? side.Toe : null, side.ToeInFoot,
+                side.ThighLength, side.ShinLength, bindFootRot, side.FootInMapped, in target, hinge, digi);
+    }
+
+    // One leg chain to the foot target. footTurn carries the mapped foot's rotation onto this chain's foot bone.
+    private void SolveLegChain(bool left, Slot hip, Slot knee, Slot foot, Slot? toe, floatQ toeRel,
+        float upperLen, float lowerLen, floatQ bindFootRot, floatQ footTurn, in Target target, float3 hinge,
+        DigitigradeLeg? digi)
+    {
+        float digiWeight = digi != null && LegAlive(digi) ? System.Math.Clamp(DigitigradeBlend, 0f, 1f) : 0f;
+        if (digiWeight <= 1e-4f && digi?.Kind != DigitigradeLeg.ChainKind.Parallel)
+            digi = null;
 
         float3 root = hip.GlobalPosition;
 
@@ -1717,36 +2781,222 @@ public sealed class FullBodyIKSolver
             ? new float3(root.x, GroundY.Value, root.z)
             : root + float3.Down * ((upperLen + lowerLen) * 0.95f);
         float3 goalPos = float3.Lerp(restEnd, target.Position, pw);
+        goalPos = CapSwingFoot(goalPos, root, upperLen + lowerLen, in target, SwingFootCeiling, left ? _lPlantedY : _rPlantedY);
 
         float restUpper = upperLen;
         float restLower = lowerLen;
         Stretch(root, goalPos, ref upperLen, ref lowerLen);
+        float plantiStretch = upperLen / MathF.Max(restUpper, 1e-6f);
+        // A digitigrade chain that shares these bones writes its own lengths and rotations below.
+        bool writeMapped = digi == null || !digi.SharesMappedChain;
         // The visible offsets must match the solve lengths. FixTransforms restores them each frame. -xlinka
-        if (!WriteBonePositions)
+        if (!WriteBonePositions && writeMapped)
         {
             ScaleLimbSegment(hip, knee, upperLen / MathF.Max(restUpper, 1e-6f));
             ScaleLimbSegment(knee, foot, lowerLen / MathF.Max(restLower, 1e-6f));
         }
 
-        float3 bend = target.HasBendGoal ? target.BendGoal : SolveForward;
+        float3 axis = goalPos - root;
+        float3 bend = target.HasBendGoal
+            ? target.BendGoal
+            : float3.Cross(hinge, axis.LengthSquared > 1e-12f ? axis.Normalized : float3.Down);
         FabrikSolver.SolveTwoBoneBend(root, goalPos, upperLen, lowerLen, bend, target.HasBendGoal,
             SolveUp, out var mid, out var end);
+        float3 plane = LegPlane(root, mid, end, hinge);
 
-        MaybeWritePosition(hip, root);
-        ApplySwing(hip, mid - root);
-        MaybeWritePosition(knee, mid);
-        ApplySwing(knee, end - mid);
-        MaybeWritePosition(foot, end);
-
-        floatQ boneRot = target.FootFrameRotation
+        floatQ boneRot = ((target.FootFrameRotation
             ? target.Rotation * _skeletonFrameFlatInv * bindFootRot
-            : target.Rotation;
+            : target.Rotation) * footTurn).Normalized;
         float rw = System.Math.Clamp(target.RotationWeight, 0f, 1f);
         floatQ restFootRot = _restRot.TryGetValue(foot, out var rfr) ? rfr : boneRot;
-        WriteGlobalRotation(foot, floatQ.Slerp(restFootRot, boneRot, rw).Normalized);
+        floatQ footRot = floatQ.Slerp(restFootRot, boneRot, rw).Normalized;
 
-        SolveToe(foot, toe, toeRel, target.StepLift);
+        if (writeMapped)
+        {
+            MaybeWritePosition(hip, root);
+            WriteHinged(hip, mid - root, plane);
+            MaybeWritePosition(knee, mid);
+            WriteHinged(knee, end - mid, plane);
+            MaybeWritePosition(foot, end);
+            WriteGlobalRotation(foot, footRot);
+            SolveToe(foot, toe, toeRel, target.StepLift);
+        }
+
+        if (digi != null)
+            SolveDigitigrade(left, digi, knee, foot, mid, end, goalPos, plane, footRot, plantiStretch, digiWeight, in target);
     }
+
+    // The digitigrade chain over the same target. Ball target: the mapped foot target when the mapped foot is
+    // the ball, else the foot target carried to the ball by the foot frame. The fold is solved in the leg plane;
+    // part way through a switch the metatarsal is turned between where the rigid leg holds it and where the fold
+    // puts it, the hock hangs that far back from the ball and the knee is solved to the hock, so lengths hold and
+    // the ball stays put the whole way. -xlinka
+    private void SolveDigitigrade(bool left, DigitigradeLeg leg, Slot mappedKnee, Slot mappedFoot, float3 plantiKnee,
+        float3 plantiEnd, float3 goalPos, float3 plane, floatQ plantiFootRot, float plantiStretch, float weight,
+        in Target target)
+    {
+        bool ballIsFoot = leg.Kind is DigitigradeLeg.ChainKind.SharedFoot or DigitigradeLeg.ChainKind.Parallel;
+        float3 hip = leg.Thigh.GlobalPosition;
+        floatQ frame = FootTargetFrame(in target, left);
+        floatQ level = LevelFrame(frame);
+        float3 ball = ballIsFoot ? goalPos : goalPos + BallFrame(frame, level) * leg.BallOffsetFlat;
+
+        // The leg plane through the hip, normal to the bend plane and containing the ball target.
+        float3 axis = Unit(ball - hip);
+        float3 normal = plane - axis * float3.Dot(plane, axis);
+        normal = normal.LengthSquared > 1e-10f ? normal.Normalized : plane;
+        float3 down = -SolveUp - normal * float3.Dot(-SolveUp, normal);
+        down = down.LengthSquared > 1e-10f ? down.Normalized : axis;
+        float3 forward = float3.Cross(normal, down);
+
+        var shape = leg.Shape;
+        shape.HockShare = DigitigradeHockShare;
+        float digiStretch = 1f;
+        float span = DigitigradeSolver.MaxSpan(in shape);
+        float distance = float3.Distance(hip, ball);
+        if (span > 1e-5f && distance > span * DigiStretchStart)
+        {
+            float maximum = MathF.Max(MaxStretch, DigiStretchStart + 1e-3f);
+            float t = System.Math.Clamp((distance / span - DigiStretchStart) / (maximum - DigiStretchStart), 0f, 1f);
+            digiStretch = 1f + (MathF.Max(MaxStretch, 1f) - 1f) * t * t * (3f - 2f * t);
+        }
+        var stretched = shape;
+        stretched.Thigh *= digiStretch;
+        stretched.Shin *= digiStretch;
+        stretched.Metatarsal *= digiStretch;
+        var fold = DigitigradeSolver.Solve(in stretched, hip, ball, down, forward);
+
+        float3 kneePos = fold.Knee, hockPos = fold.Hock, ballPos = fold.Ball;
+        float thighLen = stretched.Thigh, shinLen = stretched.Shin, metaLen = stretched.Metatarsal;
+        if (weight < 0.999f)
+        {
+            // Where the rigid two-bone leg holds the chain: shin and metatarsal turned as one with the mapped knee.
+            float upperScale = leg.Kind == DigitigradeLeg.ChainKind.Parallel ? 1f : plantiStretch;
+            float lowerScale = upperScale;
+            float metaScale = leg.Kind is DigitigradeLeg.ChainKind.SharedFoot ? plantiStretch : 1f;
+            float3 rigidKnee = hip + Unit(plantiKnee - hip) * (shape.Thigh * upperScale);
+            float3 rigidHock, rigidBall;
+            if (ballIsFoot)
+            {
+                floatQ shinTurn = _restDir.TryGetValue(mappedKnee, out var kneeRestDir)
+                    ? HingeSwing(kneeRestDir, plantiEnd - plantiKnee, _restHinge, plane)
+                    : floatQ.Identity;
+                rigidHock = rigidKnee + shinTurn * leg.RestKneeToHock * lowerScale;
+                rigidBall = leg.Kind == DigitigradeLeg.ChainKind.SharedFoot
+                    ? plantiEnd
+                    : rigidKnee + shinTurn * leg.RestKneeToBall;
+            }
+            else
+            {
+                rigidHock = plantiEnd;
+                floatQ footTurn = _restRot.TryGetValue(mappedFoot, out var footRest) ? plantiFootRot * footRest.Inverse : floatQ.Identity;
+                rigidBall = rigidHock + footTurn * leg.RestMetaDir * shape.Metatarsal;
+            }
+
+            float3 rigidMeta = Unit(rigidBall - rigidHock);
+            float3 foldMeta = Unit(fold.Ball - fold.Hock);
+            float3 meta = SlerpDirection(rigidMeta, foldMeta, weight);
+            thighLen = shape.Thigh * Lerp(upperScale, digiStretch, weight);
+            shinLen = shape.Shin * Lerp(lowerScale, digiStretch, weight);
+            metaLen = shape.Metatarsal * Lerp(metaScale, digiStretch, weight);
+            ballPos = float3.Lerp(rigidBall, fold.Ball, weight);
+            hockPos = ballPos - meta * metaLen;
+            float3 toHock = hockPos - hip;
+            float3 bend = float3.Cross(normal, toHock.LengthSquared > 1e-12f ? toHock.Normalized : axis);
+            FabrikSolver.SolveTwoBoneBend(hip, hockPos, thighLen, shinLen, bend, false, forward,
+                out kneePos, out hockPos);
+        }
+
+        // A skinned leg beside the mapped one folded hard lays its hock on the floor and sank the heel around it;
+        // the hock stops its own skin's depth off the floor, turning the metatarsal up about the ball, and the
+        // knee folds the rest. -xlinka
+        var beside = left ? _lSide : _rSide;
+        float? planted = left ? _lPlantedY : _rPlantedY;
+        if (beside != null && ReferenceEquals(leg.Hock, beside.Foot) && beside.HeelPerScale > 0f && planted.HasValue
+            && target.FootFrameRotation && metaLen > 1e-5f)
+        {
+            float floor = planted.Value - (left ? LeftFootGroundClearance : RightFootGroundClearance);
+            float lowestHock = floor + beside.HeelPerScale * RigScale();
+            if (hockPos.y < lowestHock)
+            {
+                float3 foldKnee = kneePos, foldHock = hockPos;
+                float3 meta = hockPos - ballPos;
+                float3 flat = new float3(meta.x, 0f, meta.z);
+                float3 back = flat.LengthSquared > 1e-10f ? flat.Normalized : -_curBodyForward;
+                float rise = System.Math.Clamp((lowestHock - ballPos.y) / metaLen, -1f, 1f);
+                hockPos = ballPos + back * (MathF.Sqrt(MathF.Max(1f - rise * rise, 0f)) * metaLen) + float3.Up * (rise * metaLen);
+                float3 toHock = hockPos - hip;
+                float3 bend = float3.Cross(normal, toHock.LengthSquared > 1e-12f ? toHock.Normalized : axis);
+                FabrikSolver.SolveTwoBoneBend(hip, hockPos, thighLen, shinLen, bend, false, forward,
+                    out kneePos, out hockPos);
+                // Never at the price of a hock bent the wrong way.
+                float HockFlex(float3 k, float3 h) => MathF.Atan2(float3.Dot(float3.Cross(h - k, ballPos - h), normal), float3.Dot(h - k, ballPos - h));
+                float was = HockFlex(foldKnee, foldHock), now = HockFlex(kneePos, hockPos);
+                if (MathF.Sign(now) != MathF.Sign(was) || MathF.Abs(now) < shape.HockMin)
+                {
+                    kneePos = foldKnee;
+                    hockPos = foldHock;
+                }
+            }
+        }
+
+        if (!WriteBonePositions)
+        {
+            ScaleLimbSegment(leg.Thigh, leg.Knee, thighLen / MathF.Max(shape.Thigh, 1e-6f));
+            ScaleLimbSegment(leg.Knee, leg.Hock, shinLen / MathF.Max(shape.Shin, 1e-6f));
+            ScaleLimbSegment(leg.Hock, leg.Ball, metaLen / MathF.Max(shape.Metatarsal, 1e-6f));
+        }
+        else
+        {
+            MaybeWritePosition(leg.Knee, kneePos);
+            MaybeWritePosition(leg.Hock, hockPos);
+            MaybeWritePosition(leg.Ball, ballPos);
+        }
+
+        WriteGlobalRotation(leg.Thigh, (HingeSwing(leg.RestThighDir, kneePos - hip, _restHinge, normal) * leg.RestThighRot).Normalized);
+        WriteGlobalRotation(leg.Knee, (HingeSwing(leg.RestShinDir, hockPos - kneePos, _restHinge, normal) * leg.RestShinRot).Normalized);
+        WriteGlobalRotation(leg.Hock, (HingeSwing(leg.RestMetaDir, ballPos - hockPos, _restHinge, normal) * leg.RestHockRot).Normalized);
+
+        // Toes flat on the ground: the ball bone takes the foot frame over its bind rotation, as a foot bone does.
+        // Part way through a switch it turns from where the rigid leg carries it.
+        float rw = System.Math.Clamp(target.RotationWeight, 0f, 1f);
+        floatQ riding = leg.Ball.GlobalRotation;
+        floatQ ballRot = floatQ.Slerp(riding, (level * _skeletonFrameFlatInv * leg.BindBallRotation).Normalized, rw).Normalized;
+        if (weight < 0.999f)
+        {
+            floatQ rigid = leg.Kind == DigitigradeLeg.ChainKind.SharedFoot ? plantiFootRot : riding;
+            ballRot = floatQ.Slerp(rigid, ballRot, weight).Normalized;
+        }
+        WriteGlobalRotation(leg.Ball, ballRot);
+        SolveToe(leg.Ball, leg.Toe, leg.ToeInBall, target.StepLift);
+    }
+
+    // The foot target's frame: its own for a foot-frame target, else read off the bone rotation it carries.
+    private floatQ FootTargetFrame(in Target target, bool left)
+        => target.FootFrameRotation ? target.Rotation : FootFrameFromBone(left, target.Rotation);
+
+    // The frame the toes lie in: the foot frame turned level about its own right axis. A digitigrade foot stands
+    // on its toes and rolls over the ball, so the gait's heel-to-toe pitch never reaches the toes.
+    private static floatQ LevelFrame(floatQ frame)
+    {
+        float3 forward = frame * float3.Backward;
+        float3 right = frame * float3.Right;
+        float3 flat = forward - float3.Up * float3.Dot(forward, float3.Up);
+        if (flat.LengthSquared < 1e-8f)
+            return frame;
+        flat = flat.Normalized;
+        float3 up = float3.Cross(right, flat);
+        return up.LengthSquared < 1e-8f ? frame : BuildRotation(flat, up.Normalized);
+    }
+
+    // The frame that carries a foot target on the hock to its ball: the pitched frame while the toes point down,
+    // so a foot rolling onto its toes keeps the ball on the ground and lifts the hock, and the level one while
+    // they would point up, since a digitigrade foot does not land heel first. The two agree at level.
+    private static floatQ BallFrame(floatQ frame, floatQ level)
+        => float3.Dot(frame * float3.Backward, float3.Up) < 0f ? frame : level;
+
+    private static float Lerp(float a, float b, float t) => a + (b - a) * t;
+
 
     private static void ScaleLimbSegment(Slot root, Slot end, float scale)
     {
@@ -1865,7 +3115,11 @@ public sealed class FullBodyIKSolver
             float3 axis = solvedDir.Normalized;
             float3 transported = swing * SolveForward;
             float3 current = transported - axis * float3.Dot(transported, axis);
-            float3 target = bodyForward - axis * float3.Dot(bodyForward, axis);
+            // The body forward carried over the same way the bone leans, not projected flat onto it: a neck leaning
+            // out over a crouch points nearly along the forward, the flat projection shrank to nothing there and the
+            // twist flipped the neck and head half a turn in a frame. -xlinka
+            float3 leaned = FabrikSolver.FromToRotation(SolveUp, axis) * bodyForward;
+            float3 target = leaned - axis * float3.Dot(leaned, axis);
             if (current.LengthSquared > 1e-6f && target.LengthSquared > 1e-6f)
             {
                 current = current.Normalized;

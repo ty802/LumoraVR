@@ -100,20 +100,17 @@ public static class TrackerRoles
         _ => BodyNode.NONE,
     };
 
-    // Body nodes a tracker is allowed to be mapped onto. The calibrator offers exactly these, so a puck
-    // cannot be assigned to a fingertip.
+    // Body nodes a tracker is allowed to be mapped onto: the ones the IK actually reads. The calibrator
+    // offers exactly these, so a puck cannot be claimed by a joint that would leave it driving nothing.
     public static readonly BodyNode[] Mappable =
     {
         BodyNode.Hips,
-        BodyNode.Chest,
         BodyNode.LeftFoot,
         BodyNode.RightFoot,
         BodyNode.LeftLowerLeg,
         BodyNode.RightLowerLeg,
         BodyNode.LeftLowerArm,
         BodyNode.RightLowerArm,
-        BodyNode.LeftShoulder,
-        BodyNode.RightShoulder,
     };
 
     public static bool IsMappable(BodyNode node)

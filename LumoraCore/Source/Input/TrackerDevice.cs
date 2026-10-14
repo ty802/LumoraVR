@@ -15,7 +15,7 @@ namespace Lumora.Core.Input;
 // Deliberately not a TrackedObject subclass: InputInterface resets IsTracking on every TrackedObject it
 // finds in its body-node table each frame, and a tracker's flag has to mean what the runtime last said,
 // not what a bookkeeping pass zeroed. -xlinka
-public class TrackerDevice : InputDevice, ITracker
+public class TrackerDevice : InputDevice, ITracker, ITrackerMappingReceiver
 {
     private float3 _rawPosition = float3.Zero;
     private floatQ _rawRotation = floatQ.Identity;
@@ -88,6 +88,26 @@ public class TrackerDevice : InputDevice, ITracker
     public float3 BodyNodePositionOffset { get; set; } = float3.Zero;
 
     public floatQ BodyNodeRotationOffset { get; set; } = floatQ.Identity;
+
+    public void ApplyMapping(in TrackerMapping mapping)
+    {
+        if (!mapping.Enabled || !TrackerRoles.IsMappable(mapping.Node))
+        {
+            ClearMapping();
+            return;
+        }
+
+        BodyNodePositionOffset = mapping.PositionOffset;
+        BodyNodeRotationOffset = mapping.RotationOffset;
+        CorrespondingBodyNode = mapping.Node;
+    }
+
+    public void ClearMapping()
+    {
+        CorrespondingBodyNode = BodyNode.NONE;
+        BodyNodePositionOffset = float3.Zero;
+        BodyNodeRotationOffset = floatQ.Identity;
+    }
 
     public void SetIdentity(string uniqueId)
     {

@@ -35,12 +35,20 @@ internal struct BipedGaitParameters
     public float RestAllowance;                  // m of rest error tolerated while standing still
     public float MaxSpeed;                       // m/s cap on the smoothed gait speed
     public float MaxStepHeight;                  // m ceiling on the arc
-    public float FootGroundAngle;                // deg a planted foot pitches at half a stride from rest (toe up ahead, toe down behind)
-    public float FootGroundPow;                  // shape of that pitch over the offset from rest
+    public float FootGroundAngle;                // deg of heel rise a planted foot reaches as it leaves the ground behind
+    public float FootGroundPow;                  // how late in the stance the heel starts to rise
     public float FootStepUpAngularVelocityMultiplier; // deg/s per m/s of body speed the foot keeps pitching after lift-off
     public float FootStepDownAngle;              // deg of heel-first pitch a foot lands with
     public float FootTiltMinAngle;               // deg, toe-up limit of the lift pitch
     public float FootTiltMaxAngle;               // deg, toe-down limit of the lift pitch
+    public float LegLength;                      // m hip to ankle, multiplied by Scale
+    public float RunSpeed;                       // m/s the walk turns into a run, for a 0.9 m leg
+    public float WalkDutyFactor;                 // share of a walking stride each foot spends on the ground
+    public float WalkReach;                      // of leg length, how far ahead or behind its rest a walking foot stands
+    public float RunReach;                       // the same for a run
+    public float RunStepHeight;                  // m arc at a run, for a 0.9 m leg
+    public float CrouchStride;                   // stride scale at full crouch
+    public float CrouchStepHeight;               // arc scale at full crouch
     public float Scale;                          // avatar scale, multiplies every distance
 
     public static BipedGaitParameters Default => new()
@@ -50,7 +58,7 @@ internal struct BipedGaitParameters
         MinOpposingProgress = 0.72f,
         VelocityIncreaseSmoothTime = 0.22f,
         VelocityDecreaseSmoothTime = 0.35f,
-        FootTravelDistance = 0.62f,
+        FootTravelDistance = 0.74f,
         FootSidewaysDistanceRatio = 0.5f,
         FootBackwardsDistanceRatio = 0.75f,
         FootMaxAngle = 25f,
@@ -65,12 +73,20 @@ internal struct BipedGaitParameters
         RestAllowance = 0.14f,
         MaxSpeed = 6f,
         MaxStepHeight = 0.45f,
-        FootGroundAngle = 10f,
-        FootGroundPow = 1.2f,
+        FootGroundAngle = 25f,
+        FootGroundPow = 2f,
         FootStepUpAngularVelocityMultiplier = 475f,
         FootStepDownAngle = 20f,
         FootTiltMinAngle = -30f,
-        FootTiltMaxAngle = 160f,
+        FootTiltMaxAngle = 90f,
+        LegLength = 0.9f,
+        RunSpeed = 2.2f,
+        WalkDutyFactor = 0.6f,
+        WalkReach = 0.48f,
+        RunReach = 0.42f,
+        RunStepHeight = 0.26f,
+        CrouchStride = 0.8f,
+        CrouchStepHeight = 0.45f,
         Scale = 1f
     };
 }
@@ -114,6 +130,12 @@ internal sealed class GaitFoot
     internal float LiftAngle;
     internal float LiftAngularVelocity;
     internal float GroundLerp;
+    // A walk keeps both feet down between swings. The foot that landed keeps its swing clock running after
+    // touch-down, and the other one lifts when that clock reaches the handover gate. -xlinka
+    internal bool Clocking;
+    // Radians the swing turns the foot, kept continuous from frame to frame: on a fast spin the landing facing
+    // swings past half a turn from where the foot left, and the short way round flipped sides in a frame. -xlinka
+    internal float SwingTurn;
 
     public bool IsPlanted => Initialized && !IsTravelling;
 
@@ -130,6 +152,8 @@ internal sealed class GaitFoot
         LiftAngle = 0f;
         LiftAngularVelocity = 0f;
         GroundLerp = 0f;
+        Clocking = false;
+        SwingTurn = 0f;
         WantsToMove = false;
         MovePriority = 0f;
         FootingTime = 0f;
@@ -143,6 +167,10 @@ internal sealed class BipedGait
     private const float MovingMinFootingTime = 0.05f;
     private const float MinSwingTime = 0.12f;
     private const float StillSwingTime = 0.3f;
+    private const float SpinSwingTime = 0.2f;        // s, a turning step on a fast spin
+    private const float FastSpinRate = 2.5f;         // rad/s of turn that takes the quickest turning steps
+    private const float StillTurnLead = 0.15f;       // s of turn a standing turn step lands ahead by
+    private const float MaxStillTurnLead = 1f;       // rad
     private const float StillSidewaysRatio = 0.6f;
     private const float MaxTravelScale = 2f;
     private const float MinStrideRatio = 0.4f;
@@ -151,7 +179,9 @@ internal sealed class BipedGait
     private const float DirectionSmoothTime = 0.08f;
     private const float ReachLookaheadTime = 0.5f;
     private const float FirstSwingScale = 0.6f;
-    private const float MaxHeadStart = 0.5f;
+    private const float MaxHeadStart = 0.15f;        // of a swing; a late foot catches up through it, not by a jump
+    private const float MaxLiftAngularSpeed = 650f;   // deg/s
+    private const float MaxSwingPitch = 80f;          // deg
 
     public BipedGaitParameters Parameters = BipedGaitParameters.Default;
 
@@ -165,6 +195,14 @@ internal sealed class BipedGait
     public bool IsStandingStill { get; private set; } = true;
     // 0 standing, 1 once the body clearly walks; gates how much of the landing pitch a planted foot keeps.
     public float MinVelocityLerp { get; private set; }
+    // 0..1 how far into a crouch the body is, set by the caller before Update.
+    public float Crouch { get; set; }
+    // 0 walking, 1 running: the stride, the timing and the arc all follow it.
+    public float RunBlend { get; private set; }
+    // Ground one step covers at the current pace, and the share of a stride swing to swing that is the
+    // handover gate (above 1 both feet are down between swings, below 1 both are off the ground).
+    public float StepLength { get; private set; } = 0.3f;
+    public float Gate => _gate;
 
     private float _separation = 0.2f;
     private float3 _body = float3.Zero;
@@ -183,6 +221,9 @@ internal sealed class BipedGait
     private float _swingDistance = 0.3f;
     private float _reach;
     private float _avoidanceRadius = 0.08f;
+    private float _gate = 0.72f;
+    private float _runShift;
+    private const float RunStanceBack = 0.25f;   // of the reach, how far behind its rest a running stance sits
     private GaitFoot? _nextFoot;
     private bool _wasMoving;
     private int _startupSteps;
@@ -220,6 +261,8 @@ internal sealed class BipedGait
         _nextFoot = null;
         _wasMoving = false;
         _startupSteps = 0;
+        _runShift = 0f;
+        RunBlend = 0f;
     }
 
     // The whole root jumped (teleport, a world move): carry the feet with it rather than let them
@@ -273,6 +316,7 @@ internal sealed class BipedGait
         foot.IsTravelling = false;
         foot.TravelProgress = 0f;
         foot.RawProgress = 0f;
+        foot.Clocking = false;
         foot.StepLift = 0f;
         float k = SmoothingFactor(GlideSmoothTime, dt);
         foot.Position = float3.Lerp(foot.Position, foot.RestPosition, k);
@@ -380,33 +424,73 @@ internal sealed class BipedGait
     private void UpdateRest(GaitFoot foot)
     {
         float scale = MathF.Max(Parameters.Scale, 1e-4f);
-        foot.RestPosition = _body + _right * (foot.LocalRest.x * scale) + _forward * (foot.LocalRest.z * scale);
+        foot.RestPosition = _body + _right * (foot.LocalRest.x * scale) + _forward * (foot.LocalRest.z * scale - _runShift);
         foot.RestFacing = _forward;
     }
 
-    private float OpposingGate => System.Math.Clamp(Parameters.MinOpposingProgress, 0.5f, 1f);
+    private float RunGate => System.Math.Clamp(Parameters.MinOpposingProgress, 0.55f, 1f);
 
     private float MaxSwing => MathF.Max(Parameters.MaxSwingTime, MinSwingTime);
 
-    // Step length grows with the square root of speed. With the other foot lifting at the gate g of a swing,
-    // one swing spans stepLength / g of body travel and the two feet meet the ground stepLength * (1 - 1 / 2g)
-    // ahead of rest, so a planted foot is exactly one allowance from its target when its turn comes. The reach
-    // itself fades to zero with the smoothed speed so a start or a stop never snaps a target. -xlinka
+    // Stride from the pace and the leg, the way bodies of any size do it: speeds are measured against the leg
+    // (v / sqrt(g * leg)), a walk lengthens its step with the square root of that and a run holds its cadence
+    // near constant and lengthens the step instead, and the two hand over around RunSpeed. A walk keeps each
+    // foot down for WalkDutyFactor of the stride, so both feet are on the ground between swings; a run lifts
+    // one before the other lands. Whatever the pace asks for, a planted foot never stands further from its rest
+    // than the leg can reach without the hips dropping more than a stride's worth, so a short leg takes shorter,
+    // quicker steps instead of stretching. A crouch shortens and lowers the steps and only half breaks into a run.
+    //
+    // With the handover at a gate g of a swing, one swing spans stepLength / g of body travel and the feet meet
+    // the ground stepLength * (1 - 1 / 2g) ahead of rest, so a planted foot is exactly one allowance from its
+    // target when its turn comes. The reach itself fades to zero with the smoothed speed so a start or a stop
+    // never snaps a target. -xlinka
     private void ComputeTravelMetrics()
     {
         float scale = MathF.Max(Parameters.Scale, 1e-4f);
+        float crouch = System.Math.Clamp(Crouch, 0f, 1f);
+        float fullLeg = MathF.Max(Parameters.LegLength, 0.1f) * scale;
+        float leg = fullLeg * Lerp(1f, 0.75f, crouch);
+        float reference = 0.9f * scale;
         float3 local = ToLocal(SmoothDirection);
         float ratio = Lerp(Lerp(1f, Parameters.FootBackwardsDistanceRatio, MathF.Max(0f, -local.z)),
             Parameters.FootSidewaysDistanceRatio, MathF.Abs(local.x));
-        float reference = MathF.Max(Parameters.ReferenceSpeed, 0.05f) * scale;
-        float speedScale = System.Math.Clamp(SmoothSpeed / reference, 0f, MaxTravelScale);
-        float stepLength = MathF.Max(Parameters.FootTravelDistance, 0.01f) * ratio * scale
-            * MathF.Max(MathF.Sqrt(speedScale), MinStrideRatio);
-        float gate = OpposingGate;
-        _swingDistance = stepLength / gate;
-        float reach = stepLength * (1f - 0.5f / gate);
+
+        float froude = MathF.Sqrt(9.81f * leg);
+        float pace = SmoothSpeed / froude;
+        float runPace = MathF.Max(Parameters.RunSpeed, 0.1f) / MathF.Sqrt(9.81f * 0.9f);
+        RunBlend = SmoothStep(runPace * 0.8f, runPace * 1.2f, pace) * (1f - 0.5f * crouch);
+
+        float walkPace = MathF.Max(Parameters.ReferenceSpeed, 0.05f) / MathF.Sqrt(9.81f * 0.9f);
+        float walkStep = MathF.Max(Parameters.FootTravelDistance, 0.01f) * (leg / reference) * scale
+            * MathF.Max(MathF.Sqrt(System.Math.Clamp(pace / walkPace, 0f, MaxTravelScale * MaxTravelScale)), MinStrideRatio);
+        float cadence = froude / leg * (0.72f + 0.11f * pace);
+        float runStep = MathF.Max(SmoothSpeed / MathF.Max(cadence, 0.5f), walkStep);
+        float stepLength = Lerp(walkStep, runStep, RunBlend) * ratio * Lerp(1f, Parameters.CrouchStride, crouch);
+
+        // A faster run spends less of the stride on the ground and reaches further, so the stride grows with the
+        // pace instead of the cadence running away.
+        float sprint = SmoothStep(runPace, runPace * 3.5f, pace);
+        float walkGate = 0.5f / MathF.Max(1f - System.Math.Clamp(Parameters.WalkDutyFactor, 0.5f, 0.8f), 0.2f);
+        _gate = Lerp(walkGate, RunGate - 0.1f * sprint, RunBlend);
+        float reachShare = 1f - 0.5f / _gate;
+        float reachLimit = fullLeg * Lerp(Parameters.WalkReach, Parameters.RunReach + 0.06f * sprint, RunBlend);
+        if (stepLength * reachShare > reachLimit)
+            stepLength = reachLimit / reachShare;
+        StepLength = stepLength;
+
+        _swingDistance = stepLength / _gate;
+        float reach = stepLength * reachShare;
         _stepAllowance = MathF.Max(2f * reach, stepLength * 0.2f);
         _reach = MathF.Min(reach, SmoothSpeed * ReachLookaheadTime);
+        // A runner lands nearly under the hips and pushes off well behind them; a stance centred on the hips planted
+        // the foot so far ahead that the body had to sink half a leg to reach it. -xlinka
+        _runShift = _reach * RunStanceBack * RunBlend;
+    }
+
+    private static float SmoothStep(float edge0, float edge1, float x)
+    {
+        float t = System.Math.Clamp((x - edge0) / MathF.Max(edge1 - edge0, 1e-5f), 0f, 1f);
+        return t * t * (3f - 2f * t);
     }
 
     private void PlantAtRest(GaitFoot foot)
@@ -425,6 +509,7 @@ internal sealed class BipedGait
         foot.IsTravelling = false;
         foot.TravelProgress = 0f;
         foot.RawProgress = 0f;
+        foot.Clocking = false;
         foot.FootingTime = 1f;
         foot.Initialized = true;
     }
@@ -435,6 +520,13 @@ internal sealed class BipedGait
             return;
 
         foot.FootingTime += dt;
+        if (foot.Clocking)
+        {
+            if (IsStandingStill)
+                foot.Clocking = false;
+            else
+                foot.RawProgress += MathF.Max(_bodyDelta, SmoothSpeed * dt) / MathF.Max(foot.SwingDistance, 1e-4f);
+        }
         float swingTime = MathF.Min(_swingDistance / MathF.Max(SmoothSpeed, 1e-3f), MaxSwing);
         SetTarget(foot, swingTime, 0f);
 
@@ -449,17 +541,27 @@ internal sealed class BipedGait
         UpdateFootingPitch(foot);
     }
 
-    // A planted foot pitches by how far it stands from its rest along the body: heel down and toe up when the
-    // body has yet to walk over it, toe down and heel rising once it is behind. The magnitude starts at the angle
-    // the foot landed with and fades to the ground angle as the foot passes under the body. -xlinka
+    // A planted foot pitches by how far it stands from its rest along the body. Ahead of it the heel has just
+    // struck: the landing pitch carries over and the sole slaps flat quickly as the body comes over. Behind it
+    // the heel stays down until late and then rises toward the ground angle as the foot is left behind, the
+    // push-off. Standing still neither applies, a foot left out of place stands flat. -xlinka
     private void UpdateFootingPitch(GaitFoot foot)
     {
         float offset = ToLocal(foot.Position - _body).z - ToLocal(foot.RestPosition - _body).z;
         float sign = MathF.Sign(offset);
         float value = System.Math.Clamp(MathF.Abs(offset) / (MathF.Max(_stepAllowance, 1e-3f) * 0.5f), 0f, 1f);
         foot.GroundLerp = MathF.Min(MathF.Min(MathF.Pow(value * 1.25f, 2f), foot.GroundLerp), MinVelocityLerp);
-        float angle = Lerp(Parameters.FootGroundAngle, MathF.Abs(foot.LiftAngle), foot.GroundLerp);
-        foot.Pitch = MathF.Pow(value, MathF.Max(Parameters.FootGroundPow, 0.05f)) * -sign * angle;
+        if (sign > 0f)
+        {
+            float angle = Lerp(Parameters.FootGroundAngle * 0.4f, MathF.Abs(foot.LiftAngle), foot.GroundLerp);
+            foot.Pitch = -MathF.Pow(value, 3f) * angle * MinVelocityLerp;
+        }
+        else
+        {
+            // A run pushes off harder, rising further onto the toes.
+            foot.Pitch = MathF.Pow(value, MathF.Max(Parameters.FootGroundPow, 0.05f)) * Parameters.FootGroundAngle
+                * (1f + 0.8f * RunBlend) * MinVelocityLerp;
+        }
     }
 
     private void UpdateWalkingIntent(GaitFoot foot)
@@ -530,6 +632,11 @@ internal sealed class BipedGait
     {
         float scale = MathF.Max(Parameters.Scale, 1e-4f);
         float turn = YawRate * timeToLand * System.Math.Clamp(Parameters.FootTurnInfluence, 0f, 1f);
+        // Turning on the spot a foot steps into the turn, landing where the body will face while it stands
+        // there rather than where it faces now; one that only caught up let the body trail the head by a
+        // quarter turn on a quick spin. -xlinka
+        if (IsStandingStill)
+            turn = System.Math.Clamp(YawRate * (timeToLand + StillTurnLead), -MaxStillTurnLead, MaxStillTurnLead);
         floatQ turnRotation = floatQ.AxisAngleRad(float3.Up, turn);
         float3 target = _body + turnRotation * (foot.RestPosition - _body) + SmoothDirection * (_reach + remaining);
         float3 facing = FlattenDir(turnRotation * foot.RestFacing, foot.RestFacing);
@@ -562,9 +669,11 @@ internal sealed class BipedGait
         foot.TargetFacing = facing;
     }
 
-    // Walking, the pair is locked: the planted foot lifts the moment the swinging one crosses the gate, with a
-    // head start equal to the ground covered past it that frame. Both planted while the body moves only happens
-    // at a start, where the chosen foot goes at once rather than dragging a full allowance behind. -xlinka
+    // Walking, the pair is locked: the planted foot lifts when the other one's swing clock crosses the gate, with a
+    // head start equal to the ground covered past it that frame. A run's gate falls inside the swing, so the next
+    // foot leaves before this one lands; a walk's falls after touch-down, so the clock runs on through the double
+    // support. Both planted with no clock running only happens at a start, where the chosen foot goes at once
+    // rather than dragging a full allowance behind. -xlinka
     private void UpdateWalkingStarts(float dt)
     {
         if (Left.IsTravelling && Right.IsTravelling)
@@ -573,9 +682,15 @@ internal sealed class BipedGait
         {
             GaitFoot flying = Left.IsTravelling ? Left : Right;
             GaitFoot next = flying.Opposing;
-            float gate = OpposingGate;
-            if (flying.RawProgress >= gate && next.FootingTime >= MovingMinFootingTime)
-                StartTravel(next, (flying.RawProgress - gate) * flying.SwingDistance, dt);
+            if (_gate <= 1f && flying.RawProgress >= _gate && next.FootingTime >= MovingMinFootingTime)
+                StartTravel(next, (flying.RawProgress - _gate) * flying.SwingDistance, dt);
+            return;
+        }
+        GaitFoot? lead = Left.Clocking ? Left : Right.Clocking ? Right : null;
+        if (lead != null)
+        {
+            if (lead.RawProgress >= _gate && lead.Opposing.FootingTime >= MovingMinFootingTime)
+                StartTravel(lead.Opposing, (lead.RawProgress - _gate) * lead.SwingDistance, dt);
             return;
         }
         GaitFoot first = _nextFoot ?? (Left.MovePriority >= Right.MovePriority ? Left : Right);
@@ -602,7 +717,7 @@ internal sealed class BipedGait
         if (foot.IsTravelling || !foot.WantsToMove)
             return false;
         var other = foot.Opposing;
-        if (other.IsTravelling && other.RawProgress < OpposingGate)
+        if (other.IsTravelling && other.RawProgress < MathF.Min(_gate, 0.9f))
             return false;
         StartTravel(foot, 0f, dt);
         return true;
@@ -614,26 +729,35 @@ internal sealed class BipedGait
         bool standing = IsStandingStill;
         float swingScale = !standing && _startupSteps > 0 ? FirstSwingScale : 1f;
         foot.SwingDistance = MathF.Max(_swingDistance * swingScale, 0.02f * scale);
-        foot.SwingFloorTime = standing ? MathF.Min(MaxSwing, StillSwingTime) : MaxSwing;
+        float spin = System.Math.Clamp(MathF.Abs(YawRate) / FastSpinRate, 0f, 1f);
+        foot.SwingFloorTime = standing ? MathF.Min(MaxSwing, Lerp(StillSwingTime, SpinSwingTime, spin)) : MaxSwing;
         foot.SourcePosition = foot.Position;
         foot.SourceFacing = foot.Facing;
         foot.RawProgress = System.Math.Clamp(headStart / foot.SwingDistance, 0f, MaxHeadStart);
         foot.TravelProgress = foot.RawProgress;
         foot.ProgressRate = ProgressRate(foot, dt);
         foot.SwingDuration = (1f - foot.RawProgress) / MathF.Max(foot.ProgressRate, 1e-4f);
-        // The foot leaves the ground with its planted pitch and keeps rotating that way, toe down off the back,
-        // toe up off the front, at a rate the body speed sets. -xlinka
+        // The foot leaves the ground with its planted pitch. A running foot keeps rotating that way, toe down off
+        // the back as the heel kicks up, at a rate the body speed sets; a walking one just eases from its toe-off
+        // pitch to its landing pitch. Capped, since at a sprint the rate read off the speed spun the foot forty
+        // degrees a frame. -xlinka
         foot.LiftAngle = foot.Pitch;
-        foot.LiftAngularVelocity = SmoothSpeed / scale * Parameters.FootStepUpAngularVelocityMultiplier
-            * -MathF.Sign(ToLocal(foot.Position - _body).z);
+        foot.LiftAngularVelocity = System.Math.Clamp(SmoothSpeed / scale * Parameters.FootStepUpAngularVelocityMultiplier
+            * RunBlend, 0f, MaxLiftAngularSpeed) * -MathF.Sign(ToLocal(foot.Position - foot.RestPosition).z);
         foot.IsTravelling = true;
+        foot.Clocking = false;
+        foot.Opposing.Clocking = false;
         foot.WantsToMove = false;
         foot.MovePriority = 0f;
         foot.TravellingTime = 0f;
         foot.FootingTime = 0f;
 
         SetTarget(foot, foot.SwingDuration, foot.SwingDuration * SmoothSpeed);
-        float maximum = MathF.Min(MathF.Max(Parameters.FootStepUpHeight, Parameters.FootStepDownHeight), Parameters.MaxStepHeight) * scale;
+        foot.SwingTurn = SignedFlatAngle(foot.SourceFacing, foot.TargetFacing);
+        float walkHeight = MathF.Max(Parameters.FootStepUpHeight, Parameters.FootStepDownHeight);
+        float runHeight = MathF.Max(Parameters.RunStepHeight, 0f) * MathF.Max(Parameters.LegLength, 0.1f) / 0.9f;
+        float maximum = MathF.Min(Lerp(walkHeight, MathF.Max(runHeight, walkHeight), RunBlend)
+            * Lerp(1f, Parameters.CrouchStepHeight, System.Math.Clamp(Crouch, 0f, 1f)), Parameters.MaxStepHeight) * scale;
         float liftOff = Parameters.StepUpVelocityMultiplier * Parameters.StepUpVerticalRatio
             * SmoothSpeed * foot.SwingDuration * 0.5f;
         foot.SwingHeight = MathF.Min(maximum, MathF.Max(liftOff,
@@ -651,7 +775,8 @@ internal sealed class BipedGait
             return 1f / foot.SwingFloorTime;
         float ground = MathF.Max(_bodyDelta, SmoothSpeed * dt);
         float step = MathF.Max(ground, foot.SwingDistance * dt / foot.SwingFloorTime);
-        return step / (foot.SwingDistance * dt);
+        // Never quicker than a leg can swing: the short first step of a walk otherwise crossed in three frames.
+        return MathF.Min(step / (foot.SwingDistance * dt), 1f / MinSwingTime);
     }
 
     private void UpdateTravel(GaitFoot foot, float dt)
@@ -678,19 +803,29 @@ internal sealed class BipedGait
         SetTarget(foot, timeToLand, timeToLand * SmoothSpeed);
         float ease = StrideMotion.Ease(t);
         foot.Position = float3.Lerp(foot.SourcePosition, foot.TargetPosition, ease);
-        foot.Facing = SlerpFlat(foot.SourceFacing, foot.TargetFacing, ease);
+        float sweep = SignedFlatAngle(foot.SourceFacing, foot.TargetFacing);
+        if (sweep - foot.SwingTurn > MathF.PI)
+            sweep -= 2f * MathF.PI;
+        else if (sweep - foot.SwingTurn < -MathF.PI)
+            sweep += 2f * MathF.PI;
+        foot.SwingTurn = sweep;
+        foot.Facing = FlattenDir(floatQ.AxisAngleRad(float3.Up, sweep * ease) * foot.SourceFacing, foot.SourceFacing);
         foot.StepLift = StrideMotion.Lift(t, 2f + Lerp(Parameters.FootStepUpPow, Parameters.FootStepDownPow, t));
         float height = Lerp(Parameters.FootStepUpHeight, Parameters.FootStepDownHeight, t)
             / MathF.Max(MathF.Max(Parameters.FootStepUpHeight, Parameters.FootStepDownHeight), 1e-5f);
         foot.ArcHeight = foot.SwingHeight * foot.StepLift * height;
         foot.LiftAngle = System.Math.Clamp(foot.LiftAngle + dt * foot.LiftAngularVelocity,
             Parameters.FootTiltMinAngle, Parameters.FootTiltMaxAngle);
-        foot.Pitch = Lerp(foot.LiftAngle, LandingPitch(foot), t);
+        // Never past pointing at the floor: a long jogging swing spun the foot beyond straight down, where it has no
+        // forward left to read, and the foot turned over in the air for a few frames. -xlinka
+        foot.Pitch = System.Math.Clamp(Lerp(foot.LiftAngle, LandingPitch(foot), t), -MaxSwingPitch, MaxSwingPitch);
     }
 
-    // Heel first when the foot lands ahead of the body, toe first behind it.
+    // Heel first when the foot lands ahead of its rest, toe first behind it. Measured from the rest, the same as the
+    // planted pitch it hands over to: a crouch sets the rest well behind the body, and a landing judged against the
+    // body came down toe first and flipped to heel first the frame after. -xlinka
     private float LandingPitch(GaitFoot foot)
-        => -MathF.Sign(ToLocal(foot.TargetPosition - _body).z) * Parameters.FootStepDownAngle;
+        => -MathF.Sign(ToLocal(foot.TargetPosition - foot.RestPosition).z) * Parameters.FootStepDownAngle;
 
     // A foot touching down is the one moment the body has that the world can hear, and it is known
     // exactly here rather than guessed from a height threshold somewhere downstream. The speed it
@@ -712,7 +847,13 @@ internal sealed class BipedGait
         foot.GroundLerp = 1f;
         foot.IsTravelling = false;
         foot.TravelProgress = 0f;
-        foot.RawProgress = 0f;
+        foot.Clocking = !IsStandingStill;
+        // One clock at a time, the last foot down. Two feet landing close together in a quick crouch walk both kept
+        // theirs, the older one won the handover and the foot that had just landed went again. -xlinka
+        if (foot.Clocking)
+            foot.Opposing.Clocking = false;
+        if (!foot.Clocking)
+            foot.RawProgress = 0f;
         foot.TravellingTime = 0f;
         foot.FootingTime = 0f;
 
@@ -751,6 +892,17 @@ internal sealed class BipedGait
             return 0f;
         float dot = System.Math.Clamp(float3.Dot(a.Normalized, b.Normalized), -1f, 1f);
         return MathF.Acos(dot) * (180f / MathF.PI);
+    }
+
+    private static float SignedFlatAngle(float3 from, float3 to)
+    {
+        from.y = 0f;
+        to.y = 0f;
+        if (from.LengthSquared < 1e-8f || to.LengthSquared < 1e-8f)
+            return 0f;
+        from = from.Normalized;
+        to = to.Normalized;
+        return MathF.Atan2(float3.Dot(float3.Cross(from, to), float3.Up), System.Math.Clamp(float3.Dot(from, to), -1f, 1f));
     }
 
     private static float3 SlerpFlat(float3 from, float3 to, float t)

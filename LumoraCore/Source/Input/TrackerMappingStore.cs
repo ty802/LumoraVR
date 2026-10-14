@@ -130,6 +130,9 @@ public static class TrackerMappingStore
             return false;
         mapping.Enabled = enabled;
         Set(mapping);
+        var device = FindDevice(uniqueId);
+        if (device != null)
+            Apply(device, mapping);
         return true;
     }
 
@@ -150,8 +153,25 @@ public static class TrackerMappingStore
         if (!Settings.HasValue(Root + "." + segment + "." + KeyNode))
             return false;
         Settings.ClearSettings(Root + "." + segment);
+        var device = FindDevice(uniqueId);
+        if (device is ITrackerMappingReceiver receiver)
+            receiver.ClearMapping();
+        else if (device is TrackedObject tracked)
+            ClearTracked(tracked);
         Removed?.Invoke(uniqueId);
         return true;
+    }
+
+    // The device with this raw id, offline or not: a change made while a puck is off has to be on it when
+    // it comes back.
+    private static ITracker? FindDevice(string uniqueId)
+    {
+        var input = Engine.Current?.InputInterface;
+        if (input == null)
+            return null;
+        var found = new List<ITracker>(1);
+        input.GetDevices(found, t => t.UniqueID == uniqueId);
+        return found.Count > 0 ? found[0] : null;
     }
 
     // Every stored mapping, connected or not. Broken entries (a hand-edited file, a half-written save)
@@ -196,7 +216,7 @@ public static class TrackerMappingStore
 
         if (tracker is TrackedObject tracked)
         {
-            if (mapping.Enabled)
+            if (mapping.Enabled && TrackerRoles.IsMappable(mapping.Node))
             {
                 tracked.CorrespondingBodyNode = mapping.Node;
                 tracked.BodyNodePositionOffset = mapping.PositionOffset;
@@ -204,14 +224,19 @@ public static class TrackerMappingStore
             }
             else
             {
-                tracked.CorrespondingBodyNode = BodyNode.NONE;
-                tracked.BodyNodePositionOffset = float3.Zero;
-                tracked.BodyNodeRotationOffset = floatQ.Identity;
+                ClearTracked(tracked);
             }
             return true;
         }
 
         return false;
+    }
+
+    private static void ClearTracked(TrackedObject tracked)
+    {
+        tracked.CorrespondingBodyNode = BodyNode.NONE;
+        tracked.BodyNodePositionOffset = float3.Zero;
+        tracked.BodyNodeRotationOffset = floatQ.Identity;
     }
 
     // The body node a tracker should drive right now: the saved mapping when there is one and it is
@@ -222,7 +247,7 @@ public static class TrackerMappingStore
         if (tracker == null)
             return BodyNode.NONE;
         if (TryGet(tracker.UniqueID, out var mapping))
-            return mapping.Enabled ? mapping.Node : BodyNode.NONE;
+            return mapping.Enabled && TrackerRoles.IsMappable(mapping.Node) ? mapping.Node : BodyNode.NONE;
 
         // No saved mapping means no mapping. Falling back to the runtime's suggested role would drive a
         // body node through an uncalibrated identity offset, which puts the joint exactly on the puck

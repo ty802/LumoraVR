@@ -142,7 +142,7 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         {
             input.RegisterInputEventReceiver(this);
             _isRegistered = true;
-            LumoraLogger.Log($"TrackedDevicePositioner: Registered for input on '{Slot.SlotName.Value}' (node: {AutoBodyNode.Value})");
+            LumoraLogger.Debug($"TrackedDevicePositioner: Registered for input on '{Slot.SlotName.Value}' (node: {AutoBodyNode.Value})");
         }
     }
 
@@ -166,18 +166,25 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
 
     private void RemoveBodyNode()
     {
-        if (ObjectSlot.Target != null && ObjectSlot.Target.HasEquipped)
+        var socket = ObjectSlot.Target;
+        var freed = socket?.Equipped.Target?.Node ?? BodyNode.NONE;
+        if (socket != null && socket.HasEquipped)
         {
-            ObjectSlot.Target.Dequip(new System.Collections.Generic.HashSet<Avatar.IAvatarEquippable>());
+            socket.Dequip(new System.Collections.Generic.HashSet<Avatar.IAvatarEquippable>());
         }
         BodyNodeRoot.Target?.Destroy();
+        if (BodyNodeRoot.Target != null)
+            BodyNodeRoot.Target = null!;
+        if (ObjectSlot.Target != null)
+            ObjectSlot.Target = null!;
+        if (freed != BodyNode.NONE)
+            OfferFreedDriver(freed, socket!);
     }
 
     private void UpdateObjectSlot()
     {
         if (BodyNodeRoot.Target == null)
         {
-            // Create body node root slot
             BodyNodeRoot.Target = Slot.AddSlot("BodyNode");
 
             // Attach AvatarSocket
@@ -187,7 +194,6 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
             // Drive IsTracking and IsActive from this component
         }
 
-        // Update node value if AutoBodyNode is set
         if (AutoBodyNode.Value.HasValue && ObjectSlot.Target != null)
         {
             ObjectSlot.Target.Node.Value = AutoBodyNode.Value.Value;
@@ -207,30 +213,70 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
             // The parent Slot is the tracked/default body transform. BodyNodeRoot is only the
             // equipment/body-node offset child. When tracking is absent the offset must be
             // identity; otherwise a stale desktop write can stack another head height under
-            // Head and pull the avatar head/nameplate away from the camera.
+            // Head and pull the avatar head/nameplate away from the camera. A body tracker keeps
+            // its calibrated offset instead, so an occluded puck does not flap synced writes.
             if (device.IsTracking)
             {
-                BodyNodeRoot.Target.LocalPosition.Value = device.BodyNodePositionOffset;
-                BodyNodeRoot.Target.LocalRotation.Value = device.BodyNodeRotationOffset;
+                SetIfChanged(BodyNodeRoot.Target.LocalPosition, device.BodyNodePositionOffset);
+                SetIfChanged(BodyNodeRoot.Target.LocalRotation, device.BodyNodeRotationOffset);
             }
-            else
+            else if (device is not ITracker)
             {
-                BodyNodeRoot.Target.LocalPosition.Value = float3.Zero;
-                BodyNodeRoot.Target.LocalRotation.Value = floatQ.Identity;
+                SetIfChanged(BodyNodeRoot.Target.LocalPosition, float3.Zero);
+                SetIfChanged(BodyNodeRoot.Target.LocalRotation, floatQ.Identity);
             }
 
             if (ObjectSlot.Target != null)
             {
-                ObjectSlot.Target.Node.Value = device.CorrespondingBodyNode;
-                ObjectSlot.Target.IsTracking.Value = IsTracking.Value;
-                ObjectSlot.Target.IsActive.Value = IsActive.Value;
+                var socket = ObjectSlot.Target;
+                var node = device.CorrespondingBodyNode;
+                if (socket.Node.Value != node)
+                {
+                    // A full socket turns the re-offer away and the old part's pose driver stays on this
+                    // device, so it is emptied first. The driver it gave up goes to an empty socket already
+                    // waiting for that part: when two pucks swap joints, the first one relabelled is that
+                    // socket. -xlinka
+                    var freed = socket.Equipped.Target?.Node ?? BodyNode.NONE;
+                    if (socket.HasEquipped)
+                        socket.Dequip(new System.Collections.Generic.HashSet<Avatar.IAvatarEquippable>());
+                    socket.Node.Value = node;
+                    if (freed != BodyNode.NONE && freed != node)
+                        OfferFreedDriver(freed, socket);
+                }
+                SetIfChanged(socket.IsTracking, IsTracking.Value);
+                SetIfChanged(socket.IsActive, IsActive.Value);
             }
         }
+    }
+
+    // A plain write marks the field for sync even when the value is the same, and these run every input
+    // frame for every tracked device.
+    private static void SetIfChanged<T>(Sync<T> field, T value)
+    {
+        if (!System.Collections.Generic.EqualityComparer<T>.Default.Equals(field.Value, value))
+            field.Value = value;
+    }
+
+    private void OfferFreedDriver(BodyNode node, AvatarSocket except)
+    {
+        var root = LocalUserRoot;
+        if (root == null)
+            return;
+        var waiting = new System.Collections.Generic.List<AvatarSocket>();
+        root.GetRegisteredComponents(waiting, s => s != except && !s.IsDestroyed && !s.HasEquipped && s.Node.Value == node);
+        if (waiting.Count > 0)
+            waiting[0].OfferToWearer();
     }
 
     // Convert tracked poses into this node's parent frame before publishing its transform stream.
     public void BeforeInputUpdate()
     {
+        // Device tracking space belongs to the focused user. Applying it in another world
+        // teleports that world's head/controllers toward the focused world's avatar.
+        // Overlay rigs still need tracking for the dashboard and detached panels.
+        if (World == null || World.Focus == World.WorldFocus.Background || !IsUnderLocalUser)
+            return;
+
         var device = TrackedDevice;
 
         bool tracking = false;
@@ -281,13 +327,13 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
             }
 
             node = device.CorrespondingBodyNode;
-            CorrespondingBodyNode.Value = node;
+            SetIfChanged(CorrespondingBodyNode, node);
 
             // Mirror the resolved device index into the synced field here, in the update path,
             // so the TrackedDevice getter stays read-only. Only meaningful when AutoBodyNode
             // drove the lookup; otherwise DeviceIndex is the authored input.
             if (AutoBodyNode.Value.HasValue)
-                DeviceIndex.Value = device is InputDevice inputDev ? inputDev.DeviceIndex : -1;
+                SetIfChanged(DeviceIndex, device is InputDevice inputDev ? inputDev.DeviceIndex : -1);
         }
         else
         {
@@ -300,16 +346,25 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         pos = ClampPosition(pos);
         rot = FilterRotation(rot);
 
-        // Update slot transform only if change is significant (avoid syncing VR tracking jitter)
+        // Skip only a truly still frame. The rotation gate was 0.0001 on 1-|dot|, which is about 1.6 degrees:
+        // a hand turning slowly left its controller (and the laser on it) frozen until the turn piled up past
+        // that, then jumped the whole 1.6 degrees at once, 3 cm at a metre. It is measured on the components
+        // now, because 1-|dot| in float cannot see a turn much under 0.05 degrees at all and stepped a slow
+        // hand whatever the threshold. The poses travel on their transform streams (or stay in the local
+        // userspace world), so writing every frame costs nothing on the wire. -xlinka
         const float POS_THRESHOLD_SQ = 0.0001f * 0.0001f; // 0.1mm squared
-        const float ROT_THRESHOLD = 0.0001f;
+        const float ROT_THRESHOLD_SQ = 2e-9f; // about 0.005 degrees
 
         var currentPos = Slot.LocalPosition.Value;
         var currentRot = Slot.LocalRotation.Value;
 
         float posDeltaSq = (pos - currentPos).LengthSquared;
-        float dot = floatQ.Dot(rot, currentRot);
-        float rotDelta = 1.0f - (dot < 0 ? -dot : dot);
+        float side = floatQ.Dot(rot, currentRot) < 0f ? -1f : 1f;
+        float qx = rot.x - side * currentRot.x;
+        float qy = rot.y - side * currentRot.y;
+        float qz = rot.z - side * currentRot.z;
+        float qw = rot.w - side * currentRot.w;
+        float rotDeltaSq = qx * qx + qy * qy + qz * qz + qw * qw;
 
         // When a TransformStreamDriver shares this slot, the stream is the
         // transport - writing the fields with sync generation would send every
@@ -329,7 +384,7 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
             else
                 Slot.LocalPosition.Value = pos;
         }
-        if (rotDelta > ROT_THRESHOLD)
+        if (rotDeltaSq > ROT_THRESHOLD_SQ)
         {
             if (streamed)
                 Slot.LocalRotation.SetValueSilently(rot, change: true);
@@ -337,8 +392,8 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
                 Slot.LocalRotation.Value = rot;
         }
 
-        IsTracking.Value = tracking;
-        IsActive.Value = isActive;
+        SetIfChanged(IsTracking, tracking);
+        SetIfChanged(IsActive, isActive);
 
         if (node != BodyNode.NONE)
         {

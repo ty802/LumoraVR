@@ -18,6 +18,10 @@ namespace Lumora.Core.Components.Avatar;
 public class AvatarIK : Component, IAvatarEquipReceiver
 {
     private readonly FullBodyIKSolver _solver = new();
+    private readonly Slot?[] _solverBones = new Slot?[FullBodyIKSolver.DrivenNodes.Length];
+    private HumanoidRig? _solverRig;
+    private int _restPoseRevision;
+    private int _capturedRestPoseRevision = -1;
     private readonly ProceduralGrounding _grounding = new();
     private struct ReferenceOffset
     {
@@ -29,6 +33,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     [Group("References")]
     public readonly SyncRef<SkeletonBuilder> Skeleton = null!;
     public readonly SyncRef<HumanoidRig> Rig = null!;
+    public readonly SyncRef<ImportedBodyAnimation> BodyAnimation = new();
     public readonly SyncRef<UserRoot> UserRoot = null!;
 
     [Group("General")]
@@ -43,6 +48,12 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     // Safe to capture the authored pose now that FixTransforms re-bases every frame and the IK weight gate
     // stops untracked limbs collapsing. -xlinka
     public readonly Sync<bool> ForceTpose = null!;
+    // How the legs stand (see LegMode). Auto reads the rig. An avatar whose legs read digitigrade gets a
+    // "Digi Legs" switch in its own menu that drives this, and a change eases the legs over rather than popping.
+    [Group("Legs")]
+    public readonly Sync<LegMode> Legs = null!;
+    // Set once that switch has been made, so a wearer who takes it out of the menu keeps it out.
+    protected readonly Sync<bool> _digiLegsSwitchMade = null!;
 
     // IK tunables - exposed so feel can be dialed in live in-world (no rebuild).
     [Group("Solver")]
@@ -73,17 +84,18 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     [Group("Idle Motion")]
     public readonly Sync<float> IdleBreathing = null!;      // 0..2 chest breathing amount
     public readonly Sync<float> IdleSway = null!;           // 0..2 standing weight-shift sway amount
-    public readonly Sync<float> WalkArmSwing = null!;       // 0..1 walking counter-swing on untracked arms
+    public readonly Sync<float> WalkArmSwing = null!;       // 0..2 arm swing on untracked arms, 1 = natural
 
-    // LOCOMOTION ANIMATION. The arms are a simulated weight on a shoulder rather than a sine, and
-    // the head rises, falls and leans with the stride. See HandMotion and FullBodyIKSolver.
+    // LOCOMOTION ANIMATION. The arms swing as a pendulum the legs drive, the hips rise, fall, sway and
+    // turn with the stride, and the head rides the body's bob without ever moving the view. See HandMotion
+    // and FullBodyIKSolver.
     [Group("Locomotion Animation")]
     public readonly Sync<float> HandMotion = null!;         // 0..1 the whole arm simulation, 0 = off
-    public readonly Sync<float> RunSpeed = null!;           // m/s at which the arms swing like a run
-    public readonly Sync<float> HeadBobAmount = null!;      // 0..2 scales the whole head bob
-    public readonly Sync<float> HeadBobVertical = null!;    // m of rise and fall at full stride
-    public readonly Sync<float> HeadBobHorizontal = null!;  // m of side to side at full stride
-    public readonly Sync<float> HeadBobRoll = null!;        // degrees of lean at full stride
+    public readonly Sync<float> RunSpeed = null!;           // m/s the walk turns into a run, for a 0.9 m leg
+    public readonly Sync<float> HeadBobAmount = null!;      // 0..2 how much of the body's bob and sway the head bone rides
+    public readonly Sync<float> HeadBobVertical = null!;    // m the head bone may ride up and down off the view
+    public readonly Sync<float> HeadBobHorizontal = null!;  // m it may ride side to side
+    public readonly Sync<float> HeadBobRoll = null!;        // degrees the head leans toward the planted foot, 0 keeps it level
     public readonly Sync<float> FootAvoidance = null!;      // m two feet keep between them
     [Group("IK Weights")]
     public readonly Sync<float> HandIKWeight = null!;   // per-effector IK weight for both hands
@@ -105,7 +117,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     public readonly Sync<float> StrafeStepRatio = null!;     // stride scale when moving sideways
     public readonly Sync<float> BackStepRatio = null!;       // stride scale when moving backwards
     public readonly Sync<float> TurnInfluence = null!;       // 0..1 of the expected turn taken out of the step vector
-    public readonly Sync<float> MinOpposingProgress = null!; // 0..1 of the other foot's swing before this one may lift
+    public readonly Sync<float> MinOpposingProgress = null!; // 0..1 of a running swing before the other foot lifts; a walk keeps both down between
     public readonly Sync<float> SpeedRiseTime = null!;       // s the gait takes to accept a speed increase
     public readonly Sync<float> SpeedFallTime = null!;       // s it takes to accept a decrease
     public readonly Sync<float> StepDownHeight = null!;      // m of arc at landing
@@ -115,8 +127,8 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     public readonly Sync<float> StepLiftOffVertical = null!; // 0..1 of that peel that goes straight up
     // Foot pitch through the stride: a planted foot rolls heel-to-toe as the body walks over it, keeps pitching
     // after lift-off at a rate the body speed sets, and lands heel first. Degrees; positive is toe down.
-    public readonly Sync<float> FootGroundAngle = null!;      // deg a planted foot pitches at half a stride from its rest
-    public readonly Sync<float> FootGroundCurve = null!;      // shape of that pitch over the offset from rest
+    public readonly Sync<float> FootGroundAngle = null!;      // deg of heel rise a planted foot reaches as it is left behind
+    public readonly Sync<float> FootGroundCurve = null!;      // how late in the stance the heel starts to rise
     public readonly Sync<float> FootLiftAngularSpeed = null!; // deg/s per m/s of body speed the foot keeps pitching after lift-off
     public readonly Sync<float> FootStepDownAngle = null!;    // deg of heel-first pitch the foot lands with
     public readonly Sync<float> FootTiltMinAngle = null!;     // deg, toe-up limit of the lift pitch
@@ -154,13 +166,22 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     protected readonly SyncRef<AvatarPoseDriver> _leftKneeNode = null!;
     protected readonly SyncRef<AvatarPoseDriver> _rightKneeNode = null!;
 
+    // The rest pose the solver captures from, kept with the avatar. The solve writes bones on each machine
+    // alone, so a capture reads whatever pose the avatar was last left in; putting this back first is what
+    // lets a taken-off avatar hold its pose without that pose ever becoming the rest. Stored once, from the
+    // bones before the first solve, by the machine that first wears it. -xlinka
+    [Group("Rest Pose")]
+    protected readonly SyncArray<BodyNode> _restNodes = null!;
+    protected readonly SyncArray<float3> _restPositions = null!;
+    protected readonly SyncArray<floatQ> _restRotations = null!;
+
     private bool _isInitialized;
     private bool _suspendSolve;
+    private bool _wasWorn;
+    private AvatarForm? _form;
     private ReferenceOffset _viewOffset;
     private ReferenceOffset _leftHandOffset;
     private ReferenceOffset _rightHandOffset;
-    private ReferenceOffset _leftFootOffset;
-    private ReferenceOffset _rightFootOffset;
 
     // Procedural locomotion for untracked feet. The model lives in BipedGait: each foot holds a resting
     // place under the body and a target pushed along the travel line, and a swing advances with the ground
@@ -216,17 +237,27 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     private float3 _gaitAnchorOffset;                  // smoothed centre-of-mass offset from the root, planar
     private float3 _gaitAnchorRope;                    // trailing point the walking velocity is read from
     private bool _gaitAnchorValid;
-    // Idle-life state: stillness weight (fades in slow, out fast), walking arm-swing phase + weight.
+    private float3 _gaitAnchorRootForward;             // the root's flat facing the two above were last turned to
+    // Idle-life state: stillness weight (fades in slow, out fast), how much the gait drives the body.
     private float _idleWeight;
     private float3 _bodyVelocityLocal;
+    private float3 _bodyAccelLocal;
     private float3 _lastBodyPosition;
     private bool _hasLastBodyPosition;
     private float _runBlend;
     private float _airBlend;
     private bool _suppressLocomotionAnimation;
     private bool _suppressProceduralFeet;
-    private float _armSwingPhase;
     private float _armSwingWeight;
+    // The stride as the upper body reads it, refreshed by the gait each frame: where the legs put each arm,
+    // how far the arm swings, how fast it settles, and the pelvis and chest turn, the pelvis list and the
+    // sideways shift over the planted foot. -xlinka
+    private float _legDrive;
+    private float _armAmplitude;
+    private float _armFrequency = 2f;
+    private float _pelvisYaw, _pelvisRoll, _chestYaw, _headRoll;
+    private float _sway, _swayVelocity;
+    private float _crouch;
     private readonly List<Slot> _footRayExclude = new(1);
     private float _leftStepLift;         // 0..1 current step arc height per foot
     private float _rightStepLift;
@@ -237,7 +268,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     // steps still steps. -xlinka
     private float3 _bodySettleXZ;
     private float3 _bodySettleVel;
-    private float _bobVelocity;
+    private float _bob, _bobVelocity;
     private bool _leftIsSupport = true;  // last-elected support foot (the more-planted one), for the settle bias
     // Last gait-planted foot world position + whether procedural locomotion currently owns that foot. The
     // foot proxy is ALSO driven by its AvatarPoseDriver, so rather than rely on update-order to land last, we
@@ -274,7 +305,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         _gait.Reset();
         _hasLeftPlant = _hasRightPlant = false;
         _bodySettleXZ = _bodySettleVel = _locomotionOffset = float3.Zero;
-        _bobVelocity = 0f;
+        _bob = _bobVelocity = 0f;
         // Equip reparents and rescales the avatar, so the solver's captured
         // rest pose - world-space bone lengths and rest directions - is stale.
         // Arms solved against pre-equip lengths can't reach the real targets
@@ -285,20 +316,170 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         Slot.RunInUpdates(1, () =>
         {
             if (IsDestroyed || revision != _equipRevision || UserRoot.Target == null) return;
-            EnsureSolver();
+            EnsureSolver(storeRest: true);
             RecomputeReferenceOffsets();
             _suspendSolve = false;
         });
-        LumoraLogger.Log($"AvatarIK: Equipped to {slot.Node.Value}");
+        LumoraLogger.Debug($"AvatarIK: Equipped to {slot.Node.Value}");
     }
 
     public void OnDequip(AvatarSocket slot)
     {
         _equipRevision++;
         _suspendSolve = true;
-        _solver.ResetToDefaultPose();
+        if (!HasRestPose)
+        {
+            using (World?.DataModelPermissions?.EnterSystemBypass())
+                _solver.ResetToDefaultPose();
+        }
+        CommitBonePose();
         UserRoot.Target = null!;
-        LumoraLogger.Log($"AvatarIK: Dequipped from {slot.Node.Value}");
+        LumoraLogger.Debug($"AvatarIK: Dequipped from {slot.Node.Value}");
+    }
+
+    public bool HasRestPose
+    {
+        get
+        {
+            int count = _restNodes.Count;
+            return count > 0 && _restPositions.Count == count && _restRotations.Count == count;
+        }
+    }
+
+    // The stored rest pose back on the bones, on this machine only. False when none is stored.
+    public bool ApplyRestPose()
+    {
+        var rig = Rig.Target ?? Slot?.GetComponent<HumanoidRig>() ?? Slot?.GetComponentInChildren<HumanoidRig>();
+        if (rig == null || rig.IsDestroyed || !HasRestPose)
+            return false;
+
+        using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
+        int count = _restNodes.Count;
+        for (int i = 0; i < count; i++)
+        {
+            var bone = rig.TryGetBone(_restNodes[i]);
+            if (bone == null || bone.IsDestroyed)
+                continue;
+            bone.LocalPosition.SetValueSilently(_restPositions[i], change: true);
+            bone.LocalRotation.SetValueSilently(_restRotations[i], change: true);
+        }
+        return true;
+    }
+
+    // Once, from the bones as they stand before the first solve, by a machine that may write the avatar. A
+    // refusal after all leaves the arrays uneven, which HasRestPose reads as none stored. -xlinka
+    private void StoreRestPose(HumanoidRig rig)
+    {
+        if (_restNodes.Count > 0 || !MayWriteAvatar())
+            return;
+
+        var nodes = new List<BodyNode>();
+        var positions = new List<float3>();
+        var rotations = new List<floatQ>();
+        foreach (var node in FullBodyIKSolver.DrivenNodes)
+        {
+            var bone = rig.TryGetBone(node);
+            if (bone == null || bone.IsDestroyed)
+                continue;
+            nodes.Add(node);
+            positions.Add(bone.LocalPosition.Value);
+            rotations.Add(bone.LocalRotation.Value);
+        }
+        if (nodes.Count == 0)
+            return;
+
+        try
+        {
+            _restNodes.AddRange(nodes);
+            _restPositions.AddRange(positions);
+            _restRotations.AddRange(rotations);
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private bool MayWriteAvatar()
+    {
+        var world = World;
+        if (world == null || Slot == null)
+            return false;
+        return world.IsAuthority || Slot.IsUnderLocalUser || Slot.IsMintedHere;
+    }
+
+    // The solve writes bones on each machine alone, so nothing synced says what pose the avatar is in. Taking
+    // it off says it once, as real writes, while the wearer still owns it: every machine, a later joiner and a
+    // save then hold the same pose. -xlinka
+    private void CommitBonePose()
+    {
+        var rig = Rig.Target;
+        if (rig == null || rig.IsDestroyed)
+            return;
+        foreach (var node in FullBodyIKSolver.DrivenNodes)
+        {
+            var bone = rig.TryGetBone(node);
+            if (bone == null || bone.IsDestroyed)
+                continue;
+            bone.LocalPosition.ForceSet(bone.LocalPosition.Value);
+            bone.LocalRotation.ForceSet(bone.LocalRotation.Value);
+        }
+    }
+
+    private bool IsWorn
+    {
+        get
+        {
+            if (_form == null || _form.IsDestroyed)
+                _form = Slot?.GetComponentInParents<AvatarForm>();
+            return _form is { IsDestroyed: false } form && form.Wearer != null;
+        }
+    }
+
+    private void TrackWearer()
+    {
+        bool worn = IsWorn;
+        if (worn == _wasWorn)
+            return;
+        _wasWorn = worn;
+
+        if (worn)
+        {
+            // A machine that first met this avatar held, or mid-solve, captured that pose as rest. -xlinka
+            if (HasRestPose && _isInitialized)
+                EnsureSolver();
+            return;
+        }
+
+        // Taken off, on every machine. The colliders scaled with the worn fit and need no refit, and an
+        // avatar with no stored rest goes back to its capture rather than holding a pose the next capture
+        // would take for rest. -xlinka
+        TakeColliderScaleBaseline();
+        if (!HasRestPose && _solver.IsReady)
+        {
+            using (World?.DataModelPermissions?.EnterSystemBypass())
+                _solver.ResetToDefaultPose();
+        }
+    }
+
+    private void TakeColliderScaleBaseline()
+    {
+        var rig = Rig.Target;
+        var refBone = rig?.TryGetBone(BodyNode.Hips) ?? rig?.TryGetBone(BodyNode.Spine);
+        if (refBone != null && !refBone.IsDestroyed)
+            _lastColliderScale = refBone.GlobalScale.x;
+    }
+
+    // The bones at rest for a measurement: the stored rest when there is one, the solver's capture otherwise.
+    // Written on this machine only; the caller puts the pose back. -xlinka
+    private bool ResetBonesForMeasure()
+    {
+        if (ApplyRestPose())
+            return true;
+        if (!_solver.IsReady)
+            return false;
+        using (World?.DataModelPermissions?.EnterSystemBypass())
+            _solver.ResetToDefaultPose();
+        return true;
     }
 
     private readonly UserRootRegistrationTracker _userRootReg;
@@ -323,6 +504,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         UseProceduralFeet.Value = true;
         IKEnabled.Value = true;
         ForceTpose.Value = false;
+        Legs.Value = LegMode.Auto;
 
         SpineStiffness.Value = 0.2f;
         ShoulderReach.Value = 0.45f;
@@ -347,13 +529,13 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         // Off. The standing weight-shift read as a constant wiggle on a worn avatar rather than as life,
         // and the hand drift that went with it is gone entirely. Still here to turn back up per avatar.
         IdleSway.Value = 0f;
-        WalkArmSwing.Value = 0.7f;
+        WalkArmSwing.Value = 1f;
         HandMotion.Value = 1f;
-        RunSpeed.Value = 3.2f;
+        RunSpeed.Value = 2.2f;
         HeadBobAmount.Value = 1f;
-        HeadBobVertical.Value = 0.022f;
-        HeadBobHorizontal.Value = 0.012f;
-        HeadBobRoll.Value = 1.6f;
+        HeadBobVertical.Value = 0.08f;
+        HeadBobHorizontal.Value = 0.03f;
+        HeadBobRoll.Value = 0f;
         FootAvoidance.Value = 0.085f;
         HandIKWeight.Value = 1f;
         FootIKWeight.Value = 1f;
@@ -364,9 +546,9 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         BodyBob.Value = 0f;
         CrouchBackShift.Value = 0.35f;
         StepAngleThreshold.Value = 25f;
-        MaxStepVelocity.Value = 6.0f;
+        MaxStepVelocity.Value = 12.0f;
         GaitReferenceSpeed.Value = 1.4f;
-        StepLength.Value = 0.62f;
+        StepLength.Value = 0.74f;
         StrafeStepRatio.Value = 0.5f;
         BackStepRatio.Value = 0.75f;
         TurnInfluence.Value = 0.2f;
@@ -378,8 +560,8 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         StepDownCurve.Value = 0.4f;
         StepLiftOff.Value = 0.25f;
         StepLiftOffVertical.Value = 0.75f;
-        FootGroundAngle.Value = 10f;
-        FootGroundCurve.Value = 1.2f;
+        FootGroundAngle.Value = 25f;
+        FootGroundCurve.Value = 2f;
         FootLiftAngularSpeed.Value = 475f;
         FootStepDownAngle.Value = 20f;
         FootTiltMinAngle.Value = -30f;
@@ -407,10 +589,30 @@ public class AvatarIK : Component, IAvatarEquipReceiver
             StepThreshold.Value = 0.14f;
         if (MathF.Abs(StepAngleThreshold.Value - 35f) < 1e-6f)
             StepAngleThreshold.Value = 25f;
-        if (MathF.Abs(MaxStepVelocity.Value - 2f) < 1e-6f)
-            MaxStepVelocity.Value = 6f;
+        // A desktop sprint is 8.5 m/s; a gait capped at 6 left the feet behind and dragging. -xlinka
+        if (MathF.Abs(MaxStepVelocity.Value - 2f) < 1e-6f || MathF.Abs(MaxStepVelocity.Value - 6f) < 1e-6f)
+            MaxStepVelocity.Value = 12f;
         if (MathF.Abs(FootStanceWidth.Value - 0.10f) < 1e-6f)
             FootStanceWidth.Value = 0f;
+        // The same for the locomotion animation: the run starts where a body actually breaks into one, the
+        // step length is a real walking step, the heel rises off the back of the stance, the arm swing is the
+        // whole swing, and the head keeps level and rides the body's bob instead of rolling on its own. -xlinka
+        if (MathF.Abs(RunSpeed.Value - 3.2f) < 1e-6f)
+            RunSpeed.Value = 2.2f;
+        if (MathF.Abs(StepLength.Value - 0.62f) < 1e-6f)
+            StepLength.Value = 0.74f;
+        if (MathF.Abs(FootGroundAngle.Value - 10f) < 1e-6f)
+            FootGroundAngle.Value = 25f;
+        if (MathF.Abs(FootGroundCurve.Value - 1.2f) < 1e-6f)
+            FootGroundCurve.Value = 2f;
+        if (MathF.Abs(WalkArmSwing.Value - 0.7f) < 1e-6f)
+            WalkArmSwing.Value = 1f;
+        if (MathF.Abs(HeadBobVertical.Value - 0.022f) < 1e-6f)
+            HeadBobVertical.Value = 0.08f;
+        if (MathF.Abs(HeadBobHorizontal.Value - 0.012f) < 1e-6f)
+            HeadBobHorizontal.Value = 0.03f;
+        if (MathF.Abs(HeadBobRoll.Value - 1.6f) < 1e-6f)
+            HeadBobRoll.Value = 0f;
 
         if (Skeleton.Target == null)
             Skeleton.Target = Slot.GetComponent<SkeletonBuilder>() ?? Slot.GetComponentInChildren<SkeletonBuilder>();
@@ -431,7 +633,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         RecomputeReferenceOffsets();
 
         if (_isInitialized)
-            LumoraLogger.Log($"AvatarIK: Started on '{Slot.SlotName.Value}' with skeleton");
+            LumoraLogger.Debug($"AvatarIK: Started on '{Slot.SlotName.Value}' with skeleton");
         else
             LumoraLogger.Warn($"AvatarIK: No valid skeleton found on '{Slot.SlotName.Value}'");
     }
@@ -458,8 +660,19 @@ public class AvatarIK : Component, IAvatarEquipReceiver
             _isInitialized = true;
             EnsureSolver();
             RecomputeReferenceOffsets();
-            LumoraLogger.Log("AvatarIK: Late-start with skeleton");
+            LumoraLogger.Debug("AvatarIK: Late-start with skeleton");
         }
+
+        // A replicated rig can become usable before all of its limbs and rest-pose records arrive.
+        // IsReady only means a spine was captured; it must not freeze an incomplete bone binding.
+        if (_isInitialized && SolverBindingsChanged())
+        {
+            EnsureSolver();
+            RecomputeReferenceOffsets();
+        }
+
+        TrackWearer();
+        MaybeAddDigiLegsSwitch();
 
         if (_isInitialized)
         {
@@ -481,12 +694,220 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         // event-driven because it is two component lookups a frame and the alternative is a
         // subscription that has to survive every reparent an avatar goes through. -xlinka
         _suppressLocomotionAnimation = LocomotionAnimationSuppressor.IsSuppressed(Slot, out bool suppressFeet);
-        _suppressProceduralFeet = suppressFeet;
+        _suppressProceduralFeet = suppressFeet || BodyAnimation.Target?.ReplacesFeet == true;
 
         using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
-        if (UseProceduralFeet.Value && !_suppressProceduralFeet)
-            UpdateProceduralFeet();
+        RefreshBodyDrivers();
+        RunGait();
         SolveBody();
+    }
+
+    // BODY PARTS SOMETHING ELSE PUTS SOMEWHERE.
+    //
+    // A pelvis or a pair of feet is driven while its pose node reports tracking: a tracker on that part, or a
+    // seat whose filters put the part where the seat wants it. The weights ease rather than snap, the pelvis at
+    // one rate both ways and the feet back out twice as fast as they came in, and the feet count only as a pair.
+    // A part a seat supplies is PROVIDED: its pose is a body frame from the seat's references rather than a
+    // joint a tracker was calibrated onto, the gait and the floor pin stand down while it holds, and a provided
+    // foot bends its knee toward a point ahead of and above it. The last driven pose is kept in the user's
+    // space, so easing back out once the seat lets go has something to ease from. -xlinka
+    private const float BodyDriverEaseRate = 1.6f;  // per second
+    private const float KneeGoalRise = 0.5f;        // m above a provided foot, at user scale
+    private const float KneeGoalAhead = 0.5f;       // m ahead of it
+    private float _pelvisDriveWeight;
+    private float _feetDriveWeight;
+    private bool _pelvisDriven;
+    private bool _pelvisProvided;
+    private bool _feetDriven;
+    private bool _bodyProvided;
+    private bool _pelvisCached;
+    private float3 _pelvisCachePos;
+    private floatQ _pelvisCacheRot = floatQ.Identity;
+    private bool _pelvisCacheBodyFrame;
+    private bool _feetCached;
+    private float3 _leftFootCachePos, _rightFootCachePos;
+    private floatQ _leftFootCacheRot = floatQ.Identity, _rightFootCacheRot = floatQ.Identity;
+    private bool _leftFootCacheProvided, _rightFootCacheProvided;
+
+    private void RefreshBodyDrivers()
+    {
+        float step = BodyDriverEaseRate * MathF.Max(World?.Time.Delta ?? 0f, 0f);
+
+        _pelvisDriven = IsBodyNodeDriven(_pelvisNode.Target);
+        _pelvisProvided = _pelvisDriven && IsProvided(_pelvisNode.Target);
+        _feetDriven = IsBodyNodeDriven(_leftFootNode.Target) && IsBodyNodeDriven(_rightFootNode.Target);
+        bool leftProvided = _feetDriven && IsProvided(_leftFootNode.Target);
+        bool rightProvided = _feetDriven && IsProvided(_rightFootNode.Target);
+        _bodyProvided = _pelvisProvided || (leftProvided && rightProvided);
+
+        _pelvisDriveWeight = Ease(_pelvisDriveWeight, _pelvisDriven, step, step);
+        _feetDriveWeight = Ease(_feetDriveWeight, _feetDriven, step, step * 2f);
+
+        var userSlot = UserRoot.Target?.Slot;
+        if (userSlot == null || userSlot.IsDestroyed)
+            return;
+
+        if (_pelvisDriven && _pelvisProxy.Target is { IsDestroyed: false } pelvisProxy)
+        {
+            _pelvisCachePos = userSlot.GlobalPointToLocal(pelvisProxy.GlobalPosition);
+            _pelvisCacheRot = userSlot.GlobalRotationToLocal(pelvisProxy.GlobalRotation);
+            _pelvisCacheBodyFrame = _pelvisProvided;
+            _pelvisCached = true;
+        }
+
+        if (_feetDriven && _solver.IsReady
+            && CacheDrivenFoot(userSlot, true, _leftFootProxy.Target, leftProvided, ref _leftFootCachePos, ref _leftFootCacheRot)
+            && CacheDrivenFoot(userSlot, false, _rightFootProxy.Target, rightProvided, ref _rightFootCachePos, ref _rightFootCacheRot))
+        {
+            _leftFootCacheProvided = leftProvided;
+            _rightFootCacheProvided = rightProvided;
+            _feetCached = true;
+        }
+    }
+
+    // A tracked foot proxy already carries the foot BONE's pose (calibration sets the tracker offset so it lands
+    // on the bone pivot with the bone's rotation), which is what the solver places, so no reference offset goes
+    // on top; its rotation becomes the foot-frame rotation that gives that bone. A provided one is a body frame.
+    private bool CacheDrivenFoot(Slot userSlot, bool left, Slot? proxy, bool provided,
+        ref float3 position, ref floatQ frame)
+    {
+        if (proxy == null || proxy.IsDestroyed)
+            return false;
+        float3 worldPosition = proxy.GlobalPosition;
+        floatQ worldFrame = provided ? proxy.GlobalRotation : _solver.FootFrameFromBone(left, proxy.GlobalRotation);
+        position = userSlot.GlobalPointToLocal(worldPosition);
+        frame = userSlot.GlobalRotationToLocal(worldFrame);
+        return true;
+    }
+
+    private static float Ease(float weight, bool on, float riseStep, float fallStep)
+        => on ? MathF.Min(1f, weight + riseStep) : MathF.Max(0f, weight - fallStep);
+
+    // Tracking that came from filters rather than from the socket's own source.
+    private static bool IsProvided(AvatarPoseDriver? driver)
+        => driver != null && driver.IsEquipped && driver.IsTracking.Value && !driver.SourceIsTracking.Value;
+
+    private FullBodyIKSolver.Target PelvisTarget(Slot? userSlot)
+    {
+        if (_pelvisDriveWeight <= 1e-4f || !_pelvisCached || userSlot == null || userSlot.IsDestroyed)
+            return default;
+        return new FullBodyIKSolver.Target
+        {
+            Valid = true,
+            Position = userSlot.LocalPointToGlobal(_pelvisCachePos),
+            Rotation = userSlot.LocalRotationToGlobal(_pelvisCacheRot),
+            PositionWeight = _pelvisDriveWeight,
+            RotationWeight = _pelvisDriveWeight,
+            BodyFrameRotation = _pelvisCacheBodyFrame,
+        };
+    }
+
+    // The foot the gait walks, or the rest leg at weight 0 when it does not: the plant with the gait's whole foot
+    // rotation as a foot-frame rotation and the step lift for the toe curl, else facing the body-forward reference.
+    private FullBodyIKSolver.Target BaseFootTarget(Slot? proxy, bool hasPlant, float3 plant, floatQ plantRotation,
+        float stepLift, float3 bodyForward, float footWeight)
+    {
+        var target = ProxyTarget(proxy, default);
+        bool walked = _gaitRunning && hasPlant;
+        if (walked)
+            target.Position = plant;
+        target.FootFrameRotation = true;
+        target.Rotation = walked ? plantRotation : BuildFootRotation(bodyForward);
+        target.StepLift = walked ? stepLift : 0f;
+        target.PositionWeight = target.RotationWeight = walked ? footWeight : 0f;
+        return target;
+    }
+
+    // A driven foot over the base one by the eased weight. A provided foot has no knee of its own to follow, so
+    // unless a knee tracker already steers it, the knee bends toward a point ahead of and above the foot.
+    private void BlendDrivenFoot(ref FullBodyIKSolver.Target target, Slot userSlot, float3 localPosition, floatQ localFrame,
+        bool provided, float footWeight, float scale)
+    {
+        float w = _feetDriveWeight;
+        float3 position = userSlot.LocalPointToGlobal(localPosition);
+        floatQ frame = userSlot.LocalRotationToGlobal(localFrame);
+        if (!target.Valid || target.PositionWeight <= 1e-4f)
+        {
+            target.Valid = true;
+            target.Position = position;
+            target.Rotation = frame;
+            target.PositionWeight = target.RotationWeight = footWeight * w;
+        }
+        else
+        {
+            target.Position = float3.Lerp(target.Position, position, w);
+            target.Rotation = floatQ.Slerp(target.Rotation, frame, w).Normalized;
+        }
+        target.FootFrameRotation = true;
+        target.StepLift *= 1f - w;
+        if (provided && !target.HasBendGoal)
+        {
+            target.HasBendGoal = true;
+            target.BendGoal = position + frame * (new float3(0f, KneeGoalRise, -KneeGoalAhead) * scale);
+        }
+    }
+
+    // The gait walks the feet unless something else has the body: a suppressor asking for still feet, or a seat
+    // supplying the pelvis or both feet. Stopped, it lets go of its plants so nothing stale is written back, and
+    // it starts over from where the feet are when it resumes. -xlinka
+    private bool _gaitRunning;
+    private bool _gaitStopped;
+
+    private void RunGait()
+    {
+        _gaitRunning = UseProceduralFeet.Value && !_suppressProceduralFeet && !_bodyProvided;
+        if (_gaitRunning)
+        {
+            if (_gaitStopped)
+            {
+                _gaitStopped = false;
+                _gait.Reset();
+                _grounding.Reset();
+                _gaitAnchorValid = false;
+                _hasLastBodyPosition = false;
+            }
+            UpdateProceduralFeet();
+            return;
+        }
+        _gaitStopped = true;
+        // Imported legs stop the gait, but still need a live grounded/airborne state.
+        _grounding.Update(UserRoot.Target, MathF.Max(World?.Time.Delta ?? (1f / 60f), 1e-4f));
+        _hasLeftPlant = _hasRightPlant = false;
+        _hasProceduralGroundY = false;
+        _leftStepLift = _rightStepLift = 0f;
+        _armSwingWeight = 0f;
+        _legDrive = _pelvisYaw = _pelvisRoll = _chestYaw = _headRoll = 0f;
+        _sway = _swayVelocity = _runDip = _runDipVelocity = 0f;
+        _bodyAccelLocal = float3.Zero;
+        _locomotionOffset = _bodySettleXZ = _bodySettleVel = float3.Zero;
+        _bob = _bobVelocity = 0f;
+    }
+
+    // A socket that turned up after this avatar went on (a seat's stand-in, a tracker plugged in late). The pose
+    // drivers for the parts that come and go (hips, chest, feet, knees, elbows) go into it while they are free;
+    // head and hands were filled at equip. The wearer's machine only, as every equip is. -xlinka
+    internal void OfferSocket(AvatarSocket socket)
+    {
+        if (socket == null || socket.IsDestroyed || socket.HasEquipped || !IsEquipped || UserRoot.Target?.IsLocalUserRoot != true)
+            return;
+        var driver = socket.Node.Value switch
+        {
+            BodyNode.Hips => _pelvisNode.Target,
+            BodyNode.Chest => _chestNode.Target,
+            BodyNode.LeftFoot => _leftFootNode.Target,
+            BodyNode.RightFoot => _rightFootNode.Target,
+            BodyNode.LeftLowerLeg => _leftKneeNode.Target,
+            BodyNode.RightLowerLeg => _rightKneeNode.Target,
+            BodyNode.LeftLowerArm => _leftElbowNode.Target,
+            BodyNode.RightLowerArm => _rightElbowNode.Target,
+            _ => null,
+        };
+        if (driver == null || driver.IsDestroyed)
+            return;
+        if (driver.CurrentSocket is { IsDestroyed: false })
+            return;
+        if (socket.PreEquip(driver, null!))
+            socket.Equip(driver);
     }
 
     // Re-fit the body colliders whenever the bone scale actually changes. The FBX armature scale lands on the
@@ -504,6 +925,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         // spam). The equip path sizes the worn colliders itself. ActiveUserRoot alone wasn't catching the worn case
         // (it can read null right after equip), so also bail when our pose nodes are equipped. - xlinka
         if (Slot == null || Slot.IsDestroyed || Slot.ActiveUserRoot != null || IsEquipped)
+            return;
+        // The authority alone. Every machine refitting meant every machine destroying and re-adding collider
+        // slots on an avatar most of them do not own. -xlinka
+        if (World?.IsAuthority != true)
             return;
         var refBone = rig.TryGetBone(BodyNode.Hips) ?? rig.TryGetBone(BodyNode.Spine);
         if (refBone == null || refBone.IsDestroyed)
@@ -526,7 +951,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     // calibrated UserHeight (not the live head Y) so crouching never shrinks it.
     private void MaybeRescaleAvatar()
     {
-        if (!IsUnderLocalUser)
+        if (!IsUnderLocalUser || !IsWorn)
             return;
 
         var input = Engine.Current?.InputInterface;
@@ -563,7 +988,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
 
         var root = Slot.GetComponent<AvatarForm>();
         if (root != null)
-            root.Scale.Value = s;          // canonical scale, re-applied on (re)equip
+            root.SetEquipScale(s);         // canonical scale, re-applied on (re)equip
         Slot.LocalScale.Value = s;         // take effect now
 
         // Bone lengths are read fresh from the default local pose every solve, so a scale change does not need a
@@ -586,11 +1011,17 @@ public class AvatarIK : Component, IAvatarEquipReceiver
            && Slot.IsActive && World.IsFocused && UserRoot.Target != null
            && Slot.ActiveUserRoot == UserRoot.Target && IsEquipped;
 
-    private void EnsureSolver()
+    private void EnsureSolver(bool storeRest = false)
     {
         var rig = Rig.Target;
         if (rig == null || rig.IsDestroyed)
             return;
+
+        // The capture reads the bones, so the stored rest goes in first. An unworn avatar holding a pose gets
+        // that pose back afterwards: the capture must not take it, and nothing is about to solve over it. -xlinka
+        var held = HasRestPose && !IsWorn && !ForceTpose.Value ? CaptureBoneLocalState(rig) : null;
+        if (!ApplyRestPose() && storeRest)
+            StoreRestPose(rig);
 
         // Capture the current bone pose as bind data. ForceTpose is an opt-in rig setup fallback;
         // the untracked arm pose is chosen by the solver independently of a saved A/T pose.
@@ -598,6 +1029,51 @@ public class AvatarIK : Component, IAvatarEquipReceiver
             rig.MakeTPose();
         _solver.Initialize(rig);
         CaptureGaitStance(rig);
+
+        _solverRig = rig;
+        _capturedRestPoseRevision = _restPoseRevision;
+        for (int i = 0; i < _solverBones.Length; i++)
+            _solverBones[i] = rig.TryGetBone(FullBodyIKSolver.DrivenNodes[i]);
+
+        if (held != null)
+        {
+            using (World?.DataModelPermissions?.EnterSystemBypass())
+                RestoreBoneLocalState(held);
+        }
+    }
+
+    protected override void SyncMemberChanged(IChangeable member)
+    {
+        base.SyncMemberChanged(member);
+        if (member == _restNodes || member == _restPositions || member == _restRotations)
+            _restPoseRevision++;
+    }
+
+    private bool SolverBindingsChanged()
+    {
+        var rig = Rig.Target;
+        if (rig == null || rig.IsDestroyed)
+            return false;
+        if (!ReferenceEquals(rig, _solverRig) || _capturedRestPoseRevision != _restPoseRevision)
+            return true;
+        for (int i = 0; i < _solverBones.Length; i++)
+        {
+            var bone = rig.TryGetBone(FullBodyIKSolver.DrivenNodes[i]);
+            if (!ReferenceEquals(bone, _solverBones[i]))
+                return true;
+        }
+        return false;
+    }
+
+    // The legs the wearer sees, at the capture scale. A rig posed through skinned legs beside its mapped ones walks
+    // on those, which can be a good deal shorter, and a stride measured on the mapped legs held them stretched at
+    // full reach. Those are measured live at the current scale, hence the divide. -xlinka
+    private float GaitLegLength(float scale)
+    {
+        float seen = MathF.Max(SideLength(_solver.LeftSideLeg), SideLength(_solver.RightSideLeg));
+        return seen > 1e-3f ? seen / MathF.Max(scale, 1e-5f) : _gaitLegLength;
+
+        static float SideLength(SideLeg? leg) => leg == null ? 0f : leg.ThighLength + leg.ShinLength;
     }
 
     // Stance metrics from the rig at its bind pose: the feet rest a hip width apart and behind the HEAD line (the
@@ -641,6 +1117,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
             ? toeReach / toeCount * ToeToTipRatio
             : clearance * FrontPerClearance;
         _footBackDistance = clearance * BackPerClearance;
+        TakeSoleEdges();
         ApplyGaitStance();
 
         void AccumulateToe(Slot footBone, Slot? toeBone)
@@ -654,10 +1131,55 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         }
     }
 
+    // A crouching body leans its chest out over its knees and sits its hips back, and the feet go back under that
+    // weight instead of staying under the head. -xlinka
     private void ApplyGaitStance()
     {
         float separation = _gaitHalfWidth * 2f + MathF.Max(FootStanceWidth.Value, 0f);
-        _gait.SetRest(separation, _gaitBackOffset, _gaitLeftSide);
+        float back = _gaitBackOffset;
+        if (_crouch > 1e-3f && _solver.IsReady)
+        {
+            float scale = MathF.Max(MathF.Abs(Slot.GlobalScale.x), 1e-5f) / _gaitCaptureScale;
+            float spine = MathF.Max(_solver.RestHeadHeight - _solver.RestStandHeight, 0f) / scale;
+            back += spine * CrouchFeetBack * _crouch;
+        }
+        back = MathF.Max(back, _sideCrouchBack);
+        _gait.SetRest(separation, back, _gaitLeftSide);
+    }
+
+    private const float CrouchFeetBack = 0.35f;   // of the spine's length, feet behind the head at full crouch
+
+    // Skinned legs hung low and far back on a long body stand under where they hang. Crouched, the lean carries
+    // them well behind the mapped hips, and feet left under the mapped legs stretched them past their length.
+    // Eased, and never further back than a stretched leg, since the feet going back draw the body back a little
+    // after them. -xlinka
+    private float _sideCrouchBack;
+
+    private void UpdateSideCrouchBack(in FullBodyIKSolver.Target head, float3 forward, float scale, float dt)
+    {
+        float target = 0f;
+        if (_crouch > 1e-3f && head.Valid && _solver.IsReady)
+        {
+            float3 headPos = head.Position;
+            float setback = 0f;
+            int count = 0;
+            Add(_solver.LeftSideLeg);
+            Add(_solver.RightSideLeg);
+            if (count > 0)
+            {
+                float reach = GaitLegLength(scale) * 1.2f;
+                target = MathF.Min(setback / count / MathF.Max(scale, 1e-5f), reach) * _crouch;
+            }
+
+            void Add(SideLeg? leg)
+            {
+                if (leg?.Thigh is not { IsDestroyed: false } thigh)
+                    return;
+                setback += MathF.Max(float3.Dot(headPos - thigh.GlobalPosition, forward), 0f);
+                count++;
+            }
+        }
+        _sideCrouchBack += (target - _sideCrouchBack) * (1f - MathF.Exp(-dt * 4f));
     }
 
     // Read final proxy poses and run the engine FABRIK solve onto the rig bones.
@@ -693,13 +1215,16 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         _solver.TimeSeconds = (float)(World?.Time.TotalTime ?? 0.0);
         _solver.IdleWeight = _idleWeight;
         _solver.BreathingWeight = System.Math.Clamp(IdleBreathing.Value, 0f, 2f);
-        _solver.ArmSwingPhase = _armSwingPhase;
-        _solver.ArmSwingWeight = _armSwingWeight * System.Math.Clamp(WalkArmSwing.Value, 0f, 1f);
+        _solver.ArmSwingWeight = _armSwingWeight;
+        _solver.LeftArmDrive = -_legDrive;
+        _solver.RightArmDrive = _legDrive;
+        _solver.ArmSwingAmplitude = _armAmplitude;
+        _solver.ArmSwingFrequency = _armFrequency;
 
-        // The arm simulation needs the body's own motion, not just how fast the phase is turning: it
-        // is what makes a hand lag when you set off and carry on when you stop.
+        // The arm simulation needs the body's own change of speed: it is what makes a hand lag when you set
+        // off and carry on when you stop.
         _solver.DeltaTime = System.Math.Clamp(World?.Time.Delta ?? (1f / 60f), 1f / 240f, 0.1f);
-        _solver.BodyVelocity = _bodyVelocityLocal;
+        _solver.BodyAcceleration = _bodyAccelLocal;
         _solver.RunBlend = _runBlend;
         _solver.AirBlend = _airBlend;
         _solver.SwayWeight = System.Math.Clamp(IdleSway.Value, 0f, 2f);
@@ -707,12 +1232,16 @@ public class AvatarIK : Component, IAvatarEquipReceiver
             ? 0f : System.Math.Clamp(HandMotion.Value, 0f, 1f);
         _solver.FootAvoidanceRadius = MathF.Max(FootAvoidance.Value, 0f);
 
-        float headBob = _suppressLocomotionAnimation
-            ? 0f : System.Math.Clamp(HeadBobAmount.Value, 0f, 2f);
-        _solver.HeadBobWeight = _armSwingWeight * headBob;
-        _solver.HeadBobVertical = HeadBobVertical.Value;
-        _solver.HeadBobHorizontal = HeadBobHorizontal.Value;
-        _solver.HeadBobRoll = HeadBobRoll.Value * (MathF.PI / 180f);
+        bool strideBody = !_suppressLocomotionAnimation;
+        _solver.HeadFollowBody = strideBody ? System.Math.Clamp(HeadBobAmount.Value, 0f, 2f) : 0f;
+        _solver.HeadBobWeight = strideBody ? _armSwingWeight : 0f;
+        _solver.LocomotionWeight = _armSwingWeight;
+        _solver.HeadBobVertical = MathF.Max(HeadBobVertical.Value, 0f);
+        _solver.HeadBobHorizontal = MathF.Max(HeadBobHorizontal.Value, 0f);
+        _solver.HeadBobRoll = strideBody ? _headRoll : 0f;
+        _solver.PelvisYaw = strideBody ? _pelvisYaw : 0f;
+        _solver.PelvisRoll = strideBody ? _pelvisRoll : 0f;
+        _solver.ChestYaw = strideBody ? _chestYaw : 0f;
         _solver.LocomotionOffset = _locomotionOffset;
         _solver.MoveBodyBackWhenCrouching = System.Math.Clamp(CrouchBackShift.Value, 0f, 2f);
 
@@ -721,14 +1250,12 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         var head = ResolveHeadTarget(userSlot, input);
         // The body-forward reference the gait walks with. The solver derives its own facing from the foot
         // targets, so this only has to reach the solver through a foot rotation when nothing else drives the feet.
-        float3 bodyForwardRef = UseProceduralFeet.Value && _bodyForwardValid
+        float3 bodyForwardRef = _gaitRunning && _bodyForwardValid
             ? _bodyForwardRef : UpdateBodyForwardReference(in head, ComputeBodyForward(userSlot, _headProxy.Target));
 
-        // Pelvis target only counts when a waist/hip tracker is actually equipped; otherwise the
-        // solver estimates the hips from the head (no calibration offset on the pelvis).
-        var pelvis = IsFootTracked(_pelvisNode.Target, BodyNode.Hips)
-            ? ProxyTarget(_pelvisProxy.Target, default)
-            : default;
+        // The pelvis counts while something drives it, eased in and out (see BODY PARTS SOMETHING ELSE PUTS
+        // SOMEWHERE); otherwise the solver places the hips from the head and the feet.
+        var pelvis = PelvisTarget(userSlot);
 
         // Only pull a limb to its IK target when that body node is actually driven. On desktop an idle hand
         // proxy sits at a setup pose nothing is moving, so full weight would fold the avatar toward a stale
@@ -793,8 +1320,13 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         // -xlinka
         float leftKeepW = TrackingKeepWeight(ref _leftHandTrackedOnce, leftHandTracked, input);
         float rightKeepW = TrackingKeepWeight(ref _rightHandTrackedOnce, rightHandTracked, input);
-        leftHandT.PositionWeight = leftHandT.RotationWeight = handW * MathF.Max(leftKeepW, leftHoldW);
-        rightHandT.PositionWeight = rightHandT.RotationWeight = handW * MathF.Max(rightKeepW, rightHoldW);
+        // Eased over a few frames both ways, so a controller waking up or a hand tracker taking over swings the arm
+        // across instead of snapping it there in one frame.
+        float handDt = MathF.Max(World?.Time.Delta ?? 0f, 0f);
+        _leftHandWeight = EaseHandWeight(_leftHandWeight, MathF.Max(leftKeepW, leftHoldW), handDt);
+        _rightHandWeight = EaseHandWeight(_rightHandWeight, MathF.Max(rightKeepW, rightHoldW), handDt);
+        leftHandT.PositionWeight = leftHandT.RotationWeight = handW * _leftHandWeight;
+        rightHandT.PositionWeight = rightHandT.RotationWeight = handW * _rightHandWeight;
         // Hand the far end of the chain back to the tool that asked for it, so its TOOLHOLD trace can say
         // whether the arm was actually weighted or the request died somewhere in between. -xlinka
         _leftHandTool?.ReportIKHandWeight(leftHandT.PositionWeight);
@@ -809,7 +1341,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         // BOTH hands, every time either is holding. Which arm actually moves is the open question, and a
         // one-sided log cannot answer it: if the right-hand tool drives a bone sitting on the avatar's
         // left, that is a mirrored rig and only a side-by-side comparison shows it. -xlinka
-        // Equipped elbow trackers steer the arm bend. A desktop hand holding a tool gets NO synthetic goal any
+        // Elbow trackers steer the arm bend while they track. A desktop hand holding a tool gets NO synthetic goal any
         // more: the solver derives the elbow swivel from the hand's position in the shoulder frame, which is the
         // rule a held tool needed (elbow down and a little out for a hand at chest height). The old stopgap here
         // built a goal below-and-outside the shoulder and handed it to a 0.5-weight position lerp, so it only ever
@@ -825,71 +1357,143 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         LogArmDiagnostic("Right", in rightHandT, BodyNode.RightHand, holdAny, rightHoldW, _solver.RightArmPole);
         LogHandSeparation(holdAny);
 
-        // Feet count as DRIVEN when a tracker is live OR procedural locomotion is on - the gait writes a
-        // valid ground-planted target into the foot proxy every frame, so that target should be used.
-        // Only TRULY undriven feet drop to rest weight 0; otherwise the avatar floats (the plants get
-        // computed in UpdateProceduralFeet then thrown away by a hardware-only gate). The hands' equivalent
-        // driver is the desktop tool hold handled just above. -xlinka
+        // FEET. The gait's plants while it walks them, else the rest leg at weight 0; a driven pair (trackers, or
+        // a seat's references) goes over that by its eased weight. The plant is re-asserted onto the foot proxy
+        // right before the solve so the proxy reads where the gait put the foot, whatever order the pose driver
+        // ran in. Tracked feet arrive as the foot BONE's pose from calibration, and the plant places the BONE too,
+        // sole clearance included. -xlinka
         float footW = System.Math.Clamp(FootIKWeight.Value, 0f, 1f);
-        bool leftFootTrackedInput = IsFootTracked(_leftFootNode.Target, BodyNode.LeftFoot);
-        bool rightFootTrackedInput = IsFootTracked(_rightFootNode.Target, BodyNode.RightFoot);
-        bool leftFootDriven = leftFootTrackedInput || UseProceduralFeet.Value;
-        bool rightFootDriven = rightFootTrackedInput || UseProceduralFeet.Value;
-        // Re-assert the gait plant onto the foot proxy immediately before solving, immediately before reading
-        // it - so the procedural target wins over the foot's AvatarPoseDriver drive (which ran earlier in
-        // the pose update) without depending on receiver order. -xlinka
-        if (UseProceduralFeet.Value)
+        if (_gaitRunning)
         {
             if (_hasLeftPlant && _leftFootProxy.Target != null && !_leftFootProxy.Target.IsDestroyed)
                 WriteFoot(_leftFootProxy.Target, _leftFootPlant);
             if (_hasRightPlant && _rightFootProxy.Target != null && !_rightFootProxy.Target.IsDestroyed)
                 WriteFoot(_rightFootProxy.Target, _rightFootPlant);
         }
-        // Tracked feet convert the tracker pose through the calibration offset; PROCEDURAL feet take the
-        // gait plant raw - it already places the foot BONE (sole clearance included), and the offset math
-        // needs a trustworthy proxy ROTATION, which the position-only gait writes don't maintain. -xlinka
-        var leftFootT = leftFootTrackedInput
-            ? ProxyTarget(_leftFootProxy.Target, _leftFootOffset)
-            : ProxyTarget(_leftFootProxy.Target, default);
-        var rightFootT = rightFootTrackedInput
-            ? ProxyTarget(_rightFootProxy.Target, _rightFootOffset)
-            : ProxyTarget(_rightFootProxy.Target, default);
-        leftFootT.PositionWeight = leftFootT.RotationWeight = leftFootDriven ? footW : 0f;
-        rightFootT.PositionWeight = rightFootT.RotationWeight = rightFootDriven ? footW : 0f;
-        // Equipped knee trackers steer the leg bend.
+        var leftFootT = BaseFootTarget(_leftFootProxy.Target, _hasLeftPlant, _leftFootPlant, _leftFootRot, _leftStepLift, bodyForwardRef, footW);
+        var rightFootT = BaseFootTarget(_rightFootProxy.Target, _hasRightPlant, _rightFootPlant, _rightFootRot, _rightStepLift, bodyForwardRef, footW);
+        // Knee trackers steer the leg bend while they track.
         ApplyBendGoal(ref leftFootT, _leftKneeProxy, _leftKneeNode);
         ApplyBendGoal(ref rightFootT, _rightKneeProxy, _rightKneeNode);
-
-        // Untracked feet carry the gait's FULL foot rotation (facing, heel-to-toe pitch, slope tilt) as a
-        // foot-frame rotation the solver puts on the bone whole, plus the step lift for the toe curl. With
-        // no gait either, the foot still faces the body-forward reference so the solve frame trails the look
-        // the same way. Tracked feet keep the tracker rotation. -xlinka
-        if (!leftFootTrackedInput)
+        if (_feetDriveWeight > 1e-4f && _feetCached && userSlot != null && !userSlot.IsDestroyed)
         {
-            leftFootT.FootFrameRotation = true;
-            leftFootT.Rotation = UseProceduralFeet.Value ? _leftFootRot : BuildFootRotation(bodyForwardRef);
-            leftFootT.StepLift = UseProceduralFeet.Value ? _leftStepLift : 0f;
-        }
-        if (!rightFootTrackedInput)
-        {
-            rightFootT.FootFrameRotation = true;
-            rightFootT.Rotation = UseProceduralFeet.Value ? _rightFootRot : BuildFootRotation(bodyForwardRef);
-            rightFootT.StepLift = UseProceduralFeet.Value ? _rightStepLift : 0f;
+            float userScale = MathF.Max(MathF.Abs(userSlot.GlobalScale.x), 1e-4f);
+            BlendDrivenFoot(ref leftFootT, userSlot, _leftFootCachePos, _leftFootCacheRot, _leftFootCacheProvided, footW, userScale);
+            BlendDrivenFoot(ref rightFootT, userSlot, _rightFootCachePos, _rightFootCacheRot, _rightFootCacheProvided, footW, userScale);
         }
 
-        // Floor-pin: when neither foot is tracked, give the solver the user-root ground plane so it can
-        // keep the pelvis within leg reach of the floor - the body can't float above or sink below the
-        // ground as the head moves. Tracked feet rule their own height (crouch/jump), so the pin is off
-        // then. -xlinka
-        bool anyFootTracked = leftFootTrackedInput || rightFootTrackedInput;
-        _solver.GroundY = !anyFootTracked
-            ? (_hasProceduralGroundY
+        // Floor-pin: with nothing driving the feet, give the solver the user-root ground plane so it can keep the
+        // pelvis within leg reach of the floor - the body can't float above or sink below the ground as the head
+        // moves. Driven feet rule their own height (crouch/jump) and a pelvis a seat holds rules the hips, so the
+        // pin is off then. -xlinka
+        _solver.GroundY = _feetDriveWeight > 1e-4f || _pelvisProvided
+            ? null
+            : (_hasProceduralGroundY
                 ? _proceduralGroundY
-                : userSlot != null && !userSlot.IsDestroyed ? userSlot.GlobalPosition.y : (float?)null)
-            : null;
+                : userSlot != null && !userSlot.IsDestroyed ? userSlot.GlobalPosition.y : (float?)null);
 
+        _solver.BodyAnimation = BodyAnimation.Target is { IsAvailable: true } bodyAnimation ? bodyAnimation : null;
+        // Desktop look and a remote user's replicated head are live targets too.
+        _solver.AnimatedHeadTracked = head.Valid;
+        _solver.AnimatedLeftFootTracked = IsBodyNodeDriven(_leftFootNode.Target);
+        _solver.AnimatedRightFootTracked = IsBodyNodeDriven(_rightFootNode.Target);
+        _solver.AnimatedGroundHeight = _grounding.Grounded && !_bodyProvided && UseProceduralFeet.Value
+            ? AnimatedGroundHeight : null;
+        PushLegMode();
         _solver.Solve(head, pelvis, leftHandT, rightHandT, leftFootT, rightFootT);
         LogPoseDiagnostics(head, leftHandT, rightHandT, leftFootT, rightFootT);
+    }
+
+    // LEGS. Which way they stand is the solver's to read off the rig; this eases between the two so the switch,
+    // a re-read rig or a forced mode never pops the legs, and says once in the log what it found. -xlinka
+    private const float DigiLegsEaseTime = 0.35f;
+    private float _digiBlend;
+    private bool _digiBlendSet;
+    private int _legsLogged = -1;
+    private bool _digiLegsSwitchFailed;
+
+    // Whether the rig's own legs read digitigrade, and whether the avatar stands on them that way now.
+    public bool DigitigradeDetected => _solver.IsReady && _solver.DigitigradeDetected;
+    public bool DigitigradeActive => _digiBlend > 0.5f;
+
+    private int _gaitSoleRevision;
+
+    // Read off the skinned feet once they have loaded: the edges of what the foot rests on, so the roll pivots
+    // where the sole really touches. Taken against the stance's scale, as the estimates they replace are.
+    private void TakeSoleEdges()
+    {
+        _gaitSoleRevision = _solver.SoleRevision;
+        if (!_solver.IsReady || _solver.SoleFront <= 1e-4f)
+            return;
+        float scale = MathF.Max(MathF.Abs(Slot.GlobalScale.x), 1e-5f) / _gaitCaptureScale;
+        _footFrontDistance = _solver.SoleFront / scale;
+        _footBackDistance = _solver.SoleBack / scale;
+    }
+
+    private void PushLegMode()
+    {
+        // The soles are read once the meshes load, after the stance was taken.
+        if (_solver.IsReady && _solver.SoleRevision != _gaitSoleRevision)
+            TakeSoleEdges();
+        var mode = Legs.Value;
+        _solver.LegRequest = mode;
+        bool wanted = _solver.HasDigitigradeChain
+            && (mode == LegMode.Digitigrade || (mode == LegMode.Auto && _solver.DigitigradeDetected));
+        float target = wanted ? 1f : 0f;
+        if (!_digiBlendSet)
+        {
+            _digiBlend = target;
+            _digiBlendSet = true;
+        }
+        else
+        {
+            float step = MathF.Max(World?.Time.Delta ?? 0f, 0f) / DigiLegsEaseTime;
+            _digiBlend = target > _digiBlend ? MathF.Min(target, _digiBlend + step) : MathF.Max(target, _digiBlend - step);
+        }
+        _solver.DigitigradeBlend = _digiBlend * _digiBlend * (3f - 2f * _digiBlend);
+
+        int state = (_solver.DigitigradeDetected ? 1 : 0) | (_solver.HasDigitigradeChain ? 2 : 0) | ((int)mode << 2);
+        if (state != _legsLogged)
+        {
+            _legsLogged = state;
+            LumoraLogger.Debug($"AvatarIK '{Slot.SlotName.Value}': legs {mode}, {_solver.DescribeLegs()}");
+        }
+    }
+
+    // An avatar whose legs read digitigrade gets a "Digi Legs" switch in its own menu the first time its wearer
+    // has it on: an AvatarToggle driving Legs through a value switch, the way every other avatar switch drives
+    // what it changes, so the choice saves and replicates with the avatar. Made once, by the wearer. -xlinka
+    private void MaybeAddDigiLegsSwitch()
+    {
+        if (_digiLegsSwitchFailed || _digiLegsSwitchMade.Value || Legs.IsDriven || !DigitigradeDetected)
+            return;
+        if (!IsUnderLocalUser || !IsWorn || !MayWriteAvatar())
+            return;
+        try
+        {
+            var scope = Slot.GetComponentInParents<AvatarForm>()?.Slot ?? Slot;
+            var holder = scope.GetComponentInChildren<AvatarMenu>()?.Slot;
+            if (holder == null)
+            {
+                holder = Slot.AddSlot("Avatar Menu");
+                holder.AttachComponent<AvatarMenu>();
+            }
+            var slot = holder.AddSlot("Digi Legs");
+            var toggle = slot.AttachComponent<AvatarToggle>();
+            toggle.Path.Value = "Digi Legs";
+            toggle.State.Value = Legs.Value != LegMode.Plantigrade;
+            var driver = slot.AttachComponent<Lumora.Core.Components.Utility.ValueSwitchDriver<LegMode>>();
+            driver.OffValue.Value = LegMode.Plantigrade;
+            driver.OnValue.Value = LegMode.Digitigrade;
+            driver.AddSwitch(toggle.State, LegMode.Digitigrade);
+            driver.AddDrive(Legs);
+            _digiLegsSwitchMade.Value = true;
+            LumoraLogger.Debug($"AvatarIK '{Slot.SlotName.Value}': added the Digi Legs switch to the avatar menu");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            _digiLegsSwitchFailed = true;
+        }
     }
 
     private bool _poseDiagLogged;
@@ -903,7 +1507,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     private void LogPoseDiagnostics(in FullBodyIKSolver.Target head, in FullBodyIKSolver.Target leftHand,
         in FullBodyIKSolver.Target rightHand, in FullBodyIKSolver.Target leftFoot, in FullBodyIKSolver.Target rightFoot)
     {
-        if (_poseDiagLogged)
+        if (_poseDiagLogged || !LumoraLogger.EnableDebug)
             return;
         _poseDiagLogged = true;
 
@@ -914,7 +1518,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         float scale = Slot.GlobalScale.x;
         float userHeight = Engine.Current?.InputInterface?.UserHeight ?? 0f;
 
-        LumoraLogger.Log(
+        LumoraLogger.Debug(
             $"AvatarIK[pose-diag] '{Slot.SlotName.Value}': avatarHeight={AvatarHeight.Value:F3} "
             + $"userHeight={userHeight:F3} rootScale={scale:F3} forceTpose={ForceTpose.Value}");
 
@@ -927,10 +1531,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         float hipsY = hips != null && !hips.IsDestroyed ? Slot.GlobalPointToLocal(hips.GlobalPosition).y : 0f;
         float footBoneY = FirstBoneLocalY(rig, BodyNode.LeftFoot);
         float toeBoneY = FirstBoneLocalY(rig, BodyNode.LeftToes);
-        LumoraLogger.Log(
+        LumoraLogger.Debug(
             $"AvatarIK[pose-diag]   rest   standHeight={_solver.RestStandHeight:F3} headHeight={_solver.RestHeadHeight:F3} "
             + $"clearance L={_solver.LeftFootGroundClearance:F3} R={_solver.RightFootGroundClearance:F3}");
-        LumoraLogger.Log(
+        LumoraLogger.Debug(
             $"AvatarIK[pose-diag]   local  hipsY={hipsY:F3} footY={footBoneY:F3} toeY={toeBoneY:F3} soleY={soleY:F3} "
             + $"(hips above sole = {hipsY - soleY:F3})");
 
@@ -962,11 +1566,11 @@ public class AvatarIK : Component, IAvatarEquipReceiver
                 guessVsRoot = MathF.Acos(System.Math.Clamp(float3.Dot(a.Normalized, b.Normalized), -1f, 1f)) * (180f / MathF.PI);
         }
 
-        LumoraLogger.Log(
+        LumoraLogger.Debug(
             $"AvatarIK[pose-diag]   fwd    rigAxis={(rigAxis.HasValue ? rigAxis.Value.ToString() : "<unset>")} "
             + $"guessLocal={(guess.HasValue ? Slot.GlobalDirectionToLocal(guess.Value).ToString() : "<null>")} "
             + $"guessVsRoot={guessVsRoot:F1}deg");
-        LumoraLogger.Log(
+        LumoraLogger.Debug(
             $"AvatarIK[pose-diag]   fwd    skeletonBind={Slot.GlobalDirectionToLocal(_solver.SkeletonForward)} "
             + $"solveForward={Slot.GlobalDirectionToLocal(_solver.SolveForward)} solveUp={Slot.GlobalDirectionToLocal(_solver.SolveUp)}");
 
@@ -995,12 +1599,12 @@ public class AvatarIK : Component, IAvatarEquipReceiver
                 twist = 2f * MathF.Acos(System.Math.Clamp(MathF.Abs(relative.w), 0f, 1f)) * (180f / MathF.PI);
             }
 
-            LumoraLogger.Log(
+            LumoraLogger.Debug(
                 $"AvatarIK[pose-diag]   {label,-6} driven={driven} gripTwist={twist:F1}deg proxyLocal={proxyText}");
 
             var fingerDriver = bone?.GetComponent<HandPoseDriver>();
             if (fingerDriver != null)
-                LumoraLogger.Log($"AvatarIK[pose-diag]   {label,-6} fingerDriver present, poseSource={fingerDriver.PoseSource.Target != null}");
+                LumoraLogger.Debug($"AvatarIK[pose-diag]   {label,-6} fingerDriver present, poseSource={fingerDriver.PoseSource.Target != null}");
         }
 
         void LogChain(string label, BodyNode rootNode, in FullBodyIKSolver.Target target, BodyNode[] chain)
@@ -1008,7 +1612,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
             var rootBone = rig.TryGetBone(rootNode);
             if (rootBone == null || rootBone.IsDestroyed)
             {
-                LumoraLogger.Log($"AvatarIK[pose-diag]   {label,-6} no root bone");
+                LumoraLogger.Debug($"AvatarIK[pose-diag]   {label,-6} no root bone");
                 return;
             }
 
@@ -1025,7 +1629,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
             }
 
             float distance = (target.Position - rootBone.GlobalPosition).Length;
-            LumoraLogger.Log(
+            LumoraLogger.Debug(
                 $"AvatarIK[pose-diag]   {label,-6} reach={reach:F3} targetAt={distance:F3} "
                 + $"({(reach > 0.0001f ? distance / reach : 0f):P0} of reach) weight={target.PositionWeight:F2}");
         }
@@ -1158,7 +1762,9 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     {
         var directHeadSlot = UserRoot.Target?.HeadSlot;
         var direct = ViewProxyTarget(directHeadSlot, _viewOffset);
-        bool hardwareHead = input?.HeadDevice?.IsTracked == true;
+        bool hardwareHead = UserRoot.Target?.IsLocalUserRoot == true
+            ? input?.HeadDevice?.IsTracked == true
+            : _headNode.Target?.IsTrackingAndActive == true;
 
         // Same ownership rule as the hands. The desktop branch below already preferred the direct head
         // slot when the proxy read too low; VR trusted the proxy unconditionally, so a headset-tracked
@@ -1169,16 +1775,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver
 
         FullBodyIKSolver.Target chosen = proxy.Valid ? proxy : direct;
 
-        if (!hardwareHead && userSlot != null && !userSlot.IsDestroyed)
-        {
-            float rootY = userSlot.GlobalPosition.y;
-            bool proxyTooLow = !proxy.Valid || proxy.Position.y < rootY + 0.35f;
-            bool directGood = direct.Valid && direct.Position.y >= rootY + 0.35f;
-            if (proxyTooLow && directGood)
-                chosen = direct;
-            else if (proxyTooLow)
-                chosen = DesktopHeadTarget(userSlot, directHeadSlot, input);
-        }
+        // A valid head can be close to the floor when prone or scaled down. Only synthesize
+        // a standing target when neither the live proxy nor the user's head is available.
+        if (!chosen.Valid && !hardwareHead && userSlot != null && !userSlot.IsDestroyed)
+            chosen = DesktopHeadTarget(userSlot, directHeadSlot, input);
         if (!hardwareHead && chosen.Valid)
             chosen = UprightHeadTarget(chosen);
 
@@ -1242,6 +1842,14 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     // The wearer's VR state is this machine's for the local user and the replicated flag for anyone else.
     private bool _leftHandTrackedOnce;
     private bool _rightHandTrackedOnce;
+    private float _leftHandWeight;
+    private float _rightHandWeight;
+
+    private static float EaseHandWeight(float weight, float target, float dt)
+    {
+        float next = weight + (target - weight) * (1f - MathF.Exp(-dt * (target > weight ? 16f : 8f)));
+        return MathF.Abs(next - target) < 0.002f ? target : next;
+    }
 
     private float TrackingKeepWeight(ref bool trackedOnce, bool tracked, Lumora.Core.Input.InputInterface? input)
     {
@@ -1317,7 +1925,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
 
     private void LogHandSeparation(float gateWeight)
     {
-        if (gateWeight <= 1e-3f)
+        if (gateWeight <= 1e-3f || !LumoraLogger.EnableDebug)
             return;
         double now = World != null ? World.Time.TotalTime : 0.0;
         if (now - _sepLogAt < 2.0)
@@ -1333,7 +1941,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         var rHand = rig.TryGetBone(BodyNode.RightHand);
         if (lUpper == null || rUpper == null || lHand == null || rHand == null)
         {
-            LumoraLogger.Log("HANDSEP: one or more arm bones unmapped "
+            LumoraLogger.Debug("HANDSEP: one or more arm bones unmapped "
                            + $"(lUpper={lUpper != null} rUpper={rUpper != null} lHand={lHand != null} rHand={rHand != null})");
             _sepLogAt = now;
             return;
@@ -1346,7 +1954,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         float shoulderSpan = axis.Length;
         if (shoulderSpan < 1e-4f)
         {
-            LumoraLogger.Log($"HANDSEP: shoulders coincide, span={shoulderSpan:F4} - the arms ARE mapped to one side");
+            LumoraLogger.Debug($"HANDSEP: shoulders coincide, span={shoulderSpan:F4} - the arms ARE mapped to one side");
             _sepLogAt = now;
             return;
         }
@@ -1356,7 +1964,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         float lSide = float3.Dot(lHand.GlobalPosition - mid, axis);
         float rSide = float3.Dot(rHand.GlobalPosition - mid, axis);
 
-        LumoraLogger.Log($"HANDSEP: shoulderSpan={shoulderSpan:F3} leftHandSide={lSide:F3} rightHandSide={rSide:F3} "
+        LumoraLogger.Debug($"HANDSEP: shoulderSpan={shoulderSpan:F3} leftHandSide={lSide:F3} rightHandSide={rSide:F3} "
                        + $"verdict={(lSide > 0f && rSide < 0f ? "CORRECT" : "MIRRORED-OR-SAME-SIDE")}");
         _sepLogAt = now;
     }
@@ -1367,7 +1975,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     private void LogArmDiagnostic(string side, in FullBodyIKSolver.Target target, BodyNode handNode,
         float gateWeight, float holdWeight, FullBodyIKSolver.PoleDebug pole)
     {
-        if (gateWeight <= 1e-3f)
+        if (gateWeight <= 1e-3f || !LumoraLogger.EnableDebug)
             return;
 
         var rig = Rig.Target;
@@ -1421,12 +2029,12 @@ public class AvatarIK : Component, IAvatarEquipReceiver
             return;
         _armDiagLast = line;
         _armDiagAt = now;
-        LumoraLogger.Log(line);
+        LumoraLogger.Debug(line);
     }
 
     private static void ApplyBendGoal(ref FullBodyIKSolver.Target target, SyncRef<Slot> proxy, SyncRef<AvatarPoseDriver> node)
     {
-        if ((node.Target?.IsEquippedAndActive ?? false) && proxy.Target != null && !proxy.Target.IsDestroyed)
+        if ((node.Target?.IsTrackingAndActive ?? false) && proxy.Target != null && !proxy.Target.IsDestroyed)
         {
             target.HasBendGoal = true;
             target.BendGoal = proxy.Target.GlobalPosition;
@@ -1456,7 +2064,9 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     }
 
     private AvatarSocket? _leftSocket, _rightSocket;
-    private double _socketScanAt;
+    // One clock per hand: a shared one let the first hand's scan starve the second for a second, which read its
+    // target off a different slot meanwhile and jumped the arm when the socket finally turned up. -xlinka
+    private double _leftSocketScanAt, _rightSocketScanAt;
 
     private AvatarSocket? FindSocket(BodyNode node)
     {
@@ -1464,10 +2074,11 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         if (cached != null && !cached.IsDestroyed)
             return cached;
 
+        ref double scanAt = ref (node == BodyNode.LeftHand ? ref _leftSocketScanAt : ref _rightSocketScanAt);
         double now = World?.Time.TotalTime ?? 0.0;
-        if (now < _socketScanAt)
+        if (now < scanAt)
             return null;
-        _socketScanAt = now + 1.0;
+        scanAt = now + 1.0;
 
         var root = UserRoot.Target?.Slot;
         if (root == null || root.IsDestroyed)
@@ -1556,11 +2167,11 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         UserRoot.Target = userRoot;
 
         EnsurePoseNodes();
-        EnsureSolver();
+        EnsureSolver(storeRest: true);
         RecomputeReferenceOffsets();
 
         _isInitialized = true;
-        LumoraLogger.Log($"AvatarIK: Setup complete ({rig?.Bones.Count ?? 0} bones)");
+        LumoraLogger.Debug($"AvatarIK: Setup complete ({rig?.Bones.Count ?? 0} bones)");
     }
 
     // an avatar is self-describing: its components ARE the metadata
@@ -1622,7 +2233,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
 
         EnsureSolver();
         RecomputeReferenceOffsets();
-        LumoraLogger.Log($"AvatarIK: Tracking connected for UserRoot '{userRoot.Slot.SlotName.Value}'");
+        LumoraLogger.Debug($"AvatarIK: Tracking connected for UserRoot '{userRoot.Slot.SlotName.Value}'");
     }
 
     // Build coarse body colliders for a worn avatar: a sphere on the head and a capsule along each limb segment
@@ -1637,9 +2248,8 @@ public class AvatarIK : Component, IAvatarEquipReceiver
 
         // Head sphere, sized from the neck-to-head length when available.
         var head = rig.TryGetBone(BodyNode.Head);
-        if (head != null)
+        if (head != null && RemoveBodyCollider(head))
         {
-            RemoveBodyCollider(head);
             float r = 0.08f; // world-space radius
             var neck = rig.TryGetBone(BodyNode.Neck) ?? rig.TryGetBone(BodyNode.Chest);
             if (neck != null)
@@ -1678,7 +2288,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         if (hips != null && torsoTop != null)
             AddCapsuleBetween(hips, torsoTop, 0.16f);
 
-        LumoraLogger.Log("AvatarIK: Generated body colliders.");
+        LumoraLogger.Debug("AvatarIK: Generated body colliders.");
     }
 
     private static void AddLimbCapsule(HumanoidRig rig, BodyNode proximal, BodyNode distal, float radiusRatio)
@@ -1695,7 +2305,8 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     {
         if (proximal == null || proximal.IsDestroyed || distal == null || distal.IsDestroyed)
             return;
-        RemoveBodyCollider(proximal);
+        if (!RemoveBodyCollider(proximal))
+            return;
 
         var pg = proximal.GlobalPosition;
         var cg = distal.GlobalPosition;
@@ -1724,16 +2335,33 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     }
 
     // Destroy any existing "BodyCollider" child of a bone, so GenerateBodyColliders can be re-run to re-fit the
-    // colliders to the bone's current scale (the armature scale settles late / changes on equip). -xlinka
-    private static void RemoveBodyCollider(Slot bone)
+    // colliders to the bone's current scale (the armature scale settles late / changes on equip). False when one
+    // stays because this machine may not take it away: the host fits the colliders of an avatar nobody wears, and
+    // a guest putting that avatar on keeps them instead of throwing half way through the equip. -xlinka
+    private static bool RemoveBodyCollider(Slot bone)
     {
         System.Collections.Generic.List<Slot>? toRemove = null;
         foreach (var child in bone.Children)
             if (child.SlotName.Value == "BodyCollider")
                 (toRemove ??= new System.Collections.Generic.List<Slot>()).Add(child);
-        if (toRemove != null)
-            foreach (var c in toRemove)
+        if (toRemove == null)
+            return true;
+
+        bool cleared = true;
+        foreach (var c in toRemove)
+        {
+            if (MayDestroyHere(c))
                 c.Destroy();
+            else
+                cleared = false;
+        }
+        return cleared;
+    }
+
+    private static bool MayDestroyHere(Slot slot)
+    {
+        var world = slot.World;
+        return world == null || world.IsAuthority || slot.IsMintedHere;
     }
 
     // Rotation taking the capsule's default up (+Y) onto a target unit direction.
@@ -1804,7 +2432,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         }
 
         avatarSlot.Equip(poseNode);
-        LumoraLogger.Log($"AvatarIK: Equipped {poseNode.Node.Value} pose node -> '{bodySlot.SlotName.Value}'");
+        LumoraLogger.Debug($"AvatarIK: Equipped {poseNode.Node.Value} pose node -> '{bodySlot.SlotName.Value}'");
     }
 
     // Calibration is read straight from AvatarReferencePoint components in
@@ -1815,21 +2443,14 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         _viewOffset = default;
         _leftHandOffset = default;
         _rightHandOffset = default;
-        _leftFootOffset = default;
-        _rightFootOffset = default;
 
         var rig = Rig.Target;
         if (rig == null)
             return;
 
         var states = CaptureBoneLocalState(rig);
-        bool restorePose = false;
-        if (_solver.IsReady)
-        {
-            _solver.ResetToDefaultPose();
-            restorePose = true;
-        }
-        else if (ForceTpose.Value)
+        bool restorePose = ResetBonesForMeasure();
+        if (!restorePose && ForceTpose.Value)
         {
             rig.MakeTPose();
             restorePose = true;
@@ -1863,15 +2484,16 @@ public class AvatarIK : Component, IAvatarEquipReceiver
                 TryComputeReferenceOffset(rig.TryGetBone(BodyNode.RightHand), rightHand, ref _rightHandOffset);
             else
                 TryComputeReferenceOffset(rig.TryGetBone(BodyNode.RightHand), AvatarCalibration.ComputeHandGrip(Slot, rig, true), ref _rightHandOffset);
-            TryComputeReferenceOffset(rig.TryGetBone(BodyNode.LeftFoot), leftFoot!, ref _leftFootOffset);
-            TryComputeReferenceOffset(rig.TryGetBone(BodyNode.RightFoot), rightFoot!, ref _rightFootOffset);
 
             MeasureAvatarHeight(rig, view, leftFoot, rightFoot);
         }
         finally
         {
             if (restorePose)
-                RestoreBoneLocalState(states);
+            {
+                using (World?.DataModelPermissions?.EnterSystemBypass())
+                    RestoreBoneLocalState(states);
+            }
         }
     }
 
@@ -1906,7 +2528,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     // of curl. -xlinka
     private void LogEveryBone(HumanoidRig rig)
     {
-        LumoraLogger.Log($"AvatarIK[bones] '{Slot.SlotName.Value}' scale={Slot.GlobalScale.x:F3} - positions AVATAR-LOCAL, rot = local euler degrees");
+        LumoraLogger.Debug($"AvatarIK[bones] '{Slot.SlotName.Value}' scale={Slot.GlobalScale.x:F3} - positions AVATAR-LOCAL, rot = local euler degrees");
 
         foreach (var node in AllBodyNodes)
         {
@@ -1929,7 +2551,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
                 }
             }
 
-            LumoraLogger.Log(
+            LumoraLogger.Debug(
                 $"AvatarIK[bones]  {node,-30} {bone.SlotName.Value,-22} "
                 + $"pos=({localPos.x,7:F3},{localPos.y,7:F3},{localPos.z,7:F3}) "
                 + $"axis={axis} rot=({euler.x,7:F1},{euler.y,7:F1},{euler.z,7:F1})");
@@ -2100,9 +2722,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
     private float MeasureFromDefaultBonePose(HumanoidRig rig)
     {
         var states = CaptureBoneLocalState(rig);
-        if (_solver.IsReady)
-            _solver.ResetToDefaultPose();
-        else if (ForceTpose.Value)
+        if (!ResetBonesForMeasure() && ForceTpose.Value)
             rig.MakeTPose();
 
         float measured = 0f;
@@ -2138,7 +2758,8 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         }
         finally
         {
-            RestoreBoneLocalState(states);
+            using (World?.DataModelPermissions?.EnterSystemBypass())
+                RestoreBoneLocalState(states);
         }
 
         return measured;
@@ -2240,7 +2861,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         _grounding.Update(UserRoot.Target, dt);
 
         float scale = MathF.Max(MathF.Abs(Slot.GlobalScale.x), 1e-5f) / _gaitCaptureScale;
-        float legLength = MathF.Max(_gaitLegLength * scale, 0.05f);
+        float legLength = MathF.Max(GaitLegLength(scale) * scale, 0.05f);
         float3 body = root.GlobalPosition;
         float3 rootPlanar = new float3(body.x, 0f, body.z);
 
@@ -2256,13 +2877,28 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         if (teleported)
             _gait.Carry(rootDelta);
 
+        // How far into a crouch: the head's drop below its standing height over half that height, past a small
+        // dead zone so an avatar standing a touch taller than its wearer is not read as squatting. -xlinka
+        float restHead = _solver.IsReady ? _solver.RestHeadHeight : 0f;
+        if (head.Valid && restHead > 1e-3f)
+        {
+            float floor = _hasProceduralGroundY ? _proceduralGroundY : body.y;
+            float drop = restHead - (head.Position.y - floor);
+            float crouchTarget = System.Math.Clamp((drop - restHead * 0.06f) / (restHead * 0.44f), 0f, 1f);
+            _crouch += (crouchTarget - _crouch) * (1f - MathF.Exp(-dt * 8f));
+        }
+        _gait.Crouch = _crouch;
+        UpdateSideCrouchBack(in head, forward, scale, dt);
+
         ApplyGaitStance();
         PushGaitParameters(scale);
 
         float3 anchorVelocity = UpdateGaitAnchor(rootPlanar, in head, teleported, dt, out float3 bodyPlanar);
 
-        bool leftTracked = IsFootTracked(_leftFootNode.Target, BodyNode.LeftFoot);
-        bool rightTracked = IsFootTracked(_rightFootNode.Target, BodyNode.RightFoot);
+        // Driven feet go as a pair (RefreshBodyDrivers); the plants stay live while they ease in or out, so there
+        // is always a gait foot to blend from.
+        bool leftTracked = _feetDriven;
+        bool rightTracked = _feetDriven;
 
         if (_grounding.Grounded && _grounding.WasGrounded)
             _gait.Update(bodyPlanar, forward, teleported ? float3.Zero : rootDelta / dt + anchorVelocity, dt);
@@ -2270,15 +2906,15 @@ public class AvatarIK : Component, IAvatarEquipReceiver
             _gait.Glide(bodyPlanar, forward, dt);
 
         float conformScale = MathF.Max(UserRoot.Target!.GlobalScale, 0.01f);
-        ResolveFootPose(_gait.Left, body.y, conformScale, _solver.LeftFootGroundClearance, scale,
+        ResolveFootPose(_gait.Left, body.y, conformScale, _solver.LeftFootGroundClearance, scale, _solver.FootPitchShare(true),
             out _leftFootPlant, out _leftFootRot, out float leftGroundY);
-        ResolveFootPose(_gait.Right, body.y, conformScale, _solver.RightFootGroundClearance, scale,
+        ResolveFootPose(_gait.Right, body.y, conformScale, _solver.RightFootGroundClearance, scale, _solver.FootPitchShare(false),
             out _rightFootPlant, out _rightFootRot, out float rightGroundY);
 
         _leftStepLift = leftTracked ? 0f : _gait.Left.StepLift;
         _rightStepLift = rightTracked ? 0f : _gait.Right.StepLift;
-        _hasLeftPlant = !leftTracked;
-        _hasRightPlant = !rightTracked;
+        _hasLeftPlant = !leftTracked || _feetDriveWeight < 1f;
+        _hasRightPlant = !rightTracked || _feetDriveWeight < 1f;
         _hasProceduralGroundY = !leftTracked || !rightTracked;
         _proceduralGroundY = leftTracked ? rightGroundY
             : rightTracked ? leftGroundY
@@ -2303,7 +2939,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         // whole point is the difference between the two: the gait is what the feet agreed to do, this
         // is what the body did.
         float3 here = Slot.GlobalPosition;
-        if (_hasLastBodyPosition && dt > 1e-5f)
+        if (_hasLastBodyPosition && dt > 1e-5f && !teleported)
         {
             float3 worldVelocity = (here - _lastBodyPosition) / dt;
             float3 right = float3.Cross(forward, float3.Up);
@@ -2312,15 +2948,26 @@ public class AvatarIK : Component, IAvatarEquipReceiver
                 worldVelocity.y,
                 float3.Dot(worldVelocity, forward));
             // Smoothed, or a single stuttered frame throws the arms.
+            float3 previous = _bodyVelocityLocal;
             float k = 1f - MathF.Exp(-dt * 12f);
             _bodyVelocityLocal += (local - _bodyVelocityLocal) * k;
+            float3 accel = (_bodyVelocityLocal - previous) / dt;
+            float magnitude = accel.Length;
+            if (magnitude > MaxArmAcceleration)
+                accel *= MaxArmAcceleration / magnitude;
+            _bodyAccelLocal += (accel - _bodyAccelLocal) * (1f - MathF.Exp(-dt * 10f));
+        }
+        else
+        {
+            _bodyAccelLocal = float3.Zero;
         }
         _lastBodyPosition = here;
         _hasLastBodyPosition = true;
 
-        // Walk against run, so the arms change shape rather than only amplitude as somebody speeds up.
-        float runTarget = System.Math.Clamp(speed / MathF.Max(RunSpeed.Value, 0.1f), 0f, 1f);
-        _runBlend += (runTarget - _runBlend) * (1f - MathF.Exp(-dt * 4f));
+        // Walk against run, so the arms change shape rather than only amplitude as somebody speeds up. The gait
+        // decides it, so the legs and the arms change gait together; eased so a jump in pace bends the elbows over
+        // a few frames instead of one.
+        _runBlend += (_gait.RunBlend - _runBlend) * (1f - MathF.Exp(-dt * 6f));
 
         // Off the ground the hands stop swinging and drift; eased so a hop is not a snap.
         float airTarget = _grounding.Grounded ? 0f : 1f;
@@ -2328,21 +2975,80 @@ public class AvatarIK : Component, IAvatarEquipReceiver
 
         float idleTarget = _gait.IsStandingStill && _grounding.Grounded ? 1f : 0f;
         _idleWeight += (idleTarget - _idleWeight) * (1f - MathF.Exp(-dt * (idleTarget > _idleWeight ? 1.2f : 8f)));
-        float swingTarget = _grounding.Grounded ? System.Math.Clamp(speed / legLength, 0f, 1f) : 0f;
+        float swingTarget = _grounding.Grounded ? System.Math.Clamp((speed / scale - 0.1f) / 0.5f, 0f, 1f) : 0f;
         _armSwingWeight += (swingTarget - _armSwingWeight) * (1f - MathF.Exp(-dt * 6f));
-        _armSwingPhase = (_armSwingPhase + speed * dt / legLength * 5f) % (MathF.PI * 2f);
+        UpdateStrideBody(bodyPlanar, forward, scale, dt);
 
         float3 centre = bodyPlanar - forward * (_gaitBackOffset * scale);
         UpdateBodySettle(_leftFootPlant, !leftTracked && _grounding.Grounded,
             _rightFootPlant, !rightTracked && _grounding.Grounded, centre, dt);
-        // The bob target steps whenever a foot plants, so it gets the same critically-damped follow the
-        // settle does. A first-order lag on a target that steps still steps. -xlinka
-        float bobTarget = -MathF.Min(BodyBob.Value * scale, legLength * 0.012f)
+        // A walking body carries its hips a little below standing, a running one lower still on bent knees; the
+        // rise and fall within the stride comes from the legs' reach in the solver. The target moves whenever a
+        // foot plants, so it gets the same critically-damped follow the settle does. -xlinka
+        float carriage = (_solver.IsReady ? _solver.RestStandHeight : legLength)
+            * (0.012f + 0.07f * _runBlend) * _armSwingWeight;
+        float bobTarget = -carriage - MathF.Min(BodyBob.Value * scale, legLength * 0.012f)
             * MathF.Max(_leftStepLift, _rightStepLift);
-        float bob = SmoothDamp(_locomotionOffset.y, bobTarget, ref _bobVelocity,
+        float bob = _bob = SmoothDamp(_bob, bobTarget, ref _bobVelocity,
             MathF.Max(BodySettleSmoothTime.Value, 1e-3f), dt);
-        _locomotionOffset = new float3(_bodySettleXZ.x, bob, _bodySettleXZ.z);
+        float3 side = float3.Cross(forward, float3.Up);
+        side = side.LengthSquared > 1e-8f ? side.Normalized : float3.Right;
+        _locomotionOffset = new float3(_bodySettleXZ.x, bob - _runDip, _bodySettleXZ.z) + side * _sway;
     }
+
+    private const float MaxArmAcceleration = 12f;   // m/s^2 the arms feel, so a hitch or a shove cannot fling them
+
+    // THE UPPER BODY READS THE STRIDE OFF THE FEET. All of it is a function of where the two feet are right now,
+    // so it is phase-locked to the legs by construction, starts and stops with them and keeps no clock of its own.
+    // _legDrive is +1 with the left foot a full step ahead of the right and -1 the other way round: the right arm
+    // swings forward with the left foot, the pelvis turns its left side forward with it and the chest turns back
+    // against it. The list and the sideways shift follow whichever foot is in the air, so the hips drop on the
+    // swinging side and the body sits over the planted one. -xlinka
+    private void UpdateStrideBody(float3 bodyPlanar, float3 forward, float scale, float dt)
+    {
+        float step = MathF.Max(_gait.StepLength, 0.05f * scale);
+        float left = float3.Dot(_gait.Left.Position - bodyPlanar, forward);
+        float right = float3.Dot(_gait.Right.Position - bodyPlanar, forward);
+        _legDrive = System.Math.Clamp((left - right) / step, -1f, 1f);
+
+        float run = _runBlend;
+        float pace = _gait.SmoothSpeed / MathF.Max(scale, 1e-4f);
+        float walkAmplitude = 0.3f * MathF.Sqrt(System.Math.Clamp(pace / 1.4f, 0f, 1.6f));
+        float runAmplitude = System.Math.Clamp(0.5f + 0.05f * (pace - 3f), 0.45f, 0.8f);
+        _armAmplitude = (walkAmplitude + (runAmplitude - walkAmplitude) * run) * System.Math.Clamp(WalkArmSwing.Value, 0f, 2f);
+        // The arm has to settle faster than the stride turns over or it falls behind the legs and swings out of
+        // phase, so its own frequency rides at two and a half times the stride rate.
+        _armFrequency = MathF.Max(1.6f, _gait.SmoothSpeed / step * 0.5f * 2.5f);
+
+        float moving = _armSwingWeight;
+        float list = _gait.Left.StepLift - _gait.Right.StepLift;
+        _pelvisYaw = -_legDrive * (0.06f + 0.04f * run) * moving;
+        _chestYaw = _legDrive * (0.09f + 0.07f * run) * moving;
+        _pelvisRoll = -list * (0.07f - 0.03f * run) * (1f - 0.5f * _crouch) * moving;
+        _headRoll = list * MathF.Max(HeadBobRoll.Value, 0f) * (MathF.PI / 180f) * moving;
+
+        float leg = GaitLegLength(scale) * scale;
+        float swayTarget = list * leg * (0.03f - 0.018f * run) * moving;
+        _sway = SmoothDamp(_sway, swayTarget, ref _swayVelocity, 0.08f, dt);
+
+        // A running body sinks onto the planted leg and springs off it: lowest with the foot under it, highest in
+        // the air. A walk vaults over its leg instead, which the solver's reach already gives it.
+        float reach = MathF.Max(_gait.StepLength * 0.5f, 1e-3f);
+        float sink = MathF.Max(Sink(_gait.Left), Sink(_gait.Right));
+        float dipTarget = sink * run * moving * leg * RunSinkShare;
+        _runDip = SmoothDamp(_runDip, dipTarget, ref _runDipVelocity, 0.04f, dt);
+
+        float Sink(GaitFoot foot)
+        {
+            if (!foot.IsPlanted)
+                return 0f;
+            float u = System.Math.Clamp(float3.Dot(foot.Position - foot.RestPosition, forward) / reach, -1f, 1f);
+            return 1f - u * u;
+        }
+    }
+
+    private const float RunSinkShare = 0.05f;   // of leg length, how far a running body sinks onto its planted leg
+    private float _runDip, _runDipVelocity;
 
     // The stance centre the gait keeps the feet under, and the walking velocity it strides against. See the
     // note at the GaitAnchor constants.
@@ -2359,6 +3065,26 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         AddHand(UserRoot.Target?.LeftHandSlot, IsFootTracked(_leftHandNode.Target, BodyNode.LeftHand));
         AddHand(UserRoot.Target?.RightHandSlot, IsFootTracked(_rightHandNode.Target, BodyNode.RightHand));
         float3 offset = total > 1e-4f ? centre / total - rootPlanar : float3.Zero;
+
+        // A turn of the root carries the stance offset round with it. The view sits ahead of the pivot, and a spin
+        // on the spot swung it round in a circle that read as walking: the feet strode round in long walking steps
+        // and the body trailed the view by a quarter turn instead of stepping round on the spot. -xlinka
+        var rootSlot = UserRoot.Target?.Slot;
+        float3 rootForward = rootSlot != null ? rootSlot.GlobalRotation * float3.Backward : _gaitAnchorRootForward;
+        rootForward.y = 0f;
+        if (rootForward.LengthSquared > 1e-8f)
+        {
+            rootForward = rootForward.Normalized;
+            if (_gaitAnchorValid && !teleported && _gaitAnchorRootForward.LengthSquared > 1e-8f)
+            {
+                float yaw = MathF.Atan2(float3.Dot(float3.Cross(_gaitAnchorRootForward, rootForward), float3.Up),
+                    System.Math.Clamp(float3.Dot(_gaitAnchorRootForward, rootForward), -1f, 1f));
+                floatQ turn = floatQ.AxisAngleRad(float3.Up, yaw);
+                _gaitAnchorOffset = turn * _gaitAnchorOffset;
+                _gaitAnchorRope = turn * _gaitAnchorRope;
+            }
+            _gaitAnchorRootForward = rootForward;
+        }
 
         if (!_gaitAnchorValid || teleported)
         {
@@ -2413,7 +3139,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         p.MaxSwingTime = MathF.Max(StepDuration.Value, 0.1f);
         p.RestAllowance = MathF.Max(StepThreshold.Value, 0.01f);
         p.MaxSpeed = MathF.Max(MaxStepVelocity.Value, 0.5f);
-        p.MaxStepHeight = _gaitLegLength * 0.5f;
+        float leg = GaitLegLength(scale);
+        p.MaxStepHeight = leg * 0.5f;
+        p.LegLength = MathF.Max(leg, 0.1f);
+        p.RunSpeed = MathF.Max(RunSpeed.Value, 0.5f);
         p.FootGroundAngle = System.Math.Clamp(FootGroundAngle.Value, 0f, 90f);
         p.FootGroundPow = System.Math.Clamp(FootGroundCurve.Value, 0.25f, 4f);
         p.FootStepUpAngularVelocityMultiplier = System.Math.Clamp(FootLiftAngularSpeed.Value, 0f, 1000f);
@@ -2455,7 +3184,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         }
     }
 
-    private void ResolveFootPose(GaitFoot foot, float bodyY, float conformScale, float clearance, float scale,
+    private void ResolveFootPose(GaitFoot foot, float bodyY, float conformScale, float clearance, float scale, float pitchShare,
         out float3 world, out floatQ rotation, out float groundY)
     {
         float3 planar = foot.Position;
@@ -2464,18 +3193,23 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         groundY = bodyY + (probed - bodyY) * conform;
         float3 normal = BlendNormal(probedNormal, conform);
 
-        rotation = TiltOntoSurface(BuildFootRotation(foot.Facing), normal);
+        floatQ flat = TiltOntoSurface(BuildFootRotation(foot.Facing), normal);
+        rotation = flat;
         float3 right = rotation * float3.Right;
-        if (MathF.Abs(foot.Pitch) > 1e-4f && right.LengthSquared > 1e-8f)
-            rotation = (floatQ.AxisAngleRad(right.Normalized, -foot.Pitch * (MathF.PI / 180f)) * rotation).Normalized;
+        if (MathF.Abs(foot.Pitch) * pitchShare > 1e-4f && right.LengthSquared > 1e-8f)
+            rotation = (floatQ.AxisAngleRad(right.Normalized, -foot.Pitch * pitchShare * (MathF.PI / 180f)) * rotation).Normalized;
 
+        // The foot rolls over its ends rather than its middle: a toe-down foot pivots about the tip it pushes off,
+        // a toe-up one about the heel it struck with, so the point on the ground stays put and the ankle travels
+        // up and over it. Rocking about the point under the ankle slid the toe back along the floor on every
+        // push-off. -xlinka
         float3 sole = new float3(planar.x, groundY + foot.ArcHeight, planar.z);
         float3 front = rotation * float3.Backward * (_footFrontDistance * scale);
         float3 back = rotation * float3.Forward * (_footBackDistance * scale);
         if (front.y < 0f)
-            sole.y -= front.y;
+            sole += flat * float3.Backward * (_footFrontDistance * scale) - front;
         else if (back.y < 0f)
-            sole.y -= back.y;
+            sole += flat * float3.Forward * (_footBackDistance * scale) - back;
         world = sole + rotation * new float3(0f, clearance, 0f);
     }
 
@@ -2607,9 +3341,22 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         return n.LengthSquared > 1e-8f ? n.Normalized : float3.Up;
     }
 
+    // The wearer's machine asks the hardware and also takes what the pose node reports, which is the same
+    // filtered state everybody else reads off it, so a seat's filters count on the wearer's machine too and
+    // every machine agrees on what is driven.
     private bool IsFootTracked(AvatarPoseDriver? driver, BodyNode node)
         => UserRoot.Target?.IsLocalUserRoot == true
-            ? IsNodeTracked(Engine.Current?.InputInterface, node)
+            ? IsNodeTracked(Engine.Current?.InputInterface, node) || driver?.IsTrackingAndActive == true
+            : driver?.IsTrackingAndActive == true;
+
+    // A pelvis or foot follows its proxy, and a mapped tracker whose socket never reached the pose driver leaves
+    // that proxy parked at the avatar root, so on the wearer's machine the driver has to be in a socket too, and
+    // the tracking that counts is that socket's: with two pucks on one part the hardware can report the live one
+    // while the driver sits in the lost one's socket. Everyone else reads IsTracking, which the wearer already
+    // clears whenever the driver is out.
+    private bool IsBodyNodeDriven(AvatarPoseDriver? driver)
+        => UserRoot.Target?.IsLocalUserRoot == true
+            ? driver?.IsEquipped == true && driver.IsTrackingAndActive
             : driver?.IsTrackingAndActive == true;
 
     // Downward physics probe for the floor under a foot, ignoring this avatar's own colliders so the ray doesn't
@@ -2627,14 +3374,30 @@ public class AvatarIK : Component, IAvatarEquipReceiver
         _footRayExclude.Clear();
         _footRayExclude.Add(userSlot);
 
-        var origin = new float3(x, fallbackY + GroundProbeUp, z);
-        var hit = world.Physics.Raycast(origin, new float3(0f, -1f, 0f), _footRayExclude, GroundProbeUp + GroundProbeDown);
+        float scale = MathF.Max(UserRoot.Target?.GlobalScale ?? 1f, 0.01f);
+        var origin = new float3(x, fallbackY + GroundProbeUp * scale, z);
+        var hit = world.Physics.Raycast(origin, new float3(0f, -1f, 0f), _footRayExclude,
+            (GroundProbeUp + GroundProbeDown) * scale);
         if (!hit.HasValue)
             return false;
 
         normal = hit.Value.Normal;
         height = hit.Value.Point.y;
         return true;
+    }
+
+    // Probe beneath the animated foot itself, independent of the movement capsule's contact point.
+    private float? AnimatedGroundHeight(float3 foot)
+    {
+        var root = UserRoot.Target?.Slot;
+        if (root == null || root.IsDestroyed)
+            return null;
+        float plane = root.GlobalPosition.y;
+        if (!TryGroundHeight(foot.x, foot.z, plane, out float height, out float3 normal)
+            || normal.y < 0.5f)
+            return null;
+        float scale = MathF.Max(UserRoot.Target!.GlobalScale, 0.01f);
+        return plane + (height - plane) * GroundConformance(height - plane, scale);
     }
 
     private static floatQ BuildFootRotation(float3 forward)

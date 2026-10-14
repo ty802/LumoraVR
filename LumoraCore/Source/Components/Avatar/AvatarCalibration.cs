@@ -142,7 +142,7 @@ public static class AvatarCalibration
             child.GlobalRotation = rot;
         }
 
-        Lumora.Core.Logging.Logger.Log(
+        Lumora.Core.Logging.Logger.Debug(
             $"[IK-FACING-ALIGN] root '{avatarRoot.SlotName.Value}' frame yawed {delta * 180f / System.MathF.PI:F1} deg " +
             $"onto body front={front} (root forward was {rootFwd}); world appearance unchanged");
         return true;
@@ -341,7 +341,7 @@ public static class AvatarCalibration
             var newPose = ComputeHandGrip(avatarRoot, rig, rightSide);
             if (!newPose.Valid || Matches(marker, newPose))
                 continue;
-            Logging.Logger.Log($"AvatarCalibration: {(rightSide ? "right" : "left")} hand grip on '{avatarRoot.SlotName.Value}' was a generated marker from an older grip rule; re-placed with the current one");
+            Logging.Logger.Debug($"AvatarCalibration: {(rightSide ? "right" : "left")} hand grip on '{avatarRoot.SlotName.Value}' was a generated marker from an older grip rule; re-placed with the current one");
 
             UpgradeAnchor(rightSide ? AvatarReferenceKind.RightHandToolAnchor : AvatarReferenceKind.LeftHandToolAnchor, ToolAnchorGripOffset);
             UpgradeAnchor(rightSide ? AvatarReferenceKind.RightHandGrabAnchor : AvatarReferenceKind.LeftHandGrabAnchor, GrabAnchorGripOffset);

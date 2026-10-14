@@ -208,6 +208,9 @@ public sealed class QuadrupedIKSolver
     public int NeckCount => _neck.Count;
     public bool IsReady => _captured && _rig != null && !_rig.IsDestroyed;
 
+    // Every bone the solve writes; FixTransforms puts these and only these back. -xlinka
+    public IReadOnlyList<Slot> DrivenBones => _bones;
+
     private QuadrupedRig? _rig;
     private bool _captured;
     private bool _frameBegun;
@@ -311,7 +314,7 @@ public sealed class QuadrupedIKSolver
         _spineRootIndex = IsAncestorOf(_spine[0], _spine[^1]) ? 0 : _spine.Count - 1;
         if (_spineRootIndex != 0)
         {
-            Lumora.Core.Logging.Logger.Log(
+            Lumora.Core.Logging.Logger.Debug(
                 $"QuadrupedIKSolver: spine hierarchy runs chest-first ('{_spine[^1].SlotName.Value}' carries "
                 + $"'{_spine[0].SlotName.Value}'), so the body is placed from the chest end");
         }

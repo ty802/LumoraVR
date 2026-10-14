@@ -49,7 +49,7 @@ public sealed class HandTrackingDriver : UserRootComponent, IInputUpdateReceiver
 
     public void BeforeInputUpdate()
     {
-        if (!IsUnderLocalUser)
+        if (!IsUnderLocalUser || World == null || World.Focus == World.WorldFocus.Background)
             return;
         ApplyHand(_registeredInput?.GetHand(Side.Value));
     }

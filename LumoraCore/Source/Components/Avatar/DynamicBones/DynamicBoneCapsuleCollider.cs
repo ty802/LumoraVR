@@ -15,11 +15,20 @@ public class DynamicBoneCapsuleCollider : Component, IDynamicBoneCollider
     public readonly Sync<float> Height;
     public readonly Sync<float3> Offset;
 
+    // Keeps particles inside instead of out: hair or fluff that has to stay within this shape.
+    public readonly Sync<bool> Inside;
+
+    // Tests each whole bone between two particles, not only the particles, so a long bone cannot slip through
+    // between its ends. Off tests the particles alone, the cheaper and older way.
+    public readonly Sync<bool> Segments;
+
     public DynamicBoneCapsuleCollider()
     {
         Radius = new Sync<float>(this, 0.1f);
         Height = new Sync<float>(this, 0.4f);
         Offset = new Sync<float3>(this, float3.Zero);
+        Inside = new Sync<bool>(this, false);
+        Segments = new Sync<bool>(this, false);
     }
 
     public bool TryGetShape(out DynamicBoneColliderShape shape)
@@ -38,6 +47,8 @@ public class DynamicBoneCapsuleCollider : Component, IDynamicBoneCollider
         float3 a = Slot.LocalPointToGlobal(Offset.Value + new float3(0f, half, 0f));
         float3 b = Slot.LocalPointToGlobal(Offset.Value - new float3(0f, half, 0f));
         shape = DynamicBoneColliderShape.FromCapsule(in a, in b, radius);
+        shape.Inside = Inside.Value;
+        shape.Segments = Segments.Value;
         return true;
     }
 }

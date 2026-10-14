@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
@@ -21,15 +22,21 @@ namespace Lumora.Core.Components;
 // the user's own avatar scaffold, so it is on the wire already and every peer checks it before
 // contributing a single shape. -xlinka
 [ComponentCategory("Physics/Dynamic Bones")]
-public class DynamicBonePlayerColliders : UserRootComponent
+public class DynamicBonePlayerColliders : UserRootComponent, IPlayerColliderSource
 {
     public readonly Sync<bool> HeadCollider = new();
     public readonly Sync<bool> HandColliders = new();
+
+    // A capsule from the floor under the head to just below it, so walking into a curtain parts it
+    // instead of leaving a head-sized dent. Soft bodies only: hair brushing past a torso is not a touch
+    // anybody meant, and a chain sitting on a shoulder would feel it all the time.
+    public readonly Sync<bool> BodyCollider = new();
 
     // Radii in metres at 1:1 user scale; the user root's global scale multiplies them, so a shrunk
     // user's hands stop pushing bones around like a giant's.
     public readonly Sync<float> HeadRadius = new();
     public readonly Sync<float> HandRadius = new();
+    public readonly Sync<float> BodyRadius = new();
 
     // How far forward of the wrist the hand capsule reaches. One capsule covers palm and fingers,
     // which is what a row of spheres would have cost otherwise.
@@ -61,6 +68,8 @@ public class DynamicBonePlayerColliders : UserRootComponent
         HeadRadius.Value = 0.16f;
         HandRadius.Value = 0.05f;
         HandLength.Value = 0.11f;
+        BodyCollider.Value = true;
+        BodyRadius.Value = 0.18f;
         AffectOthersBones.Value = true;
     }
 
@@ -79,7 +88,7 @@ public class DynamicBonePlayerColliders : UserRootComponent
     }
 
     // Called once per frame by the manager during the world's collider gather.
-    internal void Contribute(DynamicBoneManager manager)
+    public void Contribute(DynamicBoneManager manager)
     {
         if (!Enabled.Value || IsDestroyed || !AffectOthersBones.Value)
             return;
@@ -101,7 +110,10 @@ public class DynamicBonePlayerColliders : UserRootComponent
             // point, and a sphere centred there pushes hair off the face and leaves the back of the
             // head hollow.
             float3 centre = _head.LocalPointToGlobal(float3.Backward * 0.1f);
+            int head = manager.PlayerColliderCount;
             manager.AddPlayerCollider(centre, centre, HeadRadius.Value * scale, owner);
+            if (manager.PlayerColliderCount > head)
+                manager.PlayerColliders[head].Head = true;
         }
 
         if (HandColliders.Value)
@@ -109,6 +121,31 @@ public class DynamicBonePlayerColliders : UserRootComponent
             AddHand(manager, _leftHand, scale, owner);
             AddHand(manager, _rightHand, scale, owner);
         }
+
+        if (BodyCollider.Value && _head != null && !_head.IsDestroyed)
+            AddBody(manager, root, scale, owner);
+    }
+
+    // How far below the middle of the skull the body capsule's top end sits, in metres at 1:1 scale.
+    private const float BodyTopBelowHead = 0.3f;
+
+    // Worked out in the user root's own space, whose floor is y = 0 and whose units already carry the
+    // user's scale, so a seated rig tipped with its seat tips the capsule too.
+    private void AddBody(DynamicBoneManager manager, UserRoot root, float scale, User? owner)
+    {
+        float radius = BodyRadius.Value;
+        if (radius <= 0f)
+            return;
+        var space = root.Slot;
+        float3 head = space.GlobalPointToLocal(_head!.LocalPointToGlobal(float3.Backward * 0.1f));
+        float top = MathF.Max(head.y - BodyTopBelowHead, radius);
+        float3 a = space.LocalPointToGlobal(new float3(head.x, radius, head.z));
+        float3 b = space.LocalPointToGlobal(new float3(head.x, top, head.z));
+
+        int index = manager.PlayerColliderCount;
+        manager.AddPlayerCollider(a, b, radius * scale, owner);
+        if (manager.PlayerColliderCount > index)
+            manager.PlayerColliders[index].SoftBodyOnly = true;
     }
 
     private void ResolveBodyNodes(UserRoot root)

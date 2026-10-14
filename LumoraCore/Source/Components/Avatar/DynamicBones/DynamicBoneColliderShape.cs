@@ -22,14 +22,15 @@ public struct DynamicBoneColliderShape
         Sphere,
         Capsule,
         Box,
+        Plane,
     }
 
     public ShapeKind Kind;
 
-    // Sphere: centre. Capsule: first end. Box: unused.
+    // Sphere: centre. Capsule: first end. Plane: a point on it. Box: unused.
     public float3 A;
 
-    // Capsule: second end.
+    // Capsule: second end. Plane: unit normal, the side particles stay on.
     public float3 B;
 
     // Sphere/capsule radius, already scaled by the collider's global scale.
@@ -50,6 +51,20 @@ public struct DynamicBoneColliderShape
 
     // The user this shape belongs to, for the player-collider own-body filter. Null for static shapes.
     public User? Owner;
+
+    // Player body capsule: soft bodies push against it, bone chains never see it.
+    public bool SoftBodyOnly;
+
+    // A player's head. The wearer's own chains never feel it: it is a generic sphere, and the avatar's own
+    // colliders know the real skull.
+    public bool Head;
+
+    // Sphere and capsule: particles are kept INSIDE rather than pushed out, so hair or fluff stays within it.
+    public bool Inside;
+
+    // Sphere and capsule: the whole bone from its parent particle is kept out, not only the particle, so a
+    // long bone cannot pass through a small collider between its two ends.
+    public bool Segments;
 
     public static DynamicBoneColliderShape FromSphere(in float3 centre, float radius, User? owner = null)
     {
@@ -86,6 +101,22 @@ public struct DynamicBoneColliderShape
             MathF.Max(a.y, b.y) + radius,
             MathF.Max(a.z, b.z) + radius);
         return shape;
+    }
+
+    // Bounds are finite around the point: broadphase tests still pass for anything near it, and callers
+    // that watch BoundsMin for movement see the plane move.
+    public static DynamicBoneColliderShape FromPlane(in float3 point, in float3 normal)
+    {
+        const float reach = 10000f;
+        var pad = new float3(reach, reach, reach);
+        return new DynamicBoneColliderShape
+        {
+            Kind = ShapeKind.Plane,
+            A = point,
+            B = normal,
+            BoundsMin = point - pad,
+            BoundsMax = point + pad,
+        };
     }
 
     public static DynamicBoneColliderShape FromBox(in float4x4 localToWorld, in float4x4 worldToLocal,
@@ -131,15 +162,165 @@ public struct DynamicBoneColliderShape
     // collider components ran per particle before the snapshot existed.
     public bool Resolve(ref float3 position, float particleRadius)
     {
+        if (Inside && Kind is ShapeKind.Sphere or ShapeKind.Capsule)
+            return ResolveInside(ref position, particleRadius);
         switch (Kind)
         {
             case ShapeKind.Sphere:
                 return ResolveSphere(ref position, particleRadius);
             case ShapeKind.Capsule:
                 return ResolveCapsule(ref position, particleRadius);
+            case ShapeKind.Plane:
+                return ResolvePlane(ref position, particleRadius);
             default:
                 return ResolveBox(ref position, particleRadius);
         }
+    }
+
+    // Resolve for a particle hanging from `anchor`: the particle first, then the bone between them, turned about
+    // the anchor just far enough that it clears the shape. A bone whose anchor is already inside is left alone;
+    // the anchor's own test deals with that.
+    public bool Resolve(ref float3 position, in float3 anchor, float particleRadius)
+    {
+        bool moved = Resolve(ref position, particleRadius);
+        if (!Segments || Inside || Kind is not (ShapeKind.Sphere or ShapeKind.Capsule))
+            return moved;
+        return ResolveSegment(ref position, in anchor, particleRadius) | moved;
+    }
+
+    // For a shape that keeps bones inside: puts a particle that ended up outside back in without stretching its bone,
+    // on the circle where the sphere of points one bone length from the anchor meets the inside of the shape, at the
+    // place on it nearest where the particle was. Run after the bone's length is fixed, or that would push it out again.
+    public bool KeepInside(ref float3 position, in float3 anchor, float length, float particleRadius)
+    {
+        if (!Inside || Kind is not (ShapeKind.Sphere or ShapeKind.Capsule))
+            return false;
+        float3 core = A;
+        if (Kind == ShapeKind.Capsule)
+        {
+            float3 ab = B - A;
+            float lengthSquared = ab.LengthSquared;
+            if (lengthSquared > 1e-8f)
+                core = A + ab * System.Math.Clamp(float3.Dot(position - A, ab) / lengthSquared, 0f, 1f);
+        }
+        float limit = MathF.Max(Radius - particleRadius, 0f);
+        if ((position - core).LengthSquared <= limit * limit)
+            return false;
+        float3 toCore = core - anchor;
+        float d = toCore.Length;
+        if (d < 1e-6f || length < 1e-6f)
+            return ResolveInside(ref position, particleRadius);
+        float3 u = toCore / d;
+        float along = (length * length - limit * limit + d * d) / (2f * d);
+        float h2 = length * length - along * along;
+        if (h2 < 0f)
+        {
+            // The bone cannot reach the inside at its length: point it at the middle.
+            position = anchor + u * length;
+            return true;
+        }
+        float3 side = position - anchor;
+        side -= u * float3.Dot(side, u);
+        if (side.LengthSquared < 1e-12f)
+        {
+            side = float3.Cross(u, float3.Up);
+            if (side.LengthSquared < 1e-12f)
+                side = float3.Cross(u, float3.Right);
+        }
+        position = anchor + u * along + side.Normalized * MathF.Sqrt(h2);
+        return true;
+    }
+
+    private bool ResolveInside(ref float3 position, float particleRadius)
+    {
+        float3 core = A;
+        if (Kind == ShapeKind.Capsule)
+        {
+            float3 ab = B - A;
+            float lengthSquared = ab.LengthSquared;
+            if (lengthSquared > 1e-8f)
+                core = A + ab * System.Math.Clamp(float3.Dot(position - A, ab) / lengthSquared, 0f, 1f);
+        }
+        float limit = MathF.Max(Radius - particleRadius, 0f);
+        float3 delta = position - core;
+        float distanceSquared = delta.LengthSquared;
+        if (distanceSquared <= limit * limit)
+            return false;
+        float distance = MathF.Sqrt(distanceSquared);
+        position = core + delta / distance * limit;
+        return true;
+    }
+
+    private bool ResolveSegment(ref float3 position, in float3 anchor, float particleRadius)
+    {
+        float3 bone = position - anchor;
+        float length = bone.Length;
+        if (length < 1e-6f)
+            return false;
+        float3 dir = bone / length;
+
+        // The shape's centre nearest the bone: a sphere's own, a capsule's point on its core closest to the bone.
+        float3 centre = A;
+        if (Kind == ShapeKind.Capsule)
+            centre = ClosestOnSegment(A, B, anchor, position);
+
+        float minimum = Radius + particleRadius;
+        float3 toCentre = centre - anchor;
+        float reach = toCentre.Length;
+        if (reach <= minimum || reach < 1e-6f)
+            return false;
+        float along = float3.Dot(toCentre, dir);
+        // Past either end the nearest point of the bone is an end, which the particle tests cover.
+        if (along <= 0f || along >= length)
+            return false;
+        float3 side = toCentre - dir * along;
+        if (side.LengthSquared >= minimum * minimum)
+            return false;
+
+        // Turn the bone in the plane it shares with the centre until it passes the shape at the minimum distance.
+        float3 axisToCentre = toCentre / reach;
+        float clear = MathF.Asin(System.Math.Clamp(minimum / reach, 0f, 1f));
+        float3 away = dir - axisToCentre * float3.Dot(dir, axisToCentre);
+        if (away.LengthSquared < 1e-10f)
+        {
+            away = float3.Cross(axisToCentre, float3.Up);
+            if (away.LengthSquared < 1e-10f)
+                away = float3.Cross(axisToCentre, float3.Right);
+        }
+        away = away.Normalized;
+        position = anchor + (axisToCentre * MathF.Cos(clear) + away * MathF.Sin(clear)) * length;
+        return true;
+    }
+
+    // The point of segment ab nearest to segment pq.
+    private static float3 ClosestOnSegment(in float3 a, in float3 b, in float3 p, in float3 q)
+    {
+        float3 d1 = b - a;
+        float3 d2 = q - p;
+        float3 r = a - p;
+        float aa = float3.Dot(d1, d1);
+        float ee = float3.Dot(d2, d2);
+        if (aa < 1e-10f)
+            return a;
+        float f = float3.Dot(d2, r);
+        float c = float3.Dot(d1, r);
+        float s;
+        if (ee < 1e-10f)
+        {
+            s = System.Math.Clamp(-c / aa, 0f, 1f);
+        }
+        else
+        {
+            float bb = float3.Dot(d1, d2);
+            float denominator = aa * ee - bb * bb;
+            s = denominator > 1e-10f ? System.Math.Clamp((bb * f - c * ee) / denominator, 0f, 1f) : 0f;
+            float t = (bb * s + f) / ee;
+            if (t < 0f)
+                s = System.Math.Clamp(-c / aa, 0f, 1f);
+            else if (t > 1f)
+                s = System.Math.Clamp((bb - c) / aa, 0f, 1f);
+        }
+        return a + d1 * s;
     }
 
     private bool ResolveSphere(ref float3 position, float particleRadius)
@@ -176,6 +357,15 @@ public struct DynamicBoneColliderShape
         float distance = MathF.Sqrt(distanceSquared);
         float3 direction = distance > 1e-6f ? delta / distance : float3.Up;
         position = closest + direction * minimum;
+        return true;
+    }
+
+    private bool ResolvePlane(ref float3 position, float particleRadius)
+    {
+        float depth = float3.Dot(position - A, B) - particleRadius;
+        if (depth >= 0f)
+            return false;
+        position -= B * depth;
         return true;
     }
 

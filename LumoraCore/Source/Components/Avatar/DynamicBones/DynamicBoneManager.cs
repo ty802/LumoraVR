@@ -50,7 +50,7 @@ public sealed class DynamicBoneManager
 
     private readonly World _world;
     private readonly List<DynamicBoneChain> _chains = new();
-    private readonly List<DynamicBonePlayerColliders> _colliderSources = new();
+    private readonly List<IPlayerColliderSource> _colliderSources = new();
     private readonly List<Tool> _localTools = new();
     private readonly List<bool> _localToolGrip = new();
     private UserRoot? _scannedRoot;
@@ -132,13 +132,13 @@ public sealed class DynamicBoneManager
 
     internal void NoteUpdateOrderChanged() => _orderDirty = true;
 
-    internal void Register(DynamicBonePlayerColliders source)
+    internal void Register(IPlayerColliderSource source)
     {
         if (source != null && !_colliderSources.Contains(source))
             _colliderSources.Add(source);
     }
 
-    internal void Unregister(DynamicBonePlayerColliders source)
+    internal void Unregister(IPlayerColliderSource source)
     {
         if (source != null)
             _colliderSources.Remove(source);

@@ -13,12 +13,13 @@ namespace Lumora.Core.Components;
 
 // Secondary bone motion for hair, tails, ears, clothes: a particle chain rides the animated skeleton
 // and lags, springs and collides believably. Set Root (chain auto-builds from its descendants) or
-// fill Bones explicitly; Inertia/Damping/Elasticity/Stiffness shape the motion.
+// fill Bones explicitly; Inertia/Damping/Elasticity/Stiffness shape the motion, and limits, sag and
+// curves along the chain refine it bone by bone.
 //
 // WHAT IS AND ISN'T REPLICATED. The simulation is LOCAL on every peer (bones are already posed
 // identically from replicated proxies, so broadcasting the wiggle would only add churn) and runs
-// AFTER the IK solve each frame. Writes are silent rotation-only swings, so skinning stays scale
-// safe. The ONLY replicated state on this component is the grab: who is holding it, which bone, and
+// AFTER the IK solve each frame. Writes are silent swings, plus bone lengths on a chain allowed to
+// stretch or squish, never scale, so skinning stays scale safe. The ONLY replicated state on this component is the grab: who is holding it, which bone, and
 // where in that hand the bone was caught. Everything else - collisions, velocities, the solved pose -
 // is worked out again on each machine from state it already has. -xlinka
 [ComponentCategory("Physics/Dynamic Bones")]
@@ -59,6 +60,62 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
     // Uniform length multiplier on the whole chain.
     public readonly Sync<float> GlobalStretch;
 
+    // How much longer each bone may be drawn out, as a share of its rest length (1 lets it reach twice its length),
+    // and how much shorter it may be pressed (0..1). A hand pulling past what the chain reaches by turning, or a
+    // collider still pressing on a bone once it has turned away, changes its length up to these. StretchMotion
+    // (0..1) is how much the chain's own swinging may change it as well. Bones keep their rest length otherwise,
+    // and with both limits at zero the chain never moves a bone, it only turns them.
+    public readonly Sync<float> MaxStretch;
+    public readonly Sync<float> MaxSquish;
+    public readonly Sync<float> StretchMotion;
+
+    // The root bone swings toward its one child like the bones below it. Off, the root keeps whatever pose
+    // the skeleton gives it and only what hangs from it moves: the setting for a root that several strands
+    // or several chains share, such as a head carrying both ears.
+    public readonly Sync<bool> SwingRoot;
+
+    // The chain moves with the body rather than through the world: damping works on motion relative to the
+    // rest pose, and Inertia is how much of the body's speeding up, stopping and turning the bones simply
+    // ride. Steady walking carries the chain along; it swings when the body's motion changes.
+    public readonly Sync<bool> RelativeMotion;
+
+    // 0..1: how far each bone's rest direction leans toward the ground (1 hangs straight down, negative leans
+    // up). A share of the angle rather than a force, so the lean does not depend on how stiff the spring is.
+    public readonly Sync<float> Sag;
+
+    // 0..1: how much of the sag is taken away while a bone sits in its rest direction.
+    public readonly Sync<float> SagFalloff;
+
+    // How far each bone may turn from its rest direction under its parent, in degrees.
+    public readonly Sync<DynamicBoneLimit> Limit;
+    public readonly Sync<float> LimitAngle;
+
+    // A polar limit's second axis, in degrees.
+    public readonly Sync<float> LimitAngleSide;
+
+    // Turns the limit away from each bone's rest direction, in the bone's own frame.
+    public readonly Sync<floatQ> LimitRotation;
+
+    // Where a leaf bone's virtual end sits, in the leaf's own space. Zero extends the leaf along itself.
+    public readonly Sync<float3> EndOffset;
+
+    // Bones something else poses (an animation, the IK, a constraint) keep that pose as their rest each frame
+    // and the swing rides on top of it instead of replacing it. Bones a driver holds do this even when off.
+    public readonly Sync<bool> FollowAnimation;
+
+    // Settings scaled along the chain: points of (0 at the root .. 1 at the deepest end, multiplier) joined by
+    // straight lines, empty for 1 all the way. GravityCurve scales Gravity, LocalForce and Sag.
+    public readonly SyncFieldList<float2> ElasticityCurve;
+    public readonly SyncFieldList<float2> DampingCurve;
+    public readonly SyncFieldList<float2> StiffnessCurve;
+    public readonly SyncFieldList<float2> GravityCurve;
+    public readonly SyncFieldList<float2> InertiaCurve;
+    public readonly SyncFieldList<float2> RadiusCurve;
+    public readonly SyncFieldList<float2> LimitCurve;
+    public readonly SyncFieldList<float2> StretchCurve;
+    public readonly SyncFieldList<float2> SquishCurve;
+    public readonly SyncFieldList<float2> StretchMotionCurve;
+
     // Colliders the chain pushes out of.
     public readonly SyncRefList<IDynamicBoneCollider> StaticColliders;
 
@@ -74,6 +131,33 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
     // their own hair meeting their own skull puts real colliders in StaticColliders, and those are
     // shaped like the actual head instead of the generic sphere the player set has to assume.
     public readonly Sync<bool> CollideWithOwnBody;
+
+    // The wearer's own hands push the chain, the head never does: a hand reaching back to its own tail, without
+    // the generic head sphere shoving the wearer's ears about.
+    public readonly Sync<bool> CollideWithOwnHands;
+
+    // With RelativeMotion, Inertia rides only the body's travel through the world (walking, turning on the spot,
+    // being carried); the body's own motion under it (an animation, the IK, a head turn) swings the bones in full.
+    public readonly Sync<bool> InertiaTravelOnly;
+
+    // What a swinging root with more than one child turns toward: nothing (it holds), its first child, or the
+    // middle of all of them. The children it does not turn toward ride its turn.
+    public readonly Sync<DynamicBoneFork> RootFork;
+
+    // Keeps the Output fields below up to date each frame. Off by default: only a chain something reads needs them.
+    public readonly Sync<bool> Outputs;
+
+    // Worked out on every peer from state it already has, never sent. Held: someone has hold of the chain.
+    // Angle: how far its far end has turned from where the rest pose puts it, 0 at rest and 1 at a half turn.
+    // Stretch and Squish: how far its bones are drawn out or pressed in, as a share of what they may.
+    [NonPersistent]
+    public readonly Sync<bool> OutputGrabbed;
+    [NonPersistent]
+    public readonly Sync<float> OutputAngle;
+    [NonPersistent]
+    public readonly Sync<float> OutputStretch;
+    [NonPersistent]
+    public readonly Sync<float> OutputSquish;
 
     // GRAB CONFIGURATION (tunables, not the protocol - see the three replicated members below)
 
@@ -91,6 +175,13 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
 
     // Whether the virtual tip past the last real bone can be caught.
     public readonly Sync<bool> GrabTerminalBones;
+
+    // The caught bone goes to the middle of the hand rather than staying where in the hand it was caught.
+    public readonly Sync<bool> GrabSnapToHand;
+
+    // 0..1: how directly the caught bone follows the hand. 1 sits on it; less closes that share of the gap each
+    // 60th of a second, so the chain trails the hand a little.
+    public readonly Sync<float> GrabFollow;
 
     // The first bone is pinned to the animated skeleton, so catching it does nothing. Off by default.
     public readonly Sync<bool> GrabFirstBone;
@@ -133,16 +224,49 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
         Gravity = new Sync<float3>(this, float3.Zero);
         LocalForce = new Sync<float3>(this, float3.Zero);
         GlobalStretch = new Sync<float>(this, 1f);
+        MaxStretch = new Sync<float>(this, 0f);
+        MaxSquish = new Sync<float>(this, 0f);
+        StretchMotion = new Sync<float>(this, 0f);
+        SwingRoot = new Sync<bool>(this, true);
+        RelativeMotion = new Sync<bool>(this, false);
+        Sag = new Sync<float>(this, 0f);
+        SagFalloff = new Sync<float>(this, 0f);
+        Limit = new Sync<DynamicBoneLimit>(this, DynamicBoneLimit.None);
+        LimitAngle = new Sync<float>(this, 45f);
+        LimitAngleSide = new Sync<float>(this, 45f);
+        LimitRotation = new Sync<floatQ>(this, floatQ.Identity);
+        EndOffset = new Sync<float3>(this, float3.Zero);
+        FollowAnimation = new Sync<bool>(this, false);
+        ElasticityCurve = new SyncFieldList<float2>(this);
+        DampingCurve = new SyncFieldList<float2>(this);
+        StiffnessCurve = new SyncFieldList<float2>(this);
+        GravityCurve = new SyncFieldList<float2>(this);
+        InertiaCurve = new SyncFieldList<float2>(this);
+        RadiusCurve = new SyncFieldList<float2>(this);
+        LimitCurve = new SyncFieldList<float2>(this);
+        StretchCurve = new SyncFieldList<float2>(this);
+        SquishCurve = new SyncFieldList<float2>(this);
+        StretchMotionCurve = new SyncFieldList<float2>(this);
         StaticColliders = new SyncRefList<IDynamicBoneCollider>(this);
         MaxViewDistance = new Sync<float>(this, 0f);
         CollideWithPlayers = new Sync<bool>(this, true);
         CollideWithOwnBody = new Sync<bool>(this, false);
+        CollideWithOwnHands = new Sync<bool>(this, false);
+        InertiaTravelOnly = new Sync<bool>(this, false);
+        RootFork = new Sync<DynamicBoneFork>(this, DynamicBoneFork.Hold);
+        Outputs = new Sync<bool>(this, false);
+        OutputGrabbed = new Sync<bool>(this, false);
+        OutputAngle = new Sync<float>(this, 0f);
+        OutputStretch = new Sync<float>(this, 0f);
+        OutputSquish = new Sync<float>(this, 0f);
         AllowGrab = new Sync<bool>(this, false);
         AllowSteal = new Sync<bool>(this, true);
         GrabRadius = new Sync<float>(this, 0.08f);
         GrabReleaseDistance = new Sync<float>(this, 0.75f);
         GrabSlipping = new Sync<bool>(this, true);
         GrabTerminalBones = new Sync<bool>(this, true);
+        GrabSnapToHand = new Sync<bool>(this, false);
+        GrabFollow = new Sync<float>(this, 1f);
         GrabFirstBone = new Sync<bool>(this, false);
         UngrabbableBones = new SyncRefList<Slot>(this);
         GrabPriority = new Sync<int>(this, 0);
@@ -165,21 +289,60 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
         public float3 PrevPos;
         public float3 Vel;
         public floatQ Rot;                 // solved world rotation this frame
+        public floatQ Frame;               // rest turn under the parent's solved turn, before this bone's own swing
+        public floatQ AnimLocal;           // rest turn under the parent bone this frame: the captured one, or the animated pose
+        public floatQ AnimFrame;           // the rest pose's world turn this frame, animation included
+        public floatQ HelperTurn;          // turn of any slots between the parent bone and this one
+        public floatQ WrittenLocal;        // the local turn the chain last wrote
+        public bool HasWritten;
+        public float3 PrevRest;            // last frame's rest target
+        public float3 RestVel;             // how fast that rest target moved; with RelativeMotion, Vel is relative to it
+        public float3 TravelVel;           // the part of RestVel the body's travel through the world made
+        public float3 RestNow;             // this frame's rest offset from the parent, before any sag
+        public bool Middle;                // the virtual point a root turns toward when it follows all its children
+        public float Along;                // 0 at the root, 1 at the deepest end
+        public float ElasticityScale, DampingScale, StiffnessScale, GravityScale, InertiaScale, RadiusScale, LimitScale;
         public bool Held;                  // on the path from the root to the caught bone
+        public bool Pinned;                // hangs from a parent that does not turn: placed by the skeleton, never by the solve
         public int RotationRoot;           // nearest held ancestor, 0 when none
         public floatQ RotOffset;           // how far that held ancestor swung off its rest direction
+        public float StretchScale, SquishScale, MotionScale; // the length settings along the chain
+        public float RestLength;           // this frame's rest length to the parent, an animated one included
+        public float LengthScale;          // that rest length against the captured one
+        public float Deviation;            // how far from its rest length the segment ended last frame
+        public float SolvedLength;         // the length the step left it at, before a hand's solve
+        public float3 RestLocalPos;        // the bone's local position at rest: as captured, or what a driver put there
+        public float CaptureLocalLength;   // the captured local position's length
+        public float3 WrittenLocalPos;     // the local position the chain last wrote
+        public bool PosWritten;
     }
 
     private Particle[]? _particles;
     private int[]? _childCounts;
     private floatQ _captureRootRotInverse;
     private floatQ _rootRestLocalRot;
+    private floatQ _rootWrittenLocalRot;
+    private bool _rootWritten;
     private float _captureRootScale = 1f;
     private bool _needsRebuild = true;
+    private bool _curvesDirty;
     private bool _wasSimulating;
     private bool _paused;
     private bool _hasStepped;
     private ulong _lastSteppedFrame;
+    private int _rootTurner = -1;
+    private int _angleEnd = -1;
+    private int[] _ends = Array.Empty<int>();
+    private bool _lengthsWritten;
+    private bool _frameStretchy;
+    private float _frameMaxStretch;
+    private float _frameMaxSquish;
+    private float _frameStretchMotion;
+    private Slot? _travelSlot;
+    private ulong _travelCheckedFrame;
+    private float3 _travelPos;
+    private floatQ _travelRot = floatQ.Identity;
+    private bool _hasTravel;
 
     private DynamicBoneManager? _manager;
     private int _effector = -1;
@@ -205,6 +368,20 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
         base.OnAwake();
         Root.OnChanged += _ => _needsRebuild = true;
         Bones.OnChanged += _ => _needsRebuild = true;
+        EndOffset.OnValueChange += _ => _needsRebuild = true;
+        RootFork.OnValueChange += _ => _needsRebuild = true;
+        SwingRoot.OnValueChange += _ => _needsRebuild = true;
+        Action<SyncFieldList<float2>> curves = _ => _curvesDirty = true;
+        ElasticityCurve.OnChanged += curves;
+        DampingCurve.OnChanged += curves;
+        StiffnessCurve.OnChanged += curves;
+        GravityCurve.OnChanged += curves;
+        InertiaCurve.OnChanged += curves;
+        RadiusCurve.OnChanged += curves;
+        LimitCurve.OnChanged += curves;
+        StretchCurve.OnChanged += curves;
+        SquishCurve.OnChanged += curves;
+        StretchMotionCurve.OnChanged += curves;
         // The manager keeps its chains sorted by update order so the batched pass fires in the same
         // sequence the input dispatch would have. Moving a chain's order has to re-sort that list or
         // the pass runs in the order the chains happened to be created in.
@@ -224,8 +401,15 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
 
     }
 
+    public override void OnDisabled()
+    {
+        base.OnDisabled();
+        RestoreLengths();
+    }
+
     public override void OnDestroy()
     {
+        RestoreLengths();
         _manager?.Unregister(this);
         _manager = null;
         base.OnDestroy();
@@ -253,6 +437,8 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
 
         if (_needsRebuild)
             BuildParticles();
+        else if (_curvesDirty)
+            ApplyCurves();
         if (_particles == null || _particles.Length < 2)
             return false;
 
@@ -272,6 +458,7 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
             // that range can tell, and there is no frozen pose left lying around to pop back in.
             _paused = true;
             _wasSimulating = false;
+            RestoreLengths();
             return false;
         }
 
@@ -296,8 +483,53 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
         Simulate(manager, delta);
         WriteBones();
         HandleGrabbing();
+        if (Outputs.Value)
+            WriteOutputs();
         SimulationCount++;
         return true;
+    }
+
+    // Silent writes: every peer works these out for itself. Stretch and squish are the chain's furthest-gone end:
+    // its path's length from the root against the longest and shortest that path may get.
+    private void WriteOutputs()
+    {
+        var particles = _particles!;
+        OutputGrabbed.SetValueSilently(GrabberRef.Target != null);
+        float stretch = 0f, squish = 0f;
+        if (_frameStretchy)
+        {
+            foreach (int tip in _ends)
+            {
+                float length = 0f, rest = 0f, longest = 0f, shortest = 0f;
+                for (int i = tip; i > 0; i = particles[i].ParentIndex)
+                {
+                    ref var p = ref particles[i];
+                    length += (p.Pos - particles[p.ParentIndex].Pos).Length;
+                    rest += p.RestLength;
+                    // A pinned bone keeps its length, so it adds nothing to how far the path may go.
+                    longest += p.Pinned ? p.RestLength : p.RestLength * (1f + _frameMaxStretch * p.StretchScale);
+                    shortest += p.Pinned ? p.RestLength : p.RestLength * (1f - MathF.Min(_frameMaxSquish * p.SquishScale, MaxSquishShare));
+                }
+                if (length > rest && longest > rest)
+                    stretch = MathF.Max(stretch, MathF.Min((length - rest) / (longest - rest), 1f));
+                else if (length < rest && shortest < rest)
+                    squish = MathF.Max(squish, MathF.Min((rest - length) / (rest - shortest), 1f));
+            }
+        }
+        OutputStretch.SetValueSilently(stretch);
+        OutputSquish.SetValueSilently(squish);
+        float angle = 0f;
+        int end = _angleEnd;
+        if (end > 0 && end < particles.Length)
+        {
+            float3 rest = float3.Zero;
+            for (int i = end; i > 0; i = particles[i].ParentIndex)
+                rest += particles[i].RestNow;
+            float3 now = particles[end].Pos - particles[0].Pos;
+            if (rest.LengthSquared > 1e-12f && now.LengthSquared > 1e-12f)
+                angle = MathF.Acos(System.Math.Clamp(float3.Dot(rest.Normalized, now.Normalized), -1f, 1f)) / MathF.PI;
+        }
+        OutputAngle.SetValueSilently(angle);
     }
 
     // Frames a chain may miss and still carry on from where it was. Anything longer is a gap, and a
@@ -349,6 +581,7 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
     private void BuildParticles()
     {
         _needsRebuild = false;
+        RestoreLengths();
         _particles = null;
         _effector = -1;
 
@@ -373,6 +606,7 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
         // derived from the CAPTURED rest local rotation under the animated parent - reading the live
         // rotation back would compound the swing frame over frame.
         _rootRestLocalRot = rootBone.LocalRotation.Value;
+        _rootWritten = false;
         var gs = rootBone.GlobalScale;
         _captureRootScale = MathF.Max((MathF.Abs(gs.x) + MathF.Abs(gs.y) + MathF.Abs(gs.z)) / 3f, 1e-4f);
 
@@ -401,7 +635,11 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
                 Pos = bone.GlobalPosition,
                 PrevPos = bone.GlobalPosition,
                 Rot = bone.GlobalRotation,
+                Frame = bone.GlobalRotation,
                 RotOffset = floatQ.Identity,
+                RestLocalPos = bone.LocalPosition.Value,
+                CaptureLocalLength = bone.LocalPosition.Value.Length,
+                LengthScale = 1f,
             };
 
             if (parentIndex >= 0)
@@ -413,6 +651,10 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
                 float3 dir = offset.LengthSquared > 1e-10f ? offset.Normalized : float3.Down;
                 particle.RestDirParentSpace = parentBone.GlobalRotation.Inverse * dir;
                 particle.RestRotParentSpace = parentBone.GlobalRotation.Inverse * bone.GlobalRotation;
+                particle.AnimLocal = particle.RestRotParentSpace;
+                particle.HelperTurn = bone.Parent != null && !ReferenceEquals(bone.Parent, parentBone)
+                    ? parentBone.GlobalRotation.Inverse * bone.Parent.GlobalRotation
+                    : floatQ.Identity;
             }
 
             indexOf[bone] = list.Count;
@@ -436,11 +678,22 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
                     continue;
                 var leaf = list[i];
                 var leafBone = leaf.Bone!;
-                // Extend along the leaf's own rest direction by its segment length (or a nub).
+                // At the leaf's own end offset, or else along the leaf's rest direction by its segment
+                // length (or a nub).
                 float length = leaf.ParentIndex >= 0 ? MathF.Max(leaf.Length, 0.01f) : 0.05f;
                 float3 dirWorld = leaf.ParentIndex >= 0
                     ? leafBone.GlobalRotation * leaf.RestDirParentSpace
                     : leafBone.GlobalRotation * float3.Down;
+                var end = EndOffset.Value;
+                if (end.LengthSquared > 1e-12f)
+                {
+                    float3 offset = leafBone.LocalPointToGlobal(end) - leafBone.GlobalPosition;
+                    if (offset.LengthSquared > 1e-10f)
+                    {
+                        length = offset.Length;
+                        dirWorld = offset / length;
+                    }
+                }
                 float3 endPos = leafBone.GlobalPosition + dirWorld * length;
                 list.Add(new Particle
                 {
@@ -449,12 +702,71 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
                     RestOffsetRootSpace = _captureRootRotInverse * (dirWorld * length),
                     RestDirParentSpace = leafBone.GlobalRotation.Inverse * dirWorld,
                     RestRotParentSpace = floatQ.Identity,
+                    AnimLocal = floatQ.Identity,
+                    HelperTurn = floatQ.Identity,
                     Length = length,
                     Pos = endPos,
                     PrevPos = endPos,
                     Rot = leafBone.GlobalRotation,
+                    Frame = leafBone.GlobalRotation,
                     RotOffset = floatQ.Identity,
                 });
+            }
+        }
+
+        // A root that turns toward the middle of its children turns toward one virtual point there, right after the
+        // root so it is placed before any child that rides the root's turn.
+        _rootTurner = -1;
+        int rootChildren = 0;
+        int firstChild = -1;
+        float3 middle = float3.Zero;
+        float middleLength = 0f;
+        for (int i = 1; i < list.Count; i++)
+        {
+            if (list[i].ParentIndex != 0)
+                continue;
+            rootChildren++;
+            if (firstChild < 0)
+                firstChild = i;
+            middle += list[i].RestOffsetRootSpace;
+            middleLength += list[i].Length;
+        }
+        if (SwingRoot.Value && rootChildren > 1 && RootFork.Value != DynamicBoneFork.Hold)
+        {
+            middle /= rootChildren;
+            middleLength /= rootChildren;
+            if (RootFork.Value == DynamicBoneFork.Average && middle.Length > middleLength * 0.1f)
+            {
+                for (int i = 1; i < list.Count; i++)
+                {
+                    var moved = list[i];
+                    if (moved.ParentIndex > 0)
+                        moved.ParentIndex++;
+                    list[i] = moved;
+                }
+                float3 world = rootRot * middle;
+                list.Insert(1, new Particle
+                {
+                    Bone = null,
+                    ParentIndex = 0,
+                    RestOffsetRootSpace = middle,
+                    RestDirParentSpace = rootRot.Inverse * world.Normalized,
+                    RestRotParentSpace = floatQ.Identity,
+                    AnimLocal = floatQ.Identity,
+                    HelperTurn = floatQ.Identity,
+                    Length = middle.Length,
+                    Pos = rootBone.GlobalPosition + world,
+                    PrevPos = rootBone.GlobalPosition + world,
+                    Rot = rootRot,
+                    Frame = rootRot,
+                    RotOffset = floatQ.Identity,
+                    Middle = true,
+                });
+                _rootTurner = 1;
+            }
+            else
+            {
+                _rootTurner = firstChild;
             }
         }
 
@@ -462,8 +774,80 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
         _childCounts = new int[_particles.Length];
         for (int i = 1; i < _particles.Length; i++)
             _childCounts[_particles[i].ParentIndex]++;
+
+        // How far down the chain each particle hangs, for the curves: by steps from the root, the deepest
+        // end at 1.
+        var depth = new int[_particles.Length];
+        int deepest = 0;
+        for (int i = 1; i < _particles.Length; i++)
+        {
+            depth[i] = depth[_particles[i].ParentIndex] + 1;
+            deepest = System.Math.Max(deepest, depth[i]);
+        }
+        for (int i = 0; i < _particles.Length; i++)
+            _particles[i].Along = deepest > 0 ? depth[i] / (float)deepest : 0f;
+        // The angle the chain reports is its deepest end's, the first one found when several are as deep.
+        _angleEnd = -1;
+        for (int i = 1; i < _particles.Length; i++)
+            if (!_particles[i].Middle && (_angleEnd < 0 || depth[i] > depth[_angleEnd]))
+                _angleEnd = i;
+        var ends = new List<int>();
+        for (int i = 1; i < _particles.Length; i++)
+        {
+            _particles[i].LengthScale = 1f;
+            if (_childCounts[i] == 0 && !_particles[i].Middle)
+                ends.Add(i);
+        }
+        _ends = ends.ToArray();
+        ApplyCurves();
+
         _wasSimulating = false;
         _effector = -1;
+    }
+
+    private void ApplyCurves()
+    {
+        _curvesDirty = false;
+        var particles = _particles;
+        if (particles == null)
+            return;
+        for (int i = 0; i < particles.Length; i++)
+        {
+            ref var p = ref particles[i];
+            float t = p.Along;
+            p.ElasticityScale = MathF.Max(Sample(ElasticityCurve, t), 0f);
+            p.DampingScale = MathF.Max(Sample(DampingCurve, t), 0f);
+            p.StiffnessScale = MathF.Max(Sample(StiffnessCurve, t), 0f);
+            p.GravityScale = Sample(GravityCurve, t);
+            p.InertiaScale = MathF.Max(Sample(InertiaCurve, t), 0f);
+            p.RadiusScale = MathF.Max(Sample(RadiusCurve, t), 0f);
+            p.LimitScale = MathF.Max(Sample(LimitCurve, t), 0f);
+            p.StretchScale = MathF.Max(Sample(StretchCurve, t), 0f);
+            p.SquishScale = MathF.Max(Sample(SquishCurve, t), 0f);
+            p.MotionScale = MathF.Max(Sample(StretchMotionCurve, t), 0f);
+        }
+    }
+
+    // Straight lines between the points, flat past either end.
+    private static float Sample(SyncFieldList<float2> curve, float t)
+    {
+        int count = curve.Count;
+        if (count == 0)
+            return 1f;
+        var previous = curve[0];
+        if (count == 1 || t <= previous.x)
+            return previous.y;
+        for (int i = 1; i < count; i++)
+        {
+            var point = curve[i];
+            if (t <= point.x)
+            {
+                float span = point.x - previous.x;
+                return span > 1e-6f ? previous.y + (point.y - previous.y) * (t - previous.x) / span : point.y;
+            }
+            previous = point;
+        }
+        return previous.y;
     }
 
     // Put every particle back on the skeleton it hangs off, at rest, with no velocity. Used whenever
@@ -498,13 +882,23 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
             p.Pos = position;
             p.PrevPos = position;
             p.Vel = float3.Zero;
+            p.RestVel = float3.Zero;
+            p.TravelVel = float3.Zero;
             p.RotOffset = floatQ.Identity;
+            p.Deviation = 0f;
         }
+        _hasTravel = false;
     }
+
+    private const float DegreesToRadians = MathF.PI / 180f;
+
+    // Further than this in one frame is a teleport, not a step: 30 m/s at 60 Hz.
+    private const float TeleportDistance = 0.5f;
 
     private void Simulate(DynamicBoneManager manager, float frameDelta)
     {
         var particles = _particles!;
+        var childCount = _childCounts!;
         var rootBone = particles[0].Bone!;
         var rootParent = rootBone.Parent;
         if (rootParent == null)
@@ -512,87 +906,257 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
 
         float dt = System.Math.Clamp(frameDelta, 1e-4f, 0.1f);
         float invDt = 1f / dt;
+        // The frame as it really was, for how fast the pose moved: a long frame is stepped short, but the pose
+        // still moved the whole of it.
+        float invFrame = 1f / MathF.Max(frameDelta, 1e-4f);
 
         _frameCollidePlayers = CollideWithPlayers.Value;
         _frameCollideOwn = CollideWithOwnBody.Value;
-        _frameWearer = (_frameCollidePlayers || _frameCollideOwn) ? Slot?.ActiveUser : null;
+        _frameCollideOwnHands = CollideWithOwnHands.Value;
+        _frameWearer = (_frameCollidePlayers || _frameCollideOwn || _frameCollideOwnHands) ? Slot?.ActiveUser : null;
 
         float inertia = System.Math.Clamp(Inertia.Value, 0f, 1f);
         float damping = MathF.Max(Damping.Value, 0f);
         float elasticity = MathF.Max(Elasticity.Value, 0f);
-        float stiffnessRange = 1f - System.Math.Clamp(Stiffness.Value, 0f, 1f);
+        float stiffness = System.Math.Clamp(Stiffness.Value, 0f, 1f);
         float inertiaForce = InertiaForce.Value;
+        bool swingRoot = SwingRoot.Value;
+        bool relative = RelativeMotion.Value;
+        float sag = Sag.Value;
+        float sagFalloff = System.Math.Clamp(SagFalloff.Value, 0f, 1f);
+        var limit = Limit.Value;
+        float limitAngle = MathF.Max(LimitAngle.Value, 0f) * DegreesToRadians;
+        float limitSide = MathF.Max(LimitAngleSide.Value, 0f) * DegreesToRadians;
+        floatQ limitTurn = LimitRotation.Value;
+        _frameMaxStretch = MathF.Max(MaxStretch.Value, 0f);
+        _frameMaxSquish = System.Math.Clamp(MaxSquish.Value, 0f, 1f);
+        _frameStretchMotion = System.Math.Clamp(StretchMotion.Value, 0f, 1f);
+        bool stretchy = _frameStretchy = _frameMaxStretch > 0f || _frameMaxSquish > 0f;
 
         // Base: the root particle is pinned to the chain root's ANIMATED pose (IK/trackers already
         // wrote it this frame). Orientation comes from the captured rest local rotation under the
-        // live parent - the sim writes the root's actual rotation, so it can't be read back.
+        // live parent - the sim writes the root's actual rotation, so it can't be read back. A root
+        // something else drives (a wagging tail's animation, a constraint) hangs from what its driver last
+        // wrote. A root that holds still is never written here, so its live turn is the base as it stands.
+        // -xlinka
         particles[0].PrevPos = particles[0].Pos;
         particles[0].Pos = rootBone.GlobalPosition;
-        floatQ liveRootRot = rootParent.GlobalRotation * _rootRestLocalRot;
+        floatQ liveRootRot;
+        if (swingRoot)
+        {
+            var rootLocal = rootBone.LocalRotation;
+            // A root that no longer holds the sim's own last write was rewritten since (an animation, the IK
+            // placing a tracked foot or a hand), and that rotation is the new base; one still holding it keeps the
+            // base it had. A driver need not write every frame (an animation writes only what moved), and reading
+            // the sim's own swing back as the base would pile it up frame on frame. -xlinka
+            if (_rootWritten ? rootLocal.Value != _rootWrittenLocalRot : rootLocal.IsDriven)
+                _rootRestLocalRot = rootLocal.Value;
+            liveRootRot = rootParent.GlobalRotation * _rootRestLocalRot;
+        }
+        else
+        {
+            liveRootRot = rootBone.GlobalRotation;
+        }
         particles[0].Rot = liveRootRot;
+        particles[0].Frame = liveRootRot;
+        particles[0].AnimFrame = liveRootRot;
+        bool animated = ReadAnimatedRest(particles);
+        if (stretchy)
+            ReadRestPositions(particles);
+        else if (_lengthsWritten)
+            RestoreLengths();
 
         var gsNow = rootBone.GlobalScale;
         float scaleNow = MathF.Max((MathF.Abs(gsNow.x) + MathF.Abs(gsNow.y) + MathF.Abs(gsNow.z)) / 3f, 1e-4f);
         float stretchScale = scaleNow / _captureRootScale * MathF.Max(GlobalStretch.Value, 0.01f);
 
         float3 baseDelta = particles[0].Pos - particles[0].PrevPos;
-        // First simulated frame after (re)build: don't slam the chain with a giant base delta.
-        if (!_wasSimulating)
+        // First simulated frame after (re)build: don't slam the chain with a giant base delta. A chain that
+        // moves with the body starts afresh when the body jumps further in a frame than a body moves.
+        bool jumped = relative && _wasSimulating && baseDelta.LengthSquared > TeleportDistance * TeleportDistance;
+        if (jumped)
+            SeedParticlePositions();
+        bool fresh = !_wasSimulating || jumped;
+        if (fresh)
         {
             baseDelta = float3.Zero;
             _wasSimulating = true;
         }
-        float3 carried = baseDelta * inertia;
+
+        // The body's travel through the world this frame: where the travel frame went and how it turned. A rest
+        // point carried by that alone moved by the travel; the rest of its move is the body's own.
+        bool travelOnly = relative && InertiaTravelOnly.Value;
+        float3 travelFrom = float3.Zero, travelTo = float3.Zero;
+        floatQ travelTurn = floatQ.Identity;
+        if (travelOnly)
+        {
+            var travel = TravelFrame();
+            if (travel == null)
+            {
+                travelOnly = false;
+                _hasTravel = false;
+            }
+            else
+            {
+                var at = travel.GlobalPosition;
+                var turn = travel.GlobalRotation;
+                travelTo = at;
+                travelFrom = _hasTravel && !fresh ? _travelPos : at;
+                if (_hasTravel && !fresh)
+                    travelTurn = turn * _travelRot.Inverse;
+                _travelPos = at;
+                _travelRot = turn;
+                _hasTravel = true;
+            }
+        }
 
         float3 externalForce = rootParent.GlobalRotation * LocalForce.Value + Gravity.Value;
         float particleRadius = BaseBoneRadius.Value * scaleNow;
 
-        // Carry base motion through the chain (inertia = how rigidly the world motion is followed).
+        // Carry base motion through the chain (inertia = how rigidly the world motion is followed). A chain
+        // that moves with the body rides its rest pose instead, below.
+        float3 carried = relative ? float3.Zero : baseDelta * inertia;
         float maxSegment = 0f;
+        float maxRadius = particleRadius;
         for (int i = 1; i < particles.Length; i++)
         {
-            particles[i].PrevPos = particles[i].Pos + carried;
-            particles[i].Pos += carried;
-            maxSegment = MathF.Max(maxSegment, particles[i].Length);
+            ref var p = ref particles[i];
+            float3 share = carried * p.InertiaScale;
+            p.PrevPos = p.Pos + share;
+            p.Pos += share;
+            maxSegment = MathF.Max(maxSegment, p.Length);
+            maxRadius = MathF.Max(maxRadius, particleRadius * p.RadiusScale);
         }
 
-        PrepareCollisionShapes(manager, particleRadius, maxSegment * stretchScale);
+        PrepareCollisionShapes(manager, maxRadius, maxSegment * stretchScale * (stretchy ? MathF.Min(1f + _frameMaxStretch, 3f) : 1f));
+
+        float3 hold = float3.Zero;
+        var holdSlot = _effector > 0 ? GrabberRef.Target?.Slot : null;
+        bool holding = holdSlot != null && !holdSlot.IsRemoved;
+        if (holding)
+            hold = holdSlot!.LocalPointToGlobal(GrabAnchor.Value);
 
         for (int i = 1; i < particles.Length; i++)
         {
             ref var p = ref particles[i];
             int parent = p.ParentIndex;
-
             float segLength = p.Length * stretchScale;
+            if (stretchy)
+            {
+                segLength *= p.LengthScale;
+                p.RestLength = segLength;
+            }
+            bool parentTurns = Turns(i, parent, childCount, swingRoot);
+            if (animated)
+                p.AnimFrame = particles[parent].AnimFrame * p.AnimLocal;
+
+            // A fork, or a root that holds still, does not turn, so what hangs from it sits where the skeleton
+            // puts it. Simulated loose it would drift from the bone it stands for. A root that turns toward one
+            // child, or the middle of them, carries the others with its turn. A hand cannot move it either: it is
+            // where a held path is anchored, and it never stretches.
+            p.Pinned = !parentTurns;
+            if (!parentTurns)
+            {
+                p.RestNow = particles[parent].Frame * p.RestDirParentSpace * segLength;
+                var carry = parent == 0 && _rootTurner > 0 ? particles[0].Rot : particles[parent].Frame;
+                p.Pos = particles[parent].Pos + carry * p.RestDirParentSpace * segLength;
+                p.Vel = relative ? float3.Zero : (p.Pos - p.PrevPos) * invDt;
+                p.RestVel = fresh ? float3.Zero : (p.Pos - p.PrevRest) * invFrame;
+                p.TravelVel = float3.Zero;
+                p.PrevRest = p.Pos;
+                p.SolvedLength = segLength;
+                Settle(particles, i, false);
+                continue;
+            }
+
             // Rest offsets were captured in the root's rotation frame; the live root rotation carries
             // them, so the whole rest pose turns with the body. Anything hanging BELOW a caught bone
             // takes that bone's swing with it, or the far half of a held tail would spring back toward
             // the body while the near half followed the hand.
-            floatQ restFrame = p.RotationRoot > 0
-                ? particles[p.RotationRoot].RotOffset * liveRootRot
-                : liveRootRot;
-            float3 restOffset = restFrame * p.RestOffsetRootSpace * stretchScale;
-            float3 restTarget = particles[parent].Pos + restOffset;
+            float3 restOffset;
+            if (animated)
+            {
+                // The rest pose as the animation holds it this frame, built down from the root.
+                restOffset = particles[parent].AnimFrame * p.RestDirParentSpace * segLength;
+                if (p.RotationRoot > 0)
+                    restOffset = particles[p.RotationRoot].RotOffset * restOffset;
+            }
+            else
+            {
+                floatQ restFrame = p.RotationRoot > 0
+                    ? particles[p.RotationRoot].RotOffset * liveRootRot
+                    : liveRootRot;
+                restOffset = restFrame * p.RestOffsetRootSpace * stretchScale;
+            }
 
+            p.RestNow = restOffset;
             if (p.Held)
                 p.RotOffset = Lumora.Core.Components.Avatar.IK.FabrikSolver.FromToRotation(restOffset, p.Pos - particles[parent].Pos);
 
-            // Spring toward rest + damping + base-motion force + gravity/wind.
-            float3 force = (restTarget - p.Pos) * elasticity;
-            float3 dampingForce = -p.Vel * damping;
-            float maxDamp = p.Vel.Length * invDt;
-            if (dampingForce.Length > maxDamp)
-                dampingForce = dampingForce.LengthSquared > 1e-12f ? dampingForce.Normalized * maxDamp : float3.Zero;
-            force += dampingForce + baseDelta * invDt * inertiaForce + externalForce;
+            if (sag != 0f && p.GravityScale != 0f)
+                restOffset = Lean(restOffset, p.Pos - particles[parent].Pos, sag * p.GravityScale, sagFalloff);
+            float3 restTarget = particles[parent].Pos + restOffset;
+            if (fresh)
+            {
+                p.PrevRest = restTarget;
+                p.RestVel = float3.Zero;
+                p.TravelVel = float3.Zero;
+            }
 
-            p.Vel += force * dt;
-            p.Pos += p.Vel * dt;
+            // Moving with the body, the particle rides its rest point's move outright and only its own swing
+            // about that point is simulated, its velocity kept relative to the pose. The body's change of speed
+            // is felt as inertia, less the share Inertia says to ride. A steady pace, or a long frame, leaves
+            // the particle where it was on the pose.
+            if (relative)
+            {
+                float3 ride = restTarget - p.PrevRest;
+                float3 restVel = ride * invFrame;
+                p.Pos += ride;
+                p.PrevPos = p.Pos;
+                float kept = 1f - System.Math.Clamp(inertia * p.InertiaScale, 0f, 1f);
+                if (travelOnly)
+                {
+                    // Only the travel's change of speed is ridden by the Inertia share; the body's own is felt whole.
+                    float3 travelled = travelTo + travelTurn * (p.PrevRest - travelFrom);
+                    float3 travelVel = (travelled - p.PrevRest) * invFrame;
+                    p.Vel -= (travelVel - p.TravelVel) * kept + (restVel - travelVel) - (p.RestVel - p.TravelVel);
+                    p.TravelVel = travelVel;
+                }
+                else
+                {
+                    p.Vel -= (restVel - p.RestVel) * kept;
+                }
+                p.PrevRest = restTarget;
+                p.RestVel = restVel;
+            }
+
+            // Damping decays the particle's own velocity by e^(-damping x time), so a share kept per step stays that
+            // share at any frame rate and never turns into a stop; then the spring toward rest, the base-motion force
+            // and gravity/wind. A long frame (a stall, a slow machine) is stepped in pieces of about a 60th of a
+            // second: in one long step a stiff pull carries the bone past its rest further than it started, and
+            // the chain whips across to the other side. Frames at 48 fps and up take a single step. -xlinka
+            float pull = elasticity * p.ElasticityScale;
+            float3 baseForce = baseDelta * invDt * inertiaForce;
+            float3 outerForce = externalForce * p.GravityScale;
+            int steps = System.Math.Clamp((int)MathF.Ceiling(MathF.Max(dt * 60f - 0.25f, dt * MathF.Sqrt(pull) / 1.2f)), 1, 16);
+            float step = dt / steps;
+            float keep = MathF.Exp(-damping * p.DampingScale * step);
+            // The caught bone's pull is toward the hand: GrabFollow then takes its share of the way on top.
+            float3 aim = i == _effector && holding ? hold : restTarget;
+            for (int s = 0; s < steps; s++)
+            {
+                float3 force = (aim - p.Pos) * pull + baseForce + outerForce;
+                p.Vel *= keep;
+                p.Vel += force * step;
+                p.Pos += p.Vel * step;
+            }
 
             // A held bone answers to the hand, so the clamps that pull a particle back toward its rest
             // pose are skipped for the whole held path. They come back the moment it is let go.
             if (!p.Held)
             {
                 // Stiffness: hard clamp on how far the particle may deviate from its rest target.
+                float stiffnessRange = 1f - System.Math.Clamp(stiffness * p.StiffnessScale, 0f, 1f);
                 if (stiffnessRange < 1f)
                 {
                     float3 toRest = restTarget - p.Pos;
@@ -602,20 +1166,236 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
                         p.Pos += toRest / dist * (dist - allowed);
                 }
 
-                ResolveCollisions(ref p.Pos, particleRadius);
+                // The limit is the parent bone's: this particle is where that bone points.
+                if (limit != DynamicBoneLimit.None)
+                {
+                    float scale = particles[parent].LimitScale;
+                    ApplyLimit(ref p.Pos, particles[parent].Pos, particles[parent].Frame * limitTurn, p.RestDirParentSpace,
+                        limit, limitAngle * scale, limitSide * scale);
+                }
 
-                // Rigid segment length to the parent particle.
-                FixLength(particles, i, parent, segLength);
+                if (stretchy)
+                {
+                    // The length the bone's own motion leaves it at: one settling back toward its rest length gets
+                    // there, any further change takes StretchMotion's share, inside the chain's limits. A collider then
+                    // turns it away as it would a rigid bone, and one still pressing on it after that draws it out or
+                    // presses it shorter. A bone a collider already holds pressed or drawn out stays so while the
+                    // collider is on it, rather than flicking between turning away and giving way. -xlinka
+                    float most = segLength * _frameMaxStretch * p.StretchScale;
+                    float least = segLength * MathF.Min(_frameMaxSquish * p.SquishScale, MaxSquishShare);
+                    float was = p.Deviation;
+                    float now = (p.Pos - particles[parent].Pos).Length - segLength;
+                    float back = was >= 0f ? System.Math.Clamp(now, 0f, was) : System.Math.Clamp(now, was, 0f);
+                    float motion = System.Math.Clamp(_frameStretchMotion * p.MotionScale, 0f, 1f);
+                    float length = segLength + System.Math.Clamp(back + (now - back) * motion, -least, most);
+
+                    float3 free = p.Pos;
+                    ResolveCollisions(ref p.Pos, particles[parent].Pos, particleRadius * p.RadiusScale);
+                    if (p.Pos != free && MathF.Abs(was) > segLength * LengthTolerance)
+                    {
+                        length = System.Math.Clamp((p.Pos - particles[parent].Pos).Length, segLength - least, segLength + most);
+                        FixLength(particles, i, parent, length);
+                    }
+                    else
+                    {
+                        FixLength(particles, i, parent, length);
+                    }
+                    if (_frameShapeCount > 0)
+                    {
+                        float3 turned = p.Pos;
+                        ResolveCollisions(ref p.Pos, particles[parent].Pos, particleRadius * p.RadiusScale);
+                        if (p.Pos != turned)
+                        {
+                            length = System.Math.Clamp((p.Pos - particles[parent].Pos).Length, segLength - least, segLength + most);
+                            FixLength(particles, i, parent, length);
+                        }
+                    }
+                    if (_frameInside)
+                        KeepInside(ref p.Pos, particles[parent].Pos, length, particleRadius * p.RadiusScale);
+                    p.SolvedLength = length;
+                }
+                else
+                {
+                    ResolveCollisions(ref p.Pos, particles[parent].Pos, particleRadius * p.RadiusScale);
+
+                    // Rigid segment length to the parent particle.
+                    FixLength(particles, i, parent, segLength);
+                    if (_frameInside)
+                        KeepInside(ref p.Pos, particles[parent].Pos, segLength, particleRadius * p.RadiusScale);
+                }
             }
 
             // Velocity from actual travel, clamped so corrections can't inject energy.
             float travel = (p.Pos - p.PrevPos).Length * invDt;
             if (p.Vel.Length > travel * 2f)
                 p.Vel = p.Vel.LengthSquared > 1e-12f ? p.Vel.Normalized * (travel * 2f) : float3.Zero;
+
+            Settle(particles, i, parentTurns);
         }
 
         if (_effector > 0)
-            SolveHeld(particles, stretchScale, particleRadius);
+            SolveHeld(particles, stretchScale, particleRadius, dt);
+
+        if (stretchy)
+        {
+            for (int i = 1; i < particles.Length; i++)
+                particles[i].Deviation = (particles[i].Pos - particles[particles[i].ParentIndex].Pos).Length - particles[i].RestLength;
+        }
+    }
+
+    // A bone may be pressed down to this share of its rest length and no further: a bone of no length points nowhere.
+    private const float MaxSquishShare = 0.99f;
+
+    // Rounds of the held passes on a chain that may stretch.
+    private const int HeldRounds = 4;
+
+    // Whether a parent bone turns toward this particle: a parent with one child does, unless it is a root that
+    // holds; a root that follows its first child or the middle of its children turns toward that one alone.
+    private bool Turns(int index, int parent, int[] childCount, bool swingRoot)
+    {
+        if (parent == 0 && _rootTurner > 0)
+            return index == _rootTurner;
+        return childCount[parent] == 1 && (parent > 0 || swingRoot);
+    }
+
+    // The frame the body travels in: the user it is worn by, or else the object it is part of.
+    private Slot? TravelFrame()
+    {
+        ulong frame = World?.Time.UpdateIndex ?? 0;
+        if (_travelSlot != null && !_travelSlot.IsDestroyed && frame - _travelCheckedFrame < 60)
+            return _travelSlot;
+        _travelCheckedFrame = frame;
+        var slot = Slot;
+        if (slot == null)
+            return _travelSlot = null;
+        var user = slot.ActiveUserRoot?.Slot;
+        if (user != null)
+            return _travelSlot = user;
+        for (var s = slot; s != null; s = s.Parent)
+            if (s.GetComponent<ObjectRoot>() != null)
+                return _travelSlot = s;
+        return _travelSlot = null;
+    }
+
+    // Once a parent's one child is placed, the parent's turn is settled: aim its rest child direction at that
+    // child, then carry the turn down as the child's frame. A parent that does not turn keeps its frame.
+    private static void Settle(Particle[] particles, int index, bool parentTurns)
+    {
+        ref var p = ref particles[index];
+        int parent = p.ParentIndex;
+        if (parentTurns)
+        {
+            var frame = particles[parent].Frame;
+            float3 restDir = frame * p.RestDirParentSpace;
+            float3 simDir = p.Pos - particles[parent].Pos;
+            particles[parent].Rot = simDir.LengthSquared > 1e-10f && restDir.LengthSquared > 1e-10f
+                ? Lumora.Core.Components.Avatar.IK.FabrikSolver.FromToRotation(restDir, simDir.Normalized) * frame
+                : frame;
+        }
+        p.Frame = particles[parent].Rot * p.AnimLocal;
+        p.Rot = p.Frame;
+    }
+
+    // Bones something else posed since the chain last wrote them (an animation, the IK, a constraint) take
+    // that pose as their rest; one still holding the chain's own write keeps the rest it had, or its swing
+    // would pile up frame on frame. Others rest as captured. True when any bone follows a live pose.
+    private bool ReadAnimatedRest(Particle[] particles)
+    {
+        bool follow = FollowAnimation.Value;
+        bool any = false;
+        for (int i = 1; i < particles.Length; i++)
+        {
+            ref var p = ref particles[i];
+            var bone = p.Bone;
+            if (bone == null)
+                continue;
+            var local = bone.LocalRotation;
+            if (!follow && !local.IsDriven)
+            {
+                p.AnimLocal = p.RestRotParentSpace;
+                continue;
+            }
+            any = true;
+            if (!p.HasWritten || local.Value != p.WrittenLocal)
+                p.AnimLocal = p.HelperTurn * local.Value;
+        }
+        return any;
+    }
+
+    // Leans a rest offset toward the ground by a share of the angle between them. The falloff takes the lean
+    // away the closer the bone already sits to its rest direction.
+    private static float3 Lean(float3 offset, float3 current, float amount, float falloff)
+    {
+        float length = offset.Length;
+        if (length < 1e-8f)
+            return offset;
+        float3 dir = offset / length;
+        if (falloff > 0f && current.LengthSquared > 1e-12f)
+            amount *= 1f - falloff * MathF.Max(0f, float3.Dot(current.Normalized, dir));
+        float share = MathF.Min(MathF.Abs(amount), 1f);
+        float3 toward = amount >= 0f ? float3.Down : float3.Up;
+        float cos = System.Math.Clamp(float3.Dot(dir, toward), -1f, 1f);
+        if (share < 1e-5f || cos > 0.99999f)
+            return offset;
+        float3 axis = float3.Cross(dir, toward);
+        if (axis.LengthSquared < 1e-10f)
+            axis = float3.Cross(dir, float3.Right);
+        if (axis.LengthSquared < 1e-10f)
+            axis = float3.Cross(dir, float3.Forward);
+        return floatQ.AxisAngle(axis, MathF.Acos(cos) * share) * offset;
+    }
+
+    // Keeps a bone inside its limit. Worked in the limit's frame, where the bone's rest direction is the axis
+    // and the frame's X and Z, squared to it, are the hinge and polar axes.
+    private static void ApplyLimit(ref float3 position, float3 anchor, floatQ frame, float3 axis,
+        DynamicBoneLimit shape, float angle, float side)
+    {
+        float3 delta = position - anchor;
+        float length = delta.Length;
+        if (length < 1e-7f || axis.LengthSquared < 1e-10f)
+            return;
+        float3 local = frame.Inverse * (delta / length);
+        float3 b = axis.Normalized;
+        float3 x = float3.Right - b * float3.Dot(float3.Right, b);
+        if (x.LengthSquared < 1e-6f)
+            x = float3.Forward - b * float3.Dot(float3.Forward, b);
+        x = x.Normalized;
+        float3 z = float3.Cross(x, b);
+        float along = float3.Dot(local, b);
+        float px = float3.Dot(local, x);
+        float pz = float3.Dot(local, z);
+
+        float3 limited;
+        switch (shape)
+        {
+            case DynamicBoneLimit.Cone:
+            {
+                float sideways = MathF.Sqrt(px * px + pz * pz);
+                if (MathF.Atan2(sideways, along) <= angle)
+                    return;
+                float3 away = sideways > 1e-6f ? (x * px + z * pz) / sideways : z;
+                limited = b * MathF.Cos(angle) + away * MathF.Sin(angle);
+                break;
+            }
+            case DynamicBoneLimit.Hinge:
+            {
+                float turn = System.Math.Clamp(MathF.Atan2(pz, along), -angle, angle);
+                limited = b * MathF.Cos(turn) + z * MathF.Sin(turn);
+                break;
+            }
+            default:
+            {
+                float pitch = MathF.Atan2(pz, along);
+                float yaw = MathF.Asin(System.Math.Clamp(px, -1f, 1f));
+                if (MathF.Abs(pitch) <= angle && MathF.Abs(yaw) <= side)
+                    return;
+                pitch = System.Math.Clamp(pitch, -angle, angle);
+                yaw = System.Math.Clamp(yaw, -side, side);
+                limited = (b * MathF.Cos(pitch) + z * MathF.Sin(pitch)) * MathF.Cos(yaw) + x * MathF.Sin(yaw);
+                break;
+            }
+        }
+        position = anchor + frame * limited * length;
     }
 
     // Two passes and the chain is continuous on both sides of the hand: pull the held path UP from
@@ -623,28 +1403,113 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
     // pinned to the skeleton), then relax every segment DOWN from the root so nothing is left
     // stretched. Whatever the hand cannot reach simply comes up short, which is what a tail that is
     // too short to reach does. -xlinka
-    private void SolveHeld(Particle[] particles, float stretchScale, float particleRadius)
+    private void SolveHeld(Particle[] particles, float stretchScale, float particleRadius, float dt)
     {
         var anchorSlot = GrabberRef.Target?.Slot;
-        if (anchorSlot == null || anchorSlot.IsRemoved)
+        if (anchorSlot == null || anchorSlot.IsRemoved || particles[_effector].Pinned)
             return;
 
-        particles[_effector].Pos = anchorSlot.LocalPointToGlobal(GrabAnchor.Value);
+        float3 hold = anchorSlot.LocalPointToGlobal(GrabAnchor.Value);
+        float follow = System.Math.Clamp(GrabFollow.Value, 0f, 1f);
+        particles[_effector].Pos = follow >= 1f
+            ? hold
+            : hold + (particles[_effector].Pos - hold) * MathF.Pow(1f - follow, dt * 60f);
+
+        if (_frameStretchy)
+        {
+            SolveHeldStretching(particles, particleRadius);
+            return;
+        }
 
         for (int i = _effector; i > 0; i--)
         {
             if (!particles[i].Held)
                 continue;
             int parent = particles[i].ParentIndex;
-            if (parent <= 0)
-                continue; // the root particle stays where the skeleton put it
+            if (parent <= 0 || particles[parent].Pinned)
+                continue; // the root particle stays where the skeleton put it, and so does a pinned one
             FixLength(particles, parent, i, particles[i].Length * stretchScale);
         }
 
         for (int i = 1; i < particles.Length; i++)
         {
-            ResolveCollisions(ref particles[i].Pos, particleRadius);
+            if (particles[i].Pinned)
+                continue;
+            ResolveCollisions(ref particles[i].Pos, particles[particles[i].ParentIndex].Pos, particleRadius * particles[i].RadiusScale);
             FixLength(particles, i, particles[i].ParentIndex, particles[i].Length * stretchScale);
+            if (_frameInside)
+                KeepInside(ref particles[i].Pos, particles[particles[i].ParentIndex].Pos, particles[i].Length * stretchScale, particleRadius * particles[i].RadiusScale);
+        }
+    }
+
+    // The same two passes on a chain that may stretch. A held path that reaches the hand by turning keeps its rest
+    // lengths; one that cannot lengthens, every segment by the same share up to its own most, so a pulled ear draws
+    // out evenly and stops at its limit. The passes run a few times over the held path, as one round leaves a bent
+    // path short of the hand. The rest of the chain keeps the length its own step gave it. -xlinka
+    private void SolveHeldStretching(Particle[] particles, float particleRadius)
+    {
+        float3 target = particles[_effector].Pos;
+        int anchor = _effector;
+        while (anchor > 0 && !particles[anchor].Pinned)
+            anchor = particles[anchor].ParentIndex;
+        float rest = 0f;
+        for (int i = _effector; i != anchor; i = particles[i].ParentIndex)
+            rest += particles[i].RestLength;
+        float reach = (target - particles[anchor].Pos).Length;
+        float share = 1f;
+        if (reach > rest && rest > 1e-7f)
+        {
+            share = reach / rest;
+            for (int pass = 0; pass < 8; pass++)
+            {
+                float capped = 0f, free = 0f;
+                for (int i = _effector; i != anchor; i = particles[i].ParentIndex)
+                {
+                    float most = 1f + _frameMaxStretch * particles[i].StretchScale;
+                    if (most <= share)
+                        capped += particles[i].RestLength * most;
+                    else
+                        free += particles[i].RestLength;
+                }
+                if (free <= 1e-7f)
+                    break;
+                float next = (reach - capped) / free;
+                if (MathF.Abs(next - share) < 1e-5f)
+                    break;
+                share = next;
+            }
+        }
+        for (int i = _effector; i != anchor; i = particles[i].ParentIndex)
+            particles[i].SolvedLength = particles[i].RestLength * MathF.Min(share, 1f + _frameMaxStretch * particles[i].StretchScale);
+
+        for (int round = 0; round < HeldRounds; round++)
+        {
+            particles[_effector].Pos = target;
+            for (int i = _effector; i > 0; i--)
+            {
+                if (!particles[i].Held)
+                    continue;
+                int parent = particles[i].ParentIndex;
+                if (parent <= 0 || particles[parent].Pinned)
+                    continue;
+                FixLength(particles, parent, i, particles[i].SolvedLength);
+            }
+            if (round == HeldRounds - 1)
+                break;
+            for (int i = 1; i <= _effector; i++)
+                if (particles[i].Held && !particles[i].Pinned)
+                    FixLength(particles, i, particles[i].ParentIndex, particles[i].SolvedLength);
+        }
+
+        for (int i = 1; i < particles.Length; i++)
+        {
+            if (particles[i].Pinned)
+                continue;
+            int parent = particles[i].ParentIndex;
+            ResolveCollisions(ref particles[i].Pos, particles[parent].Pos, particleRadius * particles[i].RadiusScale);
+            FixLength(particles, i, parent, particles[i].SolvedLength);
+            if (_frameInside)
+                KeepInside(ref particles[i].Pos, particles[parent].Pos, particles[i].SolvedLength, particleRadius * particles[i].RadiusScale);
         }
     }
 
@@ -673,6 +1538,8 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
     private User? _frameWearer;
     private bool _frameCollidePlayers;
     private bool _frameCollideOwn;
+    private bool _frameCollideOwnHands;
+    private bool _frameInside;
 
     private DynamicBoneColliderShape[] _frameShapes = Array.Empty<DynamicBoneColliderShape>();
     private int _frameShapeCount;
@@ -685,9 +1552,10 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
     private void PrepareCollisionShapes(DynamicBoneManager manager, float particleRadius, float maxSegment)
     {
         _frameShapeCount = 0;
+        _frameInside = false;
 
         int staticCount = StaticColliders.Count;
-        int playerCount = (_frameCollidePlayers || _frameCollideOwn) ? manager.PlayerColliderCount : 0;
+        int playerCount = (_frameCollidePlayers || _frameCollideOwn || _frameCollideOwnHands) ? manager.PlayerColliderCount : 0;
         int capacity = staticCount + playerCount;
         if (capacity == 0)
             return;
@@ -711,8 +1579,10 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
             {
                 if (collider == null || !collider.TryGetShape(out var shape))
                     continue;
-                if (!shape.BoundsOverlap(in min, in max, margin))
+                // A shape that keeps bones inside has to reach them wherever they strayed.
+                if (!shape.Inside && !shape.BoundsOverlap(in min, in max, margin))
                     continue;
+                _frameInside |= shape.Inside;
                 _frameShapes[_frameShapeCount++] = shape;
             }
         }
@@ -724,8 +1594,10 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
         for (int i = 0; i < playerCount; i++)
         {
             ref var shape = ref players[i];
+            if (shape.SoftBodyOnly)
+                continue;
             bool mine = _frameWearer != null && ReferenceEquals(shape.Owner, _frameWearer);
-            if (mine ? !_frameCollideOwn : !_frameCollidePlayers)
+            if (mine ? !(_frameCollideOwn || _frameCollideOwnHands && !shape.Head) : !_frameCollidePlayers)
                 continue;
             if (!shape.BoundsOverlap(in min, in max, margin))
                 continue;
@@ -733,41 +1605,136 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
         }
     }
 
-    private void ResolveCollisions(ref float3 position, float particleRadius)
+    private void ResolveCollisions(ref float3 position, in float3 anchor, float particleRadius)
     {
         var shapes = _frameShapes;
         for (int i = 0; i < _frameShapeCount; i++)
-            shapes[i].Resolve(ref position, particleRadius);
+            shapes[i].Resolve(ref position, in anchor, particleRadius);
+    }
+
+    private void KeepInside(ref float3 position, in float3 anchor, float length, float particleRadius)
+    {
+        var shapes = _frameShapes;
+        for (int i = 0; i < _frameShapeCount; i++)
+            if (shapes[i].Inside)
+                shapes[i].KeepInside(ref position, in anchor, length, particleRadius);
     }
 
     private void WriteBones()
     {
         var particles = _particles!;
         var childCount = _childCounts!;
+        bool swingRoot = SwingRoot.Value;
 
-        // Swing each parent so its rest child direction points at the simulated child, then carry
-        // rest rotations down. Single-child parents only (a branch fork keeps its rest rotation).
-        for (int i = 1; i < particles.Length; i++)
+        // The solve settled every turn as it went. A held chain was moved again after it, so its turns are
+        // worked out afresh from where it ended up.
+        if (_effector > 0)
         {
-            int parent = particles[i].ParentIndex;
-            if (childCount[parent] == 1)
+            particles[0].Rot = particles[0].Frame;
+            for (int i = 1; i < particles.Length; i++)
             {
-                float3 restDirWorld = particles[parent].Rot * particles[i].RestDirParentSpace;
-                float3 simDir = particles[i].Pos - particles[parent].Pos;
-                if (simDir.LengthSquared > 1e-10f && restDirWorld.LengthSquared > 1e-10f)
-                {
-                    floatQ swing = Lumora.Core.Components.Avatar.IK.FabrikSolver.FromToRotation(restDirWorld, simDir.Normalized);
-                    particles[parent].Rot = swing * particles[parent].Rot;
-                }
+                int parent = particles[i].ParentIndex;
+                Settle(particles, i, Turns(i, parent, childCount, swingRoot));
             }
-            particles[i].Rot = particles[parent].Rot * particles[i].RestRotParentSpace;
         }
 
-        for (int i = 0; i < particles.Length; i++)
+        for (int i = swingRoot ? 0 : 1; i < particles.Length; i++)
         {
             var bone = particles[i].Bone;
             if (bone != null && !bone.IsDestroyed)
+            {
                 bone.SetGlobalRotationSilently(particles[i].Rot);
+                particles[i].WrittenLocal = bone.LocalRotation.Value;
+                particles[i].HasWritten = true;
+            }
+        }
+
+        var root = particles[0].Bone;
+        _rootWritten = swingRoot && root != null && !root.IsDestroyed;
+        if (_rootWritten)
+            _rootWrittenLocalRot = root!.LocalRotation.Value;
+
+        if (_frameStretchy)
+            WriteLengths(particles);
+    }
+
+    // A bone drawn out or pressed in moves its child along the child's own rest offset by the same share, written
+    // silently like the turns. A bone back at its rest length gets its position back once and is then left alone,
+    // so a chain at rest writes no positions at all. -xlinka
+    private void WriteLengths(Particle[] particles)
+    {
+        bool any = false;
+        for (int i = 1; i < particles.Length; i++)
+        {
+            ref var p = ref particles[i];
+            var bone = p.Bone;
+            if (bone == null || bone.IsDestroyed)
+                continue;
+            float rest = p.RestLength;
+            float share = rest > 1e-7f ? (p.Pos - particles[p.ParentIndex].Pos).Length / rest : 1f;
+            if (MathF.Abs(share - 1f) < LengthTolerance)
+            {
+                if (p.PosWritten)
+                {
+                    bone.LocalPosition.SetValueSilently(p.RestLocalPos, change: true);
+                    p.PosWritten = false;
+                }
+                continue;
+            }
+            bone.LocalPosition.SetValueSilently(p.RestLocalPos * share, change: true);
+            p.WrittenLocalPos = bone.LocalPosition.Value;
+            p.PosWritten = true;
+            any = true;
+        }
+        _lengthsWritten = any;
+    }
+
+    // Closer to its rest length than this share and a bone is simply at rest.
+    private const float LengthTolerance = 1e-4f;
+
+    // Each bone's rest offset from its parent this frame: as captured, or whatever something else (an animation, a
+    // constraint) last put there, never the chain's own last write. Its rest length follows it.
+    private static void ReadRestPositions(Particle[] particles)
+    {
+        for (int i = 1; i < particles.Length; i++)
+        {
+            ref var p = ref particles[i];
+            var bone = p.Bone;
+            if (bone == null || bone.IsDestroyed)
+            {
+                p.LengthScale = 1f;
+                continue;
+            }
+            var local = bone.LocalPosition.Value;
+            if (!p.PosWritten || local != p.WrittenLocalPos)
+            {
+                p.RestLocalPos = local;
+                p.PosWritten = false;
+            }
+            p.LengthScale = p.CaptureLocalLength > 1e-7f ? p.RestLocalPos.Length / p.CaptureLocalLength : 1f;
+        }
+    }
+
+    // Gives every bone the chain drew out or pressed in its own position back: for a chain that stops (switched off,
+    // paused at range, rebuilt, gone) or one whose stretch and squish were turned off. A position something else has
+    // written since is left as it is.
+    private void RestoreLengths()
+    {
+        if (!_lengthsWritten)
+            return;
+        _lengthsWritten = false;
+        var particles = _particles;
+        if (particles == null)
+            return;
+        for (int i = 1; i < particles.Length; i++)
+        {
+            ref var p = ref particles[i];
+            if (!p.PosWritten)
+                continue;
+            p.PosWritten = false;
+            var bone = p.Bone;
+            if (bone != null && !bone.IsDestroyed && bone.LocalPosition.Value == p.WrittenLocalPos)
+                bone.LocalPosition.SetValueSilently(p.RestLocalPos, change: true);
         }
     }
 
@@ -872,7 +1839,7 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
         int first = GrabFirstBone.Value ? 0 : 1;
         for (int i = first; i < particles.Length; i++)
         {
-            if (particles[i].Bone == null && !GrabTerminalBones.Value)
+            if (particles[i].Middle || particles[i].Bone == null && !GrabTerminalBones.Value)
                 continue;
             if (IsBoneUngrabbable(particles[i].Bone))
                 continue;
@@ -933,7 +1900,7 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
         {
             GrabberRef.Target = grabber;
             GrabbedBone.Value = bone;
-            GrabAnchor.Value = hand.GlobalPointToLocal(_particles[bone].Pos);
+            GrabAnchor.Value = GrabSnapToHand.Value ? float3.Zero : hand.GlobalPointToLocal(_particles[bone].Pos);
         }
         _lastKnownHolder = grabber;
         _handMotion.Reset();
@@ -1077,10 +2044,11 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
 
         // Seeded onto the path the hand was actually dragging. The rest of the chain picks the motion
         // up through the segment constraints on the next few frames, which is what a rope does.
+        bool relative = RelativeMotion.Value;
         for (int i = 0; i <= _effector && i < _particles.Length; i++)
         {
             if (_particles[i].Held && i > 0)
-                _particles[i].Vel = velocity;
+                _particles[i].Vel = relative ? velocity - _particles[i].RestVel : velocity;
         }
     }
 
@@ -1107,12 +2075,12 @@ public class DynamicBoneChain : Component, IGrabbable, IPermissionGrabSurface, I
             int slipTo = _effector;
             float nextDistance = (_particles[next].Pos - anchor).Length;
             float previousDistance = (_particles[previous].Pos - anchor).Length;
-            if (nextDistance < distance && !IsBoneUngrabbable(_particles[next].Bone))
+            if (nextDistance < distance && !_particles[next].Middle && !IsBoneUngrabbable(_particles[next].Bone))
             {
                 slipTo = next;
                 distance = nextDistance;
             }
-            if (previousDistance < distance && !IsBoneUngrabbable(_particles[previous].Bone))
+            if (previousDistance < distance && !_particles[previous].Middle && !IsBoneUngrabbable(_particles[previous].Bone))
             {
                 slipTo = previous;
                 distance = previousDistance;

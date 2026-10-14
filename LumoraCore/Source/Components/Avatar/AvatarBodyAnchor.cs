@@ -39,13 +39,13 @@ public class AvatarBodyAnchor : Component, IAvatarEquippable, IAvatarEquipReceiv
     public void Equip(AvatarSocket slot)
     {
         _equippingSlot = slot;
-        LumoraLogger.Log($"AvatarBodyAnchor: Equipped {Node.Value} to slot on '{slot.Slot.SlotName.Value}'");
+        LumoraLogger.Debug($"AvatarBodyAnchor: Equipped {Node.Value} to slot on '{slot.Slot.SlotName.Value}'");
     }
 
     public void Dequip()
     {
         _equippingSlot = null!;
-        LumoraLogger.Log($"AvatarBodyAnchor: Dequipped {Node.Value}");
+        LumoraLogger.Debug($"AvatarBodyAnchor: Dequipped {Node.Value}");
         if (DestroyOnDequip.Value)
             Slot.Destroy();
     }

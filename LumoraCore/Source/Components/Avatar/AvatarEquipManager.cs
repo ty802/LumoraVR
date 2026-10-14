@@ -75,6 +75,14 @@ public class AvatarEquipManager : UserRootComponent
         }
     }
 
+    // The rigs the head is looked up through, found once for the worn avatar and found again when the structure
+    // of anything changes. The nameplate asks every frame, and each ask walked the whole avatar.
+    private Slot? _rigsOf;
+    private int _rigsSearchedAt = -1;
+    private QuadrupedRig? _quadRig;
+    private HumanoidRig? _humanRig;
+    private bool _humanFound;
+
     public Slot? AvatarHead
     {
         get
@@ -82,10 +90,44 @@ public class AvatarEquipManager : UserRootComponent
             var avatar = EquippedAvatar;
             if (avatar == null || avatar.IsDestroyed || !avatar.IsActive)
                 return null;
-            var quad = avatar.GetComponentInChildren<QuadrupedRig>();
-            return quad?.TryGetBone(QuadNode.Head)
-                   ?? avatar.GetComponentInChildren<HumanoidRig>()?.TryGetBone(BodyNode.Head);
+            RigsOf(avatar);
+            return _quadRig?.TryGetBone(QuadNode.Head) ?? HumanoidRigOf(avatar)?.TryGetBone(BodyNode.Head);
         }
+    }
+
+    // The first humanoid rig in the worn avatar, as a search of it would find it now.
+    internal HumanoidRig? WornHumanoidRig
+    {
+        get
+        {
+            var avatar = EquippedAvatar;
+            if (avatar == null || avatar.IsDestroyed)
+                return null;
+            RigsOf(avatar);
+            return HumanoidRigOf(avatar);
+        }
+    }
+
+    private void RigsOf(Slot avatar)
+    {
+        int structure = Slot.StructureEpoch;
+        if (structure == _rigsSearchedAt && ReferenceEquals(avatar, _rigsOf))
+            return;
+        _rigsOf = avatar;
+        _rigsSearchedAt = structure;
+        _quadRig = avatar.GetComponentInChildren<QuadrupedRig>();
+        _humanRig = null;
+        _humanFound = false;
+    }
+
+    private HumanoidRig? HumanoidRigOf(Slot avatar)
+    {
+        if (!_humanFound)
+        {
+            _humanRig = avatar.GetComponentInChildren<HumanoidRig>();
+            _humanFound = true;
+        }
+        return _humanRig;
     }
 
     public AvatarEquipManager()
@@ -99,7 +141,7 @@ public class AvatarEquipManager : UserRootComponent
         BadgeColor.Value = color.White;
         BadgeOutline.Value = color.Black;
         BadgeBackground.Value = new color(0f, 0f, 0f, 0.6f);
-        BadgeRim.Value = new color(0.14f, 0.15f, 0.19f, 0.85f);
+        BadgeRim.Value = UngrantedRim;
         AutoAddNameBadge.Value = true;
         BadgeText.OnChanged += _ => UpdateBadges();
         BadgeColor.OnChanged += _ => UpdateBadges();
@@ -200,6 +242,10 @@ public class AvatarEquipManager : UserRootComponent
         _nameSource = user;
         _nameChanged = _ => PushDisplayName();
         user.UserName.Changed += _nameChanged;
+        user.AccountId.Changed += _nameChanged;
+        user.NameColor.Changed += _nameChanged;
+        user.IsSupporter.Changed += _nameChanged;
+        user.SupporterColor.Changed += _nameChanged;
         PushDisplayName();
     }
 
@@ -210,12 +256,37 @@ public class AvatarEquipManager : UserRootComponent
         var name = _nameSource.UserName.Value ?? string.Empty;
         if (BadgeText.Value != name)
             BadgeText.Value = name;
+
+        // The ink and the accent follow the account the host saw proved: its own name colour, the tier
+        // colour for a supporter, and the quiet guest ink for nobody. -xlinka
+        var user = _nameSource;
+        color ink;
+        if (user.IsGuest)
+            ink = NameplateTheme.GuestInk;
+        else
+            ink = user.NameColor.Value.a > 0f ? user.NameColor.Value : color.White;
+        if (!BadgeColor.Value.Equals(ink))
+            BadgeColor.Value = ink;
+
+        color rim = UngrantedRim;
+        if (!user.IsGuest && user.IsSupporter.Value)
+            rim = user.SupporterColor.Value.a > 0f ? user.SupporterColor.Value : NameplateTheme.SupporterAccent;
+        if (!BadgeRim.Value.Equals(rim))
+            BadgeRim.Value = rim;
     }
+
+    private static readonly color UngrantedRim = new color(0.14f, 0.15f, 0.19f, 0.85f);
 
     private void UntrackDisplayName()
     {
         if (_nameSource != null && !_nameSource.IsDestroyed && _nameChanged != null)
+        {
             _nameSource.UserName.Changed -= _nameChanged;
+            _nameSource.AccountId.Changed -= _nameChanged;
+            _nameSource.NameColor.Changed -= _nameChanged;
+            _nameSource.IsSupporter.Changed -= _nameChanged;
+            _nameSource.SupporterColor.Changed -= _nameChanged;
+        }
         _nameSource = null!;
         _nameChanged = null!;
     }
@@ -223,6 +294,7 @@ public class AvatarEquipManager : UserRootComponent
     public override void OnDestroy()
     {
         UntrackDisplayName();
+        _rigsOf = null;
         base.OnDestroy();
     }
 
@@ -244,6 +316,7 @@ public class AvatarEquipManager : UserRootComponent
         // it later. - xlinka
         FillEmptySockets();
         EnsureNameplate();
+        AvatarArrival.Ensure(this);
     }
 
     public bool Equip(Slot target, bool isManualEquip = false, bool forceDestroyOld = false, bool isFillingEmptySlot = false)
@@ -328,18 +401,23 @@ public class AvatarEquipManager : UserRootComponent
         }
 
         // Dequipped trees must not linger under the manager - orphan them to
-        // the world root so the old avatar doesn't accumulate as a hidden
-        // child, then optionally destroy.
+        // the world root, then optionally destroy. A whole avatar is left
+        // standing where it was instead.
         foreach (var dq in dequipped)
         {
             if (dq is not Component dqc || dqc.Slot == null || dqc.Slot.IsDestroyed)
                 continue;
 
-            if (dqc.Slot.IsDescendantOf(Slot))
-                dqc.Slot.SetParent(World.RootSlot);
+            bool underManager = dqc.Slot.IsDescendantOf(Slot);
+            if (dq is AvatarForm && !forceDestroyOld)
+            {
+                if (underManager)
+                    LeaveStanding(dqc.Slot);
+                continue;
+            }
 
-            if (dq is AvatarForm)
-                dqc.Slot.ActiveSelf.Value = false;
+            if (underManager)
+                dqc.Slot.SetParent(World.RootSlot);
 
             if (forceDestroyOld)
                 dqc.Slot.Destroy();
@@ -373,7 +451,7 @@ public class AvatarEquipManager : UserRootComponent
 
         EnsureNameplate();
 
-        Logger.Log($"AvatarEquipManager: Equipped {pairs.Count} object(s) from '{target.SlotName.Value}'");
+        Logger.Debug($"AvatarEquipManager: Equipped {pairs.Count} object(s) from '{target.SlotName.Value}'");
         if (fullAvatar)
             OnAvatarChanged?.Invoke(target);
         return true;
@@ -428,7 +506,11 @@ public class AvatarEquipManager : UserRootComponent
                     continue;
                 var handler = SocketFiller.Target;
                 if (handler == null) break;
-                _ = handler.FillSocket(slot.Node.Value, this, token);
+                // The default pieces are the authority's own fill of a user's empty socket, made at the world
+                // root and put on the user, and a Social or Event world's freeze refused that like an edit of
+                // the world. Past the gate for the world's own filler into a body the authority built. -xlinka
+                using (ReferenceID.IsAuthorityID && handler is Component { ReferenceID.IsAuthorityID: true } ? World.DataModelPermissions?.EnterSystemBypass() : null)
+                    _ = handler.FillSocket(slot.Node.Value, this, token);
             }
         }
         finally
@@ -491,7 +573,7 @@ public class AvatarEquipManager : UserRootComponent
             return;
         }
 
-        Logger.Log($"AvatarEquipManager: Dequipping '{avatarSlot.SlotName.Value}'");
+        Logger.Debug($"AvatarEquipManager: Dequipping '{avatarSlot.SlotName.Value}'");
 
         // Dequip every body-node slot whose equipped object lives under this
         // tree so OnDequip fires and pose-node drives release on all peers.
@@ -517,18 +599,44 @@ public class AvatarEquipManager : UserRootComponent
         if (avatarRoot != null)
             avatarRoot.IsActive.Value = false;
 
-        // Don't leave the dead tree hidden under the manager.
         if (userRoot != null && avatarSlot.ActiveUserRoot == userRoot)
-            avatarSlot.SetParent(World.RootSlot);
+            LeaveStanding(avatarSlot);
 
-        avatarSlot.ActiveSelf.Value = false;
         CurrentAvatar.Target = null!;
         ResetAvatarPresentation();
     }
 
+    // Taken off, an avatar stays where it stood, in the pose it was worn in, as an ordinary thing in the world.
+    // The transform goes in before the move: moving it out ends this user's hold on it, and a write after that
+    // is a write to someone else's object. A slot this user made may only leave this user's hierarchy with the right
+    // to spawn, which the host checks, so without that right it is parked out of sight under the manager. -xlinka
+    private void LeaveStanding(Slot avatar)
+    {
+        var world = World;
+        var root = world?.RootSlot;
+        if (world == null || root == null || avatar == null || avatar.IsDestroyed)
+            return;
+
+        var local = world.LocalUser;
+        if (local != null && avatar.IsMintedHere
+            && world.DataModelPermissions?.AllowsDomain(local, DataModelPermissionDomain.Spawn) == false)
+        {
+            avatar.ActiveSelf.Value = false;
+            return;
+        }
+
+        var position = avatar.GlobalPosition;
+        var rotation = avatar.GlobalRotation;
+        var scale = avatar.GlobalScale;
+        avatar.LocalPosition.Value = root.GlobalPointToLocal(position);
+        avatar.LocalRotation.Value = root.GlobalRotationToLocal(rotation);
+        avatar.LocalScale.Value = root.GlobalScaleToLocal(scale);
+        avatar.SetParent(root);
+    }
+
     public void EquipDefaultAvatar()
     {
-        Logger.Log("AvatarEquipManager: Equipping default avatar via SocketFiller");
+        Logger.Debug("AvatarEquipManager: Equipping default avatar via SocketFiller");
 
         DequipCurrentAvatar();
         ResolveUserRoot();
@@ -547,7 +655,7 @@ public class AvatarEquipManager : UserRootComponent
 
         AvailableAvatars.Remove(avatarSlot);
         avatarSlot.Destroy();
-        Logger.Log("AvatarEquipManager: Removed avatar");
+        Logger.Debug("AvatarEquipManager: Removed avatar");
     }
 
     public int GetAvatarIndex(Slot avatarSlot)
@@ -589,7 +697,46 @@ public class AvatarEquipManager : UserRootComponent
     // (AvatarForm + skeleton + rig + pose nodes). If it has a rigged body,
     // wire IK; either way, dispatch through the body-node pipeline. No
     // finalize gate. - xlinka
-    public bool EquipAvatar(Slot avatarSlot)
+    // Putting an avatar on rewrites it, so it is worn in place only by someone who may: its maker, whoever
+    // already holds it, the authority, or a role that may write what others own. -xlinka
+    private bool MayWearInPlace(Slot avatar)
+    {
+        var world = World;
+        var local = world?.LocalUser;
+        if (world == null || local == null || world.IsAuthority)
+            return true;
+        if (avatar.IsMintedHere || avatar.IsUnderLocalUser)
+            return true;
+        var permissions = world.DataModelPermissions;
+        if (permissions == null || !permissions.Enabled)
+            return true;
+        var role = permissions.GetRole(local);
+        return role != null && role.Allows(
+            DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.Create,
+            ownsTarget: false);
+    }
+
+    // This user's own copy of an avatar they may not edit, standing where the original stands. It takes the
+    // right to spawn, as anything this user puts into the world does. -xlinka
+    private Slot? WearableCopyOf(Slot avatar)
+    {
+        var world = World;
+        if (world == null)
+            return null;
+        if (world.DataModelPermissions?.AllowsDomain(world.LocalUser, DataModelPermissionDomain.Spawn) == false)
+        {
+            Logger.Warn($"AvatarEquipManager: '{avatar.SlotName.Value}' is not this user's to put on, and without the right to spawn there is no copy of it to wear.");
+            return null;
+        }
+        var copy = avatar.Duplicate(avatar.Parent ?? world.RootSlot, preserveGlobalTransform: true);
+        Logger.Debug($"AvatarEquipManager: wearing a copy of '{avatar.SlotName.Value}', which is not this user's to edit.");
+        return copy;
+    }
+
+    // replaceCurrent destroys the avatar being worn instead of leaving it standing: an avatar put on from
+    // the inventory replaces the one worn, and every swap would otherwise leave another body behind where
+    // the user stood. Putting on one that already stands in the world leaves the old one there. -xlinka
+    public bool EquipAvatar(Slot avatarSlot, bool replaceCurrent = false)
     {
         if (avatarSlot == null || avatarSlot.IsDestroyed)
             return false;
@@ -606,6 +753,18 @@ public class AvatarEquipManager : UserRootComponent
         if (avatarSlot.ActiveUserRoot != null)
             return false;
 
+        // An avatar this user may not edit, the host's or the world's own, is worn as this user's own copy,
+        // made where the original stands; the original stays there for everyone. Putting one on rewrites its
+        // rig, its IK and its parent, and none of that is this user's to write: the equip was refused halfway
+        // through and left nothing worn. -xlinka
+        if (!MayWearInPlace(avatarSlot))
+        {
+            var copy = WearableCopyOf(avatarSlot);
+            if (copy == null)
+                return false;
+            avatarSlot = copy;
+        }
+
         if (avatarSlot.GetComponent<AvatarForm>() == null)
             avatarSlot.AttachComponent<AvatarForm>();
 
@@ -615,6 +774,9 @@ public class AvatarEquipManager : UserRootComponent
         var rig = avatarSlot.GetComponentInChildren<HumanoidRig>();
         if (skeleton != null && (rig != null || avatarSlot.GetComponentInChildren<QuadrupedRig>() != null))
         {
+            // A taken-off avatar still holds the pose it was worn in, and everything below reads the rig. -xlinka
+            avatarSlot.GetComponent<AvatarIK>()?.ApplyRestPose();
+
             // Root frame must face the body: equip resets this slot to identity, so a stale frame wears the
             // avatar yawed off the user's forward. World-invariant + reference slots are live transforms, so
             // healing an old avatar here is safe. No-op when already aligned.
@@ -684,8 +846,13 @@ public class AvatarEquipManager : UserRootComponent
 
         var spanRig = avatarSlot.GetComponent<QuadrupedRig>() ?? avatarSlot.GetComponentInChildren<QuadrupedRig>();
         spanRig?.LogGirdleSpan("before-Equip");
+        var replaced = replaceCurrent ? EquippedAvatar ?? CurrentAvatar.Target : null;
         DequipCurrentAvatar();
         bool equipped = Equip(avatarSlot, isManualEquip: true);
+        // Only once the new one is on: a failed equip leaves the old one standing to put back on.
+        if (equipped && replaced != null && !replaced.IsDestroyed && !ReferenceEquals(replaced, avatarSlot)
+            && !avatarSlot.IsDescendantOf(replaced))
+            replaced.Destroy();
         if (equipped)
         {
             var quad = avatarSlot.GetComponentInChildren<QuadrupedIK>();
@@ -699,7 +866,7 @@ public class AvatarEquipManager : UserRootComponent
 
     // Resize the wearer's character capsule to the avatar actually being worn.
     //
-    // The capsule is built once for a standing person: 1.8 m tall, 0.3 m radius, centred at 0.9. Wear a
+    // The capsule is built once for a standing person: 1.8 m tall, 0.275 m radius, centred at 0.9. Wear a
     // fox and you are still a person-shaped pillar, so you cannot get under anything, you collide with
     // walls a foot before you reach them, and the body the world pushes around has nothing to do with
     // the body on screen. CapsuleCollider is Y-axis only, so an animal cannot get a capsule along its
@@ -739,7 +906,7 @@ public class AvatarEquipManager : UserRootComponent
         capsule.Radius.Value = radius;
         capsule.Offset.Value = new float3(0f, height * 0.5f, 0f);
 
-        Logger.Log($"AvatarEquipManager: body capsule fitted to {(quadrupedIk != null ? "quadruped" : "humanoid")} "
+        Logger.Debug($"AvatarEquipManager: body capsule fitted to {(quadrupedIk != null ? "quadruped" : "humanoid")} "
                  + $"height={height:F2} radius={radius:F2}");
     }
 
@@ -752,7 +919,7 @@ public class AvatarEquipManager : UserRootComponent
     }
 
     private const float HumanCapsuleHeight = 1.8f;
-    private const float HumanCapsuleRadius = 0.3f;
+    private const float HumanCapsuleRadius = 0.275f;
 
     // Attach the avatar's face-driver set, mirroring the in-world creator. Every driver attaches
     // unconditionally and resolves its own targets; one with nothing to drive is a no-op.
@@ -846,7 +1013,7 @@ public class AvatarEquipManager : UserRootComponent
 
             if (result.Success && result.RootSlot != null)
             {
-                Logger.Log("AvatarEquipManager: Avatar imported - calibrate via the avatar studio, then equip");
+                Logger.Debug("AvatarEquipManager: Avatar imported - calibrate via the avatar studio, then equip");
             }
             else
             {

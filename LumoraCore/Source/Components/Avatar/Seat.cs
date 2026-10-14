@@ -2,8 +2,10 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Helio.UI;
 using Lumora.Core;
+using Lumora.Core.Input;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
@@ -40,17 +42,18 @@ public enum SeatRestoreMode
 // back with somebody still sitting in it, and a restore pose captured in a previous session points at
 // slots that no longer exist. - xlinka
 [ComponentCategory("Users/Avatar")]
-public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
+public class Seat : Component, ICustomInspectorUI, IAvatarAnchor, IPoseFilter
 {
     // OCCUPANCY
 
-    // written by the host only; read OccupyingUser for the live answer, derived from actual parenting
-    [NonPersistent]
+    // written by the host only; read OccupyingUser for the live answer, derived from actual parenting.
+    // A copy of a seat starts empty, as does everything below about who sits in it.
+    [NonPersistent, DontCopy]
     public readonly SyncRef<User> Occupant;
 
     // bumped every time the authority rules; a peer that sat before the last bump and isn't named by
     // Occupant has lost the seat
-    [NonPersistent]
+    [NonPersistent, DontCopy]
     private readonly Sync<int> _verdict;
 
     // POSE
@@ -67,6 +70,10 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
 
     // defaults to this slot
     public readonly SyncRef<Slot> RotationReference;
+
+    // Turns the rotation and restore references before the user is turned to them. A user faces a
+    // reference's forward (-Z); a seat authored to face its +Z carries a half turn here.
+    public readonly Sync<floatQ> RotationOffset;
 
     public readonly Sync<float> MinScale;
 
@@ -95,6 +102,12 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
     // already reaches for. Builders who want a ride nobody can leave mid-flight turn it off. -xlinka
     public readonly Sync<bool> ReleaseOnJump;
 
+    // BODY POSES
+
+    // The body parts this seat holds while somebody sits, each with the filters it lays on that part's socket:
+    // a bench puts the hips and both feet on its own references, a footrest only the feet.
+    public readonly SyncList<SeatBodyPose> BodyPoses;
+
     // FILTERS
 
     // ignored when no owner can be resolved
@@ -121,18 +134,19 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
     public event SeatUserEvent? Released;
 
     // RESTORE SNAPSHOT
-
-    [NonPersistent]
-    private readonly SyncRef<Slot> _restoreSpace;
-
-    [NonPersistent]
-    private readonly Sync<float3> _restorePosition;
-
-    [NonPersistent]
-    private readonly Sync<floatQ> _restoreRotation;
-
-    [NonPersistent]
-    private readonly Sync<float> _restoreScale;
+    //
+    // Where the sitter stood before sitting, kept on the sitter's machine alone: that machine takes it at sit
+    // and is the only one that ever reads it, at stand-up. It used to be synced fields on the seat, which a
+    // guest may not write on a seat the host owns, so a guest's snapshot was refused and a seat-relative
+    // restore put them back from the defaults. Not synced, not saved, not copied: plain fields. The pose is
+    // kept both in the seat's frame and in the world, so a seat destroyed with somebody in it still has
+    // somewhere to put them. -xlinka
+    private Slot? _restoreSpace;
+    private float3 _restorePosition;
+    private floatQ _restoreRotation = floatQ.Identity;
+    private float3 _restoreWorldPosition;
+    private floatQ _restoreWorldRotation = floatQ.Identity;
+    private float _restoreScale = 1f;
 
     public Seat()
     {
@@ -143,6 +157,7 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
         PositionReference = new SyncRef<Slot>(this);
         RotationNode = new Sync<UserRoot.UserNode>(this, UserRoot.UserNode.Root);
         RotationReference = new SyncRef<Slot>(this);
+        RotationOffset = new Sync<floatQ>(this, floatQ.Identity);
         MinScale = new Sync<float>(this, 1f);
         MaxScale = new Sync<float>(this, 1f);
         PreserveUpOnEnter = new Sync<bool>(this, false);
@@ -152,6 +167,7 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
         RestoreNode = new Sync<UserRoot.UserNode>(this, UserRoot.UserNode.Root);
         RestoreReference = new SyncRef<Slot>(this);
         ReleaseOnJump = new Sync<bool>(this, true);
+        BodyPoses = new SyncList<SeatBodyPose>();
 
         OwnerOnly = new Sync<bool>(this, false);
         AllowedUsers = new SyncRefList<User>(this);
@@ -159,11 +175,6 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
         SatAction = new SyncDelegate<SeatUserEvent>(this);
         StayAction = new SyncDelegate<SeatUserEvent>(this);
         ReleasedAction = new SyncDelegate<SeatUserEvent>(this);
-
-        _restoreSpace = new SyncRef<Slot>(this);
-        _restorePosition = new Sync<float3>(this, float3.Zero);
-        _restoreRotation = new Sync<floatQ>(this, floatQ.Identity);
-        _restoreScale = new Sync<float>(this, 1f);
     }
 
     // LOCAL STATE
@@ -222,6 +233,8 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
         // non-persistent so this is belt-and-braces for a reference that survived some other route.
         if (World?.IsAuthority == true && Occupant.Target != null && !WorldStillHas(Occupant.Target))
             Rule(null);
+
+        WatchSpace();
     }
 
     public override void OnUserLeft(User user)
@@ -235,6 +248,14 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
     {
         base.OnChanges();
         CheckVerdict();
+
+        // A new space, or a change to the poses while somebody sits: lay them again from what is there now.
+        WatchSpace();
+        if (_posedRoot != null)
+        {
+            LiftPoses();
+            LayPoses();
+        }
     }
 
     public override void OnUpdate(float delta)
@@ -246,6 +267,8 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
             _arbitrationCountdown = ArbitrationInterval;
             Arbitrate();
         }
+
+        MaintainPoses();
 
         if (!_seatedLocally)
             return;
@@ -360,6 +383,9 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
         if (_seatedLocally)
             RestoreLocalUser();
         DetachSpaceWatch();
+        LiftPoses();
+        _posedRoot = null;
+        UnwatchSpace();
         World?.UnregisterEventReceiver(this);
         SeatIndex.Remove(World, this);
         base.OnDestroy();
@@ -437,7 +463,7 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
 
         var rotationTarget = RotationReference.Target ?? Slot;
         if (rotationTarget != null && !rotationTarget.IsDestroyed)
-            userRoot.SetGlobalRotation(RotationNode.Value, rotationTarget.GlobalRotation);
+            userRoot.SetGlobalRotation(RotationNode.Value, (rotationTarget.GlobalRotation * RotationOffset.Value).Normalized);
 
         if (PreserveUpOnEnter.Value)
             LevelRoot(rootSlot, space.GlobalRotation * float3.Up);
@@ -448,6 +474,9 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
 
         SuspendLocomotion(userRoot, true);
         AdoptRootYaw(userRoot);
+        PlaceStandIns(userRoot);
+        RefreshPosedUser();
+        LayPoses();
 
         _seatedLocally = true;
         _seatedUser = user;
@@ -488,32 +517,19 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
     private void CaptureRestore(UserRoot userRoot)
     {
         var rootSlot = userRoot.Slot;
-        _restoreSpace.Target = rootSlot.Parent;
-        _restoreScale.Value = rootSlot.LocalScale.Value.x;
+        _restoreSpace = rootSlot.Parent;
+        _restoreScale = rootSlot.LocalScale.Value.x;
 
         var node = RestoreNode.Value;
         var position = userRoot.GetGlobalPosition(node);
         var rotation = userRoot.GetGlobalRotation(node);
+        _restoreWorldPosition = position;
+        _restoreWorldRotation = rotation;
 
-        switch (RestoreMode.Value)
-        {
-            case SeatRestoreMode.SeatRelative:
-                // Stored in the seat's frame so a seat that moves (a vehicle, a lift) carries the exit
-                // spot with it instead of dumping the user back at a world coordinate the seat left.
-                _restorePosition.Value = Slot.GlobalPointToLocal(position);
-                _restoreRotation.Value = Slot.GlobalRotationToLocal(rotation);
-                break;
-
-            case SeatRestoreMode.WorldTransform:
-                _restorePosition.Value = position;
-                _restoreRotation.Value = rotation;
-                break;
-
-            default:
-                _restorePosition.Value = position;
-                _restoreRotation.Value = rotation;
-                break;
-        }
+        // Seat-relative is kept in the seat's frame so a seat that moves (a vehicle, a lift) carries the exit
+        // spot with it instead of dumping the user back at a world coordinate the seat left.
+        _restorePosition = Slot.GlobalPointToLocal(position);
+        _restoreRotation = Slot.GlobalRotationToLocal(rotation);
     }
 
     private void RestoreLocalUser()
@@ -533,7 +549,7 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
         var rootSlot = userRoot?.Slot;
         if (rootSlot != null && !rootSlot.IsDestroyed)
         {
-            var target = _restoreSpace.Target;
+            var target = _restoreSpace;
             if (target == null || target.IsDestroyed)
                 target = World?.RootSlot;
             if (target != null)
@@ -548,7 +564,9 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
             AdoptRootYaw(userRoot!);
         }
 
-        _restoreSpace.Clear();
+        RemoveStandIns();
+        RefreshPosedUser();
+        _restoreSpace = null;
 
         // The ruling is the host's to retire: the derived scan will see the seat is empty on its next
         // pass and clear it. A client clearing it here would be a write it is not entitled to make.
@@ -572,25 +590,30 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
                 break;
 
             case SeatRestoreMode.SeatRelative:
+                SetLocalScale(rootSlot, _restoreScale);
+                // A seat on its way out may have no frame left to read; the world pose taken with it stands in.
                 if (Slot == null || Slot.IsDestroyed)
+                {
+                    userRoot.SetGlobalRotation(node, _restoreWorldRotation);
+                    userRoot.SetGlobalPosition(node, _restoreWorldPosition);
                     break;
-                SetLocalScale(rootSlot, _restoreScale.Value);
-                userRoot.SetGlobalRotation(node, Slot.LocalRotationToGlobal(_restoreRotation.Value));
-                userRoot.SetGlobalPosition(node, Slot.LocalPointToGlobal(_restorePosition.Value));
+                }
+                userRoot.SetGlobalRotation(node, Slot.LocalRotationToGlobal(_restoreRotation));
+                userRoot.SetGlobalPosition(node, Slot.LocalPointToGlobal(_restorePosition));
                 break;
 
             case SeatRestoreMode.WorldTransform:
-                SetLocalScale(rootSlot, _restoreScale.Value);
-                userRoot.SetGlobalRotation(node, _restoreRotation.Value);
-                userRoot.SetGlobalPosition(node, _restorePosition.Value);
+                SetLocalScale(rootSlot, _restoreScale);
+                userRoot.SetGlobalRotation(node, _restoreWorldRotation);
+                userRoot.SetGlobalPosition(node, _restoreWorldPosition);
                 break;
 
             case SeatRestoreMode.Reference:
                 var reference = RestoreReference.Target;
                 if (reference == null || reference.IsDestroyed)
                     break;
-                SetLocalScale(rootSlot, _restoreScale.Value);
-                userRoot.SetGlobalRotation(node, reference.GlobalRotation);
+                SetLocalScale(rootSlot, _restoreScale);
+                userRoot.SetGlobalRotation(node, (reference.GlobalRotation * RotationOffset.Value).Normalized);
                 userRoot.SetGlobalPosition(node, reference.GlobalPosition);
                 break;
         }
@@ -664,11 +687,240 @@ public class Seat : Component, ICustomInspectorUI, IAvatarAnchor
         }
     }
 
+    // BODY POSES ON EVERY MACHINE
+    //
+    // Who sits is read off the scene graph everywhere, so every machine lays this seat's filters on the
+    // sitter's sockets itself, from the same state, and takes them off again when the sitter leaves: the
+    // filtered pose of every part comes out the same on every machine and nothing about it travels. The
+    // space's child events say when somebody arrives or leaves; a part whose socket has not turned up yet (a
+    // stand-in still on its way from the sitter's machine) is looked for again each frame until it has, which
+    // is only ever while somebody sits. -xlinka
+    private const int ReferenceFacingPriority = int.MinValue + 1;
+    private UserRoot? _posedRoot;
+    private readonly List<(AvatarSocket Socket, IPoseFilter Filter)> _laidFilters = new();
+    private readonly List<int> _posedParts = new();
+    private bool _posesPending;
+    private Slot? _watchedSpace;
+    private readonly List<AvatarSocket> _socketScratch = new();
+
+    // The sitter's machine only: one slot of its own under the sitter's root holding the stand-ins and the
+    // quiet. The root itself is the host's, so nothing the seat adds may sit on it directly or it could never
+    // be taken off again.
+    private Slot? _seatedParts;
+    private bool _occupancyDirty;
+
+    private void WatchSpace()
+    {
+        var space = IsDestroyed ? null : ResolveSpace();
+        if (ReferenceEquals(space, _watchedSpace))
+            return;
+        UnwatchSpace();
+        _watchedSpace = space;
+        if (space != null)
+        {
+            space.OnChildAdded += OnSpaceChildAdded;
+            space.OnChildRemoved += OnSpaceChildRemoved;
+        }
+        RefreshPosedUser();
+    }
+
+    private void UnwatchSpace()
+    {
+        if (_watchedSpace == null)
+            return;
+        _watchedSpace.OnChildAdded -= OnSpaceChildAdded;
+        _watchedSpace.OnChildRemoved -= OnSpaceChildRemoved;
+        _watchedSpace = null;
+    }
+
+    // Both fire while the child is still on its way in or out, before its parent reads the new value, so the
+    // look happens on the next update.
+    private void OnSpaceChildAdded(Slot space, Slot child)
+    {
+        if (child != null && child.GetComponent<UserRoot>() != null)
+            _occupancyDirty = true;
+    }
+
+    private void OnSpaceChildRemoved(Slot space, Slot child)
+    {
+        if (_posedRoot != null && ReferenceEquals(_posedRoot.Slot, child))
+            _occupancyDirty = true;
+    }
+
+    private void RefreshPosedUser()
+    {
+        var user = IsDestroyed ? null : FindSeatedUser();
+        var root = user != null ? ResolveRoot(user) : null;
+        if (ReferenceEquals(root, _posedRoot))
+            return;
+        LiftPoses();
+        _posedRoot = root;
+        LayPoses();
+    }
+
+    private void MaintainPoses()
+    {
+        if (_occupancyDirty)
+        {
+            _occupancyDirty = false;
+            RefreshPosedUser();
+        }
+        var root = _posedRoot;
+        if (root == null)
+            return;
+        if (root.IsDestroyed || root.Slot == null || !ReferenceEquals(root.Slot.Parent, _watchedSpace))
+        {
+            RefreshPosedUser();
+            return;
+        }
+        for (int i = 0; i < _laidFilters.Count; i++)
+        {
+            if (_laidFilters[i].Socket.IsDestroyed)
+            {
+                LiftPoses();
+                break;
+            }
+        }
+        if (_posesPending)
+            LayPoses();
+    }
+
+    private void LayPoses()
+    {
+        var root = _posedRoot;
+        if (root == null || root.IsDestroyed)
+        {
+            _posesPending = false;
+            return;
+        }
+        bool missing = false;
+        _socketScratch.Clear();
+        root.GetRegisteredComponents(_socketScratch);
+        for (int i = 0; i < BodyPoses.Count; i++)
+        {
+            if (_posedParts.Contains(i))
+                continue;
+            var pose = BodyPoses[i];
+            var socket = pose != null ? FindSocket(pose.Node.Value) : null;
+            if (socket == null)
+            {
+                missing |= pose != null;
+                continue;
+            }
+            for (int k = 0; k < pose!.Filters.Count; k++)
+            {
+                var entry = pose.Filters[k];
+                if (entry?.Filter.Target is { } filter && !ReferenceEquals(filter, this))
+                    Lay(socket, filter, entry.Priority.Value);
+            }
+            Lay(socket, this, ReferenceFacingPriority);
+            _posedParts.Add(i);
+        }
+        _socketScratch.Clear();
+        _posesPending = missing;
+    }
+
+    private void Lay(AvatarSocket socket, IPoseFilter filter, int priority)
+    {
+        socket.AddFilter(filter, priority);
+        _laidFilters.Add((socket, filter));
+    }
+
+    private void LiftPoses()
+    {
+        for (int i = 0; i < _laidFilters.Count; i++)
+        {
+            var (socket, filter) = _laidFilters[i];
+            if (!socket.IsDestroyed)
+                socket.RemoveFilter(filter);
+        }
+        _laidFilters.Clear();
+        _posedParts.Clear();
+        _posesPending = _posedRoot != null;
+    }
+
+    // Reads the list LayPoses and PlaceStandIns fill.
+    private AvatarSocket? FindSocket(BodyNode node)
+    {
+        for (int i = 0; i < _socketScratch.Count; i++)
+        {
+            var socket = _socketScratch[i];
+            if (!socket.IsDestroyed && socket.Node.Value == node)
+                return socket;
+        }
+        return null;
+    }
+
+    // The last step on every socket this seat poses. A pose the seat's filters supplied (the socket's own
+    // source was not tracking it) is one of the seat's references, and those face the way RotationOffset says
+    // they do; turned by it, the pose faces our forward like any other body frame. A tracked pose is the
+    // tracker's and is left alone.
+    void IPoseFilter.ProcessPose(AvatarSocket socket, Slot space, ref float3 position, ref floatQ rotation, ref bool isTracking)
+    {
+        if (isTracking && socket != null && !socket.IsTracking.Value)
+            rotation = (rotation * RotationOffset.Value).Normalized;
+    }
+
+    // The sitter's machine gives every Required part it has no socket for a stand-in: an untracked socket under
+    // the sitter's root for the filters to pose, which the worn avatar's IK takes for that part. The walking
+    // animation goes quiet as well, the feet with it when the seat holds both. All of it goes on standing up.
+    private void PlaceStandIns(UserRoot userRoot)
+    {
+        RemoveStandIns();
+        var parts = _seatedParts = userRoot.Slot.AddSlot("Seat Pose");
+        _socketScratch.Clear();
+        userRoot.GetRegisteredComponents(_socketScratch);
+        bool leftFoot = false, rightFoot = false;
+        for (int i = 0; i < BodyPoses.Count; i++)
+        {
+            var pose = BodyPoses[i];
+            if (pose == null)
+                continue;
+            var node = pose.Node.Value;
+            leftFoot |= node == BodyNode.LeftFoot;
+            rightFoot |= node == BodyNode.RightFoot;
+            if (!pose.Required.Value || node == BodyNode.NONE || FindSocket(node) != null || HasStandIn(node))
+                continue;
+            var socket = parts.AddSlot(node.ToString()).AttachComponent<AvatarSocket>();
+            socket.IsTracking.Value = false;
+            socket.Node.Value = node;
+        }
+        _socketScratch.Clear();
+
+        var quiet = parts.AttachComponent<LocomotionAnimationSuppressor>();
+        quiet.SuppressFeet.Value = leftFoot && rightFoot;
+    }
+
+    private bool HasStandIn(BodyNode node)
+    {
+        if (_seatedParts == null || _seatedParts.IsDestroyed)
+            return false;
+        foreach (var child in _seatedParts.Children)
+        {
+            if (child.GetComponent<AvatarSocket>()?.Node.Value == node)
+                return true;
+        }
+        return false;
+    }
+
+    private void RemoveStandIns()
+    {
+        var parts = _seatedParts;
+        _seatedParts = null;
+        if (parts == null || parts.IsDestroyed)
+            return;
+        foreach (var child in parts.Children)
+            child.GetComponent<AvatarSocket>()?.Dequip(null!);
+        parts.Destroy();
+    }
+
     // PERSISTENCE
 
     // The runtime state stays out of saves: a world must not come back with somebody still sitting in
     // it, and a restore pose captured last session points at slots that no longer exist. [NonPersistent]
-    // on the fields above is enough on its own - the base ShouldSerializeMember excludes them. - xlinka
+    // on the occupancy fields is enough on its own - the base ShouldSerializeMember excludes them - and the
+    // restore snapshot is plain fields that never reach a save. It was non-persistent while it was synced
+    // too, so no save carries it and older ones load as they are. - xlinka
 
     // HELPERS
 

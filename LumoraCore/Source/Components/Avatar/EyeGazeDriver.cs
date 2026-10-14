@@ -9,12 +9,12 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Drives avatar eye gaze (procedural idle saccades within a cone, or real eye tracking when available).
-/// Works for BONE eyes (rotates the LeftEye/RightEye rig bones in their head-relative frame) AND for flat
-/// texture/blendshape eyes (drives eyeLook Left/Right/Up/Down/In/Out blendshapes from the same gaze). Runs
-/// locally on every peer; writes are local (no network churn), like the IK bone writes.
-/// </summary>
+// Bone eyes turn in their head-relative frame; flat eyes get eyeLook blendshapes from the same gaze.
+// Runs on every peer and the writes are local (no network churn), like the IK bone writes.
+//
+// An avatar can say which bones are its eyes, when the rig's are not the ones that look, and how far each eye
+// may turn each way. Idle glances stay inside the cone and inside those limits; tracked eyes and the camera's
+// pull go as far as the limits allow, and the look shapes reach full at them. -xlinka
 [ComponentCategory("Users/Avatar")]
 public sealed class EyeGazeDriver : Component
 {
@@ -23,6 +23,19 @@ public sealed class EyeGazeDriver : Component
     public readonly Sync<float> SaccadeMinInterval = new();
     public readonly Sync<float> SaccadeMaxInterval = new();
     public readonly Sync<float> Speed = new();
+
+    public readonly SyncRef<Slot> LeftEye = new();
+    public readonly SyncRef<Slot> RightEye = new();
+    // Degrees each eye may turn: x up, y down, z toward the avatar's left, w toward its right. A zero leaves
+    // that way to the cone.
+    public readonly Sync<float4> LeftEyeLimits = new();
+    public readonly Sync<float4> RightEyeLimits = new();
+    // The eyes are the bones and nothing else: no look shapes found by name. Shapes made for face tracking
+    // turn the eyeball a second time on top of the bone.
+    public readonly Sync<bool> ExactEyes = new();
+
+    // Where the eyes look up and down this frame, -1 as far down as they go to 1 as far up.
+    public float LookPitch { get; private set; }
 
     private const float Deg2Rad = MathF.PI / 180f;
 
@@ -34,6 +47,7 @@ public sealed class EyeGazeDriver : Component
     private float3 _restFront = float3.Backward;
     private bool _resolved;
     private EyeStreamManager? _eyeTracking;
+    private readonly AvatarFaceWearer _wearer = new();
 
     // Flat-eye gaze: eyeLook blendshapes (side: -1 combined, 0 left, 1 right). Driven from the same gaze.
     private readonly List<(SkinnedMeshRenderer Renderer, int Index, LookKind Kind, int Side)> _lookTargets = new();
@@ -57,6 +71,12 @@ public sealed class EyeGazeDriver : Component
     {
         base.OnUpdate(delta);
 
+        if (_wearer.Update(Slot))
+            Release();
+        var wearer = _wearer.Current;
+        if (wearer == null)
+            return;
+
         if (!_resolved)
             Resolve();
 
@@ -65,12 +85,20 @@ public sealed class EyeGazeDriver : Component
         if (!hasBones && !hasLook)
             return;
 
-        // Target gaze comes from real eye tracking when the head device reports it; otherwise an idle
-        // saccade picks a new target on a randomized cadence. Either way we smooth toward the target.
+        // Target gaze comes from real eye tracking when the head device reports it; otherwise the wearer's
+        // own camera when it asks for their eyes; otherwise an idle saccade picks a new target on a
+        // randomized cadence. Either way we smooth toward the target.
         if (TryRealGaze(out float realYaw, out float realPitch))
         {
             _tgtYaw = realYaw;
             _tgtPitch = realPitch;
+        }
+        else if (TryCameraGaze(wearer, out float cameraYaw, out float cameraPitch))
+        {
+            // Held on the lens; the saccade clock waits until the camera lets go.
+            _tgtYaw = cameraYaw;
+            _tgtPitch = cameraPitch;
+            _timer = 0f;
         }
         else
         {
@@ -80,8 +108,8 @@ public sealed class EyeGazeDriver : Component
                 _timer = 0f;
                 float span = MathF.Max(0f, SaccadeMaxInterval.Value - SaccadeMinInterval.Value);
                 _next = SaccadeMinInterval.Value + (float)_rng.NextDouble() * span;
-                _tgtYaw = ((float)_rng.NextDouble() * 2f - 1f) * MaxYawDegrees.Value * Deg2Rad;
-                _tgtPitch = ((float)_rng.NextDouble() * 2f - 1f) * MaxPitchDegrees.Value * Deg2Rad;
+                _tgtYaw = ClampYaw(((float)_rng.NextDouble() * 2f - 1f) * MaxYawDegrees.Value * Deg2Rad);
+                _tgtPitch = ClampPitch(((float)_rng.NextDouble() * 2f - 1f) * MaxPitchDegrees.Value * Deg2Rad);
             }
         }
 
@@ -90,28 +118,61 @@ public sealed class EyeGazeDriver : Component
         _curYaw += (_tgtYaw - _curYaw) * k;
         _curPitch += (_tgtPitch - _curPitch) * k;
 
+        var left = LeftEyeLimits.Value;
+        var right = RightEyeLimits.Value;
         if (hasBones)
         {
-            ApplyEye(_leftEye, _leftRestRel, _curYaw, _curPitch);
-            ApplyEye(_rightEye, _rightRestRel, _curYaw, _curPitch);
+            ApplyEye(_leftEye, _leftRestRel, EyeYaw(left, _curYaw), EyePitch(left, _curPitch));
+            ApplyEye(_rightEye, _rightRestRel, EyeYaw(right, _curYaw), EyePitch(right, _curPitch));
         }
 
+        LookPitch = (Reached(left, _curPitch) + Reached(right, _curPitch)) * 0.5f;
+
         if (hasLook)
-            DriveLook(_curYaw, _curPitch);
+            DriveLook(_curYaw, _curPitch, left, right);
+    }
+
+    // Radians one eye may turn one way: 0 up, 1 down, 2 left, 3 right.
+    private float Limit(float4 limits, int way)
+    {
+        float set = way switch { 0 => limits.x, 1 => limits.y, 2 => limits.z, _ => limits.w };
+        float cone = way < 2 ? MaxPitchDegrees.Value : MaxYawDegrees.Value;
+        return MathF.Max(set > 0f ? set : cone, 0f) * Deg2Rad;
+    }
+
+    // As far as the freer eye goes, which is as far as the gaze itself goes.
+    private float Reach(int way) => MathF.Max(Limit(LeftEyeLimits.Value, way), Limit(RightEyeLimits.Value, way));
+
+    private float ClampYaw(float yaw) => System.Math.Clamp(yaw, -Reach(3), Reach(2));
+
+    private float ClampPitch(float pitch) => System.Math.Clamp(pitch, -Reach(1), Reach(0));
+
+    private float EyeYaw(float4 limits, float yaw) => System.Math.Clamp(yaw, -Limit(limits, 3), Limit(limits, 2));
+
+    private float EyePitch(float4 limits, float pitch) => System.Math.Clamp(pitch, -Limit(limits, 1), Limit(limits, 0));
+
+    // How much of one eye's way up (+) or down (-) the pitch has used, -1..1.
+    private float Reached(float4 limits, float pitch)
+    {
+        float way = Limit(limits, pitch >= 0f ? 0 : 1);
+        return way < 1e-4f ? 0f : System.Math.Clamp(pitch / way, -1f, 1f);
+    }
+
+    // The same for left (+) and right (-).
+    private float ReachedYaw(float4 limits, float yaw)
+    {
+        float way = Limit(limits, yaw >= 0f ? 2 : 3);
+        return way < 1e-4f ? 0f : System.Math.Clamp(yaw / way, -1f, 1f);
     }
 
     // Map the current gaze (yaw/pitch radians) onto eyeLook blendshapes. +yaw rotates about Up = looking
-    // LEFT (right-handed); +pitch about Right rotates local -Z upward. ARKit-style In/Out are per-eye
-    // (In = toward the nose).
-    private void DriveLook(float yaw, float pitch)
+    // LEFT (right-handed); +pitch about Right rotates local -Z upward. In/Out are per-eye
+    // (In = toward the nose). Each eye's shapes reach full at that eye's limit; a shape for both eyes
+    // takes the two eyes' average.
+    private void DriveLook(float yaw, float pitch, float4 leftLimits, float4 rightLimits)
     {
-        float maxYaw = MathF.Max(MaxYawDegrees.Value * Deg2Rad, 1e-3f);
-        float maxPitch = MathF.Max(MaxPitchDegrees.Value * Deg2Rad, 1e-3f);
-
-        float lookLeft = System.Math.Clamp(MathF.Max(yaw, 0f) / maxYaw, 0f, 1f);
-        float lookRight = System.Math.Clamp(MathF.Max(-yaw, 0f) / maxYaw, 0f, 1f);
-        float lookUp = System.Math.Clamp(MathF.Max(pitch, 0f) / maxPitch, 0f, 1f);
-        float lookDown = System.Math.Clamp(MathF.Max(-pitch, 0f) / maxPitch, 0f, 1f);
+        float leftYaw = ReachedYaw(leftLimits, yaw), rightYaw = ReachedYaw(rightLimits, yaw);
+        float leftPitch = Reached(leftLimits, pitch), rightPitch = Reached(rightLimits, pitch);
 
         for (int i = 0; i < _lookTargets.Count; i++)
         {
@@ -122,12 +183,15 @@ public sealed class EyeGazeDriver : Component
                 return;
             }
 
+            float y = side == 0 ? leftYaw : side == 1 ? rightYaw : (leftYaw + rightYaw) * 0.5f;
+            float p = side == 0 ? leftPitch : side == 1 ? rightPitch : (leftPitch + rightPitch) * 0.5f;
+            float lookLeft = MathF.Max(y, 0f), lookRight = MathF.Max(-y, 0f);
             float w = kind switch
             {
                 LookKind.Left => lookLeft,
                 LookKind.Right => lookRight,
-                LookKind.Up => lookUp,
-                LookKind.Down => lookDown,
+                LookKind.Up => MathF.Max(p, 0f),
+                LookKind.Down => MathF.Max(-p, 0f),
                 LookKind.In => side == 1 ? lookLeft : lookRight,   // left eye in = look right; right eye in = look left
                 LookKind.Out => side == 1 ? lookRight : lookLeft,
                 _ => 0f,
@@ -173,7 +237,9 @@ public sealed class EyeGazeDriver : Component
         yaw = 0f;
         pitch = 0f;
 
-        _eyeTracking ??= Slot.ActiveUserRoot?.GetRegisteredComponent<EyeStreamManager>();
+        if (_eyeTracking != null && _eyeTracking.IsDestroyed)
+            _eyeTracking = null;
+        _eyeTracking ??= _wearer.Current?.GetRegisteredComponent<EyeStreamManager>();
         if (_eyeTracking == null || !_eyeTracking.IsTracking)
             return false;
         if (!_eyeTracking.TryGetCombinedGaze(out var dir))
@@ -186,14 +252,112 @@ public sealed class EyeGazeDriver : Component
 
         // Lumora view forward is local -Z. Positive yaw is a leftward rotation around +Y, so +X
         // (viewer right) is negative yaw and -X (viewer left) is positive yaw.
-        yaw = MathF.Atan2(-dir.x, -dir.z);
-        pitch = MathF.Asin(System.Math.Clamp(dir.y, -1f, 1f));
-
-        float maxYaw = MaxYawDegrees.Value * Deg2Rad;
-        float maxPitch = MaxPitchDegrees.Value * Deg2Rad;
-        yaw = System.Math.Clamp(yaw, -maxYaw, maxYaw);
-        pitch = System.Math.Clamp(pitch, -maxPitch, maxPitch);
+        yaw = ClampYaw(MathF.Atan2(-dir.x, -dir.z));
+        pitch = ClampPitch(MathF.Asin(System.Math.Clamp(dir.y, -1f, 1f)));
         return true;
+    }
+
+    // The wearer's own camera, when it asks for their eyes and sits within reach of where they face: the gaze
+    // laid on its lens as the same head-relative yaw and pitch the saccades use, clamped to the cone. Every
+    // machine works this out for itself from the camera and head it already has, like the saccades.
+    private bool TryCameraGaze(UserRoot wearer, out float yaw, out float pitch)
+    {
+        yaw = 0f;
+        pitch = 0f;
+        var user = wearer.ActiveUser;
+        if (user == null || user.IsDestroyed)
+            return false;
+        var facing = wearer.HeadRotation * float3.Backward;
+        if (!PhotoCamera.TryEyeTarget(user, wearer.HeadPosition, facing, out var lens))
+            return false;
+
+        var toward = lens - EyeCentre(wearer);
+        if (toward.LengthSquared < 1e-8f)
+            return false;
+        toward = toward.Normalized;
+
+        // From where the eyes rest, which is where yaw and pitch count from: the rest front carried by the
+        // head, or the view when the rig has no head bone and only look shapes.
+        var front = _head != null && !_head.IsDestroyed ? (_head.GlobalRotation * _headRestRot.Inverse) * _restFront : facing;
+        front = front.LengthSquared > 1e-8f ? front.Normalized : facing;
+
+        var frontFlat = new float3(front.x, 0f, front.z);
+        var towardFlat = new float3(toward.x, 0f, toward.z);
+        if (frontFlat.LengthSquared > 1e-8f && towardFlat.LengthSquared > 1e-8f)
+        {
+            frontFlat = frontFlat.Normalized;
+            towardFlat = towardFlat.Normalized;
+            yaw = MathF.Atan2(float3.Dot(float3.Up, float3.Cross(frontFlat, towardFlat)), float3.Dot(frontFlat, towardFlat));
+        }
+        pitch = MathF.Asin(System.Math.Clamp(toward.y, -1f, 1f)) - MathF.Asin(System.Math.Clamp(front.y, -1f, 1f));
+
+        yaw = ClampYaw(yaw);
+        pitch = ClampPitch(pitch);
+        return true;
+    }
+
+    // Between the eyes when the rig has both, else the one it has, else the head.
+    private float3 EyeCentre(UserRoot wearer)
+    {
+        Slot? left = _leftEye is { IsDestroyed: false } ? _leftEye : null;
+        Slot? right = _rightEye is { IsDestroyed: false } ? _rightEye : null;
+        if (left != null && right != null)
+            return (left.GlobalPosition + right.GlobalPosition) * 0.5f;
+        if (left != null)
+            return left.GlobalPosition;
+        if (right != null)
+            return right.GlobalPosition;
+        return _head != null && !_head.IsDestroyed ? _head.GlobalPosition : wearer.HeadPosition;
+    }
+
+    // Eyes back to their authored pose and every look shape released. The bone writes are local and silent,
+    // so nothing else would ever put them back.
+    private void Release()
+    {
+        if (_resolved && _head != null && !_head.IsDestroyed)
+        {
+            ApplyEye(_leftEye, _leftRestRel, 0f, 0f);
+            ApplyEye(_rightEye, _rightRestRel, 0f, 0f);
+        }
+        foreach (var (renderer, index, _, _) in _lookTargets)
+        {
+            if (renderer != null && !renderer.IsDestroyed)
+                renderer.ReleaseBlendShape(index, this);
+        }
+        _lookTargets.Clear();
+        _resolved = false;
+        _eyeTracking = null;
+        _curYaw = _curPitch = _tgtYaw = _tgtPitch = 0f;
+        _timer = 0f;
+        LookPitch = 0f;
+    }
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        if (Slot != null)
+            Slot.ActiveChanged += OnSlotActiveChanged;
+    }
+
+    // Switched off, it stops updating and would never see anything else change, so it lets go now.
+    private void OnSlotActiveChanged(Slot slot)
+    {
+        if (Slot != null && !Slot.IsActive)
+            Release();
+    }
+
+    public override void OnDisabled()
+    {
+        base.OnDisabled();
+        Release();
+    }
+
+    public override void OnDestroy()
+    {
+        if (Slot != null)
+            Slot.ActiveChanged -= OnSlotActiveChanged;
+        Release();
+        base.OnDestroy();
     }
 
     private void Resolve()
@@ -203,8 +367,8 @@ public sealed class EyeGazeDriver : Component
             return; // keep trying until a rig appears
 
         _head = rig.TryGetBone(BodyNode.Head);
-        _leftEye = rig.TryGetBone(BodyNode.LeftEye);
-        _rightEye = rig.TryGetBone(BodyNode.RightEye);
+        _leftEye = LeftEye.Target is { IsDestroyed: false } left ? left : rig.TryGetBone(BodyNode.LeftEye);
+        _rightEye = RightEye.Target is { IsDestroyed: false } right ? right : rig.TryGetBone(BodyNode.RightEye);
 
         if (_head != null && !_head.IsDestroyed)
         {
@@ -221,8 +385,21 @@ public sealed class EyeGazeDriver : Component
                 : float3.Backward;
         }
 
-        ResolveLookTargets();
+        if (ExactEyes.Value)
+            ReleaseLookTargets();
+        else
+            ResolveLookTargets();
         _resolved = true; // rig resolved; bone eyes and/or eyeLook blendshapes drive from here, else no-op
+    }
+
+    private void ReleaseLookTargets()
+    {
+        foreach (var (renderer, index, _, _) in _lookTargets)
+        {
+            if (renderer != null && !renderer.IsDestroyed)
+                renderer.ReleaseBlendShape(index, this);
+        }
+        _lookTargets.Clear();
     }
 
     // Find eyeLook blendshapes (flat/texture eyes) and claim them so gaze can drive them. Disjoint from the
@@ -249,7 +426,7 @@ public sealed class EyeGazeDriver : Component
     private static (LookKind Kind, int Side)? ClassifyLook(string lower)
     {
         if (!lower.Contains("look"))
-            return null;
+            return ClassifyEyeDirection(lower);
         int side = SideOf(lower);
         if (lower.Contains("lookin")) return (LookKind.In, side);
         if (lower.Contains("lookout")) return (LookKind.Out, side);
@@ -258,6 +435,28 @@ public sealed class EyeGazeDriver : Component
         if (lower.Contains("lookleft")) return (LookKind.Left, side);
         if (lower.Contains("lookright")) return (LookKind.Right, side);
         return null;
+    }
+
+    // The vendor eye shape set names a look by eye then direction, with no "look" in it: Eye_Left_Left,
+    // Eye_Right_Up. Only that exact three-part shape is taken, so Eye_Left_Wide and Eye_Left_Blink stay
+    // with the drivers that own them, and the side comes from its position: Eye_Right_Left is the right
+    // eye looking left, which a search for "left" would hand to the wrong eye. -xlinka
+    private static (LookKind Kind, int Side)? ClassifyEyeDirection(string lower)
+    {
+        var parts = lower.Split('_');
+        if (parts.Length != 3 || parts[0] != "eye")
+            return null;
+        int side = parts[1] == "left" ? 0 : parts[1] == "right" ? 1 : -1;
+        if (side < 0)
+            return null;
+        return parts[2] switch
+        {
+            "left" => (LookKind.Left, side),
+            "right" => (LookKind.Right, side),
+            "up" => (LookKind.Up, side),
+            "down" => (LookKind.Down, side),
+            _ => null,
+        };
     }
 
     private static int SideOf(string lower)

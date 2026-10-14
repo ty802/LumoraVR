@@ -5,7 +5,9 @@ using System;
 using System.Collections.Generic;
 using Helio.UI;
 using Lumora.Core.Assets;
-using Lumora.Core.Components.Avatar.IK;
+using Lumora.Core.Components.Assets;
+using Lumora.Core.Components.Import;
+using Lumora.Core.Components.UI;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
@@ -13,10 +15,10 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
-// Body tracker calibration: the avatar freezes in a T-pose where you stand, every mappable joint gets a
-// marker, every puck gets a marker, you put your pucks on the joints and pull both triggers. Nobody
-// assigns a role to anything: at confirm each puck is paired with the nearest unclaimed joint, closest
-// pair first, and the stored offset is what turns that puck's pose into that joint's pose from then on.
+// Body tracker calibration: the avatar freezes in a T-pose where you stand, a ball sits on every joint a
+// tracker can drive, a ball follows every puck, you line them up and pull both triggers. Nobody assigns a
+// role to anything: each puck is paired with the nearest unclaimed joint, closest pair first, and the
+// stored offset is what turns that puck's pose into that joint bone's pose from then on.
 //
 // A per-limb wizard was rejected on purpose. It asks the user to know what a "left lower leg" is and to
 // hold a menu open with a foot in the air. Proximity needs neither. -xlinka
@@ -25,17 +27,6 @@ public sealed class TrackerCalibration : Component
 {
     [NonPersistent]
     public readonly Sync<bool> Active = new();
-
-    [NonPersistent]
-    public readonly Sync<string> Status = new();
-
-    // Metres at tracking scale 1. A puck strapped to a shin or a belt sits well inside this of its joint
-    // even on an avatar whose proportions are off; a puck a metre from everything was left on a desk.
-    public readonly Sync<float> MaxPairDistance = new();
-
-    // Both triggers have to stay down this long. A single twitch on the way to grabbing something is not
-    // a confirm.
-    public readonly Sync<float> ConfirmHoldSeconds = new();
 
     public struct PairResult
     {
@@ -49,25 +40,51 @@ public sealed class TrackerCalibration : Component
 
     public IReadOnlyList<PairResult> LastResults => _lastResults;
 
+    public IReadOnlyList<PairResult> Preview => _preview;
+
+    public string Message => _message;
+
     public const string SlotName = "TrackerCalibration";
+
+    private const string HostSlotName = "Body Calibration";
+
+    private const string NeedsHeadset = "Needs a headset";
+    private const string NeedsTracker = "Connect a tracker first";
+    private const string NeedsHumanoid = "Needs a humanoid avatar";
+
+    private const string Instructions = "Match the pose. Line up the balls. Pull both triggers.\nMenu: Cancel Calibration";
+    private const string NothingLinedUp = "Nothing lined up, try again";
 
     private const float PressPoint = 0.7f;
     private const float ReleasePoint = 0.3f;
+
+    // Metres at tracking scale 1. A puck strapped to a shin or a belt sits well inside this of its joint
+    // even on an avatar whose proportions are off; a puck a metre from everything was left on a desk.
+    private const float MaxPairDistance = 0.4f;
 
     // When two candidate pairs are this close in distance, the one matching the runtime's role
     // suggestion wins. Small enough that it never overrides where the user actually put the puck.
     private const float RoleTieBreak = 0.01f;
 
-    private const float NodeMarkerRadius = 0.03f;
-    private const float LabelHeight = 0.07f;
-    private static readonly float3 TrackerMarkerSize = new(0.06f, 0.025f, 0.04f);
-    private static readonly float3 TrackerNoseSize = new(0.01f, 0.01f, 0.03f);
+    private const float HandReach = 0.08f;
+
+    private const float JointRadius = 0.03f;
+    private const float TrackerRadius = 0.04f;
+    private const float ControllerRadius = 0.015f;
+
+    private const float MessageAhead = 0.6f;
+    private const float MessageBelowEyes = 0.3f;
+    private const float MessageSize = 0.025f;
+
+    private const float ResultSeconds = 3f;
+    private const float RetrySeconds = 3f;
+    private const float SecondBuzzDelay = 0.15f;
 
     private static readonly colorHDR LeftFill = new(0.2f, 0.7f, 1f);
     private static readonly colorHDR RightFill = new(1f, 0.3f, 0.3f);
     private static readonly colorHDR CentreFill = new(0.7f, 0.4f, 1f);
-    private static readonly colorHDR TrackerFill = new(1f, 0.75f, 0.1f);
-    private static readonly colorHDR TrackerLostFill = new(0.45f, 0.45f, 0.45f);
+    private static readonly colorHDR TrackerIdleFill = new(1f, 1f, 1f, 1f);
+    private static readonly colorHDR TrackerLostFill = new(0.45f, 0.45f, 0.45f, 0.8f);
 
     private struct BoneState
     {
@@ -76,20 +93,88 @@ public sealed class TrackerCalibration : Component
         public floatQ LocalRotation;
     }
 
-    private sealed class TrackerMarker
+    private sealed class Ball
     {
         public Slot Slot = null!;
-        public UnlitMaterial Material = null!;
-        public bool Seen;
+        public OverlayUnlitMaterial Material = null!;
+        public colorHDR Shown;
     }
 
-    private readonly List<PairResult> _lastResults = new();
-    private readonly List<BoneState> _boneStates = new();
-    private readonly List<(BodyNode node, Slot bone)> _nodes = new();
-    private readonly List<ITracker> _trackers = new();
-    private readonly Dictionary<string, TrackerMarker> _trackerMarkers = new(StringComparer.Ordinal);
+    private sealed class JointBall
+    {
+        public BodyNode Node;
+        public Slot Bone = null!;
+        public Ball Ball = null!;
+        public bool Valid;
+        public float3 Position;
+        public bool Claimed;
+    }
 
+    private sealed class HandGuide
+    {
+        public Chirality Side;
+        public Slot Bone = null!;
+        public Ball Guide = null!;
+        public Ball Controller = null!;
+    }
+
+    private sealed class TrackerBall
+    {
+        public Ball Ball = null!;
+        public bool Seen;
+        public bool Placed;
+    }
+
+    private struct TrackerSample
+    {
+        public ITracker Tracker;
+        public bool Tracking;
+        public float3 Position;
+        public BodyNode Suggested;
+    }
+
+    private struct Pairing
+    {
+        public int Tracker;
+        public int Joint;
+        public float Distance;
+    }
+
+    private struct Candidate
+    {
+        public float Key;
+        public float Distance;
+        public int Tracker;
+        public int Joint;
+    }
+
+    private static readonly Comparison<Candidate> ByKey = (a, b) =>
+    {
+        int c = a.Key.CompareTo(b.Key);
+        if (c != 0) return c;
+        c = a.Tracker.CompareTo(b.Tracker);
+        return c != 0 ? c : a.Joint.CompareTo(b.Joint);
+    };
+
+    private static readonly Comparison<Pairing> ByJoint = (a, b) => a.Joint.CompareTo(b.Joint);
+
+    private readonly List<PairResult> _lastResults = new();
+    private readonly List<PairResult> _preview = new();
+    private readonly List<BoneState> _boneStates = new();
+    private readonly List<JointBall> _joints = new();
+    private readonly List<HandGuide> _hands = new();
+    private readonly List<ITracker> _trackers = new();
+    private readonly List<TrackerSample> _samples = new();
+    private readonly List<Pairing> _pairs = new();
+    private readonly List<Candidate> _candidates = new();
+    private readonly Dictionary<string, TrackerBall> _trackerBalls = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _labels = new(StringComparer.Ordinal);
+
+    private UserRoot? _userRoot;
+    private AvatarEquipManager? _equip;
+    private UserInputState? _inputState;
     private Slot? _avatarRoot;
+    private Slot? _avatarParent;
     private HumanoidRig? _rig;
     private AvatarIK? _ik;
     private bool _ikWasEnabled;
@@ -97,47 +182,111 @@ public sealed class TrackerCalibration : Component
     private float3 _rootLocalPosition;
     private floatQ _rootLocalRotation;
     private Slot? _markerRoot;
+    private TextRenderer? _text;
+    private World.WorldFocus _startFocus;
+    private string _message = string.Empty;
     private bool _armed;
-    private float _hold;
+    private float _closeIn;
+    private float _messageFor;
+    private float _secondBuzzIn;
 
-    public override void OnInit()
+    public static bool TrackersReady(out string reason)
     {
-        base.OnInit();
-        MaxPairDistance.Value = 0.4f;
-        ConfirmHoldSeconds.Value = 0.6f;
-        Status.Value = "Idle";
+        var input = Engine.Current?.InputInterface;
+        if (input == null || !input.IsVRActive)
+        {
+            reason = NeedsHeadset;
+            return false;
+        }
+        if (input.GetDevice<ITracker>(t => t.IsDeviceActive) == null)
+        {
+            reason = NeedsTracker;
+            return false;
+        }
+        reason = string.Empty;
+        return true;
+    }
+
+    public static TrackerCalibration? FindActive(World world)
+    {
+        var calibration = Find(world);
+        return calibration != null && calibration.Active.Value ? calibration : null;
+    }
+
+    private static TrackerCalibration? Find(World? world)
+    {
+        var root = world?.LocalUser?.Root;
+        if (root == null || root.IsDestroyed || root.Slot == null || root.Slot.IsDestroyed)
+            return null;
+        var calibration = root.Slot.FindChild(HostSlotName)?.GetComponent<TrackerCalibration>();
+        return calibration is { IsDestroyed: false } ? calibration : null;
     }
 
     // Front door. Puts the component on a local, non-persistent slot under the local user's root so it
     // never replicates and never saves, then starts. The reason string is for whatever UI called this.
     public static bool TryBeginForLocalUser(World world, out string reason)
     {
-        reason = string.Empty;
-        var root = world?.LocalUser?.Root;
-        if (root == null || root.IsDestroyed || root.Slot == null || root.Slot.IsDestroyed)
+        if (!TrackersReady(out reason) || !TryFindAvatar(world, out var userRoot, out _, out _, out reason))
         {
-            reason = "no local user root";
+            LumoraLogger.Log($"TrackerCalibration: not started: {reason}");
             return false;
         }
 
-        var existing = root.Slot.GetComponentInChildren<TrackerCalibration>();
-        if (existing != null && !existing.IsDestroyed)
-        {
-            if (existing.Active.Value)
-            {
-                reason = "calibration is already running";
-                return false;
-            }
+        var existing = Find(world);
+        if (existing != null)
             return existing.TryBegin(out reason);
-        }
 
-        var slot = root.Slot.AddLocalSlot(SlotName);
+        var slot = userRoot.Slot.AddLocalSlot(HostSlotName);
         slot.Persistent.Value = false;
         var calibration = slot.AttachComponent<TrackerCalibration>();
         if (calibration.TryBegin(out reason))
             return true;
         slot.Destroy();
         return false;
+    }
+
+    private static bool TryFindAvatar(World? world, out UserRoot userRoot, out Slot avatar, out HumanoidRig rig, out string reason)
+    {
+        userRoot = null!;
+        avatar = null!;
+        rig = null!;
+        reason = NeedsHumanoid;
+
+        var root = world?.LocalUser?.Root;
+        if (root == null || root.IsDestroyed || root.Slot == null || root.Slot.IsDestroyed)
+            return false;
+
+        var worn = root.GetRegisteredComponent<AvatarEquipManager>()?.CurrentAvatar.Target;
+        if (worn == null || worn.IsDestroyed)
+            return false;
+
+        // A four-legged body keeps its biped rig around but solves with QuadrupedIK, which nothing here
+        // switches off and no tracker socket feeds.
+        if (worn.GetComponentInChildren<QuadrupedIK>() is { IsDestroyed: false }
+            || worn.GetComponentInChildren<QuadrupedRig>() is { IsDestroyed: false, IsQuadruped: true })
+            return false;
+
+        var humanoid = worn.GetComponentInChildren<HumanoidRig>();
+        if (humanoid == null || humanoid.IsDestroyed || humanoid.Bones.Count == 0)
+            return false;
+
+        bool anyJoint = false;
+        foreach (var node in TrackerRoles.Mappable)
+        {
+            if (humanoid.TryGetBone(node) is { IsDestroyed: false })
+            {
+                anyJoint = true;
+                break;
+            }
+        }
+        if (!anyJoint)
+            return false;
+
+        userRoot = root;
+        avatar = worn;
+        rig = humanoid;
+        reason = string.Empty;
+        return true;
     }
 
     [SyncMethod]
@@ -149,82 +298,45 @@ public sealed class TrackerCalibration : Component
 
     public bool TryBegin(out string reason)
     {
-        reason = string.Empty;
         if (Active.Value)
         {
-            reason = "already calibrating";
+            reason = "Already calibrating";
             return false;
         }
+        if (!TrackersReady(out reason))
+            return false;
 
         var world = World;
         if (world == null || world.RootSlot == null)
         {
-            reason = "no world";
+            reason = NeedsHumanoid;
             return false;
         }
-
-        var input = Engine.Current?.InputInterface;
-        if (input == null)
-        {
-            reason = "input is not initialised";
+        if (!TryFindAvatar(world, out var userRoot, out var avatar, out var rig, out reason))
             return false;
-        }
 
-        var userRoot = world.LocalUser?.Root;
-        if (userRoot == null || userRoot.IsDestroyed || userRoot.Slot == null)
-        {
-            reason = "no local user root";
-            return false;
-        }
-
-        var avatar = userRoot.GetRegisteredComponent<AvatarEquipManager>()?.CurrentAvatar.Target;
-        if (avatar == null || avatar.IsDestroyed)
-        {
-            reason = "no avatar equipped";
-            return false;
-        }
-
-        var rig = avatar.GetComponentInChildren<HumanoidRig>();
-        if (rig == null || rig.IsDestroyed || rig.Bones.Count == 0)
-        {
-            reason = "the avatar has no humanoid rig";
-            return false;
-        }
-
-        _nodes.Clear();
-        foreach (var node in TrackerRoles.Mappable)
-        {
-            var bone = rig.TryGetBone(node);
-            if (bone != null && !bone.IsDestroyed)
-                _nodes.Add((node, bone));
-        }
-        if (_nodes.Count == 0)
-        {
-            reason = "the rig has none of the mappable bones";
-            return false;
-        }
-
-        _trackers.Clear();
-        input.GetDevices(_trackers, t => t.IsDeviceActive);
-        if (_trackers.Count == 0)
-        {
-            reason = "no tracker is connected";
-            return false;
-        }
-
+        _userRoot = userRoot;
+        _equip = userRoot.GetRegisteredComponent<AvatarEquipManager>();
         _avatarRoot = avatar;
         _rig = rig;
         _ik = avatar.GetComponent<AvatarIK>();
         _lastResults.Clear();
+        _preview.Clear();
         _armed = false;
-        _hold = 0f;
+        _closeIn = 0f;
+        _messageFor = 0f;
+        _secondBuzzIn = 0f;
+        _startFocus = world.Focus;
 
         LockAvatar(userRoot);
-        BuildMarkers(world);
+        BuildMarkers(world, userRoot);
+        HoldInput(true);
+        if (_equip != null)
+            _equip.OnAvatarChanged += OnAvatarChanged;
 
         Active.Value = true;
-        SetStatus("Release both triggers, stand on the markers, then hold both triggers to confirm");
-        LumoraLogger.Log($"TrackerCalibration: started with {_trackers.Count} tracker(s) and {_nodes.Count} mappable joint(s)");
+        SetMessage(Instructions);
+        LumoraLogger.Debug($"TrackerCalibration: started with {_joints.Count} joint(s)");
         return true;
     }
 
@@ -233,26 +345,56 @@ public sealed class TrackerCalibration : Component
     {
         if (!Active.Value)
             return;
-        Finish("Cancelled");
-        LumoraLogger.Log("TrackerCalibration: cancelled, avatar restored");
+        Finish();
+        LumoraLogger.Debug("TrackerCalibration: cancelled, avatar restored");
     }
 
-    // Immediate confirm, no trigger hold. For a button on a panel, and for driving this without controllers.
+    // What the two-trigger click does, for a panel button or for driving this without controllers.
     [SyncMethod]
     public void Confirm()
     {
-        if (!Active.Value)
+        if (!Active.Value || _closeIn > 0f)
             return;
 
         var input = Engine.Current?.InputInterface;
         if (input == null)
         {
-            Finish("Cancelled: input went away");
+            Finish();
             return;
         }
 
-        Solve(input);
-        Finish(Summary());
+        float scale = RootScale();
+        Sample(input);
+        PairUp(_samples, _joints, MaxPairDistance * scale, RoleTieBreak * scale, _pairs, _candidates);
+        _lastResults.Clear();
+
+        if (_pairs.Count == 0)
+        {
+            ReportUnpaired(scale, disable: false);
+            Buzz(input, 0.5f, 0.06f);
+            _secondBuzzIn = SecondBuzzDelay;
+            ShowFor(NothingLinedUp, RetrySeconds);
+            LumoraLogger.Debug($"TrackerCalibration: nothing lined up ({_samples.Count} tracker(s))");
+            return;
+        }
+
+        _pairs.Sort(ByJoint);
+        var names = new List<string>(_pairs.Count);
+        for (int i = 0; i < _pairs.Count; i++)
+        {
+            var pair = _pairs[i];
+            var joint = _joints[pair.Joint];
+            WriteMapping(_samples[pair.Tracker].Tracker, joint.Node, joint.Bone.GlobalPosition, joint.Bone.GlobalRotation, scale, pair.Distance);
+            names.Add(NodeLabel(joint.Node));
+        }
+        ReportUnpaired(scale, disable: true);
+        ReleaseClaimedJoints();
+
+        Buzz(input, 1f, 0.25f);
+        SetMessage(string.Join(", ", names) + " set");
+        _messageFor = 0f;
+        _closeIn = ResultSeconds;
+        LumoraLogger.Debug($"TrackerCalibration: mapped {_pairs.Count} of {_samples.Count} tracker(s)");
     }
 
     public override void OnUpdate(float delta)
@@ -261,29 +403,75 @@ public sealed class TrackerCalibration : Component
         if (!Active.Value)
             return;
 
-        if (_avatarRoot == null || _avatarRoot.IsDestroyed || _rig == null || _rig.IsDestroyed)
+        if (_avatarRoot == null || _avatarRoot.IsDestroyed || _rig == null || _rig.IsDestroyed
+            || (_equip != null && !_equip.IsDestroyed && _equip.CurrentAvatar.Target != _avatarRoot))
         {
-            Finish("Cancelled: the avatar changed");
-            LumoraLogger.Warn("TrackerCalibration: avatar went away mid-calibration, cancelled");
+            Finish();
+            LumoraLogger.Warn("TrackerCalibration: avatar changed mid-calibration, cancelled");
             return;
         }
 
+        var world = World;
+        if (world != null && world.Focus != _startFocus && world.Focus != World.WorldFocus.Focused)
+        {
+            Finish();
+            LumoraLogger.Debug("TrackerCalibration: world lost focus, cancelled");
+            return;
+        }
+
+        // Out of VR nothing can click and the held input would lock the desktop camera, so the pose lets go
+        // by itself.
         var input = Engine.Current?.InputInterface;
-        if (input == null)
+        if (input == null || !input.IsVRActive)
         {
-            Finish("Cancelled: input went away");
+            Finish();
+            LumoraLogger.Debug("TrackerCalibration: headset gone, cancelled");
             return;
         }
 
-        RefreshTrackerMarkers(input);
-        PollConfirm(input, delta);
+        if (_secondBuzzIn > 0f)
+        {
+            _secondBuzzIn -= delta;
+            if (_secondBuzzIn <= 0f)
+                Buzz(input, 0.5f, 0.06f);
+        }
+
+        if (_closeIn > 0f)
+        {
+            _closeIn -= delta;
+            if (_closeIn <= 0f)
+                Finish();
+            return;
+        }
+
+        if (_messageFor > 0f)
+        {
+            _messageFor -= delta;
+            if (_messageFor <= 0f)
+                SetMessage(Instructions);
+        }
+
+        float scale = RootScale();
+        Sample(input);
+        PairUp(_samples, _joints, MaxPairDistance * scale, RoleTieBreak * scale, _pairs, _candidates);
+        RefreshPreview();
+        RefreshBalls(input, scale);
+        PollClick(input);
     }
 
     public override void OnDestroy()
     {
         if (Active.Value)
-            Finish("Cancelled");
+            Finish();
         base.OnDestroy();
+    }
+
+    private void OnAvatarChanged(Slot avatar)
+    {
+        if (!Active.Value || avatar == _avatarRoot)
+            return;
+        Finish();
+        LumoraLogger.Warn("TrackerCalibration: avatar changed mid-calibration, cancelled");
     }
 
     // ---- avatar lock / restore ----
@@ -303,11 +491,12 @@ public sealed class TrackerCalibration : Component
         if (_ik != null && !_ik.IsDestroyed)
             _ik.IKEnabled.Value = false;
 
+        _avatarParent = avatar.Parent;
         _rootLocalPosition = avatar.LocalPosition.Value;
         _rootLocalRotation = avatar.LocalRotation.Value;
         _rootMoved = false;
 
-        LumoraLogger.Log("POSEWRITE TrackerCalibration.LockAvatar: restoring rest and forcing a T-pose");
+        LumoraLogger.Debug("POSEWRITE TrackerCalibration.LockAvatar: restoring rest and forcing a T-pose");
         SnapshotBones(avatar, rig);
         RestoreAuthoredRest(avatar, rig);
         rig.MakeTPose();
@@ -397,6 +586,8 @@ public sealed class TrackerCalibration : Component
         _rootMoved = true;
     }
 
+    // An avatar swap can move the old body out from under the manager before this runs; its old local
+    // pose means nothing under a new parent.
     private void RestoreAvatar()
     {
         var avatar = _avatarRoot;
@@ -413,7 +604,7 @@ public sealed class TrackerCalibration : Component
                     state.Bone.LocalRotation.Value = state.LocalRotation;
             }
 
-            if (_rootMoved)
+            if (_rootMoved && avatar.Parent == _avatarParent)
             {
                 if (!avatar.LocalPosition.IsDriven)
                     avatar.LocalPosition.Value = _rootLocalPosition;
@@ -426,333 +617,487 @@ public sealed class TrackerCalibration : Component
             _ik.IKEnabled.Value = true;
     }
 
-    private void Finish(string status)
+    // Turning would swing the frozen figure round with the root, so the whole locomotion channel is held,
+    // not only translation.
+    private void HoldInput(bool hold)
     {
+        if (hold)
+            _inputState = _userRoot?.Slot?.GetComponent<UserInputState>();
+
+        var state = _inputState;
+        if (state != null && !state.IsDestroyed)
+        {
+            state.SetMovementSuppressed(this, hold);
+            state.SetDesktopInputSuppressed(this, hold);
+            // The confirming pull is ours: the beams point sideways at whatever is there and must not click it.
+            state.SetTriggerCaptured(this, hold);
+        }
+
+        if (!hold)
+            _inputState = null;
+    }
+
+    private void Finish()
+    {
+        if (_equip != null)
+            _equip.OnAvatarChanged -= OnAvatarChanged;
+        HoldInput(false);
         DestroyMarkers();
         RestoreAvatar();
 
         Active.Value = false;
-        SetStatus(status);
+        _message = string.Empty;
 
+        _userRoot = null;
+        _equip = null;
         _avatarRoot = null;
+        _avatarParent = null;
         _rig = null;
         _ik = null;
         _rootMoved = false;
         _boneStates.Clear();
-        _nodes.Clear();
         _trackers.Clear();
+        _samples.Clear();
+        _pairs.Clear();
+        _candidates.Clear();
+        _preview.Clear();
+        _labels.Clear();
         _armed = false;
-        _hold = 0f;
+        _closeIn = 0f;
+        _messageFor = 0f;
+        _secondBuzzIn = 0f;
     }
 
     // ---- markers ----
 
-    private void BuildMarkers(World world)
+    private void BuildMarkers(World world, UserRoot userRoot)
     {
         DestroyMarkers();
 
         // Local and non-persistent: calibration chrome is for the person calibrating, and it must never
-        // end up in a world save or on a peer's screen.
-        _markerRoot = world.RootSlot.AddLocalSlot("TrackerCalibration Markers");
+        // end up in a world save or on a peer's screen. It hangs off the world root, not the user: a
+        // billboard on your own body turns to face where you look.
+        _markerRoot = world.RootSlot.AddLocalSlot(SlotName);
         _markerRoot.Persistent.Value = false;
 
-        var facing = FacingRotation();
-        float halo = MathF.Max(MaxPairDistance.Value, 0.05f) * RootScale();
+        float scale = RootScale();
+        var rig = _rig!;
 
-        for (int i = 0; i < _nodes.Count; i++)
+        foreach (var node in TrackerRoles.Mappable)
         {
-            var (node, bone) = _nodes[i];
+            var bone = rig.TryGetBone(node);
             if (bone == null || bone.IsDestroyed)
                 continue;
-
-            var slot = _markerRoot.AddSlot(node.ToString());
-            slot.GlobalPosition = bone.GlobalPosition;
-            slot.GlobalRotation = facing;
-
-            var fill = FillFor(node);
-            AddSphere(slot, NodeMarkerRadius, new colorHDR(fill.r, fill.g, fill.b, 1f), BlendMode.Opaque);
-
-            var haloSlot = slot.AddSlot("Reach");
-            AddSphere(haloSlot, halo, new colorHDR(fill.r, fill.g, fill.b, 0.06f), BlendMode.Transparent);
-
-            AddLabel(slot, NodeLabel(node), fill, LabelHeight);
+            var ball = AddBall("Joint " + node, JointRadius * scale, Dim(FillFor(node)));
+            ball.Slot.GlobalPosition = bone.GlobalPosition;
+            _joints.Add(new JointBall { Node = node, Bone = bone, Ball = ball, Valid = true, Position = bone.GlobalPosition });
         }
+
+        AddHand(Chirality.Left, rig, scale);
+        AddHand(Chirality.Right, rig, scale);
+        BuildMessage(userRoot, scale);
     }
 
-    private void RefreshTrackerMarkers(InputInterface input)
+    private void AddHand(Chirality side, HumanoidRig rig, float scale)
+    {
+        var node = side.HandNode();
+        var bone = rig.TryGetBone(node);
+        if (bone == null || bone.IsDestroyed)
+            return;
+
+        var fill = side == Chirality.Left ? LeftFill : RightFill;
+        var guide = AddBall("Hand " + node, JointRadius * scale, Bright(fill));
+        guide.Slot.GlobalPosition = bone.GlobalPosition;
+        var controller = AddBall("Controller " + side, ControllerRadius * scale, Dim(fill));
+        controller.Slot.ActiveSelf.Value = false;
+        _hands.Add(new HandGuide { Side = side, Bone = bone, Guide = guide, Controller = controller });
+    }
+
+    private void BuildMessage(UserRoot userRoot, float scale)
+    {
+        var slot = _markerRoot!.AddSlot("Message");
+        var head = userRoot.HeadSlot;
+        if (head != null && !head.IsDestroyed)
+        {
+            float3 ahead = head.GlobalRotation * float3.Backward;
+            ahead.y = 0f;
+            ahead = ahead.LengthSquared > 1e-6f ? ahead.Normalized : float3.Backward;
+            slot.GlobalPosition = head.GlobalPosition + ahead * (MessageAhead * scale) - float3.Up * (MessageBelowEyes * scale);
+        }
+        slot.AttachComponent<FaceLocalUser>();
+
+        // Text with no font draws nothing.
+        var font = slot.AttachComponent<FontProvider>();
+        font.URL.Value = ImportDialog.ResolveFontUrl(World) ?? DashTheme.FontRegular;
+
+        var text = slot.AttachComponent<TextRenderer>();
+        text.Font.Target = font;
+        text.Size.Value = MessageSize * scale;
+        text.Color.Value = new color(1f, 1f, 1f, 1f);
+        text.HorizontalAlign.Value = TextHorizontalAlignment.Center;
+        text.VerticalAlign.Value = TextVerticalAlignment.Middle;
+        text.OutlineColor.Value = new colorHDR(0f, 0f, 0f, 1f);
+        text.OutlineThickness.Value = 1.2f;
+        _text = text;
+    }
+
+    // Overlay material, same as the rig editor's joint balls: these sit inside the avatar's own body and
+    // have to read through it.
+    private Ball AddBall(string name, float radius, colorHDR fill)
+    {
+        var slot = _markerRoot!.AddSlot(name);
+
+        var mesh = slot.AttachComponent<LumoraMeshes.SphereMesh>();
+        mesh.Radius.Value = radius;
+        mesh.Segments.Value = 16;
+        mesh.Rings.Value = 12;
+        var renderer = slot.AttachComponent<MeshRenderer>();
+        renderer.Mesh.Target = mesh;
+        renderer.ShadowCastMode.Value = ShadowCastMode.Off;
+
+        var material = slot.AttachComponent<OverlayUnlitMaterial>();
+        material.UseVertexColor.Value = false;
+        material.BlendMode.Value = BlendMode.Alpha;
+        renderer.Material.Target = material;
+
+        var ball = new Ball { Slot = slot, Material = material };
+        Paint(ball, fill);
+        return ball;
+    }
+
+    private void RefreshBalls(InputInterface input, float scale)
     {
         if (_markerRoot == null || _markerRoot.IsDestroyed)
             return;
 
-        foreach (var marker in _trackerMarkers.Values)
-            marker.Seen = false;
-
-        _trackers.Clear();
-        input.GetDevices(_trackers, t => t.IsDeviceActive);
-
-        for (int i = 0; i < _trackers.Count; i++)
+        for (int i = 0; i < _joints.Count; i++)
         {
-            var tracker = _trackers[i];
-            string key = tracker.UniqueID ?? string.Empty;
-            if (key.Length == 0)
+            var joint = _joints[i];
+            if (joint.Ball.Slot.IsDestroyed)
+                continue;
+            Show(joint.Ball.Slot, joint.Valid);
+            if (!joint.Valid)
+                continue;
+            Move(joint.Ball.Slot, joint.Position);
+            var fill = FillFor(joint.Node);
+            Paint(joint.Ball, joint.Claimed ? Bright(fill) : Dim(fill));
+        }
+
+        foreach (var tracker in _trackerBalls.Values)
+            tracker.Seen = false;
+
+        for (int t = 0; t < _samples.Count; t++)
+        {
+            var sample = _samples[t];
+            string key = sample.Tracker.UniqueID;
+            if (!_trackerBalls.TryGetValue(key, out var tracker) || tracker.Ball.Slot.IsDestroyed)
+            {
+                // Named by PublicID only. The unique id is a serial and stays out of the scene graph.
+                var ball = AddBall("Tracker " + (sample.Tracker.PublicID ?? "?"), TrackerRadius * scale, TrackerIdleFill);
+                tracker = new TrackerBall { Ball = ball };
+                _trackerBalls[key] = tracker;
+            }
+
+            // A puck that has not tracked since calibration began has no place to be drawn yet, and an
+            // on-top ball left at the world origin shows through every wall.
+            tracker.Seen = true;
+            if (!sample.Tracking)
+            {
+                Show(tracker.Ball.Slot, tracker.Placed);
+                Paint(tracker.Ball, TrackerLostFill);
+                continue;
+            }
+
+            Show(tracker.Ball.Slot, true);
+            Move(tracker.Ball.Slot, sample.Position);
+            tracker.Placed = true;
+            var fill = TrackerIdleFill;
+            for (int i = 0; i < _pairs.Count; i++)
+            {
+                if (_pairs[i].Tracker == t)
+                {
+                    fill = Bright(FillFor(_joints[_pairs[i].Joint].Node));
+                    break;
+                }
+            }
+            Paint(tracker.Ball, fill);
+        }
+
+        foreach (var tracker in _trackerBalls.Values)
+        {
+            if (!tracker.Seen && !tracker.Ball.Slot.IsDestroyed)
+                Show(tracker.Ball.Slot, false);
+        }
+
+        for (int i = 0; i < _hands.Count; i++)
+        {
+            var hand = _hands[i];
+            if (hand.Guide.Slot.IsDestroyed || hand.Controller.Slot.IsDestroyed)
                 continue;
 
-            if (!_trackerMarkers.TryGetValue(key, out var marker) || marker.Slot == null || marker.Slot.IsDestroyed)
-            {
-                marker = CreateTrackerMarker(tracker);
-                _trackerMarkers[key] = marker;
-            }
+            bool boneValid = hand.Bone != null && !hand.Bone.IsDestroyed;
+            Show(hand.Guide.Slot, boneValid);
+            if (boneValid)
+                Move(hand.Guide.Slot, hand.Bone!.GlobalPosition);
 
-            marker.Seen = true;
-            marker.Slot.ActiveSelf.Value = true;
-            if (tracker.IsTracking)
-            {
-                marker.Slot.GlobalPosition = tracker.Position;
-                marker.Slot.GlobalRotation = tracker.Rotation;
-                marker.Material.Color = TrackerFill;
-            }
-            else
-            {
-                marker.Material.Color = TrackerLostFill;
-            }
+            var controller = hand.Side == Chirality.Left ? input.LeftController : input.RightController;
+            var handSlot = hand.Side == Chirality.Left ? _userRoot?.LeftHandSlot : _userRoot?.RightHandSlot;
+            bool live = controller != null && controller.IsDeviceActive && handSlot != null && !handSlot.IsDestroyed;
+            Show(hand.Controller.Slot, live);
+            if (!live)
+                continue;
+
+            float3 at = handSlot!.GlobalPosition;
+            Move(hand.Controller.Slot, at);
+            bool near = boneValid && float3.Distance(at, hand.Bone!.GlobalPosition) <= HandReach * scale;
+            var fill = hand.Side == Chirality.Left ? LeftFill : RightFill;
+            Paint(hand.Controller, near ? Bright(fill) : Dim(fill));
         }
-
-        foreach (var marker in _trackerMarkers.Values)
-        {
-            if (!marker.Seen && marker.Slot != null && !marker.Slot.IsDestroyed)
-                marker.Slot.ActiveSelf.Value = false;
-        }
-    }
-
-    // Slot names carry the PublicID only. The unique id is a serial and stays out of the scene graph.
-    private TrackerMarker CreateTrackerMarker(ITracker tracker)
-    {
-        var slot = _markerRoot!.AddSlot("Tracker " + (tracker.PublicID ?? "?"));
-
-        var mesh = slot.AttachComponent<LumoraMeshes.BoxMesh>();
-        mesh.Size.Value = TrackerMarkerSize;
-        var renderer = slot.AttachComponent<MeshRenderer>();
-        renderer.Mesh.Target = mesh;
-        var material = slot.AttachComponent<UnlitMaterial>();
-        material.Color = TrackerFill;
-        renderer.Material.Target = material;
-
-        // A stub along the puck's own -Z so its orientation can be read, not just its position.
-        var nose = slot.AddSlot("Nose");
-        nose.LocalPosition.Value = new float3(0f, 0f, -(TrackerMarkerSize.z * 0.5f + TrackerNoseSize.z * 0.5f));
-        var noseMesh = nose.AttachComponent<LumoraMeshes.BoxMesh>();
-        noseMesh.Size.Value = TrackerNoseSize;
-        var noseRenderer = nose.AttachComponent<MeshRenderer>();
-        noseRenderer.Mesh.Target = noseMesh;
-        noseRenderer.Material.Target = material;
-
-        AddLabel(slot, TrackerLabel(tracker), TrackerFill, LabelHeight);
-
-        return new TrackerMarker { Slot = slot, Material = material, Seen = true };
-    }
-
-    private static void AddSphere(Slot slot, float radius, colorHDR fill, BlendMode blend)
-    {
-        var mesh = slot.AttachComponent<LumoraMeshes.SphereMesh>();
-        mesh.Radius.Value = radius;
-        mesh.Segments.Value = 20;
-        mesh.Rings.Value = 14;
-        var renderer = slot.AttachComponent<MeshRenderer>();
-        renderer.Mesh.Target = mesh;
-        var material = slot.AttachComponent<UnlitMaterial>();
-        material.Color = fill;
-        material.BlendMode.Value = blend;
-        renderer.Material.Target = material;
-    }
-
-    private static void AddLabel(Slot marker, string text, colorHDR fill, float height)
-    {
-        var label = marker.AddSlot("Label");
-        label.LocalPosition.Value = new float3(0f, height, 0f);
-        label.AttachComponent<FaceLocalUser>();
-        var renderer = label.AttachComponent<TextRenderer>();
-        renderer.Text.Value = text;
-        renderer.Size.Value = 0.045f;
-        renderer.Color.Value = new color(fill.r, fill.g, fill.b, 1f);
-        renderer.HorizontalAlign.Value = TextHorizontalAlignment.Center;
-        renderer.VerticalAlign.Value = TextVerticalAlignment.Middle;
-        renderer.OutlineThickness.Value = 1.2f;
     }
 
     private void DestroyMarkers()
     {
-        _trackerMarkers.Clear();
+        _trackerBalls.Clear();
+        _joints.Clear();
+        _hands.Clear();
+        _text = null;
         if (_markerRoot != null && !_markerRoot.IsDestroyed)
             _markerRoot.Destroy();
         _markerRoot = null;
     }
 
-    // ---- confirm ----
+    private static void Paint(Ball ball, colorHDR fill)
+    {
+        if (ball.Shown == fill || ball.Material == null || ball.Material.IsDestroyed)
+            return;
+        ball.Shown = fill;
+        ball.Material.FrontTintColor.Value = fill;
+        ball.Material.BehindTintColor.Value = fill;
+    }
 
-    // Armed only once BOTH triggers have been seen released after Begin, so a trigger that was already
-    // down when calibration started cannot confirm it. Then both have to stay past the press point for
-    // the hold time; a release on either side resets the hold.
-    private void PollConfirm(InputInterface input, float delta)
+    private static void Move(Slot slot, float3 position)
+    {
+        if (float3.DistanceSquared(slot.GlobalPosition, position) > 1e-8f)
+            slot.GlobalPosition = position;
+    }
+
+    private static void Show(Slot slot, bool show)
+    {
+        if (slot.ActiveSelf.Value != show)
+            slot.ActiveSelf.Value = show;
+    }
+
+    private static colorHDR Bright(colorHDR fill) => new(fill.r, fill.g, fill.b, 1f);
+
+    private static colorHDR Dim(colorHDR fill) => new(fill.r * 0.4f, fill.g * 0.4f, fill.b * 0.4f, 0.55f);
+
+    // ---- pairing ----
+
+    // Armed only once BOTH triggers have been seen released, so a trigger that was already down when
+    // calibration started, or that is still down from the last click, cannot fire it.
+    private void PollClick(InputInterface input)
     {
         var left = input.LeftController;
         var right = input.RightController;
         float l = left != null && left.IsDeviceActive ? left.TriggerValue : 0f;
         float r = right != null && right.IsDeviceActive ? right.TriggerValue : 0f;
 
-        bool bothDown = l >= PressPoint && r >= PressPoint;
-        bool bothUp = l <= ReleasePoint && r <= ReleasePoint;
-
         if (!_armed)
         {
-            if (bothUp)
-            {
+            if (l <= ReleasePoint && r <= ReleasePoint)
                 _armed = true;
-                SetStatus("Stand on the markers, then hold both triggers to confirm");
-            }
             return;
         }
 
-        float hold = MathF.Max(ConfirmHoldSeconds.Value, 0.1f);
-        if (bothDown)
+        if (l >= PressPoint && r >= PressPoint)
         {
-            _hold += delta;
-            if (_hold >= hold)
-            {
-                left?.TriggerHaptic(0.6f, 0.12f);
-                right?.TriggerHaptic(0.6f, 0.12f);
-                Confirm();
-                return;
-            }
-            SetStatus($"Hold both triggers... {System.Math.Clamp(_hold / hold, 0f, 1f):P0}");
-        }
-        else if (_hold > 0f)
-        {
-            _hold = 0f;
-            SetStatus("Stand on the markers, then hold both triggers to confirm");
+            _armed = false;
+            Confirm();
         }
     }
 
-    private void Solve(InputInterface input)
+    private void Sample(InputInterface input)
     {
-        _lastResults.Clear();
-
         _trackers.Clear();
         input.GetDevices(_trackers, t => t.IsDeviceActive);
 
-        float scale = RootScale();
-        float maxDistance = MathF.Max(MaxPairDistance.Value, 0.05f) * scale;
-        floatQ facing = FacingRotation();
-
-        // Joint frames, read live: position at the bone, rotation the upright facing frame the avatar is
-        // locked in. That frame is what the pose nodes equip against, so it is the pose a tracker has to
-        // reproduce, not the bone's authored axes.
-        int nodeCount = _nodes.Count;
-        var nodePosition = new float3[nodeCount];
-        var nodeValid = new bool[nodeCount];
-        for (int i = 0; i < nodeCount; i++)
+        _samples.Clear();
+        for (int i = 0; i < _trackers.Count; i++)
         {
-            var bone = _nodes[i].bone;
-            nodeValid[i] = bone != null && !bone.IsDestroyed;
-            if (nodeValid[i])
-                nodePosition[i] = bone!.GlobalPosition;
+            var tracker = _trackers[i];
+            if (string.IsNullOrEmpty(tracker.UniqueID))
+                continue;
+            bool tracking = tracker.IsTracking;
+            _samples.Add(new TrackerSample
+            {
+                Tracker = tracker,
+                Tracking = tracking,
+                Position = tracking ? tracker.Position : float3.Zero,
+                Suggested = TrackerRoles.ToBodyNode(tracker.SuggestedRole),
+            });
         }
 
-        var candidates = new List<(float key, float distance, int tracker, int node)>();
-        for (int t = 0; t < _trackers.Count; t++)
+        for (int i = 0; i < _joints.Count; i++)
         {
-            var tracker = _trackers[t];
-            if (!tracker.IsTracking)
+            var joint = _joints[i];
+            joint.Valid = joint.Bone != null && !joint.Bone.IsDestroyed;
+            if (joint.Valid)
+                joint.Position = joint.Bone!.GlobalPosition;
+        }
+    }
+
+    // Greedy over every (tracker, joint) pair in reach, closest first; the runtime's role only breaks
+    // near-ties. Reads nothing but its arguments, so the live preview and the confirm cannot disagree.
+    private static void PairUp(List<TrackerSample> trackers, List<JointBall> joints, float maxDistance, float tieBreak,
+        List<Pairing> pairs, List<Candidate> scratch)
+    {
+        pairs.Clear();
+        scratch.Clear();
+
+        for (int t = 0; t < trackers.Count; t++)
+        {
+            var tracker = trackers[t];
+            if (!tracker.Tracking)
                 continue;
-            var suggested = TrackerRoles.ToBodyNode(tracker.SuggestedRole);
-            float3 position = tracker.Position;
-            for (int n = 0; n < nodeCount; n++)
+            for (int j = 0; j < joints.Count; j++)
             {
-                if (!nodeValid[n])
+                var joint = joints[j];
+                if (!joint.Valid)
                     continue;
-                float distance = float3.Distance(position, nodePosition[n]);
+                float distance = float3.Distance(tracker.Position, joint.Position);
                 if (distance > maxDistance)
                     continue;
-                float key = distance - (suggested == _nodes[n].node ? RoleTieBreak * scale : 0f);
-                candidates.Add((key, distance, t, n));
+                float key = distance - (tracker.Suggested == joint.Node ? tieBreak : 0f);
+                scratch.Add(new Candidate { Key = key, Distance = distance, Tracker = t, Joint = j });
             }
         }
-        candidates.Sort((a, b) => a.key.CompareTo(b.key));
+        scratch.Sort(ByKey);
 
-        var trackerClaimed = new bool[_trackers.Count];
-        var nodeClaimed = new bool[nodeCount];
-        int mapped = 0;
-
-        for (int i = 0; i < candidates.Count; i++)
+        for (int i = 0; i < scratch.Count; i++)
         {
-            var (_, distance, t, n) = candidates[i];
-            if (trackerClaimed[t] || nodeClaimed[n])
-                continue;
-            trackerClaimed[t] = true;
-            nodeClaimed[n] = true;
-
-            var tracker = _trackers[t];
-            var node = _nodes[n].node;
-            WriteMapping(tracker, node, nodePosition[n], facing, scale, distance);
-            mapped++;
+            var candidate = scratch[i];
+            bool taken = false;
+            for (int p = 0; p < pairs.Count && !taken; p++)
+                taken = pairs[p].Tracker == candidate.Tracker || pairs[p].Joint == candidate.Joint;
+            if (!taken)
+                pairs.Add(new Pairing { Tracker = candidate.Tracker, Joint = candidate.Joint, Distance = candidate.Distance });
         }
+    }
 
-        for (int t = 0; t < _trackers.Count; t++)
+    private void RefreshPreview()
+    {
+        _preview.Clear();
+        for (int i = 0; i < _joints.Count; i++)
+            _joints[i].Claimed = false;
+
+        for (int i = 0; i < _pairs.Count; i++)
         {
-            if (trackerClaimed[t])
+            var pair = _pairs[i];
+            var joint = _joints[pair.Joint];
+            joint.Claimed = true;
+            var tracker = _samples[pair.Tracker].Tracker;
+            _preview.Add(new PairResult
+            {
+                PublicID = tracker.PublicID ?? string.Empty,
+                Label = LabelFor(tracker),
+                Node = joint.Node,
+                Distance = pair.Distance,
+                Mapped = false,
+                Reason = string.Empty,
+            });
+        }
+    }
+
+    // A puck that is on and tracking but lined up with nothing was put down somewhere, so it stops driving
+    // whatever it drove before. One that is not tracking right now keeps its mapping: it cannot be judged.
+    private void ReportUnpaired(float scale, bool disable)
+    {
+        float maxDistance = MaxPairDistance * scale;
+        for (int t = 0; t < _samples.Count; t++)
+        {
+            bool paired = false;
+            for (int p = 0; p < _pairs.Count && !paired; p++)
+                paired = _pairs[p].Tracker == t;
+            if (paired)
                 continue;
-            var tracker = _trackers[t];
-            string label = TrackerLabel(tracker);
-            if (!tracker.IsTracking)
+
+            var sample = _samples[t];
+            var tracker = sample.Tracker;
+            string label = LabelFor(tracker);
+            if (!sample.Tracking)
             {
                 Report(tracker, label, BodyNode.NONE, -1f, false, "not tracking");
-                LumoraLogger.Warn($"TrackerCalibration: '{label}' ({tracker.PublicID}) is not tracking, left unmapped");
                 continue;
             }
 
             float nearest = float.MaxValue;
             BodyNode nearestNode = BodyNode.NONE;
-            float3 position = tracker.Position;
-            for (int n = 0; n < nodeCount; n++)
+            for (int j = 0; j < _joints.Count; j++)
             {
-                if (!nodeValid[n])
+                if (!_joints[j].Valid)
                     continue;
-                float distance = float3.Distance(position, nodePosition[n]);
+                float distance = float3.Distance(sample.Position, _joints[j].Position);
                 if (distance < nearest)
                 {
                     nearest = distance;
-                    nearestNode = _nodes[n].node;
+                    nearestNode = _joints[j].Node;
                 }
             }
 
-            if (nearestNode == BodyNode.NONE)
-            {
-                Report(tracker, label, BodyNode.NONE, -1f, false, "no joint available");
-                continue;
-            }
-
-            bool tooFar = nearest > maxDistance;
-            string reason = tooFar
-                ? $"nearest joint {NodeLabel(nearestNode)} is {nearest:F2} m away, over the {maxDistance:F2} m limit"
-                : $"nearest joint {NodeLabel(nearestNode)} was already claimed by a closer tracker";
-            Report(tracker, label, nearestNode, nearest, false, reason);
-            LumoraLogger.Warn($"TrackerCalibration: '{label}' ({tracker.PublicID}) not mapped: {reason}. Existing mapping, if any, left untouched");
+            string reason = nearestNode == BodyNode.NONE ? "no joint available"
+                : nearest > maxDistance ? $"nearest joint {NodeLabel(nearestNode)} is {nearest:F2} m away, over the {maxDistance:F2} m limit"
+                : $"nearest joint {NodeLabel(nearestNode)} was claimed by a closer tracker";
+            if (disable && TrackerMappingStore.SetEnabled(tracker.UniqueID, false))
+                reason += ", disabled";
+            Report(tracker, label, nearestNode, nearestNode == BodyNode.NONE ? -1f : nearest, false, reason);
+            if (disable)
+                LumoraLogger.Debug($"TrackerCalibration: '{label}' ({tracker.PublicID}) not mapped: {reason}");
         }
-
-        LumoraLogger.Log($"TrackerCalibration: mapped {mapped} of {_trackers.Count} tracker(s)");
     }
 
-    // The stored offset takes the TRACKER pose to the JOINT pose, expressed in the tracker's own frame:
+    // A puck that was off or out of sight at the click keeps its mapping, unless its joint just went to
+    // another puck. Two pucks on one joint leave the body following whichever socket holds the driver,
+    // which can be the dead one.
+    private void ReleaseClaimedJoints()
+    {
+        var stored = new List<TrackerMapping>();
+        TrackerMappingStore.GetAll(stored);
+        for (int i = 0; i < stored.Count; i++)
+        {
+            var mapping = stored[i];
+            if (!mapping.Enabled)
+                continue;
+
+            bool claimed = false;
+            bool claimant = false;
+            for (int p = 0; p < _pairs.Count; p++)
+            {
+                if (_joints[_pairs[p].Joint].Node != mapping.Node)
+                    continue;
+                claimed = true;
+                claimant = string.Equals(_samples[_pairs[p].Tracker].Tracker.UniqueID, mapping.UniqueID, StringComparison.Ordinal);
+                break;
+            }
+
+            if (claimed && !claimant && TrackerMappingStore.SetEnabled(mapping.UniqueID, false))
+                LumoraLogger.Debug($"TrackerCalibration: {NodeLabel(mapping.Node)} went to another tracker, older mapping disabled");
+        }
+    }
+
+    // The stored offset takes the TRACKER pose to the joint BONE's pose in the T-pose, expressed in the
+    // tracker's own frame:
     //
-    //   rotationOffset = inverse(trackerRot) * jointRot
-    //   positionOffset = inverse(trackerRot) * (jointPos - trackerPos) / trackingScale
+    //   rotationOffset = inverse(trackerRot) * boneRot
+    //   positionOffset = inverse(trackerRot) * (bonePos - trackerPos) / trackingScale
     //
-    // so that afterwards  jointPos = trackerPos + trackerRot * (positionOffset * trackingScale)  and
-    // jointRot = trackerRot * rotationOffset. That is the child-transform composition
+    // so that afterwards  bonePos = trackerPos + trackerRot * (positionOffset * trackingScale)  and
+    // boneRot = trackerRot * rotationOffset. That is the child-transform composition
     // TrackedDevicePositioner applies (BodyNodeRoot.Local = offset under the device slot, whose world pose
     // is the tracker's), and the division by the tracking scale is there because that child's local units
-    // are the user root's units, while the poses sampled here are world metres. The round-trip below is a
-    // cheap guard that the maths agrees with itself; anything over a millimetre is logged. -xlinka
-    private void WriteMapping(ITracker tracker, BodyNode node, float3 jointPosition, floatQ jointRotation, float rootScale, float distance)
+    // are the user root's units, while the poses sampled here are world metres. The rotation is the bone's
+    // own, not a facing frame: IK takes a tracked hips or foot as that bone's target pose. The round-trip
+    // below is a cheap guard that the maths agrees with itself; anything over a millimetre is logged. -xlinka
+    private void WriteMapping(ITracker tracker, BodyNode node, float3 bonePosition, floatQ boneRotation, float rootScale, float distance)
     {
         float3 trackerPosition = tracker.Position;
         floatQ trackerRotation = tracker.Rotation.Normalized;
@@ -762,11 +1107,11 @@ public sealed class TrackerCalibration : Component
         if (trackingScale < 1e-4f || float.IsNaN(trackingScale) || float.IsInfinity(trackingScale))
             trackingScale = 1f;
 
-        float3 positionOffset = (inverse * (jointPosition - trackerPosition)) / trackingScale;
-        floatQ rotationOffset = (inverse * jointRotation).Normalized;
+        float3 positionOffset = (inverse * (bonePosition - trackerPosition)) / trackingScale;
+        floatQ rotationOffset = (inverse * boneRotation.Normalized).Normalized;
 
         float3 check = trackerPosition + trackerRotation * (positionOffset * trackingScale);
-        float error = float3.Distance(check, jointPosition);
+        float error = float3.Distance(check, bonePosition);
         if (error > 0.001f)
             LumoraLogger.Warn($"TrackerCalibration: offset round-trip for {node} is off by {error * 1000f:F1} mm");
 
@@ -788,13 +1133,9 @@ public sealed class TrackerCalibration : Component
         TrackerMappingStore.Set(mapping);
         bool applied = TrackerMappingStore.Apply(tracker, mapping);
 
-        // No slot work here any more. TrackerSlotManager gives every tracker a slot the moment the
-        // hardware appears, whether or not it is mapped, so calibration only has to change where that
-        // slot points. -xlinka
-
-        string label = TrackerLabel(tracker);
-        Report(tracker, label, node, distance, true, applied ? "mapped" : "mapped, stored only (device layer must apply)");
-        LumoraLogger.Log(
+        string label = LabelFor(tracker);
+        Report(tracker, label, node, distance, true, applied ? "set" : "set, not applied to the device");
+        LumoraLogger.Debug(
             $"TrackerCalibration: '{label}' ({tracker.PublicID}) -> {node} at {distance:F3} m, " +
             $"posOffset={positionOffset} rotOffset={rotationOffset} live={(applied ? "applied" : "not applied")}");
     }
@@ -812,18 +1153,27 @@ public sealed class TrackerCalibration : Component
         });
     }
 
-    private string Summary()
+    // ---- feedback ----
+
+    private void SetMessage(string text)
     {
-        int mapped = 0;
-        int skipped = 0;
-        for (int i = 0; i < _lastResults.Count; i++)
-        {
-            if (_lastResults[i].Mapped) mapped++;
-            else skipped++;
-        }
-        if (mapped == 0)
-            return skipped == 0 ? "Nothing to map" : $"No tracker mapped ({skipped} rejected, see log)";
-        return skipped == 0 ? $"Mapped {mapped} tracker(s)" : $"Mapped {mapped} tracker(s), {skipped} rejected (see log)";
+        _message = text;
+        if (_text != null && !_text.IsDestroyed && _text.Text.Value != text)
+            _text.Text.Value = text;
+    }
+
+    private void ShowFor(string text, float seconds)
+    {
+        SetMessage(text);
+        _messageFor = seconds;
+    }
+
+    private static void Buzz(InputInterface input, float amplitude, float seconds)
+    {
+        if (input.LeftController is { IsDeviceActive: true } left)
+            left.TriggerHaptic(amplitude, seconds);
+        if (input.RightController is { IsDeviceActive: true } right)
+            right.TriggerHaptic(amplitude, seconds);
     }
 
     // ---- frames and helpers ----
@@ -837,29 +1187,13 @@ public sealed class TrackerCalibration : Component
         return forward.LengthSquared > 1e-6f ? forward.Normalized : float3.Backward;
     }
 
-    // Upright frame whose facing axis (-Z, the slot convention) points where the locked avatar faces.
-    // Both inputs are horizontal so the swing axis is vertical and the result is yaw only.
-    private floatQ FacingRotation()
-    {
-        if (_avatarRoot == null || _rig == null)
-            return floatQ.Identity;
-        float3 forward = AvatarFacing(_avatarRoot, _rig);
-        return FabrikSolver.FromToRotation(float3.Backward, forward, float3.Up).Normalized;
-    }
-
     private float RootScale()
     {
-        var root = World?.LocalUser?.Root?.Slot;
+        var root = (_userRoot ?? World?.LocalUser?.Root)?.Slot;
         if (root == null || root.IsDestroyed)
             return 1f;
         float s = root.GlobalScale.x;
         return s > 1e-4f && !float.IsNaN(s) && !float.IsInfinity(s) ? s : 1f;
-    }
-
-    private void SetStatus(string text)
-    {
-        if (Status.Value != text)
-            Status.Value = text;
     }
 
     private static colorHDR FillFor(BodyNode node)
@@ -884,6 +1218,17 @@ public sealed class TrackerCalibration : Component
         BodyNode.RightShoulder => "Right Shoulder",
         _ => node.ToString(),
     };
+
+    private string LabelFor(ITracker tracker)
+    {
+        string key = tracker.UniqueID ?? string.Empty;
+        if (!_labels.TryGetValue(key, out var label))
+        {
+            label = TrackerLabel(tracker);
+            _labels[key] = label;
+        }
+        return label;
+    }
 
     private static string TrackerLabel(ITracker tracker)
     {

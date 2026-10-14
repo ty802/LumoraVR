@@ -7,11 +7,8 @@ using Lumora.Core.Networking.Streams;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Publishes the user's mouth/lip expression weights over the network. The owning peer reads its mouth
-/// device and packs the per-shape weights into a stream; remote peers read them. <c>MouthExpressionDriver</c>
-/// consumes this to drive avatar blendshapes. Inert until a face tracker feeds the mouth device.
-/// </summary>
+// The owner packs its mouth device's per-shape weights into a stream, remote peers read them, and
+// MouthExpressionDriver drives the blendshapes. Inert until a face tracker feeds the mouth device.
 [ComponentCategory("Users/Avatar/Face")]
 public class MouthStreamManager : UserRootComponent
 {
@@ -25,6 +22,7 @@ public class MouthStreamManager : UserRootComponent
 
     private Float3ArrayValueStream _shapes = null!;
     private BoolValueStream _tracking = null!;
+    private User? _streamUser;
 
     public override void OnUpdate(float delta)
     {
@@ -63,7 +61,9 @@ public class MouthStreamManager : UserRootComponent
                 return mouth != null && mouth.IsTracking && mouth.IsWorn;
             }
             EnsureStreams();
-            return _tracking != null && _tracking.HasValidData && _tracking.Value;
+            return _shapes is { Active: true, HasValidData: true }
+                && _shapes.Count >= EntryCount
+                && _tracking is { Active: true, HasValidData: true } && _tracking.Value;
         }
     }
 
@@ -89,12 +89,18 @@ public class MouthStreamManager : UserRootComponent
 
     private void EnsureStreams()
     {
-        if (_shapes != null)
+        var user = Slot?.ActiveUserRoot?.ActiveUser;
+        // The shapes and tracking flag are separate replicated objects and may arrive apart.
+        if (user == _streamUser && _shapes is { IsRemoved: false } && _tracking is { IsRemoved: false })
             return;
 
-        var user = Slot?.ActiveUserRoot?.ActiveUser;
+        _streamUser = user;
         if (user == null)
+        {
+            _shapes = null!;
+            _tracking = null!;
             return;
+        }
 
         if (IsUnderLocalUser)
         {

@@ -30,20 +30,48 @@ public class AvatarSocket : UserRootComponent
 
     public readonly Sync<bool> DriveScale = new();
 
-    // Using a simple list since IPoseFilter doesn't implement IWorldElement.
-    private readonly List<IPoseFilter> _filters = new();
+    // The pose filters in the order they run: higher priority first, equal ones in the order they came. Kept
+    // on each machine rather than synced: whatever lays a filter on (a seat, the smoothing below) does it on
+    // every machine from state they all share, so every machine runs the same list without one travelling.
+    // -xlinka
+    private readonly List<(IPoseFilter Filter, int Priority)> _filters = new();
 
-    public IEnumerable<IPoseFilter> Filters => _filters;
+    public int FilterCount => _filters.Count;
 
-    public void AddFilter(IPoseFilter filter)
+    public IEnumerable<IPoseFilter> Filters
     {
-        if (filter != null && !_filters.Contains(filter))
-            _filters.Add(filter);
+        get
+        {
+            for (int i = 0; i < _filters.Count; i++)
+                yield return _filters[i].Filter;
+        }
+    }
+
+    public void AddFilter(IPoseFilter filter, int priority = 0)
+    {
+        if (filter == null || IndexOfFilter(filter) >= 0)
+            return;
+        int at = _filters.Count;
+        while (at > 0 && _filters[at - 1].Priority < priority)
+            at--;
+        _filters.Insert(at, (filter, priority));
     }
 
     public void RemoveFilter(IPoseFilter filter)
     {
-        _filters.Remove(filter);
+        int index = IndexOfFilter(filter);
+        if (index >= 0)
+            _filters.RemoveAt(index);
+    }
+
+    private int IndexOfFilter(IPoseFilter filter)
+    {
+        for (int i = 0; i < _filters.Count; i++)
+        {
+            if (ReferenceEquals(_filters[i].Filter, filter))
+                return i;
+        }
+        return -1;
     }
 
     public bool HasEquipped => Equipped?.Target != null;
@@ -56,7 +84,47 @@ public class AvatarSocket : UserRootComponent
     public override void OnAwake()
     {
         base.OnAwake();
-        Node.OnChanged += _ => RefreshAutoSmoothing();
+        Node.OnChanged += _ =>
+        {
+            QueueAutoSmoothing();
+            OfferToWearer();
+            QueueLateFill();
+        };
+    }
+
+    // The head socket is the one a user's own positioner adds on its first input frame, and a joiner's
+    // reaches the host some time after that. The body was dressed at its start, before either, so a head
+    // socket arriving later went bare for good: nobody's head showed, bar the odd user whose socket beat the
+    // dressing. The authority dresses a positioner's socket when it turns up empty. Other sockets are left
+    // to whatever made them. -xlinka
+    private bool _lateFillQueued;
+
+    private void QueueLateFill()
+    {
+        if (_lateFillQueued || World?.IsAuthority != true)
+            return;
+        _lateFillQueued = true;
+        World.RunSynchronously(() =>
+        {
+            _lateFillQueued = false;
+            if (IsDestroyed || HasEquipped || Node.Value == BodyNode.NONE)
+                return;
+            if (Slot?.Parent?.GetComponent<TrackedDevicePositioner>()?.ObjectSlot.Target != this)
+                return;
+            if (_userRoot == null)
+                FindUserRoot();
+            _userRoot?.GetRegisteredComponent<AvatarEquipManager>()?.FillEmptySockets(new List<AvatarSocket> { this });
+        });
+    }
+
+    // A socket that turns up once the avatar is on (a seat's stand-in, a tracker plugged in late) is offered
+    // to the wearer's IK, which puts its pose driver for that part in it when the driver is free. Only the
+    // wearer's machine does it: equip state is the wearer's to write.
+    internal void OfferToWearer()
+    {
+        if (IsDestroyed || Node.Value == BodyNode.NONE || !IsUnderLocalUser)
+            return;
+        _userRoot?.GetRegisteredComponent<AvatarIK>(static ik => ik.IsEquipped)?.OfferSocket(this);
     }
 
     // Hips/feet jitter visibly without smoothing in any IK/tracker setup
@@ -65,22 +133,40 @@ public class AvatarSocket : UserRootComponent
     private static bool ShouldAutoSmooth(BodyNode node)
         => node == BodyNode.Hips || node == BodyNode.LeftFoot || node == BodyNode.RightFoot;
 
+    // Smoothing is each machine's own arithmetic on a pose every machine already has, so each machine keeps its
+    // own on a local slot, set up on the next update rather than in the middle of whatever changed the node.
+    // Nothing about it travels, and nothing the host made ends up inside a socket its wearer may later take
+    // away: a host-made smoothing slot under a seat's stand-in made the stand-in impossible to remove. -xlinka
+    private bool _smoothingQueued;
+
+    private void QueueAutoSmoothing()
+    {
+        if (_smoothingQueued || World == null)
+            return;
+        _smoothingQueued = true;
+        World.RunSynchronously(() =>
+        {
+            _smoothingQueued = false;
+            if (!IsDestroyed)
+                RefreshAutoSmoothing();
+        });
+    }
+
     private void RefreshAutoSmoothing()
     {
-        // Node syncs, so OnChanged fires on every peer. Only the authority
-        // mutates the slot tree; the smoothing components replicate from there.
-        if (World?.IsAuthority != true)
+        if (Slot == null || Slot.IsDestroyed)
             return;
 
         if (ShouldAutoSmooth(Node.Value))
         {
-            if (_autoSmoothing == null)
+            if (_autoSmoothing == null || _autoSmoothing.IsDestroyed)
             {
-                var smoothSlot = Slot.AddSlot("AutoSmoothing");
+                var smoothSlot = Slot.AddLocalSlot("AutoSmoothing");
+                smoothSlot.Persistent.Value = false;
                 _autoSmoothing = smoothSlot.AttachComponent<PoseSmoother>();
                 _autoSmoothing.PositionSmoothSpeed.Value = -1f;
                 _autoSmoothing.RotationSmoothSpeed.Value = 20f;
-                AddFilter(_autoSmoothing);
+                AddFilter(_autoSmoothing, int.MinValue);
             }
         }
         else if (_autoSmoothing != null)
@@ -88,23 +174,6 @@ public class AvatarSocket : UserRootComponent
             RemoveFilter(_autoSmoothing);
             _autoSmoothing.Slot?.Destroy();
             _autoSmoothing = null!;
-        }
-    }
-
-    // The filter list is per-peer, but pose computation now runs on every
-    // peer. Non-authority peers pick up the replicated smoothing component
-    // here once it arrives; the enum gate keeps the FindChild walk off the
-    // hot path for nodes that never smooth.
-    private void EnsureReplicatedSmoothing()
-    {
-        if (_autoSmoothing != null || !ShouldAutoSmooth(Node.Value))
-            return;
-
-        var smoothing = Slot?.FindChild("AutoSmoothing", recursive: false)?.GetComponent<PoseSmoother>();
-        if (smoothing != null)
-        {
-            _autoSmoothing = smoothing;
-            AddFilter(smoothing);
         }
     }
 
@@ -125,6 +194,9 @@ public class AvatarSocket : UserRootComponent
     {
         base.OnStart();
         FindUserRoot();
+        if (ShouldAutoSmooth(Node.Value))
+            QueueAutoSmoothing();
+        QueueLateFill();
     }
 
     private void FindUserRoot()
@@ -172,7 +244,6 @@ public class AvatarSocket : UserRootComponent
         Equipped.Target = avatarObject;
         avatarObject.Equip(this);
 
-        // Call OnEquip on all IAvatarEquipReceiver
         ForeachObjectComponent((avatarObject as Component)!, (c) =>
         {
             try
@@ -185,7 +256,7 @@ public class AvatarSocket : UserRootComponent
             }
         });
 
-        LumoraLogger.Log($"AvatarSocket: Equipped {avatarObject.Node} to slot on '{Slot.SlotName.Value}'");
+        LumoraLogger.Debug($"AvatarSocket: Equipped {avatarObject.Node} to slot on '{Slot.SlotName.Value}'");
     }
 
     public void Dequip(HashSet<IAvatarEquippable> dequippedObjects)
@@ -196,7 +267,6 @@ public class AvatarSocket : UserRootComponent
 
         dequippedObjects?.Add(equipped);
 
-        // Call OnDequip on all IAvatarEquipReceiver
         ForeachObjectComponent((equipped as Component)!, (c) =>
         {
             try
@@ -238,7 +308,6 @@ public class AvatarSocket : UserRootComponent
 
     private static void CollectObjectComponents(Slot slot, List<IAvatarEquipReceiver> objectComponents)
     {
-        // Get all IAvatarEquipReceiver from this slot
         foreach (var comp in slot.Components)
         {
             if (comp is IAvatarEquipReceiver avatarComp)
@@ -272,7 +341,8 @@ public class AvatarSocket : UserRootComponent
             return Slot;
         }
 
-        EnsureReplicatedSmoothing();
+        if (_autoSmoothing == null && ShouldAutoSmooth(Node.Value))
+            QueueAutoSmoothing();
 
         // Convert this slot's world transform into UserRoot-local space.
         // Using global->local conversion handles any depth of nesting under UserRoot
@@ -281,9 +351,11 @@ public class AvatarSocket : UserRootComponent
         rotation   = space.GlobalRotation.Inverse * Slot.GlobalRotation;
         isTracking = IsTracking.Value;
 
-        // Apply all filters
-        foreach (var filter in Filters)
+        for (int i = 0; i < _filters.Count; i++)
         {
+            var filter = _filters[i].Filter;
+            if (filter is Component { IsDestroyed: true })
+                continue;
             filter?.ProcessPose(this, space, ref position, ref rotation, ref isTracking);
         }
 

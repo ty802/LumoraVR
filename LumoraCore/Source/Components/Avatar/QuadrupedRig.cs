@@ -181,7 +181,7 @@ public class QuadrupedRig : Component
                 }
                 if (pushed == QuadNode.NONE)
                     continue;
-                LumoraLogger.Log($"QuadrupedRig: '{slot.SlotName.Value}' wanted {node} which was taken; "
+                LumoraLogger.Debug($"QuadrupedRig: '{slot.SlotName.Value}' wanted {node} which was taken; "
                                + $"pushed down the chain to {pushed}");
                 node = pushed;
             }
@@ -214,12 +214,12 @@ public class QuadrupedRig : Component
         if (TryComputeForward(out var forward, out var measured))
             StoreForward(forward);
 
-        LumoraLogger.Log(
+        LumoraLogger.Debug(
             $"QuadrupedRig: populated {Bones.Count} bones ({tail} tail), IsQuadruped={IsQuadruped}, "
             + $"forward={(HasForwardAxis.Value ? BodyForward.ToString() : "none")}");
         SnapshotAuthoredPose();
 
-        LumoraLogger.Log("QuadrupedRig: " + DescribeForward(in measured));
+        LumoraLogger.Debug("QuadrupedRig: " + DescribeForward(in measured));
         LogGirdleSpan("populate");
         DumpRig();
     }
@@ -236,6 +236,8 @@ public class QuadrupedRig : Component
 
     private void DumpRig()
     {
+        if (!LumoraLogger.EnableDebug)
+            return;
         var sb = new System.Text.StringBuilder();
         sb.Append("QuadrupedRig DUMP: ").Append(Bones.Count).Append(" bones, IsQuadruped=").Append(IsQuadruped);
 
@@ -308,7 +310,7 @@ public class QuadrupedRig : Component
               .Append(") scale=").Append(root.GlobalScale.x.ToString("F3"));
         }
 
-        LumoraLogger.Log(sb.ToString());
+        LumoraLogger.Debug(sb.ToString());
     }
 
     // Per limb: did the BONE NAMES state which end of the animal it is, or did we guess?
@@ -646,7 +648,7 @@ public class QuadrupedRig : Component
             moves.Append((QuadLimbId)from).Append("->").Append((QuadLimbId)corner);
         }
 
-        LumoraLogger.Log($"QuadrupedRig: limbs keyed from the authored paw references; {moves}");
+        LumoraLogger.Debug($"QuadrupedRig: limbs keyed from the authored paw references; {moves}");
         return true;
     }
 
@@ -689,7 +691,7 @@ public class QuadrupedRig : Component
             if (now <= then)
                 return;
 
-            LumoraLogger.Log(
+            LumoraLogger.Debug(
                 $"QuadrupedRig: {label} re-anchored from '{current.SlotName.Value}' to '{candidate.SlotName.Value}'; "
                 + $"it sat {MathF.Sqrt(now):F3} from its girdle and the branch point sits {MathF.Sqrt(then):F3}");
         }
@@ -741,10 +743,12 @@ public class QuadrupedRig : Component
     // at each stage turns that into a bisect. -xlinka
     public void LogGirdleSpan(string stage)
     {
+        if (!LumoraLogger.EnableDebug)
+            return;
         if (!TryGetGirdle(front: true, out float3 front, out float frontTrack, out _, out _)
             || !TryGetGirdle(front: false, out float3 rear, out float rearTrack, out _, out _))
         {
-            LumoraLogger.Log($"QuadrupedRig SPAN [{stage}]: girdles unresolved");
+            LumoraLogger.Debug($"QuadrupedRig SPAN [{stage}]: girdles unresolved");
             return;
         }
 
@@ -753,7 +757,7 @@ public class QuadrupedRig : Component
         float scale = Slot != null && !Slot.IsDestroyed ? Slot.GlobalScale.x : 1f;
         // Identity in the line, because two rigs on one avatar would produce exactly this pattern of
         // "different answers at different stages" with nothing having moved at all.
-        LumoraLogger.Log($"QuadrupedRig SPAN [{stage}] rig#{ReferenceID} on '{Slot?.SlotName.Value}' "
+        LumoraLogger.Debug($"QuadrupedRig SPAN [{stage}] rig#{ReferenceID} on '{Slot?.SlotName.Value}' "
                        + $"bones={Bones.Count} drivenFL={Driven(LimbRoot(QuadLimbId.FrontLeft))} "
                        + $"drivenRL={Driven(LimbRoot(QuadLimbId.RearLeft))} "
                        + $"frontRoot='{LimbRoot(QuadLimbId.FrontLeft)?.SlotName.Value}' "
@@ -1045,7 +1049,7 @@ public class QuadrupedRig : Component
             if (i > 0) moves.Append(", ");
             moves.Append((QuadLimbId)i).Append("->").Append(target[i]);
         }
-        LumoraLogger.Log($"QuadrupedRig: re-keying limbs from geometry, forward={forward} right={right}; {moves}; "
+        LumoraLogger.Debug($"QuadrupedRig: re-keying limbs from geometry, forward={forward} right={right}; {moves}; "
                        + DescribeRoots(roots));
 
         for (int i = 0; i < QuadLimb.Count; i++)
@@ -1063,7 +1067,7 @@ public class QuadrupedRig : Component
             }
         }
 
-        LumoraLogger.Log("QuadrupedRig: limb re-key applied");
+        LumoraLogger.Debug("QuadrupedRig: limb re-key applied");
     }
 
     // Horizontal axis the four limb roots are most spread along.
@@ -1500,7 +1504,7 @@ public class QuadrupedRig : Component
             return;
 
         float angle = SignedYaw(rootForward, forward);
-        LumoraLogger.Log($"QuadrupedRig: {DescribeForward(in measured)}; root forward={rootForward}, off by {angle * Deg:F1} deg");
+        LumoraLogger.Debug($"QuadrupedRig: {DescribeForward(in measured)}; root forward={rootForward}, off by {angle * Deg:F1} deg");
 
         if (MathF.Abs(angle) < 0.5f * (MathF.PI / 180f))
         {
@@ -1572,7 +1576,7 @@ public class QuadrupedRig : Component
         }
         else
         {
-            LumoraLogger.Log(report);
+            LumoraLogger.Debug(report);
         }
     }
 

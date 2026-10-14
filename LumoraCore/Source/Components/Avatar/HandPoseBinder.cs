@@ -7,7 +7,9 @@ namespace Lumora.Core.Components.Avatar;
 
 // On equip, points the hand's pose graph at the wearer's published finger source (UserHandPoseInfo on
 // the user root): into the first slot of the multiplexer when the hand has one, else straight into
-// the driver. Only the authority writes the replicated refs. -xlinka
+// the driver. Written by the machine putting the avatar on or taking it off, which may always write it, since
+// an avatar a user may not edit is worn as their own copy. It was the authority alone, and only the machine
+// doing the equip hears it, so a guest's hands never got their fingers. -xlinka
 [ComponentCategory("Users/Avatar/Hands")]
 public class HandPoseBinder : Component, IAvatarEquipReceiver
 {
@@ -21,7 +23,7 @@ public class HandPoseBinder : Component, IAvatarEquipReceiver
 
     public void OnEquip(AvatarSocket slot)
     {
-        if (World?.IsAuthority != true)
+        if (!MayWriteHere())
             return;
         var info = slot?.Slot?.ActiveUserRoot?.GetRegisteredComponent<UserHandPoseInfo>();
         Bind(info?.HandPoseSource.Target);
@@ -29,9 +31,17 @@ public class HandPoseBinder : Component, IAvatarEquipReceiver
 
     public void OnDequip(AvatarSocket slot)
     {
-        if (World?.IsAuthority != true)
+        if (!MayWriteHere())
             return;
         Bind(null);
+    }
+
+    private bool MayWriteHere()
+    {
+        var world = World;
+        if (world == null || Slot == null)
+            return false;
+        return world.IsAuthority || Slot.IsUnderLocalUser || Slot.IsMintedHere;
     }
 
     private void Bind(IHandPoseSourceComponent? source)

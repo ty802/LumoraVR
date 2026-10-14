@@ -34,8 +34,21 @@ public class TrackerSlotManager : Component
     public override void OnStart()
     {
         base.OnStart();
+        TryHook();
+    }
 
-        if (!IsUnderLocalUser)
+    // A joiner's root can start before it knows its user, so the hook waits until it does.
+    public override void OnUpdate(float delta)
+    {
+        base.OnUpdate(delta);
+        if (!_hooked)
+            TryHook();
+    }
+
+    private void TryHook()
+    {
+        // Both users unknown reads as a match, which would build slots under somebody else's root.
+        if (World?.LocalUser == null || !IsUnderLocalUser)
             return;
 
         var input = Engine.Current?.InputInterface;
@@ -98,6 +111,9 @@ public class TrackerSlotManager : Component
             && existing != null && !existing.IsDestroyed)
             return;
 
+        // On the host this is its own body, minted in the authority byte, so it is made in the host rig scope.
+        using var hostRig = World?.EnterHostRigScope(userRoot);
+
         // PublicID, never UniqueID. The raw id is a device identity and this slot name is visible to
         // anything that can read the hierarchy.
         var slot = userRoot.AddSlot(tracker.PublicID);
@@ -106,11 +122,6 @@ public class TrackerSlotManager : Component
         // Bound to THIS device, not resolved by body node. That is what lets two trackers hold the same
         // role, and what keeps an unmapped tracker attached to something real.
         positioner.DeviceIndex.Value = tracker.DeviceIndex;
-
-        // A tracker that is not on a body part is still a tracked object worth having (a camera puck is
-        // a mount point), it just must not create an avatar attachment.
-        if (!TrackerRoles.IsMappable(tracker.CorrespondingBodyNode))
-            positioner.CreateAvatarObjectSlot.Value = false;
 
         // Per-tracker streams, keyed by public id rather than by body node, for the same reason the slot
         // is: the body node can change under calibration and the stream must not have to move with it.
@@ -126,7 +137,7 @@ public class TrackerSlotManager : Component
         }
 
         _trackerSlots[tracker.PublicID] = slot;
-        LumoraLogger.Log(
+        LumoraLogger.Debug(
             $"TrackerSlotManager: built slot for tracker {tracker.PublicID} " +
             $"(suggested {tracker.SuggestedRole}, mapped {tracker.CorrespondingBodyNode})");
     }

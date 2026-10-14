@@ -7,17 +7,19 @@ using Lumora.Core;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Lip-sync: maps a <see cref="LipSyncAnalyzer"/>'s per-viseme weights onto the avatar's viseme
-/// blendshapes (matched by name) and drives them locally each frame. With the analyzer currently
-/// outputting silence (audio not wired yet), this holds the mouth neutral until the voice pipeline
-/// lands - then it animates automatically.
-/// </summary>
 [ComponentCategory("Users/Avatar")]
 public sealed class VisemeWeightDriver : Component
 {
     public readonly SyncRef<LipSyncAnalyzer> Source = new();
     public readonly Sync<float> StrengthMultiplier = new();
+
+    // Named shapes, in viseme order (silence, PP, FF, TH, DD, kk, CH, SS, nn, RR, aa, E, ih, oh, ou), on
+    // one mesh. An avatar that says which shape is which (an imported descriptor does) is driven by
+    // exactly those; anything left empty falls back to matching names, unless ExactShapes says the avatar
+    // named all it wants: a mouth worked some other way names none, and nothing on it moves. -xlinka
+    public readonly SyncRef<SkinnedMeshRenderer> ShapeMesh = new();
+    public readonly SyncFieldList<string> ShapeNames = new();
+    public readonly Sync<bool> ExactShapes = new();
 
     // Name tokens per viseme (lowercased). A blendshape matches if its name contains any token.
     private static readonly Dictionary<Viseme, string[]> Keywords = new()
@@ -42,6 +44,7 @@ public sealed class VisemeWeightDriver : Component
 
     private readonly List<(SkinnedMeshRenderer Renderer, int Index, Viseme V)> _targets = new();
     private bool _resolved;
+    private readonly AvatarFaceWearer _wearer = new();
 
     public override void OnInit()
     {
@@ -52,6 +55,19 @@ public sealed class VisemeWeightDriver : Component
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+
+        if (_wearer.Update(Slot))
+            Release();
+        if (_wearer.Current == null)
+            return;
+
+        // Held by an animation that works the mouth itself: the shapes are its until every holder lets go.
+        if (FaceHold.MouthHeld(Slot))
+        {
+            Release();
+            EnsureSource();
+            return;
+        }
 
         if (!_resolved)
             ResolveTargets();
@@ -66,7 +82,7 @@ public sealed class VisemeWeightDriver : Component
             var (renderer, index, viseme) = _targets[i];
             if (renderer == null || renderer.IsDestroyed || !renderer.OwnsBlendShape(index, this))
             {
-                _resolved = false; // mesh went away or our claim was lost - rescan next frame
+                _resolved = false; // mesh went away or our claim was lost; rescan next frame
                 return;
             }
             // No source / silence -> 0 -> mouth closed.
@@ -75,12 +91,75 @@ public sealed class VisemeWeightDriver : Component
         }
     }
 
+    private void Release()
+    {
+        foreach (var (renderer, index, _) in _targets)
+        {
+            if (renderer != null && !renderer.IsDestroyed)
+                renderer.ReleaseBlendShape(index, this);
+        }
+        _targets.Clear();
+        _resolved = false;
+    }
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        if (Slot != null)
+            Slot.ActiveChanged += OnSlotActiveChanged;
+    }
+
+    // Switched off, it stops updating and would never see anything else change, so it lets go now.
+    private void OnSlotActiveChanged(Slot slot)
+    {
+        if (Slot != null && !Slot.IsActive)
+            Release();
+    }
+
+    public override void OnDestroy()
+    {
+        if (Slot != null)
+            Slot.ActiveChanged -= OnSlotActiveChanged;
+        Release();
+        base.OnDestroy();
+    }
+
+    // The voice this mouth follows, which the animator reads through us as well.
+    private void EnsureSource()
+    {
+        if ((Source.Target == null || Source.Target.IsDestroyed)
+            && (Slot.GetComponentInChildren<LipSyncAnalyzer>() ?? Slot.GetComponent<LipSyncAnalyzer>()) is { } found)
+            Source.Target = found;
+    }
+
     private void ResolveTargets()
     {
         _targets.Clear();
+        EnsureSource();
 
-        if (Source.Target == null || Source.Target.IsDestroyed)
-            Source.Target = Slot.GetComponentInChildren<LipSyncAnalyzer>() ?? Slot.GetComponent<LipSyncAnalyzer>();
+        var named = new HashSet<Viseme>();
+        var mesh = ShapeMesh.Target;
+        if (mesh != null && !mesh.IsDestroyed)
+        {
+            for (int v = 0; v < ShapeNames.Count && v < (int)Viseme.COUNT; v++)
+            {
+                var shape = ShapeNames[v];
+                if (string.IsNullOrEmpty(shape))
+                    continue;
+                int index = mesh.GetBlendShapeIndex(shape);
+                if (index >= 0 && mesh.ClaimBlendShape(index, this, SkinnedMeshRenderer.BlendShapePriorityViseme))
+                {
+                    _targets.Add((mesh, index, (Viseme)v));
+                    named.Add((Viseme)v);
+                }
+            }
+        }
+
+        if (ExactShapes.Value)
+        {
+            _resolved = true;
+            return;
+        }
 
         foreach (var renderer in Slot.GetComponentsInChildren<SkinnedMeshRenderer>())
         {
@@ -88,6 +167,8 @@ public sealed class VisemeWeightDriver : Component
             {
                 var name = renderer.BlendShapeName(i);
                 if (string.IsNullOrEmpty(name))
+                    continue;
+                if (named.Count > 0 && ReferenceEquals(renderer, mesh) && renderer.OwnsBlendShape(i, this))
                     continue;
                 var lower = name.ToLowerInvariant();
 
@@ -102,6 +183,8 @@ public sealed class VisemeWeightDriver : Component
                             break;
                         }
                     }
+                    if (match && named.Contains(kv.Key))
+                        break;
                     if (match)
                     {
                         // Claim the shape so the catch-all expression driver leaves it alone (one owner per shape).

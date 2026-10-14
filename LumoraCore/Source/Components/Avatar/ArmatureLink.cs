@@ -38,6 +38,11 @@ public class ArmatureLink : Component
     // the garment was authored on a different rest pose and you would rather it conform than float.
     public readonly Sync<bool> KeepPose;
 
+    // Garments that tag their bones with their own name ("Hoodie_Hips", "Hips_Hoodie") match once the tag is
+    // taken off: a bone that starts with NamePrefix or ends with NameSuffix is matched without it.
+    public readonly Sync<string> NamePrefix;
+    public readonly Sync<string> NameSuffix;
+
     // Readouts, so the result is visible without digging through the hierarchy.
     public readonly Sync<int> LinkedBones;
     public readonly Sync<int> UnmatchedBones;
@@ -47,6 +52,8 @@ public class ArmatureLink : Component
         Avatar = new SyncRef<Slot>(this);
         Clothing = new SyncRef<Slot>(this);
         KeepPose = new Sync<bool>(this, true);
+        NamePrefix = new Sync<string>(this, "");
+        NameSuffix = new Sync<string>(this, "");
         LinkedBones = new Sync<int>(this, 0);
         UnmatchedBones = new Sync<int>(this, 0);
     }
@@ -64,18 +71,14 @@ public class ArmatureLink : Component
         if (clothing.IsDescendantOf(avatar) && clothing != avatar)
         {
             // Already worn. Re-linking is fine, but say so - a second press is usually a mistake.
-            Logger.Log("ArmatureLink: clothing is already under the avatar, re-linking its bones");
+            Logger.Debug("ArmatureLink: clothing is already under the avatar, re-linking its bones");
         }
 
         // The avatar's bones by loose name. First one wins: a rig with duplicates (a mirrored prop
         // reusing a bone name) would otherwise scatter the garment across both.
+        // A leaf (a fingertip, a prop socket) has nothing to match; the clothing then hangs on it whole.
         var byName = new Dictionary<string, Slot>(StringComparer.Ordinal);
         CollectBones(avatar, byName);
-        if (byName.Count == 0)
-        {
-            Logger.Warn("ArmatureLink: the avatar slot has nothing under it to match against");
-            return;
-        }
 
         // Snapshot before reparenting: moving a slot mid-walk would have us descend into the avatar.
         var candidates = new List<Slot>();
@@ -90,7 +93,7 @@ public class ArmatureLink : Component
             if (bone == null || bone.IsDestroyed)
                 continue;
 
-            var key = NormalizeBoneName(bone.Name.Value);
+            var key = NormalizeBoneName(Untagged(bone.Name.Value));
             if (key.Length == 0 || !byName.TryGetValue(key, out var target) || target == null || target.IsDestroyed)
             {
                 unmatched++;
@@ -119,9 +122,22 @@ public class ArmatureLink : Component
 
         LinkedBones.Value = linked;
         if (linked > 0)
-            Lumora.Core.Logging.Logger.Log($"POSEWRITE ArmatureLink: relinked {linked} bone(s), keepPose={keepPose}, unmatched={unmatched}");
+            Lumora.Core.Logging.Logger.Debug($"POSEWRITE ArmatureLink: relinked {linked} bone(s), keepPose={keepPose}, unmatched={unmatched}");
         UnmatchedBones.Value = unmatched;
-        Logger.Log($"ArmatureLink: linked {linked} bones, {unmatched} unmatched");
+        Logger.Debug($"ArmatureLink: linked {linked} bones, {unmatched} unmatched");
+    }
+
+    private string? Untagged(string? name)
+    {
+        if (string.IsNullOrEmpty(name))
+            return name;
+        var prefix = NamePrefix.Value;
+        var suffix = NameSuffix.Value;
+        if (!string.IsNullOrEmpty(prefix) && name.Length > prefix.Length && name.StartsWith(prefix, StringComparison.Ordinal))
+            name = name[prefix.Length..];
+        if (!string.IsNullOrEmpty(suffix) && name.Length > suffix.Length && name.EndsWith(suffix, StringComparison.Ordinal))
+            name = name[..^suffix.Length];
+        return name;
     }
 
     private static void CollectBones(Slot root, Dictionary<string, Slot> into)

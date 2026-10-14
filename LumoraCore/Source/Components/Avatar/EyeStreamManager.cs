@@ -7,12 +7,7 @@ using Lumora.Core.Networking.Streams;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Publishes the user's eye tracking over the network. The owning peer reads its head device's eye
-/// data (gaze directions, per-eye openness, pupil dilation) and writes it into streams; remote peers
-/// read the replicated, interpolated values. Drives nothing itself - <see cref="EyeGazeDriver"/>
-/// and <see cref="BlinkDriver"/> consume it. Inert until a head device actually reports eye tracking.
-/// </summary>
+// The owner writes its head device's eye data into streams; remote peers read them back interpolated.
 [ComponentCategory("Users/Avatar/Face")]
 public class EyeStreamManager : UserRootComponent
 {
@@ -26,6 +21,7 @@ public class EyeStreamManager : UserRootComponent
     private Float3ValueStream _state = null!;
     private Float3ArrayValueStream _expr = null!;
     private BoolValueStream _tracking = null!;
+    private User? _streamUser;
 
     public override void OnUpdate(float delta)
     {
@@ -38,7 +34,7 @@ public class EyeStreamManager : UserRootComponent
             return;
 
         var head = Engine.Current?.InputInterface?.HeadDevice;
-        bool tracking = head != null && head.HasEyeTracking && head.IsWorn;
+        bool tracking = LiveEyes(head);
         if (_tracking != null)
             _tracking.Value = tracking;
         if (!tracking)
@@ -61,16 +57,19 @@ public class EyeStreamManager : UserRootComponent
         get
         {
             if (IsUnderLocalUser)
-            {
-                var head = Engine.Current?.InputInterface?.HeadDevice;
-                return head != null && head.HasEyeTracking && head.IsWorn;
-            }
+                return LiveEyes(Engine.Current?.InputInterface?.HeadDevice);
             EnsureStreams();
-            return _tracking != null && _tracking.HasValidData && _tracking.Value;
+            return _tracking is { Active: true, HasValidData: true } && _tracking.Value;
         }
     }
 
-    /// <summary>Combined (binocular) gaze direction. Returns false if eye tracking isn't active.</summary>
+    // Whether the eyes are on a face is the eye source's call, not the headset's. Both sources drop
+    // HasEyeTracking themselves when nobody is behind the cameras (the vendor runtime reports no user,
+    // the OpenXR gaze pose goes untracked, and a sample that stops changing is dropped as stale), while
+    // the VR driver writes IsWorn false on every flat frame because it has no headset to ask. Gating on
+    // it threw away a tracker that was on a face the whole time whenever the game ran flat. -xlinka
+    private static bool LiveEyes(HeadDevice? head) => head != null && head.HasEyeTracking;
+
     public bool TryGetCombinedGaze(out float3 direction)
     {
         direction = float3.Backward;
@@ -87,13 +86,13 @@ public class EyeStreamManager : UserRootComponent
         }
 
         EnsureStreams();
-        if (_gaze == null || _gaze.Count < 3)
+        if (_gaze is not { Active: true, HasValidData: true } || _gaze.Count < 3)
             return false;
         direction = _gaze[2];
         return true;
     }
 
-    /// <summary>Average eye openness 0..1 (1 = fully open). Defaults to open when not tracking.</summary>
+    // 0..1, 1 = fully open; open when nothing feeds it.
     public float Openness
     {
         get
@@ -113,7 +112,25 @@ public class EyeStreamManager : UserRootComponent
         }
     }
 
-    /// <summary>Pupil dilation 0..1 (0 = constricted, 1 = dilated). 0 when no eye tracking is feeding it.</summary>
+    // One eye's openness 0..1, open when nothing feeds it. A per-eye tracker measures each lid on its
+    // own, and averaging them closed both eyes halfway on a wink.
+    public float GetOpenness(Chirality side)
+    {
+        if (IsUnderLocalUser)
+        {
+            var head = Engine.Current?.InputInterface?.HeadDevice;
+            if (head == null)
+                return 1f;
+            return side == Chirality.Left ? head.LeftEyeOpenness : head.RightEyeOpenness;
+        }
+        EnsureStreams();
+        if (_state == null || !_state.HasValidData)
+            return 1f;
+        var s = _state.Value;
+        return side == Chirality.Left ? s.x : s.y;
+    }
+
+    // 0..1, 0 = constricted; 0 when nothing feeds it.
     public float Pupil
     {
         get
@@ -142,7 +159,7 @@ public class EyeStreamManager : UserRootComponent
         }
 
         EnsureStreams();
-        if (_expr == null || _expr.Count < 2)
+        if (_expr is not { Active: true, HasValidData: true } || _expr.Count < 2)
             return 0f;
         var v = _expr[side == Chirality.Left ? 0 : 1];
         return component == 0 ? v.x : component == 1 ? v.y : v.z;
@@ -150,12 +167,21 @@ public class EyeStreamManager : UserRootComponent
 
     private void EnsureStreams()
     {
-        if (_gaze != null)
+        var user = Slot?.ActiveUserRoot?.ActiveUser;
+        // Gaze can arrive before state, expressions or the tracking flag. Keep resolving the
+        // missing streams, and discard the cached set when its user or streams are replaced.
+        if (user == _streamUser && _gaze is { IsRemoved: false } && _state is { IsRemoved: false }
+            && _expr is { IsRemoved: false } && _tracking is { IsRemoved: false })
             return;
 
-        var user = Slot?.ActiveUserRoot?.ActiveUser;
+        _streamUser = user;
         if (user == null)
+        {
+            _gaze = _expr = null!;
+            _state = null!;
+            _tracking = null!;
             return;
+        }
 
         if (IsUnderLocalUser)
         {

@@ -8,13 +8,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Drives the avatar's mouth/lip blendshapes from replicated mouth tracking. Matches blendshapes to a
-/// small set of mouth shapes by name (covers ARKit-style names and the other common face-tracking
-/// conventions) and writes the weight each frame from <see cref="MouthStreamManager"/>. Runs on every
-/// peer (the data is synced); rests the mouth when nothing is tracking. Eye blink is handled separately
-/// by BlinkDriver.
-/// </summary>
+// Runs on every peer because the mouth stream is synced; with nothing tracking the mouth rests at zero.
 [ComponentCategory("Users/Avatar/Face")]
 public sealed class MouthExpressionDriver : Component
 {
@@ -27,12 +21,14 @@ public sealed class MouthExpressionDriver : Component
         new[] { "jawforward", "jaw_forward" },                      // JawForward
         new[] { "pucker", "mouthpucker", "pout" },                  // MouthPucker
         new[] { "mouthwide", "mouthstretch", "stretch" },           // MouthWide
-        new[] { "smileleft", "mouthsmileleft", "smile_l" },         // SmileLeft
-        new[] { "smileright", "mouthsmileright", "smile_r" },       // SmileRight
-        new[] { "frownleft", "mouthfrownleft", "sad_l" },           // FrownLeft
-        new[] { "frownright", "mouthfrownright", "sad_r" },         // FrownRight
-        new[] { "upperup", "mouthupperup", "upperlipup" },          // UpperUp
-        new[] { "lowerdown", "mouthlowerdown", "lowerlipdown" },     // LowerDown
+        // The vendor lip set writes Mouth_Upper_UpLeft and Mouth_Lower_DownLeft, and the unified set's smile
+        // is MouthCornerPull; without these the tracker's lips and smile reached nothing on those avatars.
+        new[] { "smileleft", "mouthsmileleft", "smile_l", "cornerpullleft" },   // SmileLeft
+        new[] { "smileright", "mouthsmileright", "smile_r", "cornerpullright" }, // SmileRight
+        new[] { "frownleft", "mouthfrownleft", "sad_l", "sadleft" },             // FrownLeft
+        new[] { "frownright", "mouthfrownright", "sad_r", "sadright" },          // FrownRight
+        new[] { "upperup", "mouthupperup", "upperlipup", "upper_up" },           // UpperUp
+        new[] { "lowerdown", "mouthlowerdown", "lowerlipdown", "lower_down" },   // LowerDown
         new[] { "cheekpuff", "cheek_puff", "puff" },                // CheekPuff
         // Tongue intentionally NOT claimed: no mouth-tracking hardware is wired yet, so there is no real tongue
         // signal. Claiming a tongue shape and pinning it to weight 0 mis-renders any avatar whose neutral tongue
@@ -43,17 +39,26 @@ public sealed class MouthExpressionDriver : Component
     private readonly List<(SkinnedMeshRenderer Renderer, int Index, MouthShape Shape)> _targets = new();
     private bool _resolved;
     private MouthStreamManager? _mouth;
+    private readonly AvatarFaceWearer _wearer = new();
 
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+
+        if (_wearer.Update(Slot))
+            Release();
+        var wearer = _wearer.Current;
+        if (wearer == null)
+            return;
 
         if (!_resolved)
             ResolveTargets();
         if (_targets.Count == 0)
             return;
 
-        _mouth ??= Slot.ActiveUserRoot?.GetRegisteredComponent<MouthStreamManager>();
+        if (_mouth != null && _mouth.IsDestroyed)
+            _mouth = null;
+        _mouth ??= wearer.GetRegisteredComponent<MouthStreamManager>();
         bool tracking = _mouth != null && _mouth.IsTracking;
 
         for (int i = 0; i < _targets.Count; i++)
@@ -61,13 +66,47 @@ public sealed class MouthExpressionDriver : Component
             var (renderer, index, shape) = _targets[i];
             if (renderer == null || renderer.IsDestroyed || !renderer.OwnsBlendShape(index, this))
             {
-                _resolved = false; // mesh went away or a higher-priority driver took this shape - rescan
+                _resolved = false; // mesh went away or a higher-priority driver took this shape; rescan
                 return;
             }
 
             float weight = tracking ? System.Math.Clamp(_mouth!.GetWeight(shape), 0f, 1f) : 0f;
             renderer.DriveBlendShapeWeight(index, weight);
         }
+    }
+
+    private void Release()
+    {
+        foreach (var (renderer, index, _) in _targets)
+        {
+            if (renderer != null && !renderer.IsDestroyed)
+                renderer.ReleaseBlendShape(index, this);
+        }
+        _targets.Clear();
+        _resolved = false;
+        _mouth = null;
+    }
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        if (Slot != null)
+            Slot.ActiveChanged += OnSlotActiveChanged;
+    }
+
+    // Switched off, it stops updating and would never see anything else change, so it lets go now.
+    private void OnSlotActiveChanged(Slot slot)
+    {
+        if (Slot != null && !Slot.IsActive)
+            Release();
+    }
+
+    public override void OnDestroy()
+    {
+        if (Slot != null)
+            Slot.ActiveChanged -= OnSlotActiveChanged;
+        Release();
+        base.OnDestroy();
     }
 
     private void ResolveTargets()
@@ -104,6 +143,6 @@ public sealed class MouthExpressionDriver : Component
         }
         _resolved = true;
         if (_targets.Count > 0)
-            LumoraLogger.Log($"MouthExpressionDriver: resolved {_targets.Count} mouth blendshape target(s)");
+            LumoraLogger.Debug($"MouthExpressionDriver: resolved {_targets.Count} mouth blendshape target(s)");
     }
 }

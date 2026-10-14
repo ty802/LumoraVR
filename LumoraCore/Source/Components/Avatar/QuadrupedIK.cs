@@ -110,6 +110,8 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
 
     private bool _isInitialized;
     private bool _suspendSolve;
+    private bool _wasWorn;
+    private AvatarForm? _form;
 
     private readonly QuadrupedIKSolver.LimbTarget[] _pawTargets = new QuadrupedIKSolver.LimbTarget[QuadLimb.Count];
     private readonly float3[] _homePoints = new float3[QuadLimb.Count];
@@ -531,7 +533,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
             _restReachRatio[l] = _restReachRatio[r] = reach;
         }
 
-        LumoraLogger.Log("QuadrupedIK: rest stance symmetrised - "
+        LumoraLogger.Debug("QuadrupedIK: rest stance symmetrised - "
             + $"front fwd={_restPawOffset[0].x:F3} lat={MathF.Abs(_restPawOffset[0].y):F3} reach={_restReachRatio[0]:F2}, "
             + $"rear fwd={_restPawOffset[2].x:F3} lat={MathF.Abs(_restPawOffset[2].y):F3} reach={_restReachRatio[2]:F2}");
     }
@@ -609,7 +611,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
         }
         else
         {
-            LumoraLogger.Log("QuadrupedIK: desktop wearer, paw proxies left to the gait");
+            LumoraLogger.Debug("QuadrupedIK: desktop wearer, paw proxies left to the gait");
         }
 
         DumpWearerFrame(userRoot);
@@ -626,6 +628,8 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
     // compared that were not in the same space, and there was no single place to read both. -xlinka
     private void DumpWearerFrame(UserRoot userRoot)
     {
+        if (!LumoraLogger.EnableDebug)
+            return;
         var sb = new System.Text.StringBuilder();
         sb.Append("QuadrupedIK WEARER DUMP");
 
@@ -718,7 +722,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
             Line("Pelvis bone", rig.TryGetBone(QuadNode.Pelvis));
         }
 
-        LumoraLogger.Log(sb.ToString());
+        LumoraLogger.Debug(sb.ToString());
     }
 
     // Take the body-node sockets off the avatar's own humanoid pose drivers.
@@ -759,7 +763,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
         }
 
         if (swept > 0)
-            LumoraLogger.Log($"QuadrupedIK: swept {swept} humanoid pose driver(s) off this avatar; "
+            LumoraLogger.Debug($"QuadrupedIK: swept {swept} humanoid pose driver(s) off this avatar; "
                            + "the quadruped solver owns the body nodes");
 
         // Transform copiers on RIG BONES are the same kind of foreign writer, and a sneakier one.
@@ -790,7 +794,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
         }
 
         if (copiers > 0)
-            LumoraLogger.Log($"QuadrupedIK: removed {copiers} CopyGlobalTransform(s) from rig bones; "
+            LumoraLogger.Debug($"QuadrupedIK: removed {copiers} CopyGlobalTransform(s) from rig bones; "
                            + "they were re-posing bones the solver had just placed");
     }
 
@@ -836,7 +840,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
         Rig.Target?.LogGirdleSpan("equip-entry");
         _suspendSolve = true;
         RecaptureUntilSane(0, ++_equipRevision);
-        LumoraLogger.Log($"QuadrupedIK: equipped to {slot.Node.Value}");
+        LumoraLogger.Debug($"QuadrupedIK: equipped to {slot.Node.Value}");
     }
 
     // Take the rig's bones off whatever was driving them.
@@ -881,7 +885,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
         }
 
         if (freed > 0)
-            LumoraLogger.Log($"QuadrupedIK: released {freed} drive link(s) off the rig's bones; "
+            LumoraLogger.Debug($"QuadrupedIK: released {freed} drive link(s) off the rig's bones; "
                            + "the solver owns them now");
 
         // Releasing a link stops the next write; it does not undo the ones already made. The bones are
@@ -889,7 +893,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
         // rest capture measures anything.
         int restored = rig.RestoreAuthoredPose();
         if (restored > 0)
-            LumoraLogger.Log($"QuadrupedIK: restored the authored pose on {restored} bone(s)");
+            LumoraLogger.Debug($"QuadrupedIK: restored the authored pose on {restored} bone(s)");
 
         SymmetriseGirdles(rig);
     }
@@ -951,7 +955,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
         float offset = lowestBone - lowestVertex;
         float cap = MathF.Max(_solver.RestPelvisStandHeight, _solver.RestChestStandHeight) * 0.15f;
         _measuredSoleOffset = System.Math.Clamp(offset, 0f, MathF.Max(cap, 0f));
-        LumoraLogger.Log($"QuadrupedIK: sole offset measured {offset:F3} from {scanned} vertices "
+        LumoraLogger.Debug($"QuadrupedIK: sole offset measured {offset:F3} from {scanned} vertices "
                        + $"(lowest bone {lowestBone:F3}, lowest vertex {lowestVertex:F3}), using {_measuredSoleOffset:F3}");
     }
 
@@ -963,6 +967,8 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
     // -xlinka
     private void LogPostSolve(QuadrupedRig rig)
     {
+        if (!LumoraLogger.EnableDebug)
+            return;
         double now = World.Time.TotalTime;
         if (now - _postSolveLogAt < 2.0)
             return;
@@ -988,7 +994,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
             return MathF.Asin(System.Math.Clamp(f.y, -1f, 1f)) * (180f / MathF.PI);
         }
 
-        LumoraLogger.Log($"POSTSOLVE pelvisRoll={RollDeg(pelvis):F1} pelvisPitch={PitchDeg(pelvis):F1} "
+        LumoraLogger.Debug($"POSTSOLVE pelvisRoll={RollDeg(pelvis):F1} pelvisPitch={PitchDeg(pelvis):F1} "
                        + $"chestRoll={RollDeg(chest):F1} chestPitch={PitchDeg(chest):F1} "
                        + $"pelvisY={pelvis.GlobalPosition.y:F3} chestY={chest.GlobalPosition.y:F3} "
                        + $"hipY={hipL?.GlobalPosition.y ?? float.NaN:F3}/{hipR?.GlobalPosition.y ?? float.NaN:F3} "
@@ -997,7 +1003,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
 
     private void LogLimbConstraintsOnce()
     {
-        if (_constraintsLogged)
+        if (_constraintsLogged || !LumoraLogger.EnableDebug)
             return;
         _constraintsLogged = true;
 
@@ -1020,14 +1026,14 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
                         if (names.Length > 0) names.Append(", ");
                         names.Append(c.GetType().Name);
                     }
-                    LumoraLogger.Log($"REARWRITERS {id} '{s.SlotName.Value}' drivenP={s.LocalPosition.IsDriven} drivenR={s.LocalRotation.IsDriven} components=[{names}]");
+                    LumoraLogger.Debug($"REARWRITERS {id} '{s.SlotName.Value}' drivenP={s.LocalPosition.IsDriven} drivenR={s.LocalRotation.IsDriven} components=[{names}]");
                     if (ReferenceEquals(s, rig.TryGetBone(QuadNode.Pelvis)))
                         break;
                 }
             }
         }
         for (int i = 0; i < QuadLimb.Count; i++)
-            LumoraLogger.Log($"QuadrupedIK: {QuadLimb.Name((QuadLimbId)i)} {_solver.DescribeLimbConstraints((QuadLimbId)i)}");
+            LumoraLogger.Debug($"QuadrupedIK: {QuadLimb.Name((QuadLimbId)i)} {_solver.DescribeLimbConstraints((QuadLimbId)i)}");
     }
 
     // Level each pair of limb roots and balance its lateral spread without changing bone lengths.
@@ -1080,7 +1086,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
 
             float afterL = float3.Dot(rl.GlobalPosition - mid, axis);
             float afterR = float3.Dot(rr.GlobalPosition - mid, axis);
-            LumoraLogger.Log($"QuadrupedIK: {label} girdles symmetrised - lateral roots were "
+            LumoraLogger.Debug($"QuadrupedIK: {label} girdles symmetrised - lateral roots were "
                            + $"{sideL:F3}/{sideR:F3} (asymmetry {before:F3}), now {afterL:F3}/{afterR:F3}");
         }
 
@@ -1137,7 +1143,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
             MeasureSoleOffset();
             LogLimbConstraintsOnce();
             if (attempt > 0)
-                LumoraLogger.Log($"QuadrupedIK: rest pose settled after {attempt} extra capture(s), "
+                LumoraLogger.Debug($"QuadrupedIK: rest pose settled after {attempt} extra capture(s), "
                                + $"bodyLength={_solver.RestBodyLength:F3}");
             return;
         }
@@ -1158,9 +1164,40 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
         _equipRevision++;
         _suspendSolve = true;
         _solver.ResetToDefaultPose();
+        CommitBonePose();
         _gait.Reset();
         UserRoot.Target = null!;
-        LumoraLogger.Log($"QuadrupedIK: dequipped from {slot.Node.Value}");
+        LumoraLogger.Debug($"QuadrupedIK: dequipped from {slot.Node.Value}");
+    }
+
+    // The solve writes bones on this machine alone, so the rest pose the animal goes back to is said once as
+    // real writes, while the wearer still owns it. Every machine, a later joiner and a save then agree. -xlinka
+    private void CommitBonePose()
+    {
+        foreach (var bone in _solver.DrivenBones)
+        {
+            if (bone == null || bone.IsDestroyed)
+                continue;
+            bone.LocalPosition.ForceSet(bone.LocalPosition.Value);
+            bone.LocalRotation.ForceSet(bone.LocalRotation.Value);
+        }
+    }
+
+    // Taken off, every machine puts the animal back in its captured rest. Four legs keep no stored rest to
+    // come back from, so a held pose would be what the next capture takes for rest. -xlinka
+    private void TrackWearer()
+    {
+        if (_form == null || _form.IsDestroyed)
+            _form = Slot?.GetComponentInParents<AvatarForm>();
+        bool worn = _form is { IsDestroyed: false } form && form.Wearer != null;
+        if (worn == _wasWorn)
+            return;
+        _wasWorn = worn;
+        if (!worn && _solver.IsReady)
+        {
+            using (World?.DataModelPermissions?.EnterSystemBypass())
+                _solver.ResetToDefaultPose();
+        }
     }
 
     // The gate here is mandatory, not defensive. Input receivers live on the engine-global input
@@ -1193,6 +1230,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+        TrackWearer();
         if (!CanRun() || _suspendSolve)
             return;
 
@@ -1694,7 +1732,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
         if (!hasView)
             AvatarCalibration.AutoPlaceQuadReferences(avatarSlot, rig, bipedRig);
 
-        LumoraLogger.Log(
+        LumoraLogger.Debug(
             $"QuadrupedIK: attached ({rig.Bones.Count} bones, {rig.TailBoneCount.Value} tail); AvatarIK suppressed on this avatar");
         return ik;
     }
@@ -1718,9 +1756,8 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
             return;
 
         var head = rig.TryGetBone(QuadNode.Head);
-        if (head != null && !head.IsDestroyed)
+        if (head != null && !head.IsDestroyed && RemoveBodyCollider(head))
         {
-            RemoveBodyCollider(head);
             float radius = 0.08f;
             var neck = rig.TryGetBone(QuadNode.Neck0) ?? rig.TryGetBone(QuadNode.Chest);
             if (neck != null && !neck.IsDestroyed)
@@ -1762,7 +1799,8 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
     {
         if (proximal == null || proximal.IsDestroyed || distal == null || distal.IsDestroyed)
             return;
-        RemoveBodyCollider(proximal);
+        if (!RemoveBodyCollider(proximal))
+            return;
 
         var pg = proximal.GlobalPosition;
         var cg = distal.GlobalPosition;
@@ -1784,7 +1822,9 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
         capsule.Height.Value = worldLen / scale;
     }
 
-    private static void RemoveBodyCollider(Slot bone)
+    // False when a collider stays because this machine may not take it away: the host fits the colliders of an
+    // animal nobody wears, and a guest putting it on keeps those instead of throwing half way through. -xlinka
+    private static bool RemoveBodyCollider(Slot bone)
     {
         System.Collections.Generic.List<Slot>? toRemove = null;
         foreach (var child in bone.Children)
@@ -1792,11 +1832,24 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
             if (child.SlotName.Value == "BodyCollider")
                 (toRemove ??= new System.Collections.Generic.List<Slot>()).Add(child);
         }
-        if (toRemove != null)
+        if (toRemove == null)
+            return true;
+
+        bool cleared = true;
+        foreach (var c in toRemove)
         {
-            foreach (var c in toRemove)
+            if (MayDestroyHere(c))
                 c.Destroy();
+            else
+                cleared = false;
         }
+        return cleared;
+    }
+
+    private static bool MayDestroyHere(Slot slot)
+    {
+        var world = slot.World;
+        return world == null || world.IsAuthority || slot.IsMintedHere;
     }
 
     private static floatQ RotateUpTo(float3 to)
@@ -1818,6 +1871,8 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
     // spam per frame. -xlinka
     private void LogSolveDiagnostics(in QuadrupedIKSolver.ChassisTarget chassis, in QuadrupedIKSolver.HeadTarget head)
     {
+        if (!LumoraLogger.EnableDebug)
+            return;
         var sig = new System.Text.StringBuilder(64);
         for (int i = 0; i < QuadLimb.Count; i++)
         {
@@ -1920,7 +1975,7 @@ public class QuadrupedIK : Component, IAvatarEquipReceiver
                 line.Append(" plantedY=").Append(limb.Planted.y.ToString("F3"));
         }
 
-        LumoraLogger.Log(line.ToString());
+        LumoraLogger.Debug(line.ToString());
     }
 
     public void LogDiagnosticInfo()

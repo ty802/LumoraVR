@@ -37,8 +37,11 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable
 
     public readonly Sync<bool> SourceIsActive = new();
 
-    // Replicated equip state. Drive links below are derived from these.
+    // Replicated equip state. Drive links below are derived from these. A copy starts unworn, never on
+    // the wearer of the one it was copied from.
+    [DontCopy]
     protected readonly SyncRef<AvatarSocket> _objectSlot = null!;
+    [DontCopy]
     protected readonly SyncRef<Slot> _source = null!;
 
     // Drive links onto this slot's own transform. Declared members, so the link targets replicate and
@@ -83,15 +86,20 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable
     public override void OnChanges()
     {
         base.OnChanges();
-        // _source replicates; every peer derives its local drive links from it
-        // so remote bones are driven (and excluded from inbound field writes)
-        // exactly like local ones.
+        // _source replicates, and the machine that owns this driver aims the drive links from it; the links
+        // are replicated members themselves and reach every other peer the same way, so remote bones are
+        // driven (and excluded from inbound field writes) exactly like local ones. Every peer used to aim them
+        // the moment the equip state arrived, which on another user's avatar is a write that is not its to
+        // make. -xlinka
         RefreshDriveLinks();
     }
 
+    // Letting go of its own drives as it goes is part of being destroyed, which was already allowed; asked
+    // again of the gate, the host taking a departed guest's body down in a Social or Event world was refused.
     public override void OnDestroy()
     {
-        ReleaseDriveLinks();
+        using (World?.DataModelPermissions?.EnterSystemBypass())
+            ReleaseDriveLinks();
         AllowedEquipUser = null!;
         base.OnDestroy();
     }
@@ -120,7 +128,7 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable
         }
     }
 
-    // only assigns the synced refs; drive links follow on every peer via OnChanges
+    // only assigns the synced refs; the drive links follow from them on the machine that owns this
     public void Equip(AvatarSocket slot)
     {
         _objectSlot.Target = slot;
@@ -128,16 +136,20 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable
         RefreshDriveLinks();
     }
 
+    // The outputs are settled here, while the wearer still owns this. Left to the update, every machine would
+    // write them a frame later, after the avatar has already left its wearer. -xlinka
     public void Dequip()
     {
         _objectSlot.Target = null!;
         _source.Target = null!;
         RefreshDriveLinks();
+        SetOutput(IsTracking, false);
+        SetOutput(SourceIsTracking, false);
     }
 
     private void RefreshDriveLinks()
     {
-        if (Slot == null || IsDestroyed)
+        if (Slot == null || IsDestroyed || !MayAimLinks())
             return;
 
         // Assign only where nothing named a target yet - a link restored from a save or received from a
@@ -176,12 +188,21 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable
         }
     }
 
+    // The wearer, or whoever made this driver: the machines whose writes to it are theirs to make.
+    private bool MayAimLinks() => Slot.IsUnderLocalUser || IsMintedHere;
+
     private void ReleaseDriveLinks()
     {
-        _position.ReleaseLink();
-        _rotation.ReleaseLink();
-        _scale.ReleaseLink();
-        _active.ReleaseLink();
+        if (!MayAimLinks())
+            return;
+        if (_position.HasTarget)
+            _position.ReleaseLink();
+        if (_rotation.HasTarget)
+            _rotation.ReleaseLink();
+        if (_scale.HasTarget)
+            _scale.ReleaseLink();
+        if (_active.HasTarget)
+            _active.ReleaseLink();
     }
 
     public void AllowEquip(User user)
@@ -193,20 +214,26 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable
         AllowedEquipUser = user;
     }
 
-    // runs on every peer; results are written through local-only drives
+    // Runs on every peer; the pose is written through local-only drives. The tracking outputs and the links
+    // are synced members, written by the owner alone and received by everyone else: every peer used to write
+    // them, and a peer whose copy of the equip state had not resolved yet released the owner's links. -xlinka
     private void RunUpdate()
     {
         var equippingSlot = CurrentSocket;
+        bool mine = MayAimLinks();
         if (_source?.Target != null && equippingSlot != null && !equippingSlot.IsDestroyed)
         {
-            if (!_position.HasTarget || !_rotation.HasTarget)
+            if (mine && (!_position.HasTarget || !_rotation.HasTarget))
                 RefreshDriveLinks();
 
             var space = equippingSlot.GetFilteredPose(out var position, out var rotation, out var isTracking);
 
-            SetOutput(IsTracking, isTracking);
-            SetOutput(SourceIsTracking, equippingSlot.IsTracking.Value);
-            SetOutput(SourceIsActive, equippingSlot.IsActive.Value);
+            if (mine)
+            {
+                SetOutput(IsTracking, isTracking);
+                SetOutput(SourceIsTracking, equippingSlot.IsTracking.Value);
+                SetOutput(SourceIsActive, equippingSlot.IsActive.Value);
+            }
 
             // Pose is in user-root-local space. Full space conversion (not
             // position + rotation composition) so user scale is respected.
@@ -232,7 +259,7 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable
                 _active.SetValue(equippingSlot.Slot.ActiveSelf.Value);
             }
         }
-        else
+        else if (mine)
         {
             SetOutput(IsTracking, false);
             SetOutput(SourceIsTracking, false);

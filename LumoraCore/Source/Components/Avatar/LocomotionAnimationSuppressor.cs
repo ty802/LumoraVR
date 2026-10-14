@@ -32,22 +32,18 @@ public sealed class LocomotionAnimationSuppressor : UserRootComponent
         SuppressFeet = new Sync<bool>(this, false);
     }
 
-    // Is anything on this user root asking for quiet right now?
+    // Is anything on this user root asking for quiet right now? Read off the user root's registry, which
+    // every one of these is in, so asking every frame walks no tree and allocates nothing.
     public static bool IsSuppressed(Slot? slot, out bool feet)
     {
         feet = false;
-        var root = slot?.ActiveUserRoot?.Slot;
+        var root = slot?.ActiveUserRoot;
         if (root == null || root.IsDestroyed)
             return false;
 
-        bool hands = false;
-        foreach (var suppressor in root.GetComponentsInChildren<LocomotionAnimationSuppressor>())
-        {
-            if (suppressor.IsDestroyed || !suppressor.Enabled.Value || suppressor.Slot?.IsActive != true)
-                continue;
-            hands |= suppressor.SuppressHandMotion.Value;
-            feet |= suppressor.SuppressFeet.Value;
-        }
-        return hands;
+        feet = root.GetRegisteredComponent<LocomotionAnimationSuppressor>(static s => s.IsOn && s.SuppressFeet.Value) != null;
+        return root.GetRegisteredComponent<LocomotionAnimationSuppressor>(static s => s.IsOn && s.SuppressHandMotion.Value) != null;
     }
+
+    private bool IsOn => !IsDestroyed && Enabled.Value && Slot?.IsActive == true;
 }

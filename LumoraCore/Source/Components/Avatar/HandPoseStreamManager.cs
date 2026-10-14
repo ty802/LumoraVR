@@ -32,6 +32,7 @@ public class HandPoseStreamManager : UserRootComponent, IHandPoseSourceComponent
     private FloatQArrayValueStream _rotations = null!;
     private BoolValueStream _leftTracking = null!;
     private BoolValueStream _rightTracking = null!;
+    private User? _streamUser;
 
     public bool TracksMetacarpals => IsUnderLocalUser ? Live()?.TracksMetacarpals ?? false : Metacarpals.Value;
 
@@ -63,7 +64,9 @@ public class HandPoseStreamManager : UserRootComponent, IHandPoseSourceComponent
 
         EnsureStreams();
         var flag = side == Chirality.Left ? _leftTracking : _rightTracking;
-        return flag != null && flag.HasValidData && flag.Value;
+        return _rotations is { Active: true, HasValidData: true }
+            && _rotations.Count == HandPoseHelper.NodesPerHand * 2
+            && flag is { Active: true, HasValidData: true } && flag.Value;
     }
 
     public bool TryGetFingerPosition(BodyNode node, out float3 handLocalPosition)
@@ -101,12 +104,20 @@ public class HandPoseStreamManager : UserRootComponent, IHandPoseSourceComponent
 
     private void EnsureStreams()
     {
-        if (_rotations != null)
+        var user = Slot?.ActiveUserRoot?.ActiveUser;
+        // Stream objects and their names can arrive in separate sync batches. Finding rotations
+        // does not mean the tracking flags have arrived; retry until the whole set is resolved.
+        if (user == _streamUser && _rotations is { IsRemoved: false }
+            && _leftTracking is { IsRemoved: false } && _rightTracking is { IsRemoved: false })
             return;
 
-        var user = Slot?.ActiveUserRoot?.ActiveUser;
+        _streamUser = user;
         if (user == null)
+        {
+            _rotations = null!;
+            _leftTracking = _rightTracking = null!;
             return;
+        }
 
         if (IsUnderLocalUser)
         {

@@ -92,12 +92,18 @@ public class HandPoseDriver : UserRootComponent
     private bool _rigMetacarpals = true;
     private double _nextBindCheck = double.NegativeInfinity;
     private double _nextAssignAttempt = double.NegativeInfinity;
+    // The rigs above or below this slot as last searched, and the structure they were searched in: a hand on
+    // a body with no rig, or on a quadruped, looked for them again every frame.
+    private int _rigsSearchedAt = -1;
+    private HumanoidRig? _rigAround;
+    private QuadrupedRig? _quadrupedAround;
     private float3 _handForward = float3.Forward;
     private float3 _handUp = float3.Up;
     private float3 _handRight = float3.Right;
 
     private HandTool? _handTool;
     private double _nextHandToolScan = double.NegativeInfinity;
+    private readonly AvatarFaceWearer _wearer = new();
     private float _gripWeight;
     private FieldDrive<float>? _gripDrive;
     private const float GripBlendRate = 12f;
@@ -147,14 +153,21 @@ public class HandPoseDriver : UserRootComponent
 
     private void TryAssign()
     {
-        var rig = Slot?.GetComponentInParent<HumanoidRig>() ?? Slot?.GetComponentInChildren<HumanoidRig>();
+        int structure = Slot.StructureEpoch;
+        if (structure != _rigsSearchedAt)
+        {
+            _rigAround = Slot?.GetComponentInParent<HumanoidRig>() ?? Slot?.GetComponentInChildren<HumanoidRig>();
+            _quadrupedAround = Slot?.GetComponentInParent<QuadrupedRig>() ?? Slot?.GetComponentInChildren<QuadrupedRig>();
+            _rigsSearchedAt = structure;
+        }
+        var rig = _rigAround;
         if (rig == null || rig.IsDestroyed)
             return;
 
         // A quadruped keeps its HumanoidRig, so this would find paw digits and fight the quadruped
         // solver for them. The equip path no longer attaches one of these to a quadruped; this covers
         // the ones that arrive already attached inside an imported avatar. -xlinka
-        var quadruped = Slot?.GetComponentInParent<QuadrupedRig>() ?? Slot?.GetComponentInChildren<QuadrupedRig>();
+        var quadruped = _quadrupedAround;
         if (quadruped != null && !quadruped.IsDestroyed)
             return;
 
@@ -365,7 +378,7 @@ public class HandPoseDriver : UserRootComponent
                 _rigMetacarpals = distance >= float3.Distance(first.GlobalPosition, second.GlobalPosition);
         }
 
-        Logging.Logger.Log($"HandPoseDriver: {Side.Value} bound on '{handRoot.SlotName.Value}' forward={_handForward} up={_handUp} right={_handRight} metacarpals={_rigMetacarpals}");
+        Logging.Logger.Debug($"HandPoseDriver: {Side.Value} bound on '{handRoot.SlotName.Value}' forward={_handForward} up={_handUp} right={_handRight} metacarpals={_rigMetacarpals}");
         return true;
     }
 
@@ -558,8 +571,19 @@ public class HandPoseDriver : UserRootComponent
         _gripDrive.SetValue(_gripWeight);
     }
 
+    // The wearer's tool, never that of whoever's hierarchy the avatar sits in: a dropped or a held avatar
+    // closes its hand on nothing. -xlinka
     private HandTool? ResolveHandTool()
     {
+        if (_wearer.Update(Slot))
+        {
+            _handTool = null;
+            _nextHandToolScan = double.NegativeInfinity;
+        }
+        var rootSlot = _wearer.Current?.Slot;
+        if (rootSlot == null || rootSlot.IsDestroyed)
+            return null;
+
         if (_handTool != null && !_handTool.IsDestroyed && _handTool.Side.Value == Side.Value)
             return _handTool;
 
@@ -567,10 +591,6 @@ public class HandPoseDriver : UserRootComponent
         if (now < _nextHandToolScan)
             return null;
         _nextHandToolScan = now + 1.0;
-
-        var rootSlot = Slot?.ActiveUserRoot?.Slot;
-        if (rootSlot == null || rootSlot.IsDestroyed)
-            return null;
 
         var side = Side.Value;
         _handTool = rootSlot.GetComponentInChildren<HandTool>(t => t.Side.Value == side);

@@ -20,8 +20,7 @@ namespace Lumora.Core.Components.Avatar;
 // locomotion, head output, nameplate, avatar manager). Also serves as the
 // AvatarEquipManager.SocketFiller, supplying default head/hand visuals when
 // no custom avatar covers a body node. All behavior is gated by toggles so
-// a world can opt parts in or out. Replaces the old inline DefaultAVI-style
-// spawn. - xlinka
+// a world can opt parts in or out. - xlinka
 [ComponentCategory("Users/Avatar")]
 public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
 {
@@ -129,7 +128,7 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
             var collider = userSlot.AttachComponent<CapsuleCollider>();
             collider.Type.Value = ColliderType.CharacterController;
             collider.Height.Value = 1.8f;
-            collider.Radius.Value = 0.3f;
+            collider.Radius.Value = 0.275f;
             collider.Offset.Value = new float3(0, 0.9f, 0);
             var characterController = userSlot.AttachComponent<CharacterController>();
             // Body follows the head's ground projection so the collider stays
@@ -141,9 +140,14 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
         // and tails around. Costs nothing until a chain in the world asks for player collision, and
         // carries this user's own "keep my body out of other people's bones" toggle. -xlinka
         userSlot.AttachComponent<DynamicBonePlayerColliders>();
+        userSlot.AttachComponent<Lumora.Core.Components.Touch.UserContactSenders>();
 
+        // The two-grip self-scale goes wherever locomotion does: both move the user's own body.
         if (SetupLocomotion.Value)
+        {
             userSlot.AttachComponent<LocomotionController>();
+            userSlot.AttachComponent<SelfScaleGesture>();
+        }
 
         if (SetupHeadOutput.Value)
             userSlot.AttachComponent<HeadOutput>();
@@ -163,7 +167,7 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
         }
 
         OnAvatarSetupFinish?.Invoke(user!, avatarSlot!);
-        LumoraLogger.Log($"AvatarAssembler: Built scaffold for '{user?.UserName?.Value ?? "(null)"}'");
+        LumoraLogger.Debug($"AvatarAssembler: Built scaffold for '{user?.UserName?.Value ?? "(null)"}'");
     }
 
     // Built by the OWNING peer under its own (replicated) scaffold, minted in the owner's RefID byte so the
@@ -203,6 +207,8 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
             menuSlot.AttachComponent<Interaction.ToolContextActions>();
             menuSlot.AttachComponent<Interaction.GrabbedObjectContextActions>();
             menuSlot.AttachComponent<UserScaleContextActions>();
+            menuSlot.AttachComponent<BodyCalibrationContextActions>();
+            menuSlot.AttachComponent<HandViewfinder>();
             menuSlot.AttachComponent<UndoManager>();
             menuSlot.AttachComponent<UndoContextActions>();
         }
@@ -382,7 +388,7 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
         // now nothing logged when one was built - only when one equipped. A piece that is built and
         // fails to socket still carries an AvatarPoseDriver, so it rides the body node anyway and looks
         // exactly like a bug with no line in the log to explain it. -xlinka
-        LumoraLogger.Log("AvatarAssembler: built default BasicHead (grey sphere) to fill an empty Head socket");
+        LumoraLogger.Debug("AvatarAssembler: built default BasicHead (grey sphere) to fill an empty Head socket");
 
         piece.AttachComponent<AvatarPoseDriver>().Node.Value = BodyNode.Head;
         piece.AttachComponent<DiscardOnDequip>();
@@ -413,7 +419,7 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
 
     private static Slot BuildDefaultHand(AvatarEquipManager manager, BodyNode node)
     {
-        LumoraLogger.Log($"AvatarAssembler: built default {node} placeholder to fill an empty socket");
+        LumoraLogger.Debug($"AvatarAssembler: built default {node} placeholder to fill an empty socket");
         bool isLeft = node == BodyNode.LeftHand;
         var piece = manager.World.RootSlot.AddSlot(isLeft ? "BasicLeftHand" : "BasicRightHand");
         piece.Persistent.Value = false;

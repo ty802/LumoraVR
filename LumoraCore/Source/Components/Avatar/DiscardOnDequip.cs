@@ -12,6 +12,8 @@ namespace Lumora.Core.Components.Avatar;
 [ComponentCategory("Users/Avatar")]
 public class DiscardOnDequip : Component, IAvatarEquipReceiver
 {
+    private bool _wasEquipped;
+
     public void OnPreEquip(AvatarSocket slot) { }
 
     public void OnEquip(AvatarSocket slot) { }
@@ -29,5 +31,33 @@ public class DiscardOnDequip : Component, IAvatarEquipReceiver
                     Slot.Destroy();
             }
         });
+    }
+
+    // OnDequip runs only on the machine doing the equip, and only the authority may destroy the piece, so a
+    // guest's equip used to leave it lying in the world. The authority watches for it coming off instead. -xlinka
+    public override void OnUpdate(float delta)
+    {
+        base.OnUpdate(delta);
+        if (World?.IsAuthority != true || Slot == null || Slot.IsDestroyed)
+            return;
+
+        bool equipped = PieceEquipped();
+        if (_wasEquipped && !equipped)
+        {
+            using (World.DataModelPermissions?.EnterSystemBypass())
+                Slot.Destroy();
+            return;
+        }
+        _wasEquipped = equipped;
+    }
+
+    private bool PieceEquipped()
+    {
+        foreach (var component in Slot.Components)
+        {
+            if (component is IAvatarEquippable equippable && equippable.IsEquipped)
+                return true;
+        }
+        return false;
     }
 }

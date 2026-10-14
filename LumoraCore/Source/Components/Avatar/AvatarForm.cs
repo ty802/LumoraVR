@@ -22,10 +22,24 @@ public class AvatarForm : Component, IAvatarEquippable
     public readonly Sync<bool> IsActive = new();
 
     public readonly Sync<float3> Scale = new();
+    // One is a valid authored/calibrated scale, including on imported package avatars.
+    // A new model still needs to keep its unit-conversion transform until IK fits it.
+    public readonly Sync<bool> HasEquipScale = new();
 
     public BodyNode Node => BodyNode.Root;
     public int EquipPriority => int.MaxValue;
     public bool IsEquipped => CurrentSocket != null;
+
+    // The user wearing this avatar: the one whose Root socket holds it and names it as equipped. Held in a
+    // hand, standing in the world or nested inside somebody else's avatar is not worn. -xlinka
+    public UserRoot? Wearer
+    {
+        get
+        {
+            var socket = CurrentSocket;
+            return socket != null && ReferenceEquals(socket.Equipped.Target, this) ? socket.Slot?.ActiveUserRoot : null;
+        }
+    }
 
     public AvatarSocket CurrentSocket
     {
@@ -51,6 +65,13 @@ public class AvatarForm : Component, IAvatarEquippable
     }
 
     public User AllowedEquipUser { get; private set; } = null!;
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        if (Slot != null)
+            Slot.ActiveUserRootChanged += OnActiveUserRootChanged;
+    }
 
     public override void OnInit()
     {
@@ -90,8 +111,11 @@ public class AvatarForm : Component, IAvatarEquippable
         if (Slot.ActiveUserRoot != null)
             return;
 
+        // No hover ball: the laser reaches this target through the avatar's own body colliders, walking up
+        // from whatever it hit. A half-metre ball round the root stood at the feet, a metre across, and took
+        // every grab and point aimed anywhere near the avatar instead of the body itself. -xlinka
         var target = Slot.GetComponent<RayTarget>() ?? Slot.AttachComponent<RayTarget>();
-        target.HoverRadius.Value = 0.5f;
+        target.HoverRadius.Value = 0f;
         // Beat the root Grabbable for the laser's hovered target so a LEFT-click (use/interact) lands on this
         // RayTarget. Grab is GRIP/right-click and resolves the Grabbable by walking parents, so it's unaffected.
         target.InteractionPriority.Value = 10;
@@ -100,6 +124,16 @@ public class AvatarForm : Component, IAvatarEquippable
     }
 
     private void OnEquipRayActivated(float3 _) => ConfirmEquip();
+
+    // Taken off and left standing, it is an offer again. A machine that first saw it worn never hooked the
+    // target; the target itself is already there, put up by whoever first saw it in the world. -xlinka
+    private void OnActiveUserRootChanged(Slot _)
+    {
+        if (_equipTarget != null || Slot == null || Slot.IsDestroyed || Slot.ActiveUserRoot != null)
+            return;
+        if (Slot.GetComponent<RayTarget>() != null)
+            EnsureEquipTarget();
+    }
 
     // Left-click (use) on the avatar pops a small "Equip Avatar / Cancel" confirm, then equips.
     // Falls back to a direct equip if no context menu is available.
@@ -123,7 +157,7 @@ public class AvatarForm : Component, IAvatarEquippable
 
         // Idempotent: the activation can fire repeatedly while the laser sits on the avatar, and
         // re-opening rebuilds the whole menu visual every frame.
-        if (menu.IsOpen.Value)
+        if (menu.IsShown)
             return;
 
         // Anchor the confirm to the hand that OWNS the menu, so the camera-freeze / mouse-aim AND the opening-press
@@ -169,6 +203,8 @@ public class AvatarForm : Component, IAvatarEquippable
 
     public override void OnDestroy()
     {
+        if (Slot != null)
+            Slot.ActiveUserRootChanged -= OnActiveUserRootChanged;
         if (_equipTarget != null && !_equipTarget.IsDestroyed)
             _equipTarget.Activated -= OnEquipRayActivated;
         _equipTarget = null!;
@@ -182,12 +218,10 @@ public class AvatarForm : Component, IAvatarEquippable
         Slot.SetParent(slot.Slot);
         Slot.LocalPosition.Value = float3.Zero;
         Slot.LocalRotation.Value = floatQ.Identity;
-        // Only restore a CALIBRATED scale. Scale defaults to One and is only set once AvatarIK.MaybeRescaleAvatar
-        // has fit the avatar to the user. On the FIRST equip it's still One - writing that here would discard the
-        // import-compensation scale (which cancels the FBX armature's ~54x) and the avatar renders massive. Keep
-        // the existing LocalScale until the rescale provides a real value. -xlinka
+        // Restore authored package scales as well as IK calibration, even when they are One.
+        // Older saved avatars lack the flag; keep recognizing their non-unit calibration.
         var sc = Scale.Value;
-        bool calibrated = System.MathF.Abs(sc.x - 1f) > 1e-5f
+        bool calibrated = HasEquipScale.Value || System.MathF.Abs(sc.x - 1f) > 1e-5f
                        || System.MathF.Abs(sc.y - 1f) > 1e-5f
                        || System.MathF.Abs(sc.z - 1f) > 1e-5f;
         if (calibrated)
@@ -196,6 +230,12 @@ public class AvatarForm : Component, IAvatarEquippable
         Owner.Target = slot.Slot.ActiveUserRoot;
         Slot.ActiveSelf.Value = true;
         IsActive.Value = true;
+    }
+
+    public void SetEquipScale(float3 scale)
+    {
+        Scale.Value = scale;
+        HasEquipScale.Value = true;
     }
 
     public void Dequip()

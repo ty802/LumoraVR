@@ -12,6 +12,7 @@ using Lumora.Core.Components.Avatar.IK;
 using Lumora.Core.Components.Import;
 using Lumora.Core.Components.Interaction;
 using Lumora.Core.Components.UI;
+using Lumora.Core.Components.Utility;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
@@ -74,9 +75,14 @@ public sealed class AvatarStudio : Component
 
     // The panel's live readout and the buttons it gates. Aligning to a rig that is not under the
     // markers used to be a silent no-op with a line in the log; now the buttons say so themselves.
-    private Text? _statusText;
+    // Synced refs, so every machine and every reload finds the same panel. -xlinka
+    private readonly SyncRef<Slot> _controls = new();
+    private readonly SyncRef<Text> _statusText = new();
+    private readonly SyncRefList<Button> _needsHead = new();
+    private readonly SyncRefList<Button> _needsRig = new();
+    private readonly SyncRefList<Button> _togglePills = new();
     private UITheme? _panelTheme;
-    private readonly List<(Button button, bool needsHead)> _gated = new();
+    private PanelShell? _wiredPanel;
     private float _statusPoll;
     private bool _lastReady;
     private bool _lastRigFound;
@@ -97,42 +103,66 @@ public sealed class AvatarStudio : Component
     private readonly SyncRef<Slot> _leftGrabAnchorProxy = new();
     private readonly SyncRef<Slot> _rightGrabAnchorProxy = new();
 
-    private bool _built;
-
+    // Every machine starts a received component, so these are written by the one that made it.
     public override void OnInit()
     {
         base.OnInit();
+        if (!IsMintedHere)
+            return;
         CalibrateFeet.Value = false;
         CalibratePelvis.Value = false;
         SetupEyes.Value = true;
+        ShowDirections.Value = true; // forward arrows on by default so orientation is visible while building
     }
 
     public override void OnStart()
     {
         base.OnStart();
 
-        ShowDirections.Value = true; // forward arrows on by default so orientation is visible while building
-
-        AnchorToUser();
-        BuildMarkers();
-        BuildControlPanel();
-
-        CalibrateFeet.OnChanged += _ => RefreshOptionalMarkers();
-        CalibratePelvis.OnChanged += _ => RefreshOptionalMarkers();
-        ShowDirections.OnChanged += _ => RefreshDirectionArrows();
-        ShowToolAnchors.OnChanged += _ => RefreshOptionalMarkers();
+        CalibrateFeet.OnChanged += _ => React(RefreshOptionalMarkers);
+        CalibratePelvis.OnChanged += _ => React(RefreshOptionalMarkers);
+        SetupEyes.OnChanged += _ => React(null);
+        ShowDirections.OnChanged += _ => React(RefreshDirectionArrows);
+        ShowToolAnchors.OnChanged += _ => React(RefreshOptionalMarkers);
 
         // Flipping the mode swaps the whole marker set: six for a biped, seven for a quadruped, and
         // different bodies. Rebuilt rather than hidden, because a stale RightHand marker sitting inside
         // a fox is worse than no marker at all. Anything the user had dragged is discarded with it,
         // which is why this is a deliberate toggle and not something detection flips underneath them.
-        QuadrupedMode.OnChanged += _ => RebuildMarkersForMode();
+        QuadrupedMode.OnChanged += _ => React(RebuildMarkersForMode);
+
+        // Built once, by the machine that made the studio: everyone it reaches, and every reload, finds
+        // the markers and the panel already there. A studio saved before the panel kept synced refs gets
+        // a new panel in place of the old one.
+        if (!IsMintedHere)
+            return;
+        if (_headProxy.Target == null)
+        {
+            AnchorToUser();
+            BuildMarkers();
+        }
+        if (_controls.Target == null)
+        {
+            Slot.FindChild("Controls", recursive: false)?.Destroy();
+            BuildControlPanel();
+        }
 
         // No snapping to whatever model happens to be nearby. With more than one avatar in the world
         // that is a coin toss, and it moves markers the user never asked to move. The figure stands
         // where it spawns; you drag it onto the model you mean, or press Align once it is there. -xlinka
         RefreshOptionalMarkers();
         RefreshDirectionArrows();
+        PaintToggles();
+    }
+
+    // A setting changed, by a press on any machine: the host answers it, once, being the one machine
+    // that is always there and may write to any of the studio.
+    private void React(Action? change)
+    {
+        if (World?.IsAuthority != true)
+            return;
+        change?.Invoke();
+        PaintToggles();
     }
 
     // Stand the figure on the floor in front of the local user, facing them, so the markers overlay an
@@ -174,9 +204,8 @@ public sealed class AvatarStudio : Component
             return;
         }
 
-        if (_built)
+        if (_headProxy.Target != null)
             return;
-        _built = true;
 
         // Standing layout for an average humanoid (head ~1.8m); TryAutoAlignToRig then snaps every marker onto
         // the imported model's bones so short/tall rigs land right. The arrow direction is per-part: head/feet/
@@ -275,13 +304,6 @@ public sealed class AvatarStudio : Component
                 slot.Destroy();
             proxy.Target = null!;
         }
-
-        // The biped set latches _built so OnStart cannot double-build it, and only the biped path latches
-        // (the quadruped path returns before the check). Nothing cleared it here, so biped -> quadruped
-        // -> biped tore the biped markers down, took the quadruped path, then hit the stale latch on the
-        // way back and built NOTHING: an empty studio with a live panel. The markers are gone as of the
-        // loop above, so the latch is stale by definition at this point. -xlinka
-        _built = false;
 
         BuildMarkers();
         RefreshOptionalMarkers();
@@ -681,6 +703,7 @@ public sealed class AvatarStudio : Component
     private void BuildControlPanel()
     {
         var panelSlot = Slot.AddSlot("Controls");
+        _controls.Target = panelSlot;
         panelSlot.LocalPosition.Value = new float3(0.7f, 1.15f, 0f);
         panelSlot.LocalScale.Value = float3.One * CanvasScale;
         // The tool root faces the user (its -Z points at them so the figure looks back), and the canvas reads
@@ -728,7 +751,6 @@ public sealed class AvatarStudio : Component
         panel.AllowGrab.Value = true;
         panel.Scalable.Value = false;
         theme.ApplyTo(panel);
-        panel.CloseRequested += _ => Slot.Destroy();
 
         var content = panel.ContentSlot!;
         var b = new UIBuilder(content);
@@ -750,50 +772,88 @@ public sealed class AvatarStudio : Component
         // What the tool is waiting for, in its own words. Two lines of room so the longer states do
         // not clip, and dim so the buttons under it stay the loud thing.
         SetRowHeight(b, 44f);
-        _statusText = b.Text("Looking for a model...", 14f, DashTheme.TextDim);
-        _statusText.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
-        _statusText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        var status = b.Text("Looking for a model...", 14f, DashTheme.TextDim);
+        status.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+        status.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        _statusText.Target = status;
 
         // HEAD. Center Head sets the position; the three axis buttons snap the view frame's forward,
         // up and right onto the head bone's nearest axis, so an oddly authored skull still gives a
         // clean upright view.
         AddSectionLabel(b, "HEAD");
         SetRowHeight(b, 38f);
-        Gate(b.Button("Center Head", (_, _) => AlignHeadPosition(), DashTheme.SurfaceHover), needsHead: true);
+        Gate(b.Button("Center Head", OnCenterHead, DashTheme.SurfaceHover), needsHead: true);
 
         SetRowHeight(b, 38f);
         var axes = SplitRow(b, 3);
-        Gate(CellButton(b, axes[0], "Fwd", () => AlignHeadAxis(forward: true, up: false, right: false), DashTheme.SurfaceHover), needsHead: true);
-        Gate(CellButton(b, axes[1], "Up", () => AlignHeadAxis(forward: false, up: true, right: false), DashTheme.SurfaceHover), needsHead: true);
-        Gate(CellButton(b, axes[2], "Right", () => AlignHeadAxis(forward: false, up: false, right: true), DashTheme.SurfaceHover), needsHead: true);
+        Gate(CellButton(b, axes[0], "Fwd", OnHeadForward, DashTheme.SurfaceHover), needsHead: true);
+        Gate(CellButton(b, axes[1], "Up", OnHeadUp, DashTheme.SurfaceHover), needsHead: true);
+        Gate(CellButton(b, axes[2], "Right", OnHeadRight, DashTheme.SurfaceHover), needsHead: true);
 
         // LIMBS.
         AddSectionLabel(b, "LIMBS");
         SetRowHeight(b, 38f);
         var limbs = SplitRow(b, 2);
-        Gate(CellButton(b, limbs[0], "Hands", AlignHands, DashTheme.SurfaceHover), needsHead: true);
-        Gate(CellButton(b, limbs[1], "Body", AlignBody, DashTheme.SurfaceHover), needsHead: true);
+        Gate(CellButton(b, limbs[0], "Hands", OnHands, DashTheme.SurfaceHover), needsHead: true);
+        Gate(CellButton(b, limbs[1], "Body", OnBody, DashTheme.SurfaceHover), needsHead: true);
 
         SetRowHeight(b, 42f);
-        Gate(b.Button("Align All", (_, _) => AlignMarkersToRig(), DashTheme.Accent), needsHead: true);
+        Gate(b.Button("Align All", OnAlignAll, DashTheme.Accent), needsHead: true);
 
         // Ungated on purpose: this one squares the anchors against their own hand markers and never looks
         // at the model, so there is nothing for a missing rig to break. Rounded by hand since Gate, which
         // normally does it, is what we are skipping.
         SetRowHeight(b, 38f);
-        Round(b.Button("Align Tool Anchors", (_, _) => AlignToolAnchors(), DashTheme.SurfaceHover), DashTheme.RadiusControl);
+        Round(b.Button("Align Tool Anchors", OnToolAnchors, DashTheme.SurfaceHover), DashTheme.RadiusControl);
 
         SetRowHeight(b, 50f);
-        Gate(b.Button("Create Avatar", (_, _) => RunCreate(), DashTheme.Positive), needsHead: true);
+        var create = b.Button("Create Avatar", OnCreate, DashTheme.Positive);
+        // Strips the handles and takes the studio down, with no undo.
+        create.ActOnRelease.Value = true;
+        Gate(create, needsHead: true);
 
         AddSectionLabel(b, "OPTIONS");
-        AddToggleRow(b, "Calibrate feet", CalibrateFeet);
-        AddToggleRow(b, "Calibrate pelvis", CalibratePelvis);
-        AddToggleRow(b, "Set up eyes", SetupEyes);
-        AddToggleRow(b, "Show directions", ShowDirections);
-        AddToggleRow(b, "Show tool anchors", ShowToolAnchors);
-        AddToggleRow(b, "Quadruped", QuadrupedMode);
+        foreach (var (label, state) in ToggleRows)
+            AddToggleRow(b, label, state);
     }
+
+    // The panel's options, in the order their pills are kept.
+    private (string Label, Sync<bool> State)[] ToggleRows => new[]
+    {
+        ("Calibrate feet", CalibrateFeet),
+        ("Calibrate pelvis", CalibratePelvis),
+        ("Set up eyes", SetupEyes),
+        ("Show directions", ShowDirections),
+        ("Show tool anchors", ShowToolAnchors),
+        ("Quadruped", QuadrupedMode),
+    };
+
+    // A press runs on the machine of whoever pressed, so every button is bound to a method each machine
+    // will bind; a lambda is bound by the machine that built the panel and refused by every other. -xlinka
+    [SyncMethod] private void OnCenterHead(Button button, UIInteractionContext context) => AlignHeadPosition();
+    [SyncMethod] private void OnHeadForward(Button button, UIInteractionContext context) => AlignHeadAxis(forward: true, up: false, right: false);
+    [SyncMethod] private void OnHeadUp(Button button, UIInteractionContext context) => AlignHeadAxis(forward: false, up: true, right: false);
+    [SyncMethod] private void OnHeadRight(Button button, UIInteractionContext context) => AlignHeadAxis(forward: false, up: false, right: true);
+    [SyncMethod] private void OnHands(Button button, UIInteractionContext context) => AlignHands();
+    [SyncMethod] private void OnBody(Button button, UIInteractionContext context) => AlignBody();
+    [SyncMethod] private void OnAlignAll(Button button, UIInteractionContext context) => AlignMarkersToRig();
+    [SyncMethod] private void OnToolAnchors(Button button, UIInteractionContext context) => AlignToolAnchors();
+    [SyncMethod] private void OnCreate(Button button, UIInteractionContext context) => RunCreate();
+
+    // The close button raises its event on the machine that pressed it, so every machine listens.
+    private void WirePanel()
+    {
+        var panel = _controls.Target?.GetComponent<PanelShell>();
+        if (ReferenceEquals(panel, _wiredPanel))
+            return;
+        if (_wiredPanel != null)
+            _wiredPanel.CloseRequested -= OnCloseRequested;
+        _wiredPanel = panel;
+        if (panel != null)
+            panel.CloseRequested += OnCloseRequested;
+    }
+
+    private void OnCloseRequested(PanelShell panel) => Slot.Destroy();
 
     // A quiet heading over each group, in the dash's muted label colour.
     private static void AddSectionLabel(UIBuilder b, string text)
@@ -825,10 +885,10 @@ public sealed class AvatarStudio : Component
     // 100x100 box in the middle of its parent, so the pills came out three rows tall and hanging over
     // the edge of the panel and the labels sat nowhere near their buttons. Anything that goes in a
     // cell is told to fill it. -xlinka
-    private Button CellButton(UIBuilder b, RectTransform cell, string label, Action pressed, in color fill)
+    private Button CellButton(UIBuilder b, RectTransform cell, string label, Action<Button, UIInteractionContext>? pressed, in color fill)
     {
         b.NestInto(cell);
-        var button = b.Button(label, (_, _) => pressed(), fill);
+        var button = b.Button(label, pressed, fill);
         FillToParent(button.Slot);
         b.NestOut();
         return button;
@@ -851,7 +911,7 @@ public sealed class AvatarStudio : Component
     {
         if (button == null || button.IsDestroyed)
             return;
-        _gated.Add((button, needsHead));
+        (needsHead ? _needsHead : _needsRig).Add(button);
         Round(button, DashTheme.RadiusControl);
 
         // A Button paints its own disabled state from a derived flat grey. Against this panel that
@@ -877,7 +937,13 @@ public sealed class AvatarStudio : Component
     public override void OnCommonUpdate()
     {
         base.OnCommonUpdate();
-        if (_statusText == null || _statusText.IsDestroyed)
+        WirePanel();
+
+        // The host keeps the readout and the gates, so there is one writer whoever is looking.
+        if (World?.IsAuthority != true)
+            return;
+        var status = _statusText.Target;
+        if (status == null || status.IsDestroyed)
             return;
 
         _rigSearchBackoff -= World?.Time?.Delta ?? 0f;
@@ -897,17 +963,21 @@ public sealed class AvatarStudio : Component
         _lastReady = ready;
         _lastRigFound = rigFound;
 
-        _statusText.Content.Value = !rigFound
+        status.Content.Value = !rigFound
             ? "No rigged model in this world.\nImport one, then line the markers up."
             : !headOnRig
                 ? "Model found. Put the head marker\non its head to switch these on."
                 : "Ready: align what you need, then Create.";
 
-        foreach (var (button, needsHead) in _gated)
+        foreach (var button in _needsHead)
         {
-            if (button == null || button.IsDestroyed)
-                continue;
-            button.Interactable.Value = needsHead ? ready : rigFound;
+            if (button != null && !button.IsDestroyed)
+                button.Interactable.Value = ready;
+        }
+        foreach (var button in _needsRig)
+        {
+            if (button != null && !button.IsDestroyed)
+                button.Interactable.Value = rigFound;
         }
     }
 
@@ -1214,7 +1284,7 @@ public sealed class AvatarStudio : Component
 
         RefreshOptionalMarkers();
         RefreshDirectionArrows();
-        LumoraLogger.Log($"AvatarStudio: auto-aligned markers from computed references on '{avatar.SlotName.Value}'");
+        LumoraLogger.Debug($"AvatarStudio: auto-aligned markers from computed references on '{avatar.SlotName.Value}'");
     }
 
     private QuadrupedRig? ResolveQuadRig(Slot avatar, HumanoidRig rig)
@@ -1305,11 +1375,19 @@ public sealed class AvatarStudio : Component
         var cells = SplitRow(b, 2, new[] { 0.74f, 0.26f });
         CellText(b, cells[0], label, 14f, DashTheme.Text, TextHorizontalAlignment.Left);
 
-        var pill = CellButton(b, cells[1], state.Value ? "On" : "Off", () => state.Value = !state.Value, DashTheme.Surface);
+        var pill = CellButton(b, cells[1], state.Value ? "On" : "Off", null, DashTheme.Surface);
+        pill.Slot.AttachComponent<PressToggle>().TargetValue.Target = state;
         Round(pill, 14f);
         PaintToggle(pill, state.Value);
-        // Follow the value, not the press: the optional-marker refresh flips these too. -xlinka
-        state.OnChanged += _ => PaintToggle(pill, state.Value);
+        _togglePills.Add(pill);
+    }
+
+    // Each pill follows its value, not the press: the optional-marker refresh flips these too. -xlinka
+    private void PaintToggles()
+    {
+        var rows = ToggleRows;
+        for (int i = 0; i < _togglePills.Count && i < rows.Length; i++)
+            PaintToggle(_togglePills[i], rows[i].State.Value);
     }
 
     private void Round(Button? button, float radius)
@@ -1416,7 +1494,7 @@ public sealed class AvatarStudio : Component
         {
             var forced = avatar.AttachComponent<QuadrupedRig>();
             forced.PopulateFromSkeleton(skeleton);
-            LumoraLogger.Log(
+            LumoraLogger.Debug(
                 $"AvatarStudio: quadruped mode - built a QuadrupedRig with {forced.Bones.Count} bones mapped "
                 + $"(IsQuadruped={forced.IsQuadruped}), bypassing pose detection");
         }
@@ -1473,7 +1551,7 @@ public sealed class AvatarStudio : Component
             avatar.AttachComponent<BreathingDriver>();
 
         (avatar.GetComponent<AvatarForm>() ?? avatar.AttachComponent<AvatarForm>()).EnsureEquipTarget();
-        LumoraLogger.Log($"AvatarStudio: created avatar '{avatar.SlotName.Value}' - click it to equip");
+        LumoraLogger.Debug($"AvatarStudio: created avatar '{avatar.SlotName.Value}' - click it to equip");
         Slot.Destroy();
     }
 
@@ -1611,7 +1689,7 @@ public sealed class AvatarStudio : Component
         {
             rig = skeleton.Slot.AttachComponent<HumanoidRig>();
             rig.PopulateFromSkeleton(skeleton);
-            LumoraLogger.Log($"AvatarStudio: built a HumanoidRig from '{skeleton.Slot.SlotName.Value}' (IsHumanoid={rig.IsHumanoid}, {rig.Bones.Count} bones)");
+            LumoraLogger.Debug($"AvatarStudio: built a HumanoidRig from '{skeleton.Slot.SlotName.Value}' (IsHumanoid={rig.IsHumanoid}, {rig.Bones.Count} bones)");
         }
         return rig.Bones.Count > 0 ? rig : null;
     }

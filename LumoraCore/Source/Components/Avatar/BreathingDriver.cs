@@ -7,16 +7,12 @@ using Lumora.Core;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Drives an avatar's authored breathing blendshape (chest/belly rise), when it has one, on the same
-/// rhythm as the solver's bone breathing so mesh and skeleton inhale together. Runs locally on every
-/// peer (weights derive from world time, no sync churn). Avatars without a breath shape are a no-op;
-/// the bone breathing still carries them.
-/// </summary>
+// Runs locally on every peer: weights come from world time, so nothing syncs. An avatar without a breath
+// shape is a no-op; the bone breathing still carries it.
 [ComponentCategory("Users/Avatar/Face")]
 public sealed class BreathingDriver : Component
 {
-    /// <summary>0 disables, 1 = full authored shape at peak inhale.</summary>
+    // 0 disables, 1 = full authored shape at peak inhale.
     public readonly Sync<float> Amount = new();
 
     // Same rhythm constants as the solver's bone breathing, so skin and skeleton stay in phase.
@@ -26,6 +22,7 @@ public sealed class BreathingDriver : Component
 
     private readonly List<(SkinnedMeshRenderer Renderer, int Index)> _targets = new();
     private bool _resolved;
+    private readonly AvatarFaceWearer _wearer = new();
 
     public override void OnInit()
     {
@@ -36,6 +33,11 @@ public sealed class BreathingDriver : Component
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+
+        if (_wearer.Update(Slot))
+            Release();
+        if (_wearer.Current == null)
+            return;
 
         if (!_resolved)
             Resolve();
@@ -58,6 +60,39 @@ public sealed class BreathingDriver : Component
             }
             renderer.DriveBlendShapeWeight(index, weight);
         }
+    }
+
+    private void Release()
+    {
+        foreach (var (renderer, index) in _targets)
+        {
+            if (renderer != null && !renderer.IsDestroyed)
+                renderer.ReleaseBlendShape(index, this);
+        }
+        _targets.Clear();
+        _resolved = false;
+    }
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        if (Slot != null)
+            Slot.ActiveChanged += OnSlotActiveChanged;
+    }
+
+    // Switched off, it stops updating and would never see anything else change, so it lets go now.
+    private void OnSlotActiveChanged(Slot slot)
+    {
+        if (Slot != null && !Slot.IsActive)
+            Release();
+    }
+
+    public override void OnDestroy()
+    {
+        if (Slot != null)
+            Slot.ActiveChanged -= OnSlotActiveChanged;
+        Release();
+        base.OnDestroy();
     }
 
     private void Resolve()

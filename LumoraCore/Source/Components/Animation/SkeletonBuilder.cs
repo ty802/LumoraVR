@@ -51,6 +51,8 @@ public class SkeletonBuilder : ImplementableComponent
         RootBone.OnChanged += (field) => BoneHierarchyChanged = true;
         BoneNames.OnChanged += (list) => BoneHierarchyChanged = true;
         BoneSlots.OnChanged += (list) => BoneHierarchyChanged = true;
+        RestPoseTransforms.OnChanged += (list) => BoneHierarchyChanged = true;
+        IsBuilt.OnChanged += (field) => BoneHierarchyChanged = true;
 
         LumoraLogger.Debug($"SkeletonBuilder: Awake on slot '{Slot.SlotName.Value}'");
     }
@@ -58,7 +60,7 @@ public class SkeletonBuilder : ImplementableComponent
     public override void OnStart()
     {
         base.OnStart();
-        LumoraLogger.Log($"SkeletonBuilder: Started on slot '{Slot.SlotName.Value}'");
+        LumoraLogger.Debug($"SkeletonBuilder: Started on slot '{Slot.SlotName.Value}'");
     }
 
     public override void OnUpdate(float delta)
@@ -71,8 +73,8 @@ public class SkeletonBuilder : ImplementableComponent
             RunApplyChanges();
         }
 
-        // Clear the flag AFTER registering for hook update
-        BoneHierarchyChanged = false;
+        // The hook consumes BoneHierarchyChanged when it actually rebuilds. Hook work is budgeted
+        // and may run in a later frame; clearing here loses late-arriving bones/rest poses.
     }
 
     public override void OnDestroy()
@@ -101,7 +103,7 @@ public class SkeletonBuilder : ImplementableComponent
         IsBuilt.Value = true;
         BoneHierarchyChanged = true;
 
-        LumoraLogger.Log($"SkeletonBuilder: Built skeleton with {BoneNames.Count} bones from root '{rootBone.SlotName.Value}'");
+        LumoraLogger.Debug($"SkeletonBuilder: Built skeleton with {BoneNames.Count} bones from root '{rootBone.SlotName.Value}'");
     }
 
     // bones must be added in hierarchical order, parent before children
@@ -189,4 +191,3 @@ public class SkeletonBuilder : ImplementableComponent
         return translationMatrix * rotationMatrix * scaleMatrix;
     }
 }
-

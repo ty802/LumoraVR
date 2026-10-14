@@ -36,6 +36,11 @@ public class Animator : Component, ICustomInspectorUI, IPlayable
     // one entry per bound channel
     public readonly SyncList<AnimationBinding> Bindings;
 
+    // With any set, the clip plays only while one of them is on, and while all are off every bound field
+    // sits at the value it had before the clip first moved it: a tail that wags while its switch is on and
+    // comes back to rest when it is not. -xlinka
+    public readonly SyncRefList<IField<bool>> Switches;
+
     // Typed writers, rebuilt whenever the clip or the binding list changes. Never persisted: they are
     // derived from the clip plus the bindings, both of which replicate.
     private readonly List<ITrackBinder> _binders = new();
@@ -60,6 +65,7 @@ public class Animator : Component, ICustomInspectorUI, IPlayable
         Clip = new AssetRef<AnimationAsset>(this);
         Playback = new SyncPlayback();
         Bindings = new SyncList<AnimationBinding>();
+        Switches = new SyncRefList<IField<bool>>(this);
     }
 
     public AnimationClip? CurrentClip => Clip.Asset?.Clip;
@@ -182,11 +188,32 @@ public class Animator : Component, ICustomInspectorUI, IPlayable
             return;
         }
 
+        if (Switches.Count > 0 && !AnySwitchOn())
+        {
+            for (int i = 0; i < _binders.Count; i++)
+            {
+                _binders[i].ApplyRest();
+            }
+            return;
+        }
+
         float time = Playback.Position;
         for (int i = 0; i < _binders.Count; i++)
         {
             _binders[i].Apply(time);
         }
+    }
+
+    private bool AnySwitchOn()
+    {
+        for (int i = 0; i < Switches.Count; i++)
+        {
+            if (Switches[i] is { } field && field.Value)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     // LEGACY SAVES
@@ -284,7 +311,7 @@ public class Animator : Component, ICustomInspectorUI, IPlayable
         }
 
         _bindersValid = false;
-        LumoraLogger.Log($"Animator.AutoBind: bound {bound}/{clip.TrackCount} tracks under '{root.SlotName.Value}'");
+        LumoraLogger.Debug($"Animator.AutoBind: bound {bound}/{clip.TrackCount} tracks under '{root.SlotName.Value}'");
         return bound;
     }
 
@@ -389,7 +416,7 @@ public class Animator : Component, ICustomInspectorUI, IPlayable
             }
 
             var binder = CreateBinder(field.ValueType);
-            if (binder == null || !binder.Setup(binding.Target, field, clip[trackIndex]))
+            if (binder == null || !binder.Setup(binding, field, clip[trackIndex]))
             {
                 _unboundCount++;
                 continue;
@@ -410,8 +437,9 @@ public class Animator : Component, ICustomInspectorUI, IPlayable
 
     private interface ITrackBinder
     {
-        bool Setup(AnyFieldDrive drive, IField field, AnimationTrack track);
+        bool Setup(AnimationBinding binding, IField field, AnimationTrack track);
         void Apply(float time);
+        void ApplyRest();
     }
 
     private sealed class TrackBinder<T> : ITrackBinder
@@ -419,17 +447,33 @@ public class Animator : Component, ICustomInspectorUI, IPlayable
         private AnyFieldDrive _drive = null!;
         private SyncField<T> _field = null!;
         private IAnimationTrack<T> _track = null!;
+        private T _rest = default!;
 
-        public bool Setup(AnyFieldDrive drive, IField field, AnimationTrack track)
+        public bool Setup(AnimationBinding binding, IField field, AnimationTrack track)
         {
             if (field is not SyncField<T> typedField || track is not IAnimationTrack<T> typedTrack)
             {
                 return false;
             }
-            _drive = drive;
+            _drive = binding.Target;
             _field = typedField;
             _track = typedTrack;
+            // Taken once, the first time this binding meets its field, before anything has been written.
+            if (binding.Rest is not T rest)
+            {
+                rest = typedField.Value;
+                binding.Rest = rest;
+            }
+            _rest = rest;
             return true;
+        }
+
+        public void ApplyRest()
+        {
+            if (_drive.IsLinkValid && !_field.IsDestroyed)
+            {
+                _field.SetDrivenValueLocal(_rest);
+            }
         }
 
         public void Apply(float time)

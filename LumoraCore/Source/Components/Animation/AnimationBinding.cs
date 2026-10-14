@@ -22,6 +22,10 @@ public sealed class AnimationBinding : SyncElement
     // replicates and persists like any other link
     public readonly AnyFieldDrive Target = new();
 
+    // The field's own value from before the clip first drove it, for an animator that hands its fields back
+    // while it is switched off. Runtime only: every peer reads it off the same replicated field.
+    internal object? Rest;
+
     public override void Initialize(World world, IWorldElement? parent)
     {
         base.Initialize(world, parent);

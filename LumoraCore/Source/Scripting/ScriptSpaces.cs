@@ -18,12 +18,27 @@ internal static class ScriptSpaces
 
     public static float4x4 ToWorld(Slot? space) => space?.LocalToWorld ?? float4x4.Identity;
 
+    // The slot's own kept inverse, unless something on its way up is flattened or nearly so: there each level
+    // is undone in turn, a flattened axis left as it is. The walk took a matrix inverse and three products
+    // a level, on every conversion a script asked for.
     public static float4x4 FromWorld(Slot? space)
     {
+        if (space == null)
+            return float4x4.Identity;
+        if (Unflattened(space.GlobalScale))
+            return space.WorldToLocal;
         var matrix = float4x4.Identity;
         for (var level = space; level != null; level = level.Parent)
             matrix = matrix * Undo(level);
         return matrix;
+    }
+
+    private static bool Unflattened(float3 scale)
+    {
+        float x = System.MathF.Abs(scale.x), y = System.MathF.Abs(scale.y), z = System.MathF.Abs(scale.z);
+        float least = System.MathF.Min(x, System.MathF.Min(y, z));
+        float most = System.MathF.Max(x, System.MathF.Max(y, z));
+        return float.IsFinite(most) && least > 1e-12f && least >= most * 1e-4f;
     }
 
     // From one space into the other, as one matrix.

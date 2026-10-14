@@ -17,7 +17,9 @@ namespace Lumora.Core.Scripting;
 // group holds by then.
 //
 // Nothing moves unless every move may be made, since a refusal halfway would leave a graph split. A group
-// someone has wired across since is not taken apart again: that undo leaves the two together. -xlinka
+// someone has wired across since is not taken apart again: that undo leaves the two together. A property
+// node that comes into a shader graph under a name the graph already uses is renamed in the same step, and
+// gets its name back with the undo. -xlinka
 internal sealed class ScriptMergeUndo : IUndoBatch, IUndoTargetQuery
 {
     private sealed class Move
@@ -35,6 +37,7 @@ internal sealed class ScriptMergeUndo : IUndoBatch, IUndoTargetQuery
     private readonly ScriptGraphSpace _from;
     private readonly Slot _group;
     private readonly List<Move> _moves = new();
+    private List<IUndoBatch> _renames = new();
     private SlotExistenceUndoBatch? _parked;
 
     private ScriptMergeUndo(ScriptGraphSpace into, ScriptGraphSpace from, Slot group)
@@ -171,10 +174,25 @@ internal sealed class ScriptMergeUndo : IUndoBatch, IUndoTargetQuery
             if (slot.LocalScale.Value != float3.One)
                 slot.LocalScale.Value = float3.One;
         }
+        var came = new List<ScriptGraphNode>(_moves.Count);
+        foreach (var move in _moves)
+            came.Add(move.Node);
+        _renames = ScriptGraphEditing.EnsureUniquePropertyNames(_into, came);
     }
 
     private void TakeBack()
     {
+        for (int i = _renames.Count - 1; i >= 0; i--)
+        {
+            try
+            {
+                _renames[i].Undo();
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+        _renames.Clear();
         var from = _from.Slot;
         for (int i = _moves.Count - 1; i >= 0; i--)
         {

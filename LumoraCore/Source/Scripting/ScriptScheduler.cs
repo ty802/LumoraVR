@@ -14,7 +14,7 @@ namespace Lumora.Core.Scripting;
 //
 // Due timers join their script's queue, then every event waiting as the phase begins runs, one per script
 // in turn; what those events queue runs next frame, so an event that raises another cannot hold the frame
-// forever. Then every per-frame update runs, then the Displays. Nothing is held back for time: a call that
+// forever. Then every per-frame update runs, then every script's drives, then the Displays. Nothing is held back for time: a call that
 // takes WarnCallMs, or a script whose calls take WarnFrameMs of one frame, is warned about and carries on.
 // The one stop is ScriptInstanceOptions.MaxCallMilliseconds, for a call that never ends. A fault is marked
 // on the node and warned about; the script keeps running.
@@ -31,6 +31,14 @@ public sealed class ScriptScheduler
     private readonly List<ScriptHostRuntime> _runtimes = new();
     private ScriptHostRuntime[] _snapshot = Array.Empty<ScriptHostRuntime>();
     private bool _snapshotDirty;
+
+    // The snapshot split by what each pass walks, so a world of seven hundred scripts with thirty that run
+    // every frame walks thirty for the frame's update, not seven hundred. What a runtime does is fixed when
+    // it starts; the lists are made again with the snapshot. Index 0 is the Shared pass, 1 the Local.
+    private readonly ScriptHostRuntime[][] _sides = { Array.Empty<ScriptHostRuntime>(), Array.Empty<ScriptHostRuntime>() };
+    private readonly ScriptHostRuntime[][] _updaters = { Array.Empty<ScriptHostRuntime>(), Array.Empty<ScriptHostRuntime>() };
+    private readonly ScriptHostRuntime[][] _drivers = { Array.Empty<ScriptHostRuntime>(), Array.Empty<ScriptHostRuntime>() };
+    private readonly List<ScriptHostRuntime>[] _due = { new(), new() };
     private bool _recheck;
     private readonly List<(ScriptHost Host, System.Threading.Tasks.Task Compile)> _compiles = new();
 
@@ -211,10 +219,13 @@ public sealed class ScriptScheduler
             return;
         }
 
+        _due[0].Clear();
+        _due[1].Clear();
         foreach (var runtime in runtimes)
         {
             runtime.QueueDueTimers(now);
-            runtime.TakeDue();
+            if (runtime.TakeDue())
+                _due[runtime.IsLocal ? 1 : 0].Add(runtime);
         }
 
         double shared = Pass(runtimes, local: false, now, delta);
@@ -235,31 +246,50 @@ public sealed class ScriptScheduler
     private double Pass(ScriptHostRuntime[] runtimes, bool local, double now, float delta)
     {
         double spent = 0;
+        int side = local ? 1 : 0;
 
-        bool progress = true;
+        var due = _due[side];
+        bool progress = due.Count > 0;
         while (progress)
         {
             progress = false;
-            foreach (var runtime in runtimes)
+            foreach (var runtime in due)
             {
-                if (runtime.IsLocal != local || !runtime.CanRun || !runtime.TryTakeDue())
+                if (!runtime.CanRun || !runtime.TryTakeDue())
                     continue;
                 spent += Run(runtime, runtime.Dequeue());
                 progress = true;
             }
         }
 
-        var tick = new FrameTick(delta);
-        foreach (var runtime in runtimes)
+        var updaters = _updaters[side];
+        if (updaters.Length > 0)
         {
-            if (runtime.IsLocal == local && runtime.CanRun && runtime.WantsUpdate)
-                spent += Run(runtime, runner => runner.Raise(tick));
+            var tick = new FrameTick(delta);
+            foreach (var runtime in updaters)
+            {
+                if (runtime.CanRun)
+                    spent += Run(runtime, runner => runner.Raise(tick));
+            }
         }
 
-        foreach (var runtime in runtimes)
+        foreach (var runtime in _drivers[side])
         {
-            if (runtime.IsLocal == local && runtime.CanRun && runtime.DisplaysDue(now))
-                spent += Refresh(runtime, now);
+            if (!runtime.CanRun)
+                continue;
+            if (!runtime.Runner.DrivesCurrent)
+                spent += Run(runtime, static runner => runner.RunDrives());
+            if (runtime.CanRun)
+                runtime.ApplyDrives(now);
+        }
+
+        if (!local)
+        {
+            foreach (var runtime in _sides[side])
+            {
+                if (runtime.CanRun && runtime.DisplaysDue(now))
+                    spent += Refresh(runtime, now);
+            }
         }
         return spent;
     }
@@ -269,7 +299,17 @@ public sealed class ScriptScheduler
         long before = Stopwatch.GetTimestamp();
         var context = runtime.Runner.Context;
         context.BeginCall();
-        var result = call(runtime.Runner);
+        // One writer scope for the call, not one per node call inside it.
+        bool entered = context.EnterWholeCall(out var mark);
+        ScriptCallResult result;
+        try
+        {
+            result = call(runtime.Runner);
+        }
+        finally
+        {
+            ScriptContext.LeaveWholeCall(entered, mark);
+        }
         context.EndCall();
         double ms = (Stopwatch.GetTimestamp() - before) * 1000.0 / Stopwatch.Frequency;
 
@@ -307,6 +347,13 @@ public sealed class ScriptScheduler
         {
             _snapshot = _runtimes.ToArray();
             _snapshotDirty = false;
+            for (int side = 0; side < 2; side++)
+            {
+                bool local = side == 1;
+                _sides[side] = Array.FindAll(_snapshot, runtime => runtime.IsLocal == local);
+                _updaters[side] = Array.FindAll(_sides[side], runtime => runtime.WantsUpdate);
+                _drivers[side] = Array.FindAll(_sides[side], runtime => runtime.DrivesHere);
+            }
         }
         return _snapshot;
     }

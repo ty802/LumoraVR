@@ -32,14 +32,19 @@ internal static class ScriptSounds
     // content outside anyone's body, for a Local one its own object or what it made there.
     public static Slot? PlayOnce(ScriptContext ctx, IAssetProvider<AudioClip>? clip, float3 point, in Sound sound, Slot? parent = null)
     {
-        if (clip is not Component provider || !ScriptReads.Visible(ctx, provider))
+        if (clip is not Component provider)
+        {
+            ctx.Fail("no clip");
+            return null;
+        }
+        if (!ScriptReads.Reached(ctx, provider, "clip"))
             return null;
         // A clip already known not to load says why, rather than playing silence.
         if (clip is IUrlAssetProvider { LoadFailure: { } why })
             throw new InvalidOperationException("the clip does not load: " + why);
         ScriptWrites.Finite(point, "point");
         Check(sound);
-        if (parent != null && !ScriptReads.Visible(ctx, parent))
+        if (parent != null && !ScriptReads.Reached(ctx, parent, "parent"))
             return null;
 
         if (ctx.IsLocal)

@@ -162,7 +162,7 @@ internal static class ScriptTweens
             var value = t >= 1f ? _to : At(_from, _to, (float)Ease.Run((double)t, _curve, _direction));
             try
             {
-                using (world.DataModelPermissions?.EnterActor(_ctx.Principal))
+                using (_ctx.EnterWriter())
                     ScriptWrites.Write(_ctx, _field, value);
             }
             catch (UnauthorizedAccessException)

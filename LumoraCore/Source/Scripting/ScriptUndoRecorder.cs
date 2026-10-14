@@ -49,7 +49,12 @@ internal sealed class ScriptUndoRecorder
 
     public void End()
     {
-        if (_depth == 0 || --_depth > 0)
+        if (_depth == 0)
+        {
+            _ctx.Fail("no undo batch is open");
+            return;
+        }
+        if (--_depth > 0)
             return;
         var batch = _open;
         _open = null;
@@ -60,7 +65,10 @@ internal sealed class ScriptUndoRecorder
     public void Field<T>(IField<T>? field)
     {
         if (field == null || field.IsDestroyed)
+        {
+            _ctx.Fail(field == null ? "no field" : "the field is gone");
             return;
+        }
         if (field is not SyncElement element)
             throw new UnauthorizedAccessException("scripts record only fields they could change");
         ScriptWrites.Check(_ctx, element);
@@ -72,7 +80,10 @@ internal sealed class ScriptUndoRecorder
     public void Reference(ISyncRef? reference)
     {
         if (reference is not SyncElement element || element.IsDestroyed)
+        {
+            _ctx.Fail(reference == null ? "no reference" : reference is SyncElement ? "the reference is gone" : "scripts cannot record that reference");
             return;
+        }
         ScriptWrites.Check(_ctx, element);
         if (ScriptUndoReferenceStep.ChildOf(element) == null && (element.HasInboundRules || reference is ISyncDelegate))
             throw new UnauthorizedAccessException("scripts do not record a drive, a hook, an action or a reference with rules of its own");
@@ -81,7 +92,7 @@ internal sealed class ScriptUndoRecorder
 
     public void Transform(Slot? slot)
     {
-        if (slot == null || !ScriptReads.Visible(_ctx, slot))
+        if (!ScriptReads.Reached(_ctx, slot))
             return;
         ScriptWrites.Check(_ctx, slot.LocalPosition);
         ScriptWrites.Check(_ctx, slot.LocalRotation);
@@ -91,7 +102,7 @@ internal sealed class ScriptUndoRecorder
 
     public void Spawn(Slot? slot)
     {
-        if (slot == null || !ScriptReads.Visible(_ctx, slot) || IsParked(slot))
+        if (!ScriptReads.Reached(_ctx, slot) || IsParked(slot!))
             return;
         ScriptWrites.CheckPark(_ctx, slot);
         Record(ScriptUndoSlotStep.Spawned(slot));
@@ -99,7 +110,7 @@ internal sealed class ScriptUndoRecorder
 
     public void Destroy(Slot? slot)
     {
-        if (slot == null || !ScriptReads.Visible(_ctx, slot) || IsParked(slot))
+        if (!ScriptReads.Reached(_ctx, slot) || IsParked(slot!))
             return;
         ScriptWrites.CheckPark(_ctx, slot);
         Record(ScriptUndoSlotStep.Destroyed(_ctx, slot));

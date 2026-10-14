@@ -20,7 +20,10 @@ namespace Lumora.Core.Scripting;
 //
 // A Local script hears what this machine can hear: presses on panel buttons and beams from whoever is
 // here, not touch controls, whose reactions run on the authority; people coming and going by watching
-// the user list, since this machine is told only about its own user. -xlinka
+// the user list, since this machine is told only about its own user.
+//
+// A script with drives works their values out every frame wherever it runs, and every other machine runs
+// a drives-only copy that hears nothing and only does that. -xlinka
 internal sealed class ScriptHostRuntime : IDisposable
 {
     public const int WarnQueue = 256;
@@ -31,7 +34,7 @@ internal sealed class ScriptHostRuntime : IDisposable
     private const int MaxFaultText = 90;
 
     private readonly Queue<Func<ScriptRunner, ScriptCallResult>> _queue = new();
-    private readonly List<int> _dueTimers = new();
+    private readonly List<(int Timer, int Word)> _dueTimers = new();
     private readonly List<TouchControl> _controls = new();
     private readonly List<(Slot Slot, ScriptEventEntry Entry)> _listeners = new();
     private readonly List<Slot> _watched = new();
@@ -41,7 +44,9 @@ internal sealed class ScriptHostRuntime : IDisposable
     private readonly System.Text.StringBuilder _traceText = new();
     private int[] _publishedTraces = Array.Empty<int>();
     private readonly List<(string NodeId, float Seconds, double Due, int Count)> _intervals = new();
-    private double _nextDisplays;
+    private double _nextDisplays = double.NegativeInfinity;
+    private readonly double _displayPhase = (System.Threading.Interlocked.Increment(ref _started) & 7) / 8.0 * DisplaySeconds;
+    private static int _started;
     private readonly Action<TouchControl, TouchResponse, TouchContact> _onResponded;
     private readonly Action<Slot, Component> _onComponentsChanged;
     private readonly ScriptEventSources _sources;
@@ -66,8 +71,12 @@ internal sealed class ScriptHostRuntime : IDisposable
     // What this script took of the frame running now; the scheduler reads it as the frame ends.
     public double FrameMs { get; set; }
 
-    // The events and answers waiting as this frame's phase began are what runs this frame.
-    internal void TakeDue() => _due = _queue.Count + Runner.Instance.WaitingAnswers;
+    // The events and answers waiting as this frame's phase began are what runs this frame. True when any are.
+    internal bool TakeDue()
+    {
+        _due = _queue.Count + Runner.Instance.WaitingAnswers;
+        return _due > 0;
+    }
 
     internal bool TryTakeDue()
     {
@@ -78,6 +87,15 @@ internal sealed class ScriptHostRuntime : IDisposable
     }
 
     public bool IsLocal { get; }
+
+    // Only the drives: a copy on a machine the script's events do not run on.
+    public bool DrivesOnly { get; }
+
+    private readonly ScriptDriveApplier? _drives;
+
+    public bool DrivesHere => _drives != null;
+
+    public void ApplyDrives(double now) => _drives?.Apply(now);
 
     // Working memory this script holds, counted with its author's other scripts.
     public long MemoryHeld => _memory;
@@ -96,8 +114,19 @@ internal sealed class ScriptHostRuntime : IDisposable
     // What the open graph shows of a Shared script, its Displays, the flow along its wires and the node it
     // last faulted in, is worked out only while someone could be looking: while the graph is open. A Local
     // script's view reads this machine's runtime directly.
+    //
+    // Looked for ten times a second, not every frame: finding the open graph walks the host's children, and a
+    // world of seven hundred closed scripts walked them all on every frame to find nothing. Each runtime
+    // looks at its own point in the tenth of a second, so the looks spread over the frames.
     public bool DisplaysDue(double now)
-        => !IsLocal && now >= _nextDisplays && ScriptGraphEditing.FindSpace(Host) is { Slot.IsActive: true };
+    {
+        if (IsLocal || now < _nextDisplays)
+            return false;
+        if (ScriptGraphEditing.FindSpace(Host) is { IsShown: true })
+            return true;
+        _nextDisplays = double.IsNegativeInfinity(_nextDisplays) ? now + _displayPhase : now + DisplaySeconds;
+        return false;
+    }
 
     // How many times flow has left by each wired exit, for a Local script's view on this machine.
     public int ReadTrace(int index) => Runner.Instance.ReadTrace(index);
@@ -112,7 +141,8 @@ internal sealed class ScriptHostRuntime : IDisposable
         return true;
     }
 
-    private ScriptHostRuntime(ScriptHost host, ScriptRunner runner, string graphHash, IReadOnlyList<object?> bindings, long memory, bool local)
+    private ScriptHostRuntime(ScriptHost host, ScriptRunner runner, string graphHash, IReadOnlyList<object?> bindings, long memory, bool local,
+        bool drivesOnly)
     {
         Host = host;
         Runner = runner;
@@ -120,7 +150,10 @@ internal sealed class ScriptHostRuntime : IDisposable
         Bindings = bindings;
         _memory = memory;
         IsLocal = local;
-        if (local && (runner.Instance.Handles(typeof(UserJoined)) || runner.Instance.Handles(typeof(UserLeft))) && host.World is { } world)
+        DrivesOnly = drivesOnly;
+        if (runner.Instance.HasDrives)
+            _drives = new ScriptDriveApplier(this);
+        if (local && !drivesOnly && (runner.Instance.Handles(typeof(UserJoined)) || runner.Instance.Handles(typeof(UserLeft))) && host.World is { } world)
         {
             _tracksUsers = true;
             world.GetAllUsers(_userScratch);
@@ -130,7 +163,7 @@ internal sealed class ScriptHostRuntime : IDisposable
                     _knownUsers.Add(user);
             }
         }
-        WantsUpdate = runner.Instance.Handles(typeof(FrameTick));
+        WantsUpdate = !drivesOnly && runner.Instance.Handles(typeof(FrameTick));
         var traces = runner.Compiled.Traces;
         for (int i = 0; i < traces.Count; i++)
         {
@@ -139,7 +172,7 @@ internal sealed class ScriptHostRuntime : IDisposable
             owned.Add(i);
         }
         double start = host.World?.Time.TotalTime ?? 0.0;
-        foreach (var entry in runner.Instance.Events)
+        foreach (var entry in drivesOnly ? Array.Empty<ScriptEventEntry>() : runner.Instance.Events)
         {
             if (entry.IntervalSeconds > 0f)
                 _intervals.Add((entry.NodeId, entry.IntervalSeconds, start + entry.IntervalSeconds, 0));
@@ -155,18 +188,21 @@ internal sealed class ScriptHostRuntime : IDisposable
 
     // Replacing is the script this one takes over from, which gives its memory back once this one runs.
     // Cached says the compile was waiting in the cache when the host asked for it.
+    // Local is where it runs: on this machine, not the host. An Author script on its author's machine runs
+    // here like a Local one but writes as its author.
     public static ScriptHostRuntime Start(ScriptHost host, CompileResult compiled, bool cached, IReadOnlyList<object?> bindings,
-        ScriptPrincipal principal, ScriptHostRuntime? replacing = null, bool local = false)
+        ScriptPrincipal principal, ScriptHostRuntime? replacing = null, bool local = false, bool drivesOnly = false, bool authorMachine = false)
     {
         ScriptEnvironment.TryGetCompileRecord(compiled.GraphHash, out var record);
-        var runner = ScriptRunner.Start(host.World, compiled, record, cached, principal, bindings, self: host.Slot, local: local);
+        var runner = ScriptRunner.Start(host.World, compiled, record, cached, principal, bindings, self: host.Slot,
+            local: local && !authorMachine, authorMachine: authorMachine);
         runner.Context.Host = host;
         long memory = runner.Instance.MemorySize;
         long freed = replacing != null && replacing.Principal.AuthorKey == principal.AuthorKey ? replacing.MemoryHeld : 0;
         if (host.World.Scripts.Ledger.Hold(principal, memory, freed))
             runner.Context.Warn(ScriptWarning.Memory,
                 $"its author's scripts hold more than {ScriptAuthorLedger.WarnMemoryBytes >> 20} MiB of working memory between them");
-        var runtime = new ScriptHostRuntime(host, runner, runner.Compiled.GraphHash, bindings, memory, local);
+        var runtime = new ScriptHostRuntime(host, runner, runner.Compiled.GraphHash, bindings, memory, local, drivesOnly);
         var stats = runtime.Stats;
         stats.Nodes = compiled.TagNodes.Count;
         stats.ModuleBytes = runner.Compiled.Module?.Length ?? 0;
@@ -174,14 +210,15 @@ internal sealed class ScriptHostRuntime : IDisposable
         stats.CompileCached = runner.CompileCached;
         stats.LoadMs = runner.LoadMs;
         stats.StartedAt = host.World.Time.TotalTime;
-        runtime.Resubscribe();
+        if (!drivesOnly)
+            runtime.Resubscribe();
         host.World.Scripts.Add(runtime);
         return runtime;
     }
 
     public void Enqueue(Func<ScriptRunner, ScriptCallResult> call)
     {
-        if (!CanRun)
+        if (!CanRun || DrivesOnly)
             return;
         _queue.Enqueue(call);
         if (_queue.Count == WarnQueue + 1)
@@ -200,7 +237,7 @@ internal sealed class ScriptHostRuntime : IDisposable
     // Queues every Delay and every Every N Seconds that is due, behind whatever events are already waiting.
     public void QueueDueTimers(double now)
     {
-        if (!CanRun)
+        if (!CanRun || DrivesOnly)
             return;
         _sources.PollTriggers(now);
         _sources.FollowBeams(now);
@@ -222,8 +259,8 @@ internal sealed class ScriptHostRuntime : IDisposable
             return;
         _dueTimers.Clear();
         Runner.Instance.TakeDueTimers(now, _dueTimers);
-        foreach (int timer in _dueTimers)
-            Enqueue(runner => runner.RunTimer(timer));
+        foreach (var (timer, word) in _dueTimers)
+            Enqueue(runner => runner.RunTimer(timer, word));
     }
 
     public void RecordFault(double now, in ScriptCallResult result)
@@ -233,7 +270,7 @@ internal sealed class ScriptHostRuntime : IDisposable
             string message = result.Message ?? result.Status.ToString();
             _faultMarks[result.NodeId] = (message.Length > MaxFaultText ? message[..(MaxFaultText - 3)] + "..." : message, now);
             // At once, not with the next publish.
-            if (!IsLocal && ScriptGraphEditing.FindSpace(Host) is { Slot.IsActive: true } space)
+            if (!IsLocal && ScriptGraphEditing.FindSpace(Host) is { IsShown: true } space)
             {
                 foreach (var node in space.Nodes)
                 {
@@ -258,7 +295,7 @@ internal sealed class ScriptHostRuntime : IDisposable
         foreach (var entry in Runner.Instance.Events)
         {
             if (entry.PayloadType != typeof(ButtonPressed) && entry.PayloadType != typeof(ButtonReleased)
-                && entry.PayloadType != typeof(ControlTouched))
+                && entry.PayloadType != typeof(ControlTouched) && !ScriptEventSources.IsPressStep(entry))
                 continue;
             if (SourceOf(entry) is not { IsDestroyed: false } slot)
                 continue;
@@ -436,6 +473,33 @@ internal sealed class ScriptHostRuntime : IDisposable
         }
     }
 
+    // A call from another script of the same author to one of this script's Functions, run in this script's
+    // turn, as this script, and answered on the caller's ticket. One whose caller stopped or was deleted since
+    // runs nothing; one still waiting when this script stops is answered failed.
+    private readonly List<(CallTicket Ticket, string Function, string Where)> _inbound = new();
+
+    public void EnqueueFunctionCall(ScriptContext caller, CallTicket ticket, string function, object?[] arguments, string where)
+    {
+        if (!CanRun || DrivesOnly)
+        {
+            ticket.Fail($"the script on {where} is not running");
+            return;
+        }
+        var waiting = (ticket, function, where);
+        _inbound.Add(waiting);
+        Enqueue(runner =>
+        {
+            _inbound.Remove(waiting);
+            if (ticket.IsAnswered || ticket.Cancelled.IsCancellationRequested || caller.Host is { IsDestroyed: true })
+            {
+                ticket.Abandon();
+                return new ScriptCallResult(ScriptCallStatus.NoSuchEvent, null, "its caller is gone", 0);
+            }
+            // Answered at once, or by a Function that waits once its call returns.
+            return runner.CallFunction(function, arguments, ticket, $"{function} on {where}");
+        });
+    }
+
     // A press on a Call node's card, when the running graph has that Call node.
     public void EnqueueCall(User? caller, string nodeId)
     {
@@ -480,7 +544,31 @@ internal sealed class ScriptHostRuntime : IDisposable
                     response == TouchResponse.Released, point, contact.Tip, contact.Hand, contact.Kind == TouchProbeKind.Fingertip);
                 Enqueue(runner => runner.Raise(node, touched));
             }
+            else if (ScriptEventSources.IsPressStep(entry))
+            {
+                var (local, normalized) = PointsOn(control, point);
+                if (response == TouchResponse.Pressed && entry.PayloadType == typeof(PressBegan))
+                    Enqueue(runner => runner.Raise(node, new PressBegan(presser, point, local, normalized)));
+                else if (response == TouchResponse.Pressing && entry.PayloadType == typeof(PressHeld))
+                    Enqueue(runner => runner.Raise(node, new PressHeld(presser, point, local, normalized)));
+                else if (response == TouchResponse.Released && entry.PayloadType == typeof(PressEnded))
+                    Enqueue(runner => runner.Raise(node, new PressEnded(presser, point, local, normalized)));
+            }
         }
+    }
+
+    // Where a touch is on a control: in the control's own space, and across the box collider it is touched
+    // through when it has one, from its lower left corner to its upper right as on a panel button.
+    private static (float2 Local, float2 Normalized) PointsOn(TouchControl control, float3 point)
+    {
+        var slot = control.Slot;
+        if (slot == null || slot.IsDestroyed)
+            return (float2.Zero, float2.Zero);
+        var local = slot.GlobalPointToLocal(point);
+        var box = slot.GetComponent<BoxCollider>();
+        var size = box?.Size.Value ?? float3.Zero;
+        var from = local - (box?.Offset.Value ?? float3.Zero) + size * 0.5f;
+        return (new float2(local.x, local.y), new float2(size.x != 0f ? from.x / size.x : 0f, size.y != 0f ? from.y / size.y : 0f));
     }
 
     public void Dispose()
@@ -489,9 +577,12 @@ internal sealed class ScriptHostRuntime : IDisposable
             return;
         _disposed = true;
         _queue.Clear();
+        foreach (var (ticket, function, where) in _inbound)
+            ticket.Fail($"the script on {where} stopped before {function} ran");
+        _inbound.Clear();
         Unsubscribe();
         _sources.Release();
-        if (IsLocal)
+        if (Runner.Context.IsLocal)
             Runner.Context.DropLocalMade();
         Runner.Instance.StopAwaits();
         var scripts = Host.World?.ScriptsIfAny;

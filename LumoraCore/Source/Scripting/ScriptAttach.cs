@@ -19,10 +19,11 @@ namespace Lumora.Core.Scripting;
 // The gate is asked as the author, like the same attach made by hand, and a person's provider is minted in
 // the range the host keeps for their scripts, so it is theirs.
 //
-// A local:// address is always allowed. An http or https address goes to the approval the web nodes use:
-// the user at the machine running the script decides for its host, once, remembered or asked, and an
-// address written as a local network or as this machine is refused before anyone is asked. Any other kind
-// of address is refused. Once attached, every machine in the session loads the file the way it loads any
+// A local:// address is always allowed, and so is a lumora:/// one, a stored file by its hash, which is how a
+// cloud saved object names its files. An http or https address goes to the approval the web nodes use:
+// the user at the machine running the script decides for its host, once, remembered or asked, a local
+// address or this machine included. An address no socket can open is refused before anyone is asked, and so
+// is any other kind of address. Once attached, every machine in the session loads the file the way it loads any
 // address set by hand. Nothing is capped; a script attaching more than WarnPerMinute a minute is warned.
 // -xlinka
 internal static class ScriptAttach
@@ -88,8 +89,8 @@ internal static class ScriptAttach
         ticket.Answer("attached", result);
     }
 
-    // What an address is: local:// with no host to ask about, or http or https with the host to ask about.
-    // Anything else, or an address naming a local network or this machine, is refused with why.
+    // What an address is: local:// or lumora:/// with no host to ask about, or http or https with the host to
+    // ask about. Anything else, or an address no socket can open, is refused with why.
     public static bool TryAddress(string? text, out Uri address, out string? host, out string why)
     {
         address = null!;
@@ -104,9 +105,18 @@ internal static class ScriptAttach
         address = parsed;
         if (parsed.Scheme == "local")
             return true;
+        // A stored file by its hash, fetched from our own content service like any cloud asset a provider
+        // names, so there is no host to ask about.
+        if (parsed.Scheme == Persistence.CloudAssetPacker.CloudScheme)
+        {
+            if (Persistence.CloudAssetPacker.HashOf(parsed.OriginalString) != null)
+                return true;
+            why = "a lumora address names a stored file by its hash";
+            return false;
+        }
         if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
         {
-            why = "only local, http and https addresses can be attached";
+            why = "only local, lumora, http and https addresses can be attached";
             return false;
         }
         host = WebAccess.HostKey(parsed);
@@ -115,14 +125,9 @@ internal static class ScriptAttach
             why = "the address has no host";
             return false;
         }
-        if (IPAddress.TryParse(host, out var literal) && !WebAddressFilter.IsPublic(literal))
+        if (IPAddress.TryParse(host, out var literal) && !WebAddressFilter.IsReachable(literal))
         {
-            why = $"{host} is a local network address, which scripts cannot reach";
-            return false;
-        }
-        if (host == "localhost" || host.EndsWith(".localhost", StringComparison.Ordinal))
-        {
-            why = $"{host} is this machine, which scripts cannot reach";
+            why = $"{host} is not an address anything can be fetched from";
             return false;
         }
         return true;

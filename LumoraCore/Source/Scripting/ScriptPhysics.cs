@@ -25,12 +25,23 @@ internal static class ScriptPhysics
     // from within.
     private const float StepPast = 0.001f;
 
+    // The rigid body on slot that this machine simulates. One another machine simulates is no failure for a
+    // Local script, whose copy there pushes it; for any other script nothing pushes it, and it fails.
     public static RigidBody? Body(ScriptContext ctx, Slot? slot)
     {
-        if (!ScriptReads.Visible(ctx, slot) || slot!.GetComponent<RigidBody>() is not { IsDestroyed: false } body)
+        if (!ScriptReads.Reached(ctx, slot))
             return null;
+        if (slot!.GetComponent<RigidBody>() is not { IsDestroyed: false } body)
+        {
+            ctx.Fail($"{ScriptReads.Named(slot)} has no rigid body");
+            return null;
+        }
         if (!body.IsSimulationOwner)
+        {
+            if (!ctx.IsLocal)
+                ctx.Fail($"{ScriptReads.Named(slot)} is simulated on another machine");
             return null;
+        }
         ScriptWrites.Check(ctx, body.LinearVelocity);
         return body;
     }

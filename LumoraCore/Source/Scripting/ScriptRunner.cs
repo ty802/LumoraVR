@@ -48,7 +48,7 @@ public sealed class ScriptRunner
     }
 
     public static ScriptRunner Start(World world, CompileResult compiled, ScriptCompileRecord record, bool cached, ScriptPrincipal principal,
-        IReadOnlyList<object?> bindings, ScriptInstanceOptions? options = null, Slot? self = null, bool local = false)
+        IReadOnlyList<object?> bindings, ScriptInstanceOptions? options = null, Slot? self = null, bool local = false, bool authorMachine = false)
     {
         if (!compiled.Success)
             throw new ScriptLinkException("graph does not compile: " + string.Join("; ", compiled.Errors));
@@ -63,7 +63,7 @@ public sealed class ScriptRunner
             bindings = fitted;
         }
 
-        var context = new ScriptContext(world, principal, self, local);
+        var context = new ScriptContext(world, principal, self, local, authorMachine);
         long loading = System.Diagnostics.Stopwatch.GetTimestamp();
         var instance = ScriptInstance.Create(compiled, context, bindings, options);
         return new ScriptRunner(world, context, instance)
@@ -80,16 +80,7 @@ public sealed class ScriptRunner
             return new ScriptCallResult(ScriptCallStatus.Trap, null, why, 0);
 
         Context.Cause = ScriptContext.CauseOf(payload);
-        var last = new ScriptCallResult(ScriptCallStatus.NoSuchEvent, null, $"no event takes {typeof(T).Name}", 0);
-        foreach (var entry in Instance.Events)
-        {
-            if (entry.PayloadType != typeof(T))
-                continue;
-            last = Instance.Raise(entry.NodeId, payload);
-            if (!last.Ok)
-                break;
-        }
-        return last;
+        return Instance.RaiseEach(payload, NoEventTakes<T>.Result);
     }
 
     // One event node, for a host that routes an event to the nodes listening for it.
@@ -101,13 +92,14 @@ public sealed class ScriptRunner
         return Instance.Raise(nodeId, payload);
     }
 
-    // What follows a Delay, when its timer is due. The timer set it off, not whoever set off the call before it.
-    public ScriptCallResult RunTimer(int timer)
+    // What follows a Delay, when its timer is due, on in the call of a waiting Function it was armed in. The timer
+    // set it off, not whoever set off the call before it.
+    public ScriptCallResult RunTimer(int timer, int word = 0)
     {
         if (!CanRun(out var why))
             return new ScriptCallResult(ScriptCallStatus.Trap, null, why, 0);
         Context.Cause = null;
-        return Instance.RunTimer(timer);
+        return Instance.RunTimer(timer, word);
     }
 
     // An exit an await's answer runs, once its work came back. The work set it off, not whoever started it.
@@ -119,6 +111,28 @@ public sealed class ScriptRunner
         return Instance.RunAnswer(answer);
     }
 
+    // One of this script's Functions, for a call from another script. That script set it off, not anyone here.
+    public ScriptCallResult CallFunction(string function, IReadOnlyList<object?> arguments, out object?[] outputs)
+    {
+        outputs = Array.Empty<object?>();
+        if (!CanRun(out var why))
+            return new ScriptCallResult(ScriptCallStatus.Trap, null, why, 0);
+        Context.Cause = null;
+        return Instance.CallFunction(function, arguments, out outputs);
+    }
+
+    // The same, answering the caller's ticket: at once, or once a Function that waits returns.
+    public ScriptCallResult CallFunction(string function, IReadOnlyList<object?> arguments, CallTicket answer, string described)
+    {
+        if (!CanRun(out var why))
+        {
+            answer.Fail($"{described} could not run: {why}");
+            return new ScriptCallResult(ScriptCallStatus.Trap, null, why, 0);
+        }
+        Context.Cause = null;
+        return Instance.CallFunction(function, arguments, answer, described);
+    }
+
     // Works out one Display that needs no flow.
     public ScriptCallResult RefreshDisplay(string nodeId)
     {
@@ -127,9 +141,27 @@ public sealed class ScriptRunner
         return Instance.RunDisplay(nodeId);
     }
 
+    // Whether the drives may be left as they are this frame: the script could run, and running them would
+    // change nothing. An author gone is left for the run that stops the script to find.
+    public bool DrivesCurrent => Instance.DrivesCurrent && CanRun(out _, stopIfAuthorGone: false);
+
+    // Works out every drive's value, on whichever machine this runs. Nothing set it off.
+    public ScriptCallResult RunDrives()
+    {
+        if (!CanRun(out var why))
+            return new ScriptCallResult(ScriptCallStatus.Trap, null, why, 0);
+        Context.Cause = null;
+        return Instance.RunDrives();
+    }
+
     public void Stop() => Stopped = true;
 
-    private bool CanRun(out string why)
+    private static class NoEventTakes<T>
+    {
+        public static readonly ScriptCallResult Result = new(ScriptCallStatus.NoSuchEvent, null, $"no event takes {typeof(T).Name}", 0);
+    }
+
+    private bool CanRun(out string why, bool stopIfAuthorGone = true)
     {
         why = string.Empty;
         if (Stopped)
@@ -149,7 +181,8 @@ public sealed class ScriptRunner
         }
         if (!Context.Principal.IsStillAuthorIn(World))
         {
-            Stopped = true;
+            if (stopIfAuthorGone)
+                Stopped = true;
             why = "its author is no longer in the world";
             return false;
         }

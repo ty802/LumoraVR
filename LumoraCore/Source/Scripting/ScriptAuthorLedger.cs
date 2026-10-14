@@ -144,7 +144,7 @@ public sealed class ScriptAuthorLedger
     {
         foreach (var user in _world.GetAllUsers())
         {
-            if (!user.IsDestroyed && user.AllocationID.Value == owner)
+            if (!user.IsDestroyed && user.HoldsByte(owner))
                 return ScriptPrincipal.AuthorKeyOf(user) == key;
         }
         return false;

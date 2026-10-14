@@ -10,7 +10,7 @@ namespace Lumora.Core.Scripting;
 internal static class ScriptInput
 {
     public static InputInterface? Of(ScriptContext ctx)
-        => ctx.IsLocal && ctx.World.Focus == World.WorldFocus.Focused ? Engine.Current?.InputInterface : null;
+        => ctx.OffHost && ctx.World.Focus == World.WorldFocus.Focused ? Engine.Current?.InputInterface : null;
 
     public static bool KeysOpen(InputInterface input) => input.Keyboard != null && input.Actions?.TextFocusHeld != true;
 }

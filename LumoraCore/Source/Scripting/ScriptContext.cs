@@ -29,6 +29,9 @@ public sealed class ScriptContext : ScriptContextBase
 
     internal List<User> PeopleScratch { get; } = new();
 
+    // The scopes this script's variable paths reached, kept by ScriptScopedVariables.
+    internal object? ScopeLookups;
+
     // Rays one script casts in a frame, slots it makes in a second and slots in one copy, past which it is
     // warned. What its author's scripts do between them is counted too: the world's ScriptAuthorLedger.
     public const int WarnRaysPerFrame = 512;
@@ -47,6 +50,21 @@ public sealed class ScriptContext : ScriptContextBase
     // Local: running on this machine only, for whoever is looking. What that lets it change is in
     // ScriptWrites.
     public bool IsLocal { get; }
+
+    // A world's Local script: what it changes in the world it changes as the user at this machine, judged as
+    // their own edit. A person's Local script never does, or a guest's script would write as the host on the
+    // host's machine.
+    public bool WritesAsMachineUser => IsLocal && Principal.IsWorldContent;
+
+    // The user at this machine, while there is one.
+    internal User? MachineUser => World.LocalUser is { IsDestroyed: false } user ? user : null;
+
+    // An Author script on its author's own machine: its writes are the author's own, its input theirs. A world
+    // script's author's machine is the host.
+    public bool OnAuthorMachine { get; }
+
+    // Running on a machine of its own rather than the host: what only the host keeps is out of its reach.
+    public bool OffHost => IsLocal || (OnAuthorMachine && !World.IsAuthority);
 
     // The host running this script, for the messages it sends. Null for a script run without one.
     internal ScriptHost? Host { get; set; }
@@ -84,12 +102,13 @@ public sealed class ScriptContext : ScriptContextBase
         Cause = null;
     }
 
-    public ScriptContext(World world, ScriptPrincipal principal, Slot? self = null, bool local = false)
+    public ScriptContext(World world, ScriptPrincipal principal, Slot? self = null, bool local = false, bool authorMachine = false)
     {
         World = world;
         Principal = principal;
         Self = self;
         IsLocal = local;
+        OnAuthorMachine = authorMachine && !local;
     }
 
     public override double Now => World.Time.TotalTime;
@@ -100,20 +119,94 @@ public sealed class ScriptContext : ScriptContextBase
     protected override void WriteWarning(string text)
         => LumoraLogger.Warn($"Loom [{Principal}] {Self?.Name.Value}: {text}");
 
+    // The same scope EnterWriter opens, without a scope object per node call: the saved actor goes on this
+    // context's own stack and one leaver puts it back. Node calls nest strictly, each in its invoker's using.
+    // The scheduler opens the writer once around a whole call, and a node call inside it already acts as the
+    // writer with nothing lifting the gate, so it needs no scope of its own.
     protected override IDisposable? EnterCall(NodeOverload overload)
-        => World.DataModelPermissions?.EnterActor(Principal);
+    {
+        if (World.DataModelPermissions == null)
+            return null;
+        var writer = Writer;
+        if (Lumora.Warden.PermissionEngine.IsActingAs(writer))
+            return null;
+        _callMarks.Add(Lumora.Warden.PermissionEngine.SetActor(writer));
+        return _leaveCall ??= new LeaveCall(_callMarks);
+    }
+
+    // Who the gate takes this script's changes for, as EnterWriter says.
+    private Lumora.Warden.IPermissionActor? Writer => !WritesAsMachineUser ? Principal : MachineUser;
+
+    // The writer for a whole call the scheduler makes, put back with LeaveWholeCall. False when there is no
+    // gate to tell.
+    internal bool EnterWholeCall(out Lumora.Warden.PermissionEngine.ActorMark mark)
+    {
+        mark = default;
+        if (World.DataModelPermissions == null)
+            return false;
+        mark = Lumora.Warden.PermissionEngine.SetActor(Writer);
+        return true;
+    }
+
+    internal static void LeaveWholeCall(bool entered, in Lumora.Warden.PermissionEngine.ActorMark mark)
+    {
+        if (entered)
+            Lumora.Warden.PermissionEngine.Restore(mark);
+    }
+
+    private readonly List<Lumora.Warden.PermissionEngine.ActorMark> _callMarks = new();
+    private LeaveCall? _leaveCall;
+
+    private sealed class LeaveCall : IDisposable
+    {
+        private readonly List<Lumora.Warden.PermissionEngine.ActorMark> _marks;
+
+        public LeaveCall(List<Lumora.Warden.PermissionEngine.ActorMark> marks) => _marks = marks;
+
+        public void Dispose()
+        {
+            int last = _marks.Count - 1;
+            if (last < 0)
+                return;
+            Lumora.Warden.PermissionEngine.Restore(_marks[last]);
+            _marks.RemoveAt(last);
+        }
+    }
+
+    // Who the gate takes this script's changes for: the user at this machine for a world's Local script, with
+    // nobody there for one that has no user here, and its author for every other.
+    internal IDisposable? EnterWriter()
+        => !WritesAsMachineUser ? World.DataModelPermissions?.EnterActor(Principal)
+            : World.DataModelPermissions?.EnterActor(MachineUser);
+
+    protected override void CallScriptFunction(CallTicket ticket, object? target, string function, FunctionSignature signature,
+        object?[] arguments)
+        => ScriptFunctionCalls.Start(this, ticket, target, function, signature, arguments);
 
     // A destroyed slot, component, field or user reads as nothing to every node.
     protected override bool IsGone(object value)
         => value is IWorldElement { IsDestroyed: true } || value is User { IsDestroyed: true };
 
-    // The groups whose rules exist. Input is the viewer's own, so only a Local script reads it. The rest
-    // (affecting users, UI) link for nobody until their quotas and world settings do.
+    // Whether this script may use what nodes of that capability do, asked outside a node call.
+    internal bool MayUse(Capability capability) => AllowsCapability(capability);
+
+    // The user at this machine: the only one a script running here can move, scale or seat.
+    internal bool IsMachineUser(User? user) => user is { IsDestroyed: false } && ReferenceEquals(user, World.LocalUser);
+
+    // A script never holds rights over anyone's body, its author's included; what it does to the user here it
+    // does as them, the way their own movement does it.
+    internal IDisposable? AsSelf(User user) => World.DataModelPermissions?.EnterActor(user);
+
+    // The groups whose rules exist. Input is the viewer's own, so only a Local script reads it, or an Author
+    // script on its author's machine. Affecting users is any script's, and its nodes touch only the user at the
+    // machine it runs on, as that user's own movement would, inside their role and the world's locomotion
+    // rules. UI links for nobody until its quotas and world settings do.
     protected override bool AllowsCapability(Capability capability) => capability switch
     {
         Capability.Core or Capability.WorldRead or Capability.WorldWrite or Capability.WorldStructure
             or Capability.UsersRead or Capability.Physics or Capability.Audio or Capability.Events => true,
-        Capability.Input => IsLocal,
+        Capability.Input => IsLocal || OnAuthorMachine,
+        Capability.UsersAffect => true,
         // Links for every script; each request still waits on the sending machine's user for its host.
         Capability.Web => true,
         _ => false,

@@ -16,20 +16,26 @@ internal static class ScriptMedia
 {
     public static IPlayable? Find(ScriptContext ctx, Slot? slot)
     {
-        if (!ScriptReads.Visible(ctx, slot))
+        if (!ScriptReads.Reached(ctx, slot))
             return null;
         foreach (var component in slot!.Components)
         {
             if (component is IPlayable playable && !component.IsDestroyed)
                 return playable;
         }
+        ctx.Fail($"nothing on {ScriptReads.Named(slot)} plays");
         return null;
     }
 
     public static void Control(ScriptContext ctx, Slot? slot, Action<IPlayable> act)
     {
-        if (Find(ctx, slot) is not { } playable || TransportOf(playable) is not { } transport)
+        if (Find(ctx, slot) is not { } playable)
             return;
+        if (TransportOf(playable) is not { } transport)
+        {
+            ctx.Fail($"the player on {ScriptReads.Named(slot)} cannot be controlled");
+            return;
+        }
         ScriptWrites.Check(ctx, transport);
         act(playable);
     }

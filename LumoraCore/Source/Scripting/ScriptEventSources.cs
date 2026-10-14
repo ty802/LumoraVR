@@ -62,6 +62,9 @@ internal sealed class ScriptEventSources
     // Spawns, saves, scoped variables and stream chat.
     private readonly ScriptWorldEventSources _world;
 
+    // People touching watched colliders, for the On Person events.
+    private readonly ScriptPersonContacts _persons;
+
     // A Local script hears the panel buttons and beams of whoever is at this machine itself, the way a
     // relay hears them for a Shared one.
     private readonly List<(Button Button, Action<UIInteractionContext> Submitted)> _buttons = new();
@@ -88,6 +91,7 @@ internal sealed class ScriptEventSources
     {
         _runtime = runtime;
         _world = new ScriptWorldEventSources(runtime);
+        _persons = new ScriptPersonContacts(runtime);
     }
 
     public void Subscribe(IEnumerable<ScriptEventEntry> events, Func<ScriptEventEntry, object?> sourceOf)
@@ -135,6 +139,12 @@ internal sealed class ScriptEventSources
                 if (source is Slot { IsDestroyed: false } slot && !ReferenceEquals(slot, home))
                     Add(_relayed, slot, entry);
             }
+            else if (IsPressStep(entry))
+            {
+                // Heard through the relay on the slot, the script's own as well.
+                if (source is Slot { IsDestroyed: false } slot)
+                    Add(_relayed, slot, entry);
+            }
             else if (type == typeof(TriggerEntered) || type == typeof(TriggerExited) || type == typeof(TriggerStaying))
             {
                 if (source is Slot { IsDestroyed: false } slot)
@@ -178,6 +188,11 @@ internal sealed class ScriptEventSources
             {
                 if (source is Slot { IsDestroyed: false } slot && slot.GetComponent<Components.Avatar.Seat>() is { IsDestroyed: false } seat)
                     Add(seats, seat, entry);
+            }
+            else if (type == typeof(PersonEntered) || type == typeof(PersonStaying) || type == typeof(PersonExited))
+            {
+                if (source is Slot { IsDestroyed: false } slot)
+                    _persons.Add(slot, entry);
             }
             else
             {
@@ -231,6 +246,7 @@ internal sealed class ScriptEventSources
         _onFootstep = null;
         _footsteps.Clear();
         _world.Stop();
+        _persons.Clear();
         foreach (var (button, submitted) in _buttons)
             button.Submitted -= submitted;
         _buttons.Clear();
@@ -251,6 +267,50 @@ internal sealed class ScriptEventSources
         KeepRelays();
     }
 
+    // A panel button that takes presses, or a context menu entry that does.
+    internal static bool Pressable(Slot? slot)
+        => slot != null && (slot.GetComponent<Button>() is { CanInteract: true }
+            || slot.GetComponent<Components.UI.ContextMenuEntry>() is { Enabled.Value: true, Interactable.Value: true });
+
+    internal static bool IsPressStep(ScriptEventEntry entry)
+        => entry.PayloadType == typeof(PressBegan) || entry.PayloadType == typeof(PressHeld) || entry.PayloadType == typeof(PressEnded);
+
+    // Where a press is on the element pressed: in the element's own layout space, and across its rect.
+    internal static (float2 Local, float2 Normalized) PointsOn(InteractionElement element, in UIInteractionContext context)
+    {
+        var local = context.PointIn(element.Slot);
+        var rect = element.RectTransform?.LocalComputeRect ?? default;
+        var size = rect.Size;
+        var from = local - rect.Min;
+        return (local, new float2(size.x != 0f ? from.x / size.x : 0f, size.y != 0f ? from.y / size.y : 0f));
+    }
+
+    // A press landing on, held on, or ending on a panel button on a watched object, with the Touch domain any press
+    // needs. A button may switch itself off the moment it is pressed, to hand the drag to what lies under it, so
+    // only a hidden or non-interactable button is refused, and an ending is never refused while the button is there.
+    // -xlinka
+    public void RelayPressStep(User? user, Slot source, ScriptSourceKind kind, float3 point, float2 local, float2 normalized)
+    {
+        if (!_relayed.TryGetValue(source, out var entries) || source.IsDestroyed)
+            return;
+        if (source.GetComponent<Button>() is not { IsDestroyed: false } button
+            || (kind != ScriptSourceKind.PressEnd && (!button.Interactable.Value || !source.IsActive)))
+            return;
+        if (source.World?.DataModelPermissions?.AllowsDomain(user, DataModelPermissionDomain.Touch) == false)
+            return;
+        foreach (var entry in entries)
+        {
+            var node = entry.NodeId;
+            var type = entry.PayloadType;
+            if (kind == ScriptSourceKind.PressBegin && type == typeof(PressBegan))
+                _runtime.Enqueue(runner => runner.Raise(node, new PressBegan(user, point, local, normalized)));
+            else if (kind == ScriptSourceKind.PressHold && type == typeof(PressHeld))
+                _runtime.Enqueue(runner => runner.Raise(node, new PressHeld(user, point, local, normalized)));
+            else if (kind == ScriptSourceKind.PressEnd && type == typeof(PressEnded))
+                _runtime.Enqueue(runner => runner.Raise(node, new PressEnded(user, point, local, normalized)));
+        }
+    }
+
     // What a relay on a watched object passed on, from whoever acted there.
     public void Relay(User? user, Slot source, ScriptSourceKind kind, float3 point)
     {
@@ -259,7 +319,7 @@ internal sealed class ScriptEventSources
         if (kind is ScriptSourceKind.Press or ScriptSourceKind.Click
             && source.World?.DataModelPermissions?.AllowsDomain(user, DataModelPermissionDomain.Touch) == false)
             return;
-        if (kind == ScriptSourceKind.Press && source.GetComponent<Button>() is not { CanInteract: true })
+        if (kind == ScriptSourceKind.Press && !Pressable(source))
             return;
         if (kind is ScriptSourceKind.HoverEnter or ScriptSourceKind.HoverExit && entries.Exists(entry => entry.PayloadType == typeof(HoverStaying)))
             TrackHover(user, source, kind);
@@ -337,6 +397,7 @@ internal sealed class ScriptEventSources
 
     public void PollTriggers(double now)
     {
+        _persons.Poll(now);
         if (_triggers.Count == 0 || now < _nextTriggers)
             return;
         _nextTriggers = now + TriggerSeconds;
@@ -472,8 +533,20 @@ internal sealed class ScriptEventSources
                 physics.OverlapPeople(middle, sphere.Radius.Value * grow, people);
                 break;
             default:
-                into.Clear();
-                people.Clear();
+                // Any other shape by its bounds, turned with the slot; one with no size yet, a hull not worked
+                // out, finds nothing.
+                var bounds = collider.GetLocalBounds();
+                var span = bounds.Max - bounds.Min;
+                var across = new float3(MathF.Abs(span.x * scale.x), MathF.Abs(span.y * scale.y), MathF.Abs(span.z * scale.z));
+                if (!(across.x > 1e-5f && across.y > 1e-5f && across.z > 1e-5f))
+                {
+                    into.Clear();
+                    people.Clear();
+                    break;
+                }
+                var mid = slot.LocalPointToGlobal((bounds.Min + bounds.Max) * 0.5f);
+                physics.OverlapBox(mid, across, slot.GlobalRotation, into, hitTriggers: true);
+                physics.OverlapPeople(mid, across, slot.GlobalRotation, people);
                 break;
         }
     }
@@ -808,8 +881,35 @@ internal sealed class ScriptEventSources
             button.Submitted += submitted;
             _buttons.Add((button, submitted));
         }
+        foreach (var (slot, entries) in _relayed)
+        {
+            if (entries.Exists(IsPressStep) && slot.GetComponent<Button>() is { } pressed)
+                ListenToSteps(slot, pressed);
+        }
         foreach (var slot in _relayed.Keys)
             ListenToParts(slot);
+    }
+
+    // A press landing on, held on and ending on a panel button, as whoever is at this machine works it.
+    private void ListenToSteps(Slot slot, Button button)
+    {
+        void Step(ScriptSourceKind kind, in UIInteractionContext context)
+        {
+            var (local, normalized) = PointsOn(button, in context);
+            RelayPressStep(context.Actor ?? slot.World?.LocalUser, slot, kind, context.WorldPoint, local, normalized);
+        }
+        Action<UIInteractionContext> began = context => Step(ScriptSourceKind.PressBegin, in context);
+        Action<UIInteractionContext> held = context => Step(ScriptSourceKind.PressHold, in context);
+        Action<UIInteractionContext> ended = context => Step(ScriptSourceKind.PressEnd, in context);
+        button.Pressed += began;
+        button.Dragged += held;
+        button.Released += ended;
+        _undo.Add(() =>
+        {
+            button.Pressed -= began;
+            button.Dragged -= held;
+            button.Released -= ended;
+        });
     }
 
     // The typing, drops and tool presses of whoever is at this machine, on a watched object, heard here at
@@ -853,7 +953,11 @@ internal sealed class ScriptEventSources
         }
     }
 
-    // The beams of whoever is at this machine, looked for about once a second.
+    private int _beamsSearchedAt = -1;
+    private Slot? _beamsUnder;
+
+    // The beams of whoever is at this machine, looked for about once a second, and only when the body's
+    // structure changed since the last look.
     public void FollowBeams(double now)
     {
         if (!_runtime.IsLocal || _relayed.Count == 0 || now < _nextBeamLook)
@@ -870,6 +974,11 @@ internal sealed class ScriptEventSources
         var root = _runtime.Host.World?.LocalUser?.Root?.Slot;
         if (root == null || root.IsDestroyed)
             return;
+        int structure = Slot.StructureEpoch;
+        if (structure == _beamsSearchedAt && ReferenceEquals(root, _beamsUnder))
+            return;
+        _beamsSearchedAt = structure;
+        _beamsUnder = root;
         foreach (var laser in root.GetComponentsInChildren<InteractionLaser>())
         {
             if (_beams.Exists(beam => ReferenceEquals(beam.Laser, laser)))
@@ -951,6 +1060,16 @@ internal sealed class ScriptEventSources
                 }
             }
             _relays.Add(relay);
+        }
+        // Each relay passes on press steps only where something listens to them, so a press held on a button
+        // nobody follows that closely costs nothing on the wire.
+        foreach (var relay in _relays)
+        {
+            bool steps = _relayed.TryGetValue(relay.Slot, out var entries) && entries.Exists(IsPressStep);
+            if (relay.PressSteps.Value == steps || relay.World is not { IsAuthority: true } world)
+                continue;
+            using (world.DataModelPermissions?.EnterSystemBypass())
+                relay.PressSteps.Value = steps;
         }
     }
 

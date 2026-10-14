@@ -21,6 +21,7 @@ internal sealed class ScriptUndoBatch
     public ScriptPrincipal Principal { get; }
     public World World { get; }
     public bool IsLocal { get; }
+    public bool OnAuthorMachine { get; }
 
     // The script's own slot, where a Local script parks what it made.
     public Slot? Self { get; }
@@ -35,6 +36,7 @@ internal sealed class ScriptUndoBatch
         Principal = ctx.Principal;
         World = ctx.World;
         IsLocal = ctx.IsLocal;
+        OnAuthorMachine = ctx.OnAuthorMachine;
         Self = ctx.Self;
     }
 
@@ -65,9 +67,9 @@ internal sealed class ScriptUndoBatch
         if (PermissionEngine.IsGateOpenOnThisThread || WorldConfigEdit.IsOpen)
             return false;
 
-        var ctx = new ScriptContext(World, Principal, Self, IsLocal);
+        var ctx = new ScriptContext(World, Principal, Self, IsLocal, OnAuthorMachine);
         bool any = false;
-        using (IsLocal ? null : World.DataModelPermissions?.EnterActor(Principal))
+        using (IsLocal && !Principal.IsWorldContent ? null : ctx.EnterWriter())
         {
             if (undo)
             {

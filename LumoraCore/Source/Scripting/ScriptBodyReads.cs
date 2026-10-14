@@ -9,15 +9,11 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Scripting;
 
-// A person's body as the user and avatar nodes read it: the slots tracking moves, the bones of the avatar
-// they wear, and where their feet, hips and facing are when nothing tracks those. Everything here reads;
-// nothing moves anybody. Facing is level with the user root, so a rig tipped in a seat still faces the way
-// its head does. -xlinka
+// A person's body as the user and avatar nodes read it: the slots tracking moves and the bones of the avatar
+// they wear. Where their feet, hips and facing are is the user root's to say (UserRoot's body points), so a
+// script, a seat and an anchor all agree. Everything here reads; nothing moves anybody. -xlinka
 internal static class ScriptBodyReads
 {
-    // A standing adult's hips sit a little over half their eye height above the floor.
-    public const float HipsOfEyeHeight = 0.56f;
-
     // The slot tracking moves for a body node: the head, a controller, a hand, a foot, or whatever else a
     // positioner or socket on the user root carries. Root is the whole rig. Null for one they lack.
     public static Slot? Tracked(UserRoot root, BodyNode node)
@@ -49,10 +45,7 @@ internal static class ScriptBodyReads
     // with no rig.
     public static HumanoidRig? RigOf(UserRoot root)
     {
-        var avatar = root.GetRegisteredComponent<AvatarEquipManager>()?.EquippedAvatar;
-        if (avatar == null || avatar.IsDestroyed)
-            return null;
-        var rig = avatar.GetComponentInChildren<HumanoidRig>();
+        var rig = root.GetRegisteredComponent<AvatarEquipManager>()?.WornHumanoidRig;
         return rig is { IsDestroyed: false } ? rig : null;
     }
 
@@ -86,79 +79,6 @@ internal static class ScriptBodyReads
     // In front of this world and, in a headset, wearing it.
     public static bool IsPresent(User user)
         => user.IsPresent.Value && (user.PresentInHeadset.Value || !user.VRActive.Value);
-
-    // Which way the head looks, level with the user root: the look direction with its rise taken out. Near
-    // straight up or down the top of the head gives the heading instead, the way it points when looking down
-    // and against it when looking up. World space, unit length.
-    public static float3 Facing(UserRoot root)
-    {
-        var frame = root.Slot.GlobalRotation;
-        var head = Alive(root.HeadSlot);
-        var look = head != null ? head.GlobalRotation : frame;
-        var inverse = frame.Inverse;
-        var forward = inverse * (look * float3.Backward);
-        var flat = new float3(forward.x, 0f, forward.z);
-        if (flat.LengthSquared < 1e-4f)
-        {
-            var top = inverse * (look * float3.Up);
-            flat = forward.y < 0f ? new float3(top.x, 0f, top.z) : new float3(-top.x, 0f, -top.z);
-        }
-        if (flat.LengthSquared < 1e-8f)
-            flat = float3.Backward;
-        return frame * flat.Normalized;
-    }
-
-    // The rotation that turns only about the user root's up and faces the direction along its forward (-Z).
-    public static floatQ Level(UserRoot root, float3 facing)
-    {
-        var frame = root.Slot.GlobalRotation;
-        var local = frame.Inverse * facing;
-        if (local.x * local.x + local.z * local.z < 1e-8f)
-            return frame;
-        float yaw = MathF.Atan2(-local.x, -local.z);
-        return (frame * floatQ.AxisAngle(float3.Up, yaw)).Normalized;
-    }
-
-    // Between the two feet, else under the head on the user root's floor. The feet found come back too.
-    public static float3 Feet(UserRoot root, HumanoidRig? rig, out Slot? left, out Slot? right)
-    {
-        left = Foot(root, rig, left: true);
-        right = Foot(root, rig, left: false);
-        if (left != null && right != null)
-            return (left.GlobalPosition + right.GlobalPosition) * 0.5f;
-        var head = root.Slot.GlobalPointToLocal(root.HeadPosition);
-        return root.Slot.LocalPointToGlobal(new float3(head.x, 0f, head.z));
-    }
-
-    // The feet face across the line between them, toward the side the head faces; without both feet, the
-    // head's facing.
-    public static floatQ FeetRotation(UserRoot root, Slot? left, Slot? right, float3 facing)
-    {
-        if (left == null || right == null)
-            return Level(root, facing);
-        var up = root.Slot.GlobalRotation * float3.Up;
-        var across = float3.Cross(up, right.GlobalPosition - left.GlobalPosition);
-        if (across.LengthSquared < 1e-8f)
-            return Level(root, facing);
-        if (float3.Dot(across, facing) < 0f)
-            across = -across;
-        return Level(root, across);
-    }
-
-    // The avatar's hips bone, else partway up from the feet to the head.
-    public static float3 Hips(UserRoot root, HumanoidRig? rig, float3 feet)
-    {
-        if (Bone(rig, BodyNode.Hips) is { } hips)
-            return hips.GlobalPosition;
-        return feet + (root.HeadPosition - feet) * HipsOfEyeHeight;
-    }
-
-    // Where the avatar's body faces, from its bones; the head's facing without a rig.
-    public static floatQ HipsRotation(UserRoot root, HumanoidRig? rig, float3 facing)
-    {
-        var body = rig?.GuessForwardAxis();
-        return body is { } forward && forward.LengthSquared > 1e-8f ? Level(root, forward) : Level(root, facing);
-    }
 
     // A sided body node on a side; one down the middle, or a side of None, leaves it as it is.
     public static BodyNode OnSide(BodyNode node, Chirality side)

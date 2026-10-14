@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using Lumora.Core.Components;
 using Lumora.Core.Networking.Sync;
 
@@ -46,6 +47,81 @@ internal static class ScriptReads
             }
         }
         return false;
+    }
+
+    // Visible, and when not, the failure of the action asking: which thing was missing, gone or out of reach.
+    public static bool Reached(ScriptContext ctx, [NotNullWhen(true)] Slot? slot, string what = "slot")
+    {
+        if (Visible(ctx, slot))
+            return true;
+        ctx.Fail(slot == null ? $"no {what}"
+            : slot.IsDestroyed ? $"the {what} is gone"
+            : !ReferenceEquals(slot.World, ctx.World) ? $"the {what} is in another world"
+            : ctx.IsLocal ? $"{Named(slot)} is not under this script's object"
+            : $"{Named(slot)} is only on one machine");
+        return false;
+    }
+
+    public static bool Reached(ScriptContext ctx, [NotNullWhen(true)] User? user, string what = "user")
+    {
+        if (Visible(ctx, user))
+            return true;
+        ctx.Fail(user == null ? $"no {what}" : user.IsDestroyed ? $"the {what} has left" : $"the {what} is in another world");
+        return false;
+    }
+
+    public static bool Reached(ScriptContext ctx, [NotNullWhen(true)] Component? component, string what = "component")
+    {
+        if (component != null && !component.IsDestroyed)
+            return Reached(ctx, component.Slot, what + "'s slot");
+        ctx.Fail(component == null ? $"no {what}" : $"the {what} is gone");
+        return false;
+    }
+
+    public static bool ReachedElement(ScriptContext ctx, [NotNullWhen(true)] IWorldElement? element, string what)
+    {
+        if (VisibleElement(ctx, element))
+            return true;
+        ctx.Fail(element == null ? $"no {what}"
+            : element.IsDestroyed ? $"the {what} is gone"
+            : !ReferenceEquals(element.World, ctx.World) ? $"the {what} is in another world"
+            : $"the {what} is out of this script's reach");
+        return false;
+    }
+
+    // Whether user is the person at this machine, for a node that only ever moves its own person. Anyone else
+    // fails only where no other machine runs the flow: a Local script runs on every machine, each for its own.
+    public static bool HereFor(ScriptContext ctx, [NotNullWhen(true)] User? user)
+    {
+        if (ctx.IsMachineUser(user))
+            return true;
+        if (Reached(ctx, user) && !ctx.IsLocal)
+            ctx.Fail($"{Named(user)} is not the user at this machine");
+        return false;
+    }
+
+    // How a failure names what an element belongs to: its slot's name, or a user's.
+    public static string Named(IWorldElement? element)
+    {
+        for (int depth = 0; element != null && depth < 16; depth++)
+        {
+            switch (element)
+            {
+                case Slot slot:
+                    return string.IsNullOrEmpty(slot.Name.Value) ? "a slot with no name" : $"'{slot.Name.Value}'";
+                case User user:
+                    return string.IsNullOrEmpty(user.UserName.Value) ? "a user with no name" : $"'{user.UserName.Value}'";
+                case Component component:
+                    element = component.Slot;
+                    break;
+                case SyncElement member:
+                    element = member.Parent;
+                    break;
+                default:
+                    return "it";
+            }
+        }
+        return "it";
     }
 
     // A reference field whose target a script may read: one it can see, and not host-only.

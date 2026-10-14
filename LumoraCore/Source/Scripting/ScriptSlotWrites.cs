@@ -10,18 +10,19 @@ namespace Lumora.Core.Scripting;
 // offset, its place among its siblings, clearing what is under it, and destroying while keeping the assets
 // something else still uses. Each is judged as the author doing it by hand, after what every script is
 // refused: the world root, a protected slot, and anything in someone's body or hands. A Local script
-// changes only what it made on this machine, as ScriptWrites has it. -xlinka
+// changes what it made on this machine, and a world's Local script the world as the user at the machine,
+// as ScriptWrites has it, that user's own body and hands included. -xlinka
 internal static class ScriptSlotWrites
 {
     private const string LocalOnly = "a Local script changes only what it made on this machine";
 
     public static void Editable(ScriptContext ctx, Slot slot, string what)
     {
-        if (ctx.IsLocal)
+        if (ctx.IsLocal && (slot.IsLocalElement || !ctx.WritesAsMachineUser))
             return;
         if (slot.IsRootSlot || slot.IsProtected)
             throw new UnauthorizedAccessException($"scripts cannot {what} the world root or a protected slot");
-        if (slot.ActiveUserRoot != null)
+        if (slot.ActiveUserRoot is { } root && !(ctx.IsLocal && ReferenceEquals(root, ctx.MachineUser?.Root)))
             throw new UnauthorizedAccessException($"scripts cannot {what} anything in someone's body or hands");
     }
 
@@ -50,9 +51,12 @@ internal static class ScriptSlotWrites
     {
         var parent = slot.Parent;
         if (parent == null)
+        {
+            ctx.Fail($"{ScriptReads.Named(slot)} has no parent to be ordered under");
             return;
+        }
         Editable(ctx, slot, "move");
-        if (ctx.IsLocal && !slot.IsLocalElement)
+        if (ctx.IsLocal && !slot.IsLocalElement && !ctx.WritesAsMachineUser)
             throw new UnauthorizedAccessException(LocalOnly);
         ScriptWrites.Check(ctx, slot.OrderOffset);
         var writes = new List<(Slot Slot, long Offset)>();
@@ -109,7 +113,7 @@ internal static class ScriptSlotWrites
             if (keepAssets)
                 CheckTakeApart(ctx, child);
             else
-                ScriptWrites.CheckPark(ctx, child);
+                ScriptWrites.CheckDestroy(ctx, child);
         }
         if (!keepAssets)
         {

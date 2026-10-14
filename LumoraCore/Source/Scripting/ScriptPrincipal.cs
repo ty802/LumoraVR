@@ -50,8 +50,9 @@ public sealed class ScriptPrincipal : IPermissionActor
     private static string KeyOf(ulong id, string? accountKey)
         => !string.IsNullOrEmpty(accountKey) ? "account:" + accountKey : "user:" + id;
 
-    public static ScriptPrincipal ForUser(User author)
-        => new(author.ReferenceID.RawValue, author.AllocationID.Value, $"{author.UserName.Value} (script)",
+    // ownerByte is the byte the script's things are in: the one the author joined on, or the host's item byte.
+    public static ScriptPrincipal ForUser(User author, byte ownerByte)
+        => new(author.ReferenceID.RawValue, ownerByte, $"{author.UserName.Value} (script)",
             author.MachineID.Value, author.AccountId.Value, worldContent: false) { Author = author };
 
     // The author of whatever carries the script, or null when nobody present owns its byte.
@@ -69,8 +70,8 @@ public sealed class ScriptPrincipal : IPermissionActor
 
         foreach (var user in world.GetAllUsers())
         {
-            if (user.AllocationID.Value == owner && !user.IsDestroyed)
-                return ForUser(user);
+            if (user.HoldsByte(owner) && !user.IsDestroyed)
+                return ForUser(user, owner);
         }
         return null;
     }
@@ -83,7 +84,7 @@ public sealed class ScriptPrincipal : IPermissionActor
 
         foreach (var user in world.GetAllUsers())
         {
-            if (user.AllocationID.Value != AllocationByte || user.IsDestroyed)
+            if (!user.HoldsByte(AllocationByte) || user.IsDestroyed)
                 continue;
             return user.ReferenceID.RawValue == Id
                 && user.MachineID.Value == MachineKey

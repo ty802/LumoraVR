@@ -49,7 +49,7 @@ internal static class ScriptDrawings
     public static float Seconds(float seconds) => seconds > 0f && float.IsFinite(seconds) ? seconds : 0f;
 
     public static ScriptDrawingLayer? Layer(ScriptContext ctx, Slot? space)
-        => space == null || ScriptReads.Visible(ctx, space) ? ScriptDrawingLayer.For(ctx.World) : null;
+        => space == null || ScriptReads.Reached(ctx, space, "space") ? ScriptDrawingLayer.For(ctx.World) : null;
 
     public static bool ToWorld(Slot? space, float3 point, out float3 world)
     {

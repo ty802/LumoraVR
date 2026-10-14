@@ -74,6 +74,15 @@ public sealed class AudioClip : LoadableAsset
         }
     }
 
+    // Samples made in memory by a procedural provider rather than gathered from a URL. World thread.
+    public void SetGenerated(AudioClipData data)
+    {
+        Data = data ?? throw new ArgumentNullException(nameof(data));
+        FailureReason = null;
+        IsReady = true;
+        Version++;
+    }
+
     public override void Unload()
     {
         Data = null;

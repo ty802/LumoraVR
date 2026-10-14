@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Helio.UI;
+using Lumora.Core.Components.Interaction;
 using UIButton = Helio.UI.Button;
 
 namespace Lumora.Core.Components.Audio;
@@ -9,21 +10,19 @@ namespace Lumora.Core.Components.Audio;
 // Makes a button audible: press it and the clip plays from the start. The player does the sounding,
 // this only pulls the trigger, so the same clip can be shared by a panel full of buttons.
 //
-// The wiring goes through the button's own press action, which stores a target and a method name and
-// therefore survives a duplicate: the clone's button calls the clone's handler. A button carries ONE
-// such action, so an empty one is claimed and an occupied one is left alone and ridden through its
-// local press event instead of being stolen from whatever already owns it. Neither path is a closure,
-// because a closure exists only in the process that built it. -xlinka
+// It hears the presses on its own slot the way every press receiver does, so a physical control rings
+// it as well as a panel button. A button on another slot, named in Button, is followed through its local
+// press event. This used to claim a button's single press action, and a save from then still names this
+// component there; on load that claim is let go of, or every press would play twice. -xlinka
 [ComponentCategory("Audio")]
-public sealed class ButtonAudioClipPlayer : Component
+public sealed class ButtonAudioClipPlayer : Component, IPressReceiver
 {
     public readonly SyncRef<AudioClipPlayer> Player;
 
-    // Empty means the button on this slot.
+    // Empty means the presses on this slot.
     public readonly SyncRef<UIButton> Button;
 
-    private UIButton? _bound;
-    private bool _ownsAction;
+    private UIButton? _followed;
 
     public ButtonAudioClipPlayer()
     {
@@ -34,21 +33,25 @@ public sealed class ButtonAudioClipPlayer : Component
     public override void OnStart()
     {
         base.OnStart();
-        Bind();
+        LetGoOfClaim();
+        Follow();
     }
 
     public override void OnChanges()
     {
         base.OnChanges();
-        Bind();
+        Follow();
     }
 
     public override void OnDestroy()
     {
-        Unbind();
+        Unfollow();
         base.OnDestroy();
     }
 
+    public void OnPressed(in PressEvent press) => PlayFromStart();
+
+    // Still here so a press action saved by the old claim resolves.
     [SyncMethod]
     public void OnButtonPressed(UIButton button, UIInteractionContext context) => PlayFromStart();
 
@@ -63,48 +66,42 @@ public sealed class ButtonAudioClipPlayer : Component
         player.Play();
     }
 
-    private void HandlePressed(UIInteractionContext context) => PlayFromStart();
+    private void HandleSubmitted(UIInteractionContext context) => PlayFromStart();
 
-    private void Bind()
+    private void Follow()
     {
-        var button = Button.Target ?? Slot?.GetComponent<UIButton>();
-        if (ReferenceEquals(button, _bound))
+        var button = Button.Target;
+        if (button != null && (button.IsDestroyed || ReferenceEquals(button.Slot, Slot)))
+            button = null;
+        if (ReferenceEquals(button, _followed))
             return;
 
-        Unbind();
-        if (button == null || button.IsDestroyed)
+        Unfollow();
+        if (button == null)
             return;
-
-        _bound = button;
-        if (button.PressAction.Target == null)
-        {
-            button.SetAction(OnButtonPressed);
-            _ownsAction = true;
-        }
-        else
-        {
-            button.Pressed += HandlePressed;
-            _ownsAction = false;
-        }
+        _followed = button;
+        button.Submitted += HandleSubmitted;
     }
 
-    private void Unbind()
+    private void Unfollow()
     {
-        var button = _bound;
-        _bound = null;
-        if (button == null || button.IsDestroyed)
-            return;
+        var button = _followed;
+        _followed = null;
+        if (button != null && !button.IsDestroyed)
+            button.Submitted -= HandleSubmitted;
+    }
 
-        if (_ownsAction)
+    private void LetGoOfClaim()
+    {
+        if (World?.IsAuthority != true)
+            return;
+        Release(Button.Target);
+        Release(Slot?.GetComponent<UIButton>());
+
+        void Release(UIButton? button)
         {
-            var action = button.PressAction.Target;
-            if (action != null && ReferenceEquals(action.Target, this))
+            if (button is { IsDestroyed: false } && button.PressAction.Target is { } action && ReferenceEquals(action.Target, this))
                 button.PressAction.Clear();
         }
-        else
-        {
-            button.Pressed -= HandlePressed;
-        }
-        _ownsAction = false;
     }
 }

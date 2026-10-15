@@ -5,6 +5,7 @@ using Godot;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 using Lumora.Source.Input;
+using Lumora.Source.Godot.Bootstrap;
 using System.Numerics;
 using System;
 using System.Collections.Generic;
@@ -95,14 +96,14 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         if (_xrInterface != null && _xrInterface.IsInitialized())
         {
             _modeActive = true;
-            GD.Print($"GodotVRDriver: VR active - interface: {_xrInterface.GetName()}");
+            LumoraLogger.Log($"GodotVRDriver: VR active - interface: {_xrInterface.GetName()}");
 
             // Log the resolved platform + runtime + active interaction profile
             // so it's obvious at boot whether we're on Quest, Pico, SteamVR PC,
             // etc. Useful for gameplay code that branches on Platform, and for
             // remote debugging on standalone where the only log surface is adb.
             // - xlinka
-            GD.Print($"GodotVRDriver: Platform={Platform}, Runtime='{RuntimeName}', " +
+            LumoraLogger.Log($"GodotVRDriver: Platform={Platform}, Runtime='{RuntimeName}', " +
                      $"LeftProfile='{LeftInteractionProfile}', RightProfile='{RightInteractionProfile}'");
 
             if (!_trackerSignalsConnected)
@@ -117,7 +118,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         else
         {
             _modeActive = false;
-            GD.Print("GodotVRDriver: No VR interface active - running in desktop mode");
+            LumoraLogger.Log("GodotVRDriver: No VR interface active - running in desktop mode");
         }
     }
 
@@ -125,7 +126,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
     {
         var newActive = active && IsRuntimeInitialized;
         if (_modeActive != newActive)
-            GD.Print($"GodotVRDriver: Mode active = {newActive} (runtime initialized: {IsRuntimeInitialized})");
+            LumoraLogger.Debug($"GodotVRDriver: Mode active = {newActive} (runtime initialized: {IsRuntimeInitialized})");
 
         _modeActive = newActive;
 
@@ -135,9 +136,9 @@ public class GodotVRDriver : IVRDriver, IInputDriver
 
     public void LogRuntimeDiagnostics()
     {
-        global::Godot.GD.Print($"GodotVRDriver: Runtime='{RuntimeName}', System='{VRSystemName}', Platform={Platform}, Active={IsVRActive}");
-        global::Godot.GD.Print($"GodotVRDriver: HMD='{GetTrackerDescription("head")}', Left='{GetTrackerDescription("left_hand")}', Right='{GetTrackerDescription("right_hand")}'");
-        global::Godot.GD.Print($"GodotVRDriver: Profiles Left='{LeftInteractionProfile}', Right='{RightInteractionProfile}'");
+        LumoraLogger.Debug($"GodotVRDriver: Runtime='{RuntimeName}', System='{VRSystemName}', Platform={Platform}, Active={IsVRActive}");
+        LumoraLogger.Log($"GodotVRDriver: HMD='{GetTrackerDescription("head")}', Left='{GetTrackerDescription("left_hand")}', Right='{GetTrackerDescription("right_hand")}'");
+        LumoraLogger.Debug($"GodotVRDriver: Profiles Left='{LeftInteractionProfile}', Right='{RightInteractionProfile}'");
     }
 
     private void OnTrackerAdded(StringName trackerName, long type)
@@ -146,10 +147,10 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         if (tracker == null) return;
 
         string desc = tracker is XRPositionalTracker pt ? pt.Description : tracker.Name.ToString();
-        global::Godot.GD.Print($"GodotVRDriver: Tracker connected [{(XRServer.TrackerType)type}] '{trackerName}' - {desc}");
+        LumoraLogger.Debug($"GodotVRDriver: Tracker connected [{(XRServer.TrackerType)type}] '{trackerName}' - {desc}");
 
-        if ((XRServer.TrackerType)type == XRServer.TrackerType.Head)
-            global::Godot.GD.Print($"GodotVRDriver: HMD device: {desc}");
+        if ((XRServer.TrackerType)type == XRServer.TrackerType.Camera)
+            LumoraLogger.Debug($"GodotVRDriver: HMD device: {desc}");
 
         if ((XRServer.TrackerType)type == XRServer.TrackerType.Hand)
             RefreshHandSkeletonTrackers();
@@ -169,7 +170,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         bool wasLive = entry.Live;
         DetachCandidate(entry);
         if (wasLive)
-            LumoraLogger.Log($"GodotVRDriver: body tracker {entry.Device?.Name} removed");
+            LumoraLogger.Debug($"GodotVRDriver: body tracker {entry.Device?.Name} removed");
     }
 
     // Vive pucks arrive typed Controller with the role path as their name; the type alone cannot tell
@@ -182,7 +183,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
 
         switch (tracker.Type)
         {
-            case XRServer.TrackerType.Head:
+            case XRServer.TrackerType.Camera:
             case XRServer.TrackerType.Hand:
             case XRServer.TrackerType.Body:
             case XRServer.TrackerType.Face:
@@ -270,7 +271,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
                 entry.PoseSubscribed = false;
             }
 
-            LumoraLogger.Log($"GodotVRDriver: body tracker {entry.Device.Name} online, suggested role {entry.Device.SuggestedRole}");
+            LumoraLogger.Debug($"GodotVRDriver: body tracker {entry.Device.Name} online, suggested role {entry.Device.SuggestedRole}");
             return;
         }
 
@@ -289,31 +290,30 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             entry.PoseSubscribed = true;
         }
 
-        LumoraLogger.Log($"GodotVRDriver: body tracker {entry.Device?.Name} offline");
+        LumoraLogger.Debug($"GodotVRDriver: body tracker {entry.Device?.Name} offline");
     }
 
     private TrackerDevice AcquireTrackerDevice(string uniqueId)
     {
         if (_trackerDevices.TryGetValue(uniqueId, out var existing))
+        {
+            TrackerMappingStore.TryApply(existing);
             return existing;
+        }
 
         var device = new TrackerDevice();
         device.SetIdentity(uniqueId);
+        device.SuggestedRole = TrackerRoles.FromRolePath(uniqueId);
+
+        // Never mapped from the role: an uncalibrated puck drives nothing. Set before registering,
+        // which applies the saved mapping on top. -xlinka
+        device.CorrespondingBodyNode = BodyNode.NONE;
+        device.Priority = TrackerPriority;
 
         string publicId = device.PublicID;
         string shortId = publicId.Length > 12 ? publicId.Substring(0, 12) : publicId;
         _inputInterface.RegisterInputDevice(device, "VR_Tracker_" + shortId);
 
-        var role = TrackerRoles.FromRolePath(uniqueId);
-        device.SuggestedRole = role;
-
-        // NOT auto-mapped from the role. A puck that has never been calibrated drives NOTHING: its
-        // offset would be identity, so the body node would snap to the raw puck pose and the avatar
-        // would look broken in a way that reads as a bug rather than as "you have not calibrated yet".
-        // The role is a suggestion for the calibrator to break ties with, not an assignment. A saved
-        // mapping is applied separately, by InputInterface at registration. -xlinka
-        device.CorrespondingBodyNode = BodyNode.NONE;
-        device.Priority = TrackerPriority;
         _trackerDevices[uniqueId] = device;
         return device;
     }
@@ -425,17 +425,32 @@ public class GodotVRDriver : IVRDriver, IInputDriver
 
     // What the bound profile physically has, off its path. An unlisted profile counts as having no
     // face buttons, which puts the dash on a menu hold rather than on a button that may not exist,
-    // and no force sensor, which keeps the grip on the analog it does report. -xlinka
+    // no force sensor, which keeps the grip on the analog it does report, and no trigger click, which
+    // takes the trigger's deep level off its value. -xlinka
     private static bool ProfileHasFaceButtons(string profile)
         => profile.Contains("touch_controller")
            || profile.Contains("pico")
            || profile.Contains("index_controller")
+           || profile.Contains("frame_controller_valve")
            || profile.Contains("hp/mixed_reality_controller")
            || profile.Contains("cosmos")
            || profile.Contains("focus3");
 
     private static bool ProfileHasGripForce(string profile)
         => profile.Contains("index_controller");
+
+    // Profiles whose trigger has a click path of its own. The rest bind trigger_click to the value,
+    // which leaves its depth to the runtime.
+    private static bool ProfileHasTriggerClick(string profile)
+        => profile.Contains("htc/vive_controller")
+           || profile.Contains("index_controller")
+           || profile.Contains("frame_controller_valve")
+           || profile.Contains("cosmos")
+           || profile.Contains("focus3")
+           || profile.Contains("huawei/controller");
+
+    private static bool ProfileIsHandTracking(string profile)
+        => profile.Contains("hand_interaction");
 
     private static string GetTrackerDescription(string trackerName)
     {
@@ -450,6 +465,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
     private VRPlatform DetectPlatform()
     {
         if (!IsVRActive) return VRPlatform.None;
+        if (HeadsetDeviceMode.IsSteamFrame) return VRPlatform.SteamFrameStandalone;
 
         // PC OpenXR runtimes (SteamVR, Oculus PC, WMR, Monado, Varjo, ...)
         // all share the same desktop bucket - mobile/standalone is the
@@ -486,7 +502,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             if (node is XRController3D controller)
             {
                 var trackerStr = controller.Tracker.ToString();
-                global::Godot.GD.Print($"GodotVRDriver: Found XRController3D '{controller.Name}' with tracker '{trackerStr}'");
+                LumoraLogger.Debug($"GodotVRDriver: Found XRController3D '{controller.Name}' with tracker '{trackerStr}'");
 
                 if (trackerStr.Contains("left") || trackerStr == "left_hand")
                     _leftController = controller;
@@ -497,11 +513,11 @@ public class GodotVRDriver : IVRDriver, IInputDriver
 
         if (_xrOrigin == null || _leftController == null || _rightController == null)
         {
-            global::Godot.GD.Print("GodotVRDriver: XR nodes not found, creating them...");
+            LumoraLogger.Debug("GodotVRDriver: XR nodes not found, creating them...");
             CreateXRNodes(sceneRoot);
         }
 
-        global::Godot.GD.Print($"GodotVRDriver: XR nodes ready - Origin:{_xrOrigin != null}, Camera:{_xrCamera != null}, Left:{_leftController != null}, Right:{_rightController != null}");
+        LumoraLogger.Debug($"GodotVRDriver: XR nodes ready - Origin:{_xrOrigin != null}, Camera:{_xrCamera != null}, Left:{_leftController != null}, Right:{_rightController != null}");
     }
 
     private void CreateXRNodes(Node sceneRoot)
@@ -511,7 +527,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             _xrOrigin = new XROrigin3D();
             _xrOrigin.Name = "XROrigin3D";
             sceneRoot.AddChild(_xrOrigin);
-            global::Godot.GD.Print("GodotVRDriver: Created XROrigin3D");
+            LumoraLogger.Debug("GodotVRDriver: Created XROrigin3D");
         }
 
         if (_xrCamera == null)
@@ -519,7 +535,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             _xrCamera = new XRCamera3D();
             _xrCamera.Name = "XRCamera3D";
             _xrOrigin.AddChild(_xrCamera);
-            global::Godot.GD.Print("GodotVRDriver: Created XRCamera3D");
+            LumoraLogger.Debug("GodotVRDriver: Created XRCamera3D");
         }
 
         if (_leftController == null)
@@ -528,7 +544,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             _leftController.Name = "LeftController";
             _leftController.Tracker = new StringName("left_hand");
             _xrOrigin.AddChild(_leftController);
-            global::Godot.GD.Print("GodotVRDriver: Created LeftController (left_hand)");
+            LumoraLogger.Debug("GodotVRDriver: Created LeftController (left_hand)");
         }
 
         if (_rightController == null)
@@ -537,7 +553,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             _rightController.Name = "RightController";
             _rightController.Tracker = new StringName("right_hand");
             _xrOrigin.AddChild(_rightController);
-            global::Godot.GD.Print("GodotVRDriver: Created RightController (right_hand)");
+            LumoraLogger.Debug("GodotVRDriver: Created RightController (right_hand)");
         }
     }
 
@@ -618,8 +634,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
 
         UpdateTrackerPoses();
 
-        // IMPORTANT: Update VRController inputs (thumbsticks, buttons, triggers)
-        // This is separate from TrackedObject tracking
+        // Controller buttons and sticks, apart from the tracked poses above.
         if (_inputInterface.LeftController != null)
             UpdateControllerInputs(_inputInterface.LeftController);
         if (_inputInterface.RightController != null)
@@ -703,8 +718,9 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             }
 
             hand.ApplySkeleton(_jointSamples, rootPosition, rootRotation);
-            NoteHandFeed(side, $"runtime hand skeleton, data source {tracker.HandTrackingSource}, root = "
-                              + (controllerTracking ? "controller pose" : "derived from the palm (no controller)"));
+            if (LumoraLogger.EnableDebug)
+                NoteHandFeed(side, $"runtime hand skeleton, data source {tracker.HandTrackingSource}, root = "
+                                  + (controllerTracking ? "controller pose" : "derived from the palm (no controller)"));
             return;
         }
 
@@ -788,12 +804,19 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             inputs.ThumbTouched = inputs.ThumbTouched
                 || ReadBoolAction(xrController, "ax_touch")
                 || ReadBoolAction(xrController, "by_touch")
+                || ReadBoolAction(xrController, "face_left_touch")
+                || ReadBoolAction(xrController, "face_up_touch")
                 || ReadBoolAction(xrController, "primary_touch")
                 || ReadBoolAction(xrController, "secondary_touch");
         }
 
+        if (inputs.ThumbTouched)
+            _thumbSensed[left ? 0 : 1] = true;
+        inputs.SensesThumb = _thumbSensed[left ? 0 : 1];
         return inputs;
     }
+
+    private readonly bool[] _thumbSensed = new bool[2];
 
     // Once per change of feed, never per frame: a headset log answers "are these real fingers". -xlinka
     private void NoteHandFeed(Chirality side, string feed)
@@ -802,7 +825,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         if (logged == feed)
             return;
         logged = feed;
-        LumoraLogger.Log($"GodotVRDriver: {side} hand fingers fed by {feed}");
+        LumoraLogger.Debug($"GodotVRDriver: {side} hand fingers fed by {feed}");
     }
 
     private static float ReadFloatAction(XRController3D controller, string action)
@@ -956,6 +979,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         if (!IsVRActive)
         {
             ClearLegacyDevice(headDevice);
+            OpenXREyeGaze.Release(headDevice);
             ClearLegacyDevice(leftController);
             ClearLegacyDevice(rightController);
             ClearTrackingState();
@@ -1023,7 +1047,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         controller.IsDeviceActive = false;
         controller.ThumbstickPosition = Vector2.Zero;
         controller.TriggerValue = 0f;
-        controller.TriggerPressed = false;
+        controller.TriggerClick = false;
         controller.GripValue = 0f;
         controller.GripForce = 0f;
         controller.PrimaryButtonPressed = false;
@@ -1037,6 +1061,12 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         controller.TriggerTouched = false;
         controller.PrimaryButtonTouched = false;
         controller.SecondaryButtonTouched = false;
+        controller.FaceLeftPressed = false;
+        controller.FaceUpPressed = false;
+        controller.ShoulderPressed = false;
+        controller.FaceLeftTouched = false;
+        controller.FaceUpTouched = false;
+        controller.ShoulderTouched = false;
         controller.ResetLatches();
     }
 
@@ -1080,11 +1110,26 @@ public class GodotVRDriver : IVRDriver, IInputDriver
     private void UpdateControllerInputs(VRController controller)
     {
         var xrController = controller.Side == VRControllerSide.Left ? _leftController : _rightController;
-        string sideName = controller.Side == VRControllerSide.Left ? "left" : "right";
+        string profile = controller.Side == VRControllerSide.Left ? LeftInteractionProfile : RightInteractionProfile;
+        ref string previousProfile = ref (controller.Side == VRControllerSide.Left ? ref _leftInputProfile : ref _rightInputProfile);
+        if (previousProfile != profile)
+        {
+            previousProfile = profile;
+            LumoraLogger.Log($"GodotVRDriver: {controller.Side} controller profile='{profile}'");
+            // A user can swap controllers without restarting SteamVR. An Index force sensor seen
+            // earlier must not make Frame's ordinary squeeze stop grabbing.
+            if (controller.Side == VRControllerSide.Left) { _leftGripForceSeen = false; _leftTriggerClickSeen = false; }
+            else { _rightGripForceSeen = false; _rightTriggerClickSeen = false; }
+            _thumbSensed[controller.Side == VRControllerSide.Left ? 0 : 1] = false;
+            controller.ResetLatches();
+            controller.DeviceName = profile.Contains("frame_controller_valve") ? "Steam Frame Controller"
+                : GetTrackerDescription(controller.Side == VRControllerSide.Left ? "left_hand" : "right_hand");
+        }
 
         global::Godot.Vector2 thumbstick = global::Godot.Vector2.Zero;
         global::Godot.Vector2 touchpad = global::Godot.Vector2.Zero;
         float trigger = 0f;
+        bool triggerClick = false;
         float grip = 0f;
         float gripForce = 0f;
         bool primaryButton = false;
@@ -1097,6 +1142,8 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         bool triggerTouched = false;
         bool primaryTouched = false;
         bool secondaryTouched = false;
+        bool faceLeft = false, faceUp = false, shoulder = false;
+        bool faceLeftTouch = false, faceUpTouch = false, shoulderTouch = false;
 
         // Method 1: Try XRController3D if available (requires action map bindings to work)
         if (xrController != null && GodotObject.IsInstanceValid(xrController))
@@ -1104,6 +1151,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             thumbstick = xrController.GetVector2("primary");
             touchpad = xrController.GetVector2("secondary");
             trigger = xrController.GetFloat("trigger");
+            triggerClick = ReadBoolAction(xrController, "trigger_click");
             grip = xrController.GetFloat("grip");
             // The force sensor, where the profile binds one. It stays at zero from a relaxed hold
             // while the squeeze value above does not, which is why the press comes off it. -xlinka
@@ -1119,41 +1167,33 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             triggerTouched = ReadBoolAction(xrController, "trigger_touch");
             primaryTouched = ReadBoolAction(xrController, "ax_touch");
             secondaryTouched = ReadBoolAction(xrController, "by_touch");
+            faceLeft = ReadBoolAction(xrController, "face_left_button");
+            faceUp = ReadBoolAction(xrController, "face_up_button");
+            shoulder = ReadBoolAction(xrController, "shoulder_button");
+            faceLeftTouch = ReadBoolAction(xrController, "face_left_touch");
+            faceUpTouch = ReadBoolAction(xrController, "face_up_touch");
+            shoulderTouch = ReadBoolAction(xrController, "shoulder_touch");
         }
 
-        // Method 2: Use Godot Input joypad mapping as fallback
-        // OpenXR maps to joypad index 0 (left) and 1 (right)
-        if (thumbstick == global::Godot.Vector2.Zero)
-        {
-            int joyId = controller.Side == VRControllerSide.Left ? 0 : 1;
+        // An idle XR stick is valid input. Joypad indices are unrelated to XR hands: Steam Input
+        // can expose Frame as ONE gamepad, and copying that pad into a hand caused phantom presses.
+        // Flat-screen gamepad input belongs to GodotGamepadDriver.
 
-            float joyX = global::Godot.Input.GetJoyAxis(joyId, JoyAxis.LeftX);
-            float joyY = global::Godot.Input.GetJoyAxis(joyId, JoyAxis.LeftY);
-            if (joyX != 0 || joyY != 0)
-                thumbstick = new global::Godot.Vector2(joyX, joyY); // No inversion - raw values
-
-            if (trigger == 0f)
-                trigger = global::Godot.Input.GetJoyAxis(joyId, JoyAxis.TriggerRight);
-            if (grip == 0f)
-                grip = global::Godot.Input.GetJoyAxis(joyId, JoyAxis.TriggerLeft);
-
-            if (!primaryButton)
-                primaryButton = global::Godot.Input.IsJoyButtonPressed(joyId, JoyButton.A);
-            if (!secondaryButton)
-                secondaryButton = global::Godot.Input.IsJoyButtonPressed(joyId, JoyButton.B);
-        }
-
-        string profile = controller.Side == VRControllerSide.Left ? LeftInteractionProfile : RightInteractionProfile;
         ref bool forceSeen = ref (controller.Side == VRControllerSide.Left ? ref _leftGripForceSeen : ref _rightGripForceSeen);
         if (gripForce > GripForcePresenceFloor)
             forceSeen = true;
+        ref bool clickSeen = ref (controller.Side == VRControllerSide.Left ? ref _leftTriggerClickSeen : ref _rightTriggerClickSeen);
+        if (triggerClick)
+            clickSeen = true;
 
         controller.ThumbstickPosition = new Vector2(thumbstick.X, thumbstick.Y);
         controller.TouchpadPosition = new Vector2(touchpad.X, touchpad.Y);
-        controller.TriggerValue = trigger;
-        controller.TriggerPressed = trigger > 0.5f;
-        // Raw values only. The press edge is latched once a frame on the controller, because this
+        // Raw values only. The press edges are latched once a frame on the controller, because this
         // runs twice a frame, once per interface the driver is registered on. -xlinka
+        controller.TriggerValue = trigger;
+        controller.TriggerClick = triggerClick;
+        controller.HasTriggerClick = clickSeen && ProfileHasTriggerClick(profile);
+        controller.TriggerIsPinch = ProfileIsHandTracking(profile);
         controller.GripValue = grip;
         controller.GripForce = gripForce;
         controller.HasGripForce = forceSeen || ProfileHasGripForce(profile);
@@ -1168,6 +1208,12 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         controller.TriggerTouched = triggerTouched;
         controller.PrimaryButtonTouched = primaryTouched;
         controller.SecondaryButtonTouched = secondaryTouched;
+        controller.FaceLeftPressed = faceLeft;
+        controller.FaceUpPressed = faceUp;
+        controller.ShoulderPressed = shoulder;
+        controller.FaceLeftTouched = faceLeftTouch;
+        controller.FaceUpTouched = faceUpTouch;
+        controller.ShoulderTouched = shoulderTouch;
 
         // First press of each control is logged once, so a headset log answers "does the app get my
         // buttons" without a debugger attached. -xlinka
@@ -1175,6 +1221,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         NoteFirstPress(controller.Side, "secondary", secondaryButton);
         NoteFirstPress(controller.Side, "menu", menuPressed);
         NoteFirstPress(controller.Side, "trigger", trigger > 0.5f);
+        NoteFirstPress(controller.Side, "triggerclick", triggerClick);
         NoteFirstPress(controller.Side, "grip", controller.GripPressed);
         NoteFirstPress(controller.Side, "gripforce", gripForce > GripForcePresenceFloor);
         NoteFirstPress(controller.Side, "stick", thumbstick.LengthSquared() > 0.25f);
@@ -1192,12 +1239,19 @@ public class GodotVRDriver : IVRDriver, IInputDriver
     private bool _leftGripForceSeen;
     private bool _rightGripForceSeen;
 
+    // A profile's trigger click only counts once it has come through, so a runtime that binds it and
+    // never sends it still gets a deep level off the value.
+    private bool _leftTriggerClickSeen;
+    private bool _rightTriggerClickSeen;
+    private string _leftInputProfile = string.Empty;
+    private string _rightInputProfile = string.Empty;
+
     private void NoteFirstPress(VRControllerSide side, string control, bool pressed)
     {
-        if (!pressed)
+        if (!pressed || !LumoraLogger.EnableDebug)
             return;
         if (_seenPresses.Add($"{side}/{control}"))
-            LumoraLogger.Log($"GodotVRDriver: first '{control}' press on the {side} controller");
+            LumoraLogger.Debug($"GodotVRDriver: first '{control}' press on the {side} controller");
     }
 
     // Hand any pulse the engine queued this frame to the runtime. Reading it CLEARS it, so a pulse
@@ -1245,7 +1299,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         _modeActive = false;
         ClearTrackingState();
         _xrInterface = null!;
-        GD.Print("GodotVRDriver: VR shutdown");
+        LumoraLogger.Debug("GodotVRDriver: VR shutdown");
     }
 }
 

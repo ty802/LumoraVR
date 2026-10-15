@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -295,11 +296,70 @@ internal static class SRanipalNative
     {
         foreach (var root in EnumerateInstallRoots())
         {
-            var exe = Path.Combine(root, "sr_runtime.exe");
+            var exe = Path.Combine(root, RuntimeProcessName + ".exe");
             if (File.Exists(exe))
                 return exe;
         }
         return null;
+    }
+
+    private const string RuntimeProcessName = "sr_runtime";
+
+    public static bool IsRuntimeRunning()
+    {
+        try
+        {
+            var found = Process.GetProcessesByName(RuntimeProcessName);
+            foreach (var p in found)
+                p.Dispose();
+            return found.Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // Whether anything the runtime could track is plugged in: a present USB device under the vendor's
+    // id, or the eye tracker maker's. The eye cameras, the facial tracker and the headsets that carry
+    // them all enumerate under one of the two. Present devices only, so a tracker that was plugged in
+    // once last year does not count. -xlinka
+    private static readonly string[] VendorUsbIds = { "VID_0BB4&", "VID_2104&" };
+    private const int CmGetIdListFilterEnumerator = 0x00000001;
+    private const int CmGetIdListFilterPresent = 0x00000100;
+    private const int CrSuccess = 0;
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode, EntryPoint = "CM_Get_Device_ID_List_SizeW")]
+    private static extern int CmGetDeviceIdListSize(out int length, string? filter, int flags);
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode, EntryPoint = "CM_Get_Device_ID_ListW")]
+    private static extern int CmGetDeviceIdList(string? filter, [Out] char[] buffer, int length, int flags);
+
+    public static bool IsVendorDevicePresent()
+    {
+        if (!OperatingSystem.IsWindows())
+            return false;
+        try
+        {
+            const int flags = CmGetIdListFilterEnumerator | CmGetIdListFilterPresent;
+            if (CmGetDeviceIdListSize(out int length, "USB", flags) != CrSuccess || length <= 0)
+                return false;
+            var buffer = new char[length];
+            if (CmGetDeviceIdList("USB", buffer, length, flags) != CrSuccess)
+                return false;
+            var ids = new string(buffer);
+            foreach (var id in VendorUsbIds)
+            {
+                if (ids.Contains(id, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Warn($"SRanipal: could not list USB devices ({ex.Message}).");
+            return false;
+        }
     }
 
     public static void EnsureResolver()

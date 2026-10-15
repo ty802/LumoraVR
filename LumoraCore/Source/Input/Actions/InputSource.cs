@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Input.Actions;
@@ -32,7 +33,33 @@ public sealed class KeyboardSource : IInputSource
     // reads as released for the duration, so typing "was" into a name box does not walk you into a
     // wall or fire a tool. Other device families are untouched: a controller still works while
     // someone types. -xlinka
-    public bool TextFocusHeld { get; set; }
+    public bool TextFocusHeld
+    {
+        get => _textFocusHeld;
+        set
+        {
+            if (_textFocusHeld && !value)
+            {
+                var keyboard = _input?.Keyboard;
+                if (keyboard != null)
+                {
+                    foreach (var key in InputControlCatalog.Keys)
+                    {
+                        if (keyboard.IsKeyPressed(key))
+                            _downFromText.Add(key);
+                    }
+                }
+            }
+            _textFocusHeld = value;
+        }
+    }
+
+    private bool _textFocusHeld;
+
+    // Keys still down when the field let go. The Escape that left a field, or the last letter typed into
+    // it, has to come up before it drives anything; read straight away it lands as a fresh press the
+    // frame the gate lifts, and Escape opened the dash as it closed the field. -xlinka
+    private readonly System.Collections.Generic.HashSet<Key> _downFromText = new();
 
     public InputDeviceKind Kind => InputDeviceKind.Keyboard;
     public bool IsAvailable => !TextFocusHeld && _input?.Keyboard != null;
@@ -47,7 +74,16 @@ public sealed class KeyboardSource : IInputSource
         var keyboard = _input?.Keyboard;
         if (keyboard == null || TextFocusHeld)
             return false;
-        return InputControlCatalog.TryParseKey(control.Control, out var key) && keyboard.IsKeyPressed(key);
+        if (!InputControlCatalog.TryParseKey(control.Control, out var key))
+            return false;
+        bool down = keyboard.IsKeyPressed(key);
+        if (_downFromText.Count > 0 && _downFromText.Contains(key))
+        {
+            if (down)
+                return false;
+            _downFromText.Remove(key);
+        }
+        return down;
     }
 
     public float ReadAnalog(in ControlRef control) => ReadDigital(control) ? 1f : 0f;
@@ -56,6 +92,71 @@ public sealed class KeyboardSource : IInputSource
     // Escape, read past the text gate. It is the rebind listener's cancel and the dashboard's toggle,
     // so it has to answer even while a field is eating keystrokes.
     public bool CaptureEscape() => _input?.Keyboard?.IsKeyJustPressed(Key.Escape) == true;
+
+    private static bool IsModifier(Key key) => key is Key.LeftControl or Key.RightControl
+        or Key.LeftShift or Key.RightShift or Key.LeftAlt or Key.RightAlt;
+
+    private static readonly Key[] ChordModifiers =
+    {
+        Key.LeftControl, Key.RightControl, Key.LeftAlt, Key.RightAlt, Key.LeftShift, Key.RightShift
+    };
+
+    // Snapshot the whole chord while its keys are down. Keep the letter last even when a modifier
+    // was pressed after it; the snapshot survives release for both capture and the last-input readout.
+    public InputBinding CaptureChord(ControlRef primary)
+    {
+        var keyboard = _input?.Keyboard;
+        if (keyboard == null || primary.Device is not (InputDeviceKind.Keyboard or InputDeviceKind.Mouse))
+            return new InputBinding(primary);
+        if (primary.Device == InputDeviceKind.Keyboard && InputControlCatalog.TryParseKey(primary.Control, out var key) && IsModifier(key))
+        {
+            foreach (var held in InputControlCatalog.Keys)
+                if (held != Key.Escape && !IsModifier(held) && keyboard.IsKeyPressed(held))
+                    primary = ControlRef.Key(held);
+        }
+        var modifiers = new List<ControlRef>();
+        foreach (var held in ChordModifiers)
+            Add(held);
+        foreach (var held in InputControlCatalog.Keys)
+            if (held != Key.Escape && !IsModifier(held))
+                Add(held);
+        return new InputBinding(primary, modifiers: modifiers);
+
+        void Add(Key held)
+        {
+            var control = ControlRef.Key(held);
+            if (control != primary && keyboard.IsKeyPressed(held))
+                modifiers.Add(control);
+        }
+    }
+
+    public bool ChordIsHeld(InputBinding chord)
+    {
+        if (!Held(chord.Control))
+            return false;
+        foreach (var modifier in chord.Modifiers)
+            if (!Held(modifier))
+                return false;
+        return true;
+    }
+
+    // Between movement directions, let Ctrl/Shift/Alt stay held but require the direction keys to
+    // come up. Otherwise a previous direction can accidentally become part of the next chord.
+    public bool ChordKeysStillHeld(InputBinding chord)
+    {
+        if (HeldNonModifier(chord.Control))
+            return true;
+        foreach (var modifier in chord.Modifiers)
+            if (HeldNonModifier(modifier))
+                return true;
+        return false;
+    }
+
+    private bool Held(in ControlRef control) => control.Device == InputDeviceKind.Keyboard
+        && InputControlCatalog.TryParseKey(control.Control, out var key) && _input?.Keyboard?.IsKeyPressed(key) == true;
+
+    private bool HeldNonModifier(in ControlRef control) => Held(control)
+        && InputControlCatalog.TryParseKey(control.Control, out var key) && !IsModifier(key);
 
     public bool TryCaptureControl(out ControlRef control)
     {
@@ -176,14 +277,29 @@ public sealed class VRControllerSource : IInputSource
             InputControlCatalog.VRGrip => controller.GripPressed,
             InputControlCatalog.VRPrimary => controller.PrimaryButtonPressed,
             InputControlCatalog.VRSecondary => controller.SecondaryButtonPressed,
+            InputControlCatalog.VRFaceLeft => controller.FaceLeftPressed,
+            InputControlCatalog.VRFaceUp => controller.FaceUpPressed,
+            InputControlCatalog.VRShoulder => controller.ShoulderPressed,
             InputControlCatalog.VRMenu => controller.MenuButtonPressed,
             InputControlCatalog.VRStickPress => controller.ThumbstickPressed,
             InputControlCatalog.VRStickTouch => controller.ThumbstickTouched,
             InputControlCatalog.VRPadPress => controller.TouchpadPressed,
+            InputControlCatalog.VRSelectPress => ReadSelectPress(controller),
             InputControlCatalog.VRMenuHold => controller.MenuHoldFired,
             InputControlCatalog.VRMenuTap => controller.MenuTapFired,
             _ => false
         };
+    }
+
+    private bool ReadSelectPress(VRController controller)
+        => SelectionUsesTouchpad(_input, _side) ? controller.TouchpadPressed : controller.ThumbstickPressed;
+
+    internal static bool SelectionUsesTouchpad(InputInterface input, Chirality side)
+    {
+        var driver = input.ActiveVRDriver;
+        var profile = side == Chirality.Left ? driver?.LeftInteractionProfile : driver?.RightInteractionProfile;
+        // Index has both controls: selection belongs to the pad, leaving its stick click available.
+        return profile?.Contains("/valve/index_controller", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     public float ReadAnalog(in ControlRef control)
@@ -197,6 +313,15 @@ public sealed class VRControllerSource : IInputSource
             InputControlCatalog.VRGrip => controller.GripValue,
             _ => ReadDigital(control) ? 1f : 0f
         };
+    }
+
+    // The trigger's deep level and its one-frame edges, for an action bound to the trigger.
+    public (bool Held, bool Pressed, bool Released) ReadTriggerDepth()
+    {
+        var controller = Controller;
+        if (controller == null)
+            return default;
+        return (controller.TriggerDeep, controller.TriggerDeepPressed, controller.TriggerDeepReleased);
     }
 
     public float2 ReadAnalog2D(in ControlRef control)

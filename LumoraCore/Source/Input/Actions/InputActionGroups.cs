@@ -45,6 +45,7 @@ public sealed class LocomotionActions : InputActionGroup
     public readonly DigitalAction Jump;
     public readonly DigitalAction Sprint;
     public readonly DigitalAction Crouch;
+    public readonly DigitalAction SlowWalk;
     public readonly DigitalAction ToggleMouseCapture;
     public readonly AnalogAction ScaleUser;
     public readonly Analog2DAction LeftStick;
@@ -60,6 +61,7 @@ public sealed class LocomotionActions : InputActionGroup
         Jump = Digital("Jump", "Jump");
         Sprint = Digital("Sprint", "Sprint");
         Crouch = Digital("Crouch", "Crouch");
+        SlowWalk = Digital("SlowWalk", "Slow Walk", "Toggles walking at a quarter of the pace. Sprint turns it off.");
         ToggleMouseCapture = Digital("ToggleMouseCapture", "Release Mouse", "Frees the cursor from mouse look.");
         ScaleUser = Analog("ScaleUser", "Resize Self", "Grow or shrink yourself.");
 
@@ -81,6 +83,7 @@ public sealed class InteractionActions : InputActionGroup
     public readonly DigitalAction Primary;
     public readonly DigitalAction Grab;
     public readonly DigitalAction Secondary;
+    public readonly DigitalAction Select;
     public readonly DigitalAction ContextMenu;
     public readonly DigitalAction HoldFreeze;
     public readonly DigitalAction HoldModifier;
@@ -95,6 +98,7 @@ public sealed class InteractionActions : InputActionGroup
         Primary = Digital("Primary", "Use / Click");
         Grab = Digital("Grab", "Grab");
         Secondary = Digital("Secondary", "Tool Secondary");
+        Select = Digital("Select", "Select with Gizmo", "Select or deselect the object under the DevTip.");
         ContextMenu = Digital("ContextMenu", "Context Menu");
         HoldFreeze = Digital("HoldFreeze", "Manipulate Held", "Hold to aim a carried object instead of looking.");
         HoldModifier = Digital("HoldModifier", "Scale Modifier", "Held with distance input, resizes instead of moving.");
@@ -102,7 +106,7 @@ public sealed class InteractionActions : InputActionGroup
         HoldLook = Analog2D("HoldLook", "Held Rotation", "Pointer motion applied to a carried object.");
         HoldAxis = Analog2D("HoldAxis", "Held Axis", "Stick axis for distance (Y) and twist (X).");
         Pointer = Analog2D("Pointer", "Pointer Scroll", "Scrolls whatever the laser is pointing at.");
-        Stick = Analog2D("Stick", "Menu Flick", "Deflect to pick a context menu wedge, release to take it.");
+        Stick = Analog2D("Stick", "Menu Flick", "Deflect toward a context menu action, release to take it.");
 
         // Distance/rotation on the same hand read the same wheel and the same stick on purpose - what
         // they mean depends on the modifier - so a radial cut is wrong here.
@@ -134,6 +138,8 @@ public sealed class CameraActions : InputActionGroup
     public readonly AnalogAction FlyVertical;
     public readonly DigitalAction FlyFast;
     public readonly AnalogAction OrbitZoom;
+    public readonly DigitalAction TakePhoto;
+    public readonly DigitalAction TimedPhoto;
 
     public CameraActions(InputActionSet set) : base(set)
     {
@@ -143,6 +149,8 @@ public sealed class CameraActions : InputActionGroup
         FlyVertical = Analog("FlyVertical", "Camera Up / Down", "Free-cam vertical flight.");
         FlyFast = Digital("FlyFast", "Camera Boost", "Hold for fast free-cam flight.");
         OrbitZoom = Analog("OrbitZoom", "Orbit Zoom", "Third-person camera distance.");
+        TakePhoto = Digital("TakePhoto", "Photo", "Hold to frame a photo of what the screen shows, let go to take it.");
+        TimedPhoto = Digital("TimedPhoto", "Timed Photo", "Hold to frame a photo, let go to start its timer.");
     }
 }
 
@@ -150,9 +158,15 @@ public sealed class CameraActions : InputActionGroup
 public sealed class EditingActions : InputActionGroup
 {
     public readonly DigitalAction Paste;
+    public readonly DigitalAction Copy;
+    public readonly DigitalAction Undo;
+    public readonly DigitalAction Redo;
 
     public EditingActions(InputActionSet set) : base(set)
     {
         Paste = Digital("Paste", "Paste", "Import whatever is on the clipboard into the world.");
+        Copy = Digital("Copy", "Copy", "Copy a held or selected object to the clipboard.");
+        Undo = Digital("Undo", "Undo", "Undo the last edit; hold Shift to redo.");
+        Redo = Digital("Redo", "Redo", "Redo the last undone edit.");
     }
 }

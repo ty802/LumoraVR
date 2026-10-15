@@ -131,6 +131,10 @@ public static class InputControlCatalog
     public const string VRGrip = "Grip";
     public const string VRPrimary = "Primary";
     public const string VRSecondary = "Secondary";
+    public const string VRFaceLeft = "FaceLeft";
+    public const string VRFaceUp = "FaceUp";
+    public const string VRShoulder = "Shoulder";
+    public const string VRSelectPress = "SelectPress";
     public const string VRMenu = "Menu";
     public const string VRStick = "Stick";
     public const string VRStickPress = "StickPress";
@@ -177,7 +181,7 @@ public static class InputControlCatalog
     private static readonly string[] _vrControls =
     {
         VRTrigger, VRGrip, VRPrimary, VRSecondary, VRMenu, VRStick, VRStickPress, VRStickTouch,
-        VRPad, VRPadPress, VRMenuHold, VRMenuTap
+        VRPad, VRPadPress, VRMenuHold, VRMenuTap, VRSelectPress, VRFaceLeft, VRFaceUp, VRShoulder
     };
 
     // Both directions are built in one pass from one source of truth. Two separate initializers that
@@ -226,9 +230,10 @@ public static class InputControlCatalog
 
     // Controls whose press is a latch with its own thresholds. A digital action bound to one reads
     // the latch only and never falls back to cutting the analog at its press point: the grip's
-    // analog is finger curl and sits above any sane cut from a relaxed hold. -xlinka
+    // analog is finger curl and sits above any sane cut from a relaxed hold, and a bare cut beside
+    // the trigger's latch would bring back the chatter its release band is there to stop. -xlinka
     public static bool PressIsLatched(in ControlRef control)
-        => control.Device == InputDeviceKind.VRController && control.Control == VRGrip;
+        => control.Device == InputDeviceKind.VRController && control.Control is VRGrip or VRTrigger;
 
     public static string Describe(in ControlRef control)
     {
@@ -283,12 +288,16 @@ public static class InputControlCatalog
                     VRGrip => "Grip",
                     VRPrimary => "A / X",
                     VRSecondary => "B / Y",
+                    VRFaceLeft => "X / D-Pad Left",
+                    VRFaceUp => "Y / D-Pad Up",
+                    VRShoulder => "Shoulder",
                     VRMenu => "Menu",
                     VRStick => "Stick",
                     VRStickPress => "Stick Press",
                     VRStickTouch => "Stick Touch",
                     VRPad => "Touchpad",
                     VRPadPress => "Touchpad Press",
+                    VRSelectPress => "Stick / Index Touchpad Press",
                     VRMenuHold => "Menu (hold)",
                     VRMenuTap => "Menu (tap)",
                     _ => control.Control

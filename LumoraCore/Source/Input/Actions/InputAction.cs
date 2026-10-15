@@ -167,17 +167,36 @@ public sealed class DigitalAction : InputAction
     public bool Pressed { get; private set; }
     public bool Released { get; private set; }
 
+    // The VR trigger's deep level, on an action bound to that trigger. DeepHeld while the trigger is
+    // past it under a held press; DeepPressed and DeepReleased for one evaluation when a press that was
+    // already held goes deep again or eases off it without letting go. Any other control bound here, a
+    // rebound face button included, leaves all three off. See TriggerLatch.
+    public bool DeepHeld { get; private set; }
+    public bool DeepPressed { get; private set; }
+    public bool DeepReleased { get; private set; }
+
     // One-shot injection from code (scripted input, a UI button standing in for a control). Consumed
     // by the next evaluation and cleared, so a caller that stops setting it stops driving the action.
     public bool? ExternalInput { get; set; }
 
     private bool _accumulator;
+    private bool _deepAccumulator;
+    private bool _deepPressedAccumulator;
+    private bool _deepReleasedAccumulator;
+
+    // A control already down when its set comes back from being gated off has to come up before it counts.
+    // Otherwise the set below takes the same keystroke as a fresh press: Escape closing the dash also
+    // released the mouse a frame later, and Escape leaving a text field also opened the dash. -xlinka
+    private bool _waitForRelease;
 
     public DigitalAction(string name, string label) : base(name, label) { }
 
     internal override void Begin()
     {
         _accumulator = false;
+        _deepAccumulator = false;
+        _deepPressedAccumulator = false;
+        _deepReleasedAccumulator = false;
         if (ExternalInput.HasValue)
         {
             _accumulator = ExternalInput.Value;
@@ -187,6 +206,16 @@ public sealed class DigitalAction : InputAction
 
     internal override void Accumulate(InputBinding binding, IInputSource source)
     {
+        // Ahead of the early out below, so another binding already holding the action cannot hide
+        // the trigger's depth.
+        if (source is VRControllerSource vr && binding.Control.Control == InputControlCatalog.VRTrigger)
+        {
+            var depth = vr.ReadTriggerDepth();
+            _deepAccumulator |= depth.Held;
+            _deepPressedAccumulator |= depth.Pressed;
+            _deepReleasedAccumulator |= depth.Released;
+        }
+
         if (_accumulator)
             return;
 
@@ -217,11 +246,24 @@ public sealed class DigitalAction : InputAction
             _accumulator = true;
     }
 
-    internal override void Finish(float deltaTime) => Apply(_accumulator);
+    internal override void Finish(float deltaTime)
+    {
+        if (_waitForRelease)
+        {
+            if (_accumulator)
+            {
+                Apply(false);
+                return;
+            }
+            _waitForRelease = false;
+        }
+        Apply(_accumulator);
+    }
 
     internal override void Release(float deltaTime)
     {
         ExternalInput = null;
+        _waitForRelease = true;
         Apply(false);
     }
 
@@ -230,6 +272,10 @@ public sealed class DigitalAction : InputAction
         Pressed = !Held && held;
         Released = Held && !held;
         Held = held;
+        bool carried = held && !Pressed;
+        DeepHeld = held && _deepAccumulator;
+        DeepPressed = carried && _deepPressedAccumulator;
+        DeepReleased = carried && _deepReleasedAccumulator;
     }
 
     public static implicit operator bool(DigitalAction action) => action.Held;

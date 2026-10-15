@@ -5,6 +5,7 @@ using Godot;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 using Lumora.Source.UI;
 using Lumora.Source.Godot.UI;
+using Lumora.Source.Godot.Input;
 
 namespace Lumora.Source.Input;
 
@@ -119,13 +120,13 @@ public partial class DesktopInput : Node3D
         }
 
         var camera = _camera;
-        if (!DashboardToggle.IsDashboardVisible || input.IsVRActive || camera == null || viewport == null)
+        if ((!DashboardToggle.IsDashboardVisible && TouchControls.Instance?.PointerActive != true) || input.IsVRActive || camera == null || viewport == null)
         {
             input.SetDesktopCursorRay(false, default, default);
             return;
         }
 
-        var mousePos = viewport.GetMousePosition();
+        var mousePos = TouchControls.Instance is { PointerActive: true } touch ? touch.PointerPosition : viewport.GetMousePosition();
         var origin = camera.ProjectRayOrigin(mousePos);
         var direction = camera.ProjectRayNormal(mousePos);
         input.SetDesktopCursorRay(
@@ -152,7 +153,7 @@ public partial class DesktopInput : Node3D
         // the game window owns the mouse, so the screen reticle takes over there. Its layer (101)
         // sits one above the dash overlay (100). -xlinka
         bool overDash = Lumora.Core.Engine.Current?.InputInterface is { IsVRActive: false, IsDashboardOpen: true };
-        _cursorDot.Visible = overDash;
+        _cursorDot.Visible = overDash && TouchControls.Instance == null;
         if (overDash)
             _cursorDot.Position = _cursorDot.GetViewport().GetMousePosition() - _cursorDot.Size / 2f;
     }

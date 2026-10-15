@@ -49,6 +49,9 @@ public sealed class SRanipalDriver : IInputDriver
     private InputInterface _input = null!;
     private Thread? _worker;
     private readonly AutoResetEvent _pollSignal = new(false);
+    // The waits before polling starts sleep on this, not on _pollSignal, which the frame thread sets
+    // every frame once either module is up.
+    private readonly ManualResetEventSlim _stopSignal = new(false);
     private readonly object _dataLock = new();
 
     // Serialises the native calls themselves. The worker polls while the frame thread can be
@@ -88,14 +91,16 @@ public sealed class SRanipalDriver : IInputDriver
 
     // WHETHER TO RUN AT ALL
     //
-    // Godot's OpenXR gives us no headset manufacturer or model in this build, so the headset question
-    // goes to the ACTIVE OPENXR RUNTIME: a Virtual Desktop or Oculus runtime means the headset is a
-    // Quest, and a Quest has no SRanipal hardware behind it whatever is installed on the PC.
-    //
     // Deliberately NOT gated on being in VR. Registration happens once at startup and there is no
     // second chance: gating on the headset being up at that instant means anyone who boots flat and
     // puts a headset on afterwards never gets eye tracking for the rest of the session. The hardware
-    // check is the honest question. -xlinka
+    // check is the honest question.
+    //
+    // Nor on the active OpenXR runtime, which used to veto it whenever a streaming runtime was the
+    // active one. That is one machine-wide registry value naming the runtime a headset session would go
+    // through. It says nothing about what is plugged into the PC, and a flat launch goes through no
+    // runtime at all, so a facial tracker on such a machine never got as far as being asked: every
+    // launch logged "skipped" and the face never moved. -xlinka
     public static bool ShouldRegister()
     {
         if (!OperatingSystem.IsWindows())
@@ -110,6 +115,7 @@ public sealed class SRanipalDriver : IInputDriver
         if (LaunchArgs.HasFlag(ForceFlag))
         {
             LumoraLogger.Log($"SRanipal: forced on by {ForceFlag}.");
+            _mayStartRuntime = true;
             return true;
         }
 
@@ -123,29 +129,42 @@ public sealed class SRanipalDriver : IInputDriver
             return false;
         }
 
-        var runtime = OpenXRRuntimeReport.ActiveKind;
-        if (runtime is OpenXRRuntimeReport.RuntimeKind.VirtualDesktop or OpenXRRuntimeReport.RuntimeKind.Oculus)
-        {
-            LumoraLogger.Log($"SRanipal: skipped, the active OpenXR runtime is {OpenXRRuntimeReport.Friendly(runtime)} " +
-                             $"so the headset is not one SRanipal drives. Pass {ForceFlag} to run it anyway.");
-            return false;
-        }
-
         var runtimeExe = SR.FindRuntimeExecutable();
         if (runtimeExe != null)
         {
-            LumoraLogger.Log($"SRanipal: runtime found at '{runtimeExe}'.");
+            _mayStartRuntime = SR.IsVendorDevicePresent();
+            LumoraLogger.Log(_mayStartRuntime
+                ? $"SRanipal: runtime found at '{runtimeExe}', and tracking hardware is plugged in."
+                : $"SRanipal: runtime found at '{runtimeExe}'. No tracking hardware is plugged in, so it is used " +
+                  $"once the SRanipal runtime is running (start it, or pass {ForceFlag} to start it from here).");
             return true;
         }
 
         if (SR.SafeIsViveProEye())
         {
             LumoraLogger.Log("SRanipal: no runtime install found, but the headset reports itself as a Vive Pro Eye.");
+            _mayStartRuntime = true;
             return true;
         }
 
         return false;
     }
+
+    // WHO STARTS THE RUNTIME
+    //
+    // Initial() starts sr_runtime.exe itself when it is not running, and the runtime's manifest asks
+    // for elevation. On a machine with nothing plugged in that is an admin prompt nobody asked for, then
+    // minutes inside Initial waiting on a runtime that never comes up: measured on a machine with the
+    // runtime installed and not running, three minutes and then InitialFailed, for the eyes alone, with
+    // the lips queued behind them. So Initial is only called while the runtime is running, with one
+    // exception: a machine with the hardware plugged in, or the force flag, may start it, once.
+    // Otherwise the worker waits for the runtime and attaches the moment someone starts it. -xlinka
+    private static bool _mayStartRuntime;
+    private bool _startSpent;
+    private bool _waitLogged;
+    private const int RuntimePollMs = 2000;
+    private const int RuntimeSettleMs = 3000;
+    private const int RetryDelayMs = 2000;
 
     public void RegisterInputs(InputInterface inputInterface)
     {
@@ -176,6 +195,7 @@ public sealed class SRanipalDriver : IInputDriver
         if (_stopping)
             return;
         _stopping = true;
+        _stopSignal.Set();
         _pollSignal.Set();
 
         try
@@ -205,8 +225,9 @@ public sealed class SRanipalDriver : IInputDriver
     // core, and no sample older than one frame.
     private void Worker()
     {
-        InitializeModule(SR.AnipalTypeEye);
-        InitializeModule(SR.AnipalTypeLip);
+        InitializeModules();
+        if (_stopping)
+            return;
 
         if (!_eyeReady && !_lipReady)
         {
@@ -262,56 +283,120 @@ public sealed class SRanipalDriver : IInputDriver
 
     // The service can be up before the camera is, so a first failure is worth waiting out. Bounded,
     // because a machine that simply has no facial tracker must not retry forever.
-    private void InitializeModule(int anipalType)
+    //
+    // The two modules take turns rather than one after the other. The eyes used to run all their
+    // attempts first, and a facial tracker on a headset without eye cameras waited behind every one of
+    // them before it was asked at all. -xlinka
+    private void InitializeModules()
+    {
+        const int MaxAttempts = 6;
+        bool eyeSettled = false;
+        bool lipSettled = false;
+
+        for (int attempt = 1; attempt <= MaxAttempts; attempt++)
+        {
+            bool last = attempt == MaxAttempts;
+            if (!eyeSettled)
+            {
+                if (!AwaitRuntime())
+                    return;
+                eyeSettled = TryInitialize(SR.AnipalTypeEye, attempt, last);
+            }
+            if (!lipSettled)
+            {
+                if (!AwaitRuntime())
+                    return;
+                lipSettled = TryInitialize(SR.AnipalTypeLip, attempt, last);
+            }
+            if ((eyeSettled && lipSettled) || last)
+                return;
+            if (_stopSignal.Wait(RetryDelayMs))
+                return;
+        }
+    }
+
+    // False when shutting down.
+    private bool AwaitRuntime()
+    {
+        if (_stopping)
+            return false;
+        if (SR.IsRuntimeRunning())
+            return true;
+        if (_mayStartRuntime && !_startSpent)
+        {
+            _startSpent = true;
+            LumoraLogger.Log("SRanipal: the runtime is not running; starting it (it may ask for administrator rights).");
+            return true;
+        }
+
+        if (!_waitLogged)
+        {
+            _waitLogged = true;
+            LumoraLogger.Log("SRanipal: waiting for the SRanipal runtime to be started; eye and lip tracking attach when it is.");
+        }
+        while (!_stopSignal.Wait(RuntimePollMs))
+        {
+            if (SR.IsRuntimeRunning())
+            {
+                // A process that has just appeared is still bringing its cameras and ports up, and an
+                // answer it gives in that moment can settle a module for the whole session.
+                LumoraLogger.Log("SRanipal: the runtime is running.");
+                return !_stopSignal.Wait(RuntimeSettleMs);
+            }
+            // Hardware plugged in after launch gets the same one start it would have had at launch.
+            if (!_startSpent && SR.IsVendorDevicePresent())
+            {
+                _startSpent = true;
+                LumoraLogger.Log("SRanipal: tracking hardware was plugged in; starting the runtime (it may ask for administrator rights).");
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // True when this module is settled: up, or answered in a way another attempt will not change.
+    private bool TryInitialize(int anipalType, int attempt, bool last)
     {
         bool isLip = anipalType == SR.AnipalTypeLip;
         string label = isLip ? "lip" : "eye";
-        const int MaxAttempts = 6;
 
-        for (int attempt = 1; attempt <= MaxAttempts && !_stopping; attempt++)
+        SR.SRError result;
+        try
         {
-            SR.SRError result;
-            try
-            {
-                lock (_apiLock)
-                    result = SR.Initial(anipalType, IntPtr.Zero);
-            }
-            catch (Exception ex)
-            {
-                LumoraLogger.Warn($"SRanipal: {label} init threw ({ex.Message}).");
-                return;
-            }
-
-            if (result == SR.SRError.Work)
-            {
-                if (isLip) _lipReady = true; else _eyeReady = true;
-                LumoraLogger.Log($"SRanipal: {label} tracking initialized.");
-                return;
-            }
-
-            // Nothing plugged in. Not an error worth shouting about and not worth retrying at all for
-            // the facial tracker, which most people do not own.
-            if (result is SR.SRError.UnknownModule or SR.SRError.DeviceNotFound or SR.SRError.ServiceNotFound
-                       or SR.SRError.DisabledByUser or SR.SRError.NotSupportEyeTracking)
-            {
-                LumoraLogger.Log($"SRanipal: no {label} tracking device ({result}).");
-                return;
-            }
-
-            if (result is SR.SRError.RuntimeNotFound or SR.SRError.NotImplemented)
-            {
-                LumoraLogger.Log($"SRanipal: {label} tracking unavailable ({result}).");
-                return;
-            }
-
-            if (attempt == MaxAttempts)
-            {
-                LumoraLogger.Warn($"SRanipal: {label} tracking gave up after {MaxAttempts} attempts (last: {result}).");
-                return;
-            }
-
-            Thread.Sleep(2000);
+            lock (_apiLock)
+                result = SR.Initial(anipalType, IntPtr.Zero);
         }
+        catch (Exception ex)
+        {
+            LumoraLogger.Warn($"SRanipal: {label} init threw ({ex.Message}).");
+            return true;
+        }
+
+        if (result == SR.SRError.Work)
+        {
+            if (isLip) _lipReady = true; else _eyeReady = true;
+            LumoraLogger.Log($"SRanipal: {label} tracking initialized.");
+            return true;
+        }
+
+        // Nothing plugged in. Not an error worth shouting about and not worth retrying at all for
+        // the facial tracker, which most people do not own.
+        if (result is SR.SRError.UnknownModule or SR.SRError.DeviceNotFound or SR.SRError.ServiceNotFound
+                   or SR.SRError.DisabledByUser or SR.SRError.NotSupportEyeTracking)
+        {
+            LumoraLogger.Log($"SRanipal: no {label} tracking device ({result}).");
+            return true;
+        }
+
+        if (result is SR.SRError.RuntimeNotFound or SR.SRError.NotImplemented)
+        {
+            LumoraLogger.Log($"SRanipal: {label} tracking unavailable ({result}).");
+            return true;
+        }
+
+        if (last)
+            LumoraLogger.Warn($"SRanipal: {label} tracking gave up after {attempt} attempts (last: {result}).");
+        return last;
     }
 
     public void UpdateInputs(float deltaTime)

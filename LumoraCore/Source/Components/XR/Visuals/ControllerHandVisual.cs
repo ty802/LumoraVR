@@ -51,7 +51,6 @@ public sealed class ControllerHandVisual : Component
     private HandSkeletonMesh _skeletonMesh = null!;
     private List<JointEntry> _joints = null!;
     private List<BoneEntry>  _bones = null!;
-    private Dictionary<BodyNode, float3> _jointWorldPositions = null!;
     private Dictionary<BodyNode, float3> _restPoseLocalPositions = null!;
 
     // Scratch pose handed to the mesh each frame, in the skeleton root's local space. Sized once.
@@ -59,6 +58,9 @@ public sealed class ControllerHandVisual : Component
     private float[] _poseRadii = Array.Empty<float>();
     private (int a, int b)[] _poseBones = Array.Empty<(int, int)>();
     private Dictionary<BodyNode, int> _jointIndex = null!;
+    // Per joint: whether it was placed this frame. Per bone: its two joints.
+    private bool[] _placed = Array.Empty<bool>();
+    private (int a, int b)[] _boneJoints = Array.Empty<(int, int)>();
 
     // FINGER TOPOLOGY
 
@@ -106,7 +108,6 @@ public sealed class ControllerHandVisual : Component
         _joints = new List<JointEntry>();
         _bones  = new List<BoneEntry>();
         _jointIndex = new Dictionary<BodyNode, int>(32);
-        _jointWorldPositions   = new Dictionary<BodyNode, float3>(32);
         _restPoseLocalPositions = BuildRestPoseLocalPositions(HandSide.Value, HandScale.Value);
         // The skeleton is a per-viewer visual: RefreshVisuals drives every joint/bone each frame from THIS
         // machine's InputInterface (tracked node poses) or a controller-relative rest pose, so the geometry
@@ -117,7 +118,7 @@ public sealed class ControllerHandVisual : Component
         // non-owner peer never tries to write under a slot it doesn't own. -xlinka
         BuildHandSkeleton();
         RefreshVisuals();
-        LumoraLogger.Log($"ControllerHandVisual: Initialized for {HandSide.Value} hand on '{Slot.SlotName.Value}'");
+        LumoraLogger.Debug($"ControllerHandVisual: Initialized for {HandSide.Value} hand on '{Slot.SlotName.Value}'");
     }
 
     public override void OnUpdate(float delta)
@@ -153,7 +154,6 @@ public sealed class ControllerHandVisual : Component
         _bones  = null!;
         _jointIndex = null!;
         _skeletonMesh = null!;
-        _jointWorldPositions = null!;
         _restPoseLocalPositions = null!;
         base.OnDestroy();
     }
@@ -217,6 +217,13 @@ public sealed class ControllerHandVisual : Component
         for (int i = 0; i < _joints.Count; i++)
             _poseRadii[i] = jRadius;
         _poseBones = new (int, int)[_bones.Count];
+        _placed = new bool[_joints.Count];
+        _boneJoints = new (int, int)[_bones.Count];
+        for (int i = 0; i < _bones.Count; i++)
+        {
+            _boneJoints[i] = (_jointIndex.TryGetValue(_bones[i].NodeA, out int a) ? a : -1,
+                _jointIndex.TryGetValue(_bones[i].NodeB, out int b) ? b : -1);
+        }
 
         _handSkeletonRoot.ActiveSelf.Value = true;
     }
@@ -237,64 +244,81 @@ public sealed class ControllerHandVisual : Component
 
     private void RefreshVisuals()
     {
-        var input = Engine.Current?.InputInterface;
-        _jointWorldPositions.Clear();
+        // Only the wearer's own hands follow this machine's tracked fingers. Every machine draws everyone's
+        // default hands, and all of them used to be posed from the local hand devices, so in VR each hand in
+        // the room was drawn over the viewer's own and jumped back to its owner's controller whenever a joint
+        // dropped tracking. Anyone else's hands rest on their own controller here. -xlinka
+        var input = Slot.IsUnderLocalUser ? Engine.Current?.InputInterface : null;
+        var root = _handSkeletonRoot;
+        bool rooted = root != null && !root.IsDestroyed && _poseJoints.Length == _joints.Count && _placed.Length == _joints.Count;
 
-        // Update joint sphere world positions. Prefer tracked node poses, but fall back
-        // to a controller-relative hand rest pose when tracking is unavailable.
-        foreach (var joint in _joints)
+        // A joint on the rest pose sits at a fixed place under the root however the controller moves. Worked
+        // out there directly it holds the same lanes frame to frame, so its slot and the mesh are left alone;
+        // through world space it picked up new rounding with every move, and both were written every frame.
+        // That place is the rest offset over the controller's scale, while the root sits on the controller
+        // and the scale is even; otherwise the joint goes through world space as before. -xlinka
+        float3 scale = Slot.GlobalScale;
+        bool atRest = rooted && root!.LocalPosition.Value == float3.Zero && root.LocalRotation.Value == floatQ.Identity
+            && root.LocalScale.Value == float3.One && scale.x == scale.y && scale.y == scale.z;
+
+        // Prefer tracked node poses, but fall back to a controller-relative hand rest pose when tracking is
+        // unavailable.
+        for (int i = 0; i < _joints.Count; i++)
         {
+            var joint = _joints[i];
+            if (rooted)
+                _placed[i] = false;
             if (joint.VisualSlot == null || joint.VisualSlot.IsDestroyed)
                 continue;
 
-            float3 jointWorldPos;
-
-            if (input != null)
+            var device = input?.GetBodyNode(joint.Node);
+            if (device != null && device.IsTracking)
             {
-                var device = input.GetBodyNode(joint.Node);
-                if (device != null && device.IsTracking)
-                {
-                    jointWorldPos = device.Position;
-                }
-                else
-                {
-                    jointWorldPos = GetFallbackJointWorldPosition(joint.Node);
-                }
+                var world = device.Position;
+                joint.VisualSlot.GlobalPosition = world;
+                if (rooted)
+                    _poseJoints[i] = root!.GlobalPointToLocal(world);
+            }
+            else if (atRest)
+            {
+                var local = (_restPoseLocalPositions.TryGetValue(joint.Node, out var rest) ? rest : float3.Zero) / scale;
+                joint.VisualSlot.LocalPosition.Value = local;
+                _poseJoints[i] = local;
             }
             else
             {
-                jointWorldPos = GetFallbackJointWorldPosition(joint.Node);
+                var world = GetFallbackJointWorldPosition(joint.Node);
+                joint.VisualSlot.GlobalPosition = world;
+                if (rooted)
+                    _poseJoints[i] = root!.GlobalPointToLocal(world);
             }
 
-            joint.VisualSlot.GlobalPosition = jointWorldPos;
-            joint.VisualSlot.ActiveSelf.Value = true;
-            _jointWorldPositions[joint.Node] = jointWorldPos;
+            if (!joint.VisualSlot.ActiveSelf.Value)
+                joint.VisualSlot.ActiveSelf.Value = true;
+            if (rooted)
+                _placed[i] = true;
         }
 
         // Hand the whole pose to the one mesh. The default hand gets disposed when a real avatar is
         // equipped over the hands while this refresh can still run for a frame; a disposed mesh is
         // skipped rather than written. -xlinka
         var mesh = _skeletonMesh;
-        var root = _handSkeletonRoot;
-        if (mesh == null || mesh.IsDestroyed || root == null || root.IsDestroyed || _poseJoints.Length != _joints.Count)
+        if (mesh == null || mesh.IsDestroyed || !rooted)
             return;
 
         for (int i = 0; i < _joints.Count; i++)
         {
-            _poseJoints[i] = _jointWorldPositions.TryGetValue(_joints[i].Node, out var world)
-                ? root.GlobalPointToLocal(world)
-                : float3.Zero;
+            if (!_placed[i])
+                _poseJoints[i] = float3.Zero;
         }
 
-        int written = 0;
-        foreach (var bone in _bones)
+        for (int i = 0; i < _boneJoints.Length; i++)
         {
             // A bone without both ends collapses to a point inside the mesh instead of vanishing from
             // the index buffer, so the topology never has to be rebuilt for a lost joint.
-            int a = -1, b = -1;
-            bool ok = _jointIndex.TryGetValue(bone.NodeA, out a) && _jointIndex.TryGetValue(bone.NodeB, out b)
-                      && _jointWorldPositions.ContainsKey(bone.NodeA) && _jointWorldPositions.ContainsKey(bone.NodeB);
-            _poseBones[written++] = ok ? (a, b) : (-1, -1);
+            var (a, b) = _boneJoints[i];
+            bool ok = a >= 0 && b >= 0 && _placed[a] && _placed[b];
+            _poseBones[i] = ok ? (a, b) : (-1, -1);
         }
 
         float bRadius = BoneRadius.Value * MathF.Max(HandScale.Value, 0.2f);

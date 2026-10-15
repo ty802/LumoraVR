@@ -200,6 +200,18 @@ public static class OpenXREyeGaze
         }
     }
 
+    // Out of VR nothing calls Update, so a gaze written on the last VR frame would sit on the device
+    // for the whole flat session and hold the avatar's eyes on it. Called every flat frame by the VR
+    // driver; the vendor path owns the fields while it is live and is left alone. -xlinka
+    public static void Release(HeadDevice headDevice)
+    {
+        if (headDevice == null || SRanipalDriver.EyesLive)
+            return;
+        Clear(headDevice);
+        _haveLocalForward = false;
+        _localForwardMoved = false;
+    }
+
     private static void Clear(HeadDevice headDevice)
     {
         if (!headDevice.HasEyeTracking)

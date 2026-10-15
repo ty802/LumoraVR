@@ -116,6 +116,11 @@ public static class InputBindingDefaults
             action.Bind(ControlRef.Key(Key.C));
             action.Bind(ControlRef.Pad(Cat.PadLeftTrigger));
         }
+        else if (action == loco.SlowWalk)
+        {
+            // Plain Z only: with ctrl held the undo shortcut owns the letter.
+            action.Bind(ControlRef.Key(Key.Z));
+        }
         else if (action == loco.ToggleMouseCapture)
         {
             action.Bind(ControlRef.Key(Key.Escape));
@@ -180,6 +185,10 @@ public static class InputBindingDefaults
                 action.Bind(ControlRef.Key(Key.R));
                 action.Bind(ControlRef.Pad(Cat.PadFaceLeft));
             }
+        }
+        else if (action == hand.Select)
+        {
+            action.Bind(ControlRef.VR(side, Cat.VRSelectPress));
         }
         else if (action == hand.ContextMenu)
         {
@@ -283,14 +292,28 @@ public static class InputBindingDefaults
         }
         else if (action == camera.OrbitZoom)
             action.Bind(ControlRef.Mouse(Cat.MouseWheel));
+        else if (action == camera.TakePhoto)
+            action.Bind(ControlRef.Key(Key.F12));
+        else if (action == camera.TimedPhoto)
+        {
+            action.Bind(new InputBinding(ControlRef.Key(Key.F12), modifiers: new[] { ControlRef.Key(Key.LeftShift) }));
+            action.Bind(new InputBinding(ControlRef.Key(Key.F12), modifiers: new[] { ControlRef.Key(Key.RightShift) }));
+        }
     }
 
     private static void ApplyEditing(InputBindingMap map, InputAction action)
     {
-        if (action == map.Editing.Paste)
+        if (action == map.Editing.Paste || action == map.Editing.Copy)
         {
-            action.Bind(new InputBinding(ControlRef.Key(Key.V), modifiers: new[] { LeftCtrl }));
-            action.Bind(new InputBinding(ControlRef.Key(Key.V), modifiers: new[] { RightCtrl }));
+            var key = ControlRef.Key(action == map.Editing.Paste ? Key.V : Key.C);
+            action.Bind(new InputBinding(key, modifiers: new[] { LeftCtrl }));
+            action.Bind(new InputBinding(key, modifiers: new[] { RightCtrl }));
+        }
+        else if (action == map.Editing.Undo || action == map.Editing.Redo)
+        {
+            var key = ControlRef.Key(action == map.Editing.Undo ? Key.Z : Key.Y);
+            action.Bind(new InputBinding(key, modifiers: new[] { LeftCtrl }));
+            action.Bind(new InputBinding(key, modifiers: new[] { RightCtrl }));
         }
     }
 

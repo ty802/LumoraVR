@@ -75,10 +75,10 @@ public class GodotGamepadDriver : IGamepadDriver, IInputDriver
 		if (connected)
 		{
 			string name = global::Godot.Input.GetJoyName((int)device);
-			LumoraLogger.Log($"GodotGamepadDriver: pad connected in slot {device} ({name})");
+			LumoraLogger.Debug($"GodotGamepadDriver: pad connected in slot {device} ({name})");
 		}
 		else
-			LumoraLogger.Log($"GodotGamepadDriver: pad disconnected from slot {device}");
+			LumoraLogger.Debug($"GodotGamepadDriver: pad disconnected from slot {device}");
 	}
 
 	private void RefreshConnected()
@@ -107,7 +107,7 @@ public class GodotGamepadDriver : IGamepadDriver, IInputDriver
 		_activeSlot = _connected.Count > 0 ? _connected[0] : -1;
 		_activeName = _activeSlot >= 0 ? global::Godot.Input.GetJoyName(_activeSlot) : string.Empty;
 		if (_activeSlot >= 0)
-			LumoraLogger.Log($"GodotGamepadDriver: active pad is slot {_activeSlot} '{_activeName}' ({_connectedCount} connected)");
+			LumoraLogger.Debug($"GodotGamepadDriver: active pad is slot {_activeSlot} '{_activeName}' ({_connectedCount} connected)");
 	}
 
 	public void UpdateGamepad(Gamepad gamepad, float deltaTime)
@@ -126,7 +126,7 @@ public class GodotGamepadDriver : IGamepadDriver, IInputDriver
 				// Unplugging with a button down would otherwise leave that button held forever.
 				gamepad.ClearState(deltaTime);
 				gamepad.UpdateTriggerButtons();
-				LumoraLogger.Log("GodotGamepadDriver: no pad connected");
+				LumoraLogger.Debug("GodotGamepadDriver: no pad connected");
 			}
 			gamepad.IsConnected = false;
 			gamepad.IsDeviceActive = false;

@@ -245,6 +245,13 @@ public partial class DesktopCameraController : Node
         // frames, not a control anybody would rebind. Everything discrete goes through actions.
     }
 
+    public void AddTouchMotion(Vector2 motion)
+    {
+        if (DashboardToggle.IsDashboardVisible || UserInputState.FocusedDesktopInputSuppressed) return;
+        if (_mode == CameraMode.ThirdPerson) _pendingTpMouse += motion;
+        if (_mode == CameraMode.FreeCam) _pendingFreeCamMouse += motion;
+    }
+
     // MODE SWITCHING
 
     private void SwitchMode(CameraMode newMode)
@@ -291,7 +298,7 @@ public partial class DesktopCameraController : Node
             case CameraMode.FirstPerson:
                 _headOutput?.ClearPositionOverride();
                 _headOutput?.ClearRotationOverride();
-                LumoraLogger.Log("[DesktopCameraController] First-person");
+                LumoraLogger.Debug("[DesktopCameraController] First-person");
                 break;
 
             case CameraMode.ThirdPerson:
@@ -304,7 +311,7 @@ public partial class DesktopCameraController : Node
                 _tpHeadSlot       = null;
                 _tpObstructionLimit = float.PositiveInfinity;
                 _flaggedState?.SetMouseLookSuppressed(true);
-                LumoraLogger.Log("[DesktopCameraController] Third-person (mouse=orbit, scroll=distance)");
+                LumoraLogger.Debug("[DesktopCameraController] Third-person (mouse=orbit, scroll=distance)");
                 break;
 
             case CameraMode.FreeCam:
@@ -312,7 +319,7 @@ public partial class DesktopCameraController : Node
                 RefreshFreeCamLabel();
                 _flaggedState?.SetFreeCamActive(true);
                 if (_freeCamIndicator != null) _freeCamIndicator.Visible = true;
-                LumoraLogger.Log("[DesktopCameraController] Free-cam (WASD+mouse, Shift=fast, Space/Ctrl=vertical)");
+                LumoraLogger.Debug("[DesktopCameraController] Free-cam (WASD+mouse, Shift=fast, Space/Ctrl=vertical)");
                 break;
         }
     }
@@ -396,7 +403,8 @@ public partial class DesktopCameraController : Node
     // point: probe from the head toward the view against this world's solid bodies with the local user's
     // own avatar excluded, and park the camera at hit.Point + normal * standoff when something is in the
     // way (projected back onto the orbit ray, which moves it by under a centimetre and keeps the look
-    // direction constant). Triggers are not probed, so grabbable sensors never tug the view, and the
+    // direction constant). Triggers are not probed and a prop that can be picked up is looked past, so
+    // neither tugs the view, and the
     // physics hook already skips bodies it cannot resolve to a slot in this world, which is what keeps
     // every user's CharacterBody3D (parented to the world root with no slot tag) out of the result.
     //
@@ -416,15 +424,24 @@ public partial class DesktopCameraController : Node
         float rayLength = freeDistance - rayStart;
         if (physics != null && rootSlot != null && rayLength > 0f)
         {
-            if (_tpRayExclude.Count == 0) _tpRayExclude.Add(rootSlot);
-            else _tpRayExclude[0] = rootSlot;
+            _tpRayExclude.Clear();
+            _tpRayExclude.Add(rootSlot);
 
             var origin = (pivot + rayDir * rayStart).ToLumora();
-            if (physics.Raycast(origin, rayDir.ToLumora(), rayLength, _tpRayExclude, out var hit))
+            for (int pass = 0; pass < 4; pass++)
             {
+                if (!physics.Raycast(origin, rayDir.ToLumora(), rayLength, _tpRayExclude, out var hit))
+                    break;
+                if (hit.Slot != null && (hit.Slot.GetComponent<Grabbable>() != null
+                    || hit.Slot.GetComponent<Lumora.Core.Assets.ImageProvider>() != null))
+                {
+                    _tpRayExclude.Add(hit.Slot);
+                    continue;
+                }
                 float standoff = Mathf.Max(TpCollisionStandoff, _headOutput?.NearClip ?? 0f);
                 Vector3 parked = hit.Point.ToGodot() + hit.Normal.ToGodot() * standoff;
                 limit = Mathf.Max((parked - pivot).Dot(rayDir), rayStart);
+                break;
             }
         }
 

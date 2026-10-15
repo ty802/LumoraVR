@@ -9,16 +9,11 @@ using EngineKey = Lumora.Core.Input.Key;
 
 namespace Lumora.Source.Godot.Input.Drivers;
 
-/// <summary>
-/// Godot-specific keyboard input driver.
-/// Implements IKeyboardDriver and IInputDriver interfaces.
-/// </summary>
 public class GodotKeyboardDriver : IKeyboardDriver, IInputDriver
 {
     public int UpdateOrder => 0;
     private StringBuilder _typedCharacters = new StringBuilder();
 
-    // Map engine Key enum to Godot Key enum
     private static readonly Dictionary<EngineKey, global::Godot.Key> _keyMap = new Dictionary<EngineKey, global::Godot.Key>
     {
         { EngineKey.Backspace, global::Godot.Key.Backspace },
@@ -98,11 +93,6 @@ public class GodotKeyboardDriver : IKeyboardDriver, IInputDriver
         if (_keyMap.TryGetValue(key, out global::Godot.Key godotKey))
         {
             bool isPressed = global::Godot.Input.IsKeyPressed(godotKey);
-            // Commented out for less spam - uncomment for debugging
-            // if (isPressed)
-            // {
-            // 	GD.Print($"[GodotKeyboardDriver] Key pressed: {key} (Godot: {godotKey})");
-            // }
             return isPressed;
         }
         return false;
@@ -115,17 +105,18 @@ public class GodotKeyboardDriver : IKeyboardDriver, IInputDriver
         return result;
     }
 
-    /// <summary>
-    /// Called from Godot's _Input event to capture typed characters
-    /// </summary>
     public void HandleInputEvent(InputEvent @event)
     {
-        if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo)
+        if (@event is InputEventKey keyEvent && keyEvent.Pressed)
         {
-            // Capture printable characters
-            if (keyEvent.Unicode != 0)
+            // Shortcut letters are not text. AltGr (Ctrl+Alt) still produces layout characters.
+            // Printable OS repeats are text too; deletion repeat is handled by TextInput itself.
+            if ((keyEvent.CtrlPressed || keyEvent.MetaPressed) && !keyEvent.AltPressed)
+                return;
+            if (keyEvent.Unicode >= 32 && keyEvent.Unicode != 127
+                && System.Text.Rune.IsValid((int)keyEvent.Unicode))
             {
-                _typedCharacters.Append((char)keyEvent.Unicode);
+                _typedCharacters.Append(char.ConvertFromUtf32((int)keyEvent.Unicode));
             }
         }
     }
@@ -145,7 +136,6 @@ public class GodotKeyboardDriver : IKeyboardDriver, IInputDriver
         if (keyboard == null)
             return;
 
-        // Build set of currently pressed keys
         var pressedKeys = new HashSet<EngineKey>();
         foreach (var kvp in _keyMap)
         {
@@ -155,18 +145,8 @@ public class GodotKeyboardDriver : IKeyboardDriver, IInputDriver
             }
         }
 
-        // Commented out for less spam - uncomment for debugging
-        // if (pressedKeys.Count > 0)
-        // {
-        // 	var keyList = string.Join(", ", pressedKeys);
-        // 	GD.Print($"[GodotKeyboardDriver.UpdateKeyboard] Pressed keys: {keyList}");
-        // }
-
-        // Get typed text for this frame
         string typedText = GetTypeDelta();
 
-        // Update the keyboard device
         keyboard.UpdateFromDriver(pressedKeys, typedText);
     }
 }
-

@@ -31,6 +31,17 @@ public sealed class InputBindingMap
     private readonly List<InputActionSet> _sets = new();
     private readonly Dictionary<string, InputAction> _actionsByPath = new(StringComparer.Ordinal);
 
+    // A control held for one set: every set below it reads that control as untouched. A hold lasts until
+    // the pass after the one it was taken in, so whoever wants it keeps it by asking every frame and it
+    // lapses on its own when they stop. The laser holds its stick while it rests on something the stick
+    // scrolls, which keeps turning and walking off that stick there. -xlinka
+    private readonly Dictionary<ControlRef, (int Priority, long Pass)> _holds = new();
+    private long _pass;
+
+    // Carrying hands reserve controls before locomotion actions are evaluated. World updates may
+    // run less often than input, so a live grab cannot rely on last update's one-pass hold.
+    internal event Action? BeforeEvaluate;
+
     private readonly KeyboardSource _keyboard;
     private readonly MouseSource _mouse;
     private readonly GamepadSource _gamepad;
@@ -55,6 +66,7 @@ public sealed class InputBindingMap
 
     // For the controls screen's sanity readout.
     public ControlRef LastActivatedControl { get; private set; }
+    public InputBinding? LastActivatedBinding { get; private set; }
 
     // False in headless or before init.
     public bool HasEvaluated { get; private set; }
@@ -145,6 +157,16 @@ public sealed class InputBindingMap
     public void Evaluate(float deltaTime)
     {
         HasEvaluated = true;
+        _pass++;
+        BeforeEvaluate?.Invoke();
+
+        // A shortcut such as Ctrl+C owns its letter; it must not also crouch the player.
+        if (Editing.Set.IsLive)
+            foreach (var action in Editing.Set.Actions)
+                foreach (var binding in action.Bindings)
+                    if (binding.Modifiers.Count > 0 && ModifiersHeld(binding)
+                        && Resolve(binding.Control) is { IsAvailable: true } source && source.ReadDigital(binding.Control))
+                        HoldControl(Editing.Set, binding.Control);
 
         // A set that asserts itself shuts out everything below it. That is the whole of "the menu
         // blocks locomotion" - no flags passed down, no module checking whether a panel is up.
@@ -160,8 +182,10 @@ public sealed class InputBindingMap
         foreach (var set in _sets)
         {
             bool live = set.IsLive && set.Priority >= blockBelow && !capturing;
-            foreach (var action in set.Actions)
+            var actions = set.Actions;
+            for (int i = 0; i < actions.Count; i++)
             {
+                var action = actions[i];
                 if (!live || !action.Enabled)
                 {
                     action.Release(deltaTime);
@@ -177,37 +201,68 @@ public sealed class InputBindingMap
     private void EvaluateAction(InputAction action, float deltaTime)
     {
         action.Begin();
-        foreach (var binding in action.Bindings)
+        var bindings = action.Bindings;
+        for (int i = 0; i < bindings.Count; i++)
         {
+            var binding = bindings[i];
             var source = Resolve(binding.Control);
             if (source == null || !source.IsAvailable)
                 continue;
             if (!ModifiersHeld(binding))
+                continue;
+            if (HeldAbove(binding.Control, action.Set.Priority))
                 continue;
             action.Accumulate(binding, source);
         }
         action.Finish(deltaTime);
     }
 
+    public void HoldControl(InputActionSet owner, in ControlRef control)
+    {
+        if (owner != null)
+            _holds[control] = (owner.Priority, _pass);
+    }
+
+    private bool HeldAbove(in ControlRef control, int priority)
+    {
+        if (_holds.Count == 0 || !_holds.TryGetValue(control, out var hold))
+            return false;
+        if (hold.Pass < _pass - 1)
+        {
+            _holds.Remove(control);
+            return false;
+        }
+        return hold.Priority > priority;
+    }
+
     private bool ModifiersHeld(InputBinding binding)
     {
         var modifiers = binding.Modifiers;
+        bool ctrl = false, alt = false;
         for (int i = 0; i < modifiers.Count; i++)
         {
+            ctrl |= modifiers[i] == ControlRef.Key(Key.LeftControl) || modifiers[i] == ControlRef.Key(Key.RightControl);
+            alt |= modifiers[i] == ControlRef.Key(Key.LeftAlt) || modifiers[i] == ControlRef.Key(Key.RightAlt);
             var source = Resolve(modifiers[i]);
             if (source == null || !source.IsAvailable || !source.ReadDigital(modifiers[i]))
                 return false;
         }
+        // AltGr is Ctrl+Alt on some Windows and Linux layouts. It types characters, rather than
+        // invoking Ctrl-only shortcuts. An explicitly bound Ctrl+Alt chord remains available.
+        if (ctrl && !alt && (_keyboard.ReadDigital(ControlRef.Key(Key.LeftAlt)) || _keyboard.ReadDigital(ControlRef.Key(Key.RightAlt))))
+            return false;
         return true;
     }
 
     private void TrackLastActivated()
     {
-        if (_mouse.TryCaptureControl(out var mouseControl)) { LastActivatedControl = mouseControl; return; }
-        if (_gamepad.TryCaptureControl(out var padControl)) { LastActivatedControl = padControl; return; }
-        if (_vrRight.TryCaptureControl(out var rightControl)) { LastActivatedControl = rightControl; return; }
-        if (_vrLeft.TryCaptureControl(out var leftControl)) { LastActivatedControl = leftControl; return; }
-        if (_keyboard.TryCaptureControl(out var keyControl)) LastActivatedControl = keyControl;
+        if (_mouse.TryCaptureControl(out var control) || _gamepad.TryCaptureControl(out control)
+            || _vrRight.TryCaptureControl(out control) || _vrLeft.TryCaptureControl(out control)
+            || _keyboard.TryCaptureControl(out control))
+        {
+            LastActivatedBinding = _keyboard.CaptureChord(control);
+            LastActivatedControl = LastActivatedBinding.Control;
+        }
     }
 
     // REBIND LISTENING
@@ -239,6 +294,52 @@ public sealed class InputBindingMap
     // its own. -xlinka
     private const float CaptureTimeout = 8f;
     private float _captureAge;
+    private InputBinding? _captureChord;
+    private InputBinding? _captureRelease;
+    private readonly List<InputBinding> _captureBindings = new();
+
+    public string CapturePrompt
+    {
+        get
+        {
+            if (_captureChord != null)
+                return "Release " + _captureChord.Describe();
+            if (CaptureTarget == null)
+                return string.Empty;
+            bool keyboard = false;
+            foreach (var device in CaptureDevices)
+                keyboard |= device == InputDeviceKind.Keyboard;
+            if (!keyboard)
+                return "Press a control";
+            if (CaptureTarget.Kind == InputActionKind.Analog2D)
+            {
+                string direction = _captureBindings.Count switch
+                {
+                    0 => CaptureTarget == Locomotion.Move || CaptureTarget == Camera.FlyMove ? "Forward" : "Up",
+                    1 => CaptureTarget == Locomotion.Move || CaptureTarget == Camera.FlyMove ? "Backward" : "Down",
+                    2 => "Left",
+                    _ => "Right"
+                };
+                return $"Press {direction} ({_captureBindings.Count + 1}/4)";
+            }
+            if (CaptureTarget.Kind == InputActionKind.Analog)
+            {
+                bool positive = _captureBindings.Count == 0;
+                string direction = CaptureTarget == Locomotion.Turn ? (positive ? "Right" : "Left")
+                    : CaptureTarget == Locomotion.Fly || CaptureTarget == Camera.FlyVertical ? (positive ? "Up" : "Down")
+                    : positive ? "Positive" : "Negative";
+                return $"Press {direction} ({_captureBindings.Count + 1}/2)";
+            }
+            return "Press and release a key or chord";
+        }
+    }
+
+    private void ResetCaptureInput()
+    {
+        _captureChord = null;
+        _captureRelease = null;
+        _captureBindings.Clear();
+    }
 
     // Every set is gated off while listening, so the key you press to rebind does not also fire
     // whatever it is currently bound to.
@@ -251,10 +352,12 @@ public sealed class InputBindingMap
         CaptureStatus = CaptureState.Listening;
         CaptureConflicts = Array.Empty<InputAction>();
         _captureAge = 0f;
+        ResetCaptureInput();
     }
 
     public void CancelCapture()
     {
+        ResetCaptureInput();
         CaptureTarget = null;
         CaptureDevices = Array.Empty<InputDeviceKind>();
         CaptureStatus = CaptureState.Cancelled;
@@ -262,6 +365,7 @@ public sealed class InputBindingMap
 
     public void ClearCapture()
     {
+        ResetCaptureInput();
         CaptureTarget = null;
         CaptureDevices = Array.Empty<InputDeviceKind>();
         CaptureStatus = CaptureState.Idle;
@@ -288,31 +392,74 @@ public sealed class InputBindingMap
             return true;
         }
 
-        ControlRef control = default;
-        bool captured = false;
+        if (_captureRelease != null)
+        {
+            if (_keyboard.ChordKeysStillHeld(_captureRelease))
+                return true;
+            _captureRelease = null;
+        }
+        if (_captureChord != null && !_keyboard.ChordIsHeld(_captureChord))
+        {
+            var chord = _captureChord;
+            _captureChord = null;
+            AcceptCapture(chord);
+            return true;
+        }
+
         foreach (var device in CaptureDevices)
         {
-            if (TryCaptureFrom(device, out control))
+            if (TryCaptureFrom(device, out var control))
             {
-                captured = true;
+                var chord = _keyboard.CaptureChord(control);
+                if (control.Device == InputDeviceKind.Keyboard)
+                {
+                    // A press begins a chord; release commits it. This leaves time for modifiers or
+                    // additional keys, and still allows a modifier to be bound on its own.
+                    _captureChord = chord;
+                    _captureAge = 0f;
+                }
+                else
+                {
+                    _captureChord = null;
+                    AcceptCapture(chord);
+                }
                 break;
             }
         }
-        if (!captured)
-            return true;
+        return true;
+    }
 
-        var action = CaptureTarget;
+    private void AcceptCapture(InputBinding chord)
+    {
+        var action = CaptureTarget!;
+        int steps = chord.Control.Device == InputDeviceKind.Keyboard
+            ? action.Kind == InputActionKind.Analog2D ? 4 : action.Kind == InputActionKind.Analog ? 2 : 1
+            : 1;
+        if (steps == 1)
+            _captureBindings.Clear();
+        int step = _captureBindings.Count;
+        var target = steps == 4 ? (step < 2 ? BindingAxis.Y : BindingAxis.X) : DefaultTargetFor(action, chord.Control);
+        float scale = steps > 1 && (step == 1 || step == 2) ? -1f : 1f;
+        _captureBindings.Add(new InputBinding(chord.Control, BindingAxis.Auto, target, scale, chord.Modifiers));
+        _captureAge = 0f;
+        if (_captureBindings.Count < steps)
+        {
+            _captureRelease = chord;
+            return;
+        }
+
+        // Commit the complete set together. Cancelling midway must leave all previous directions intact.
         foreach (var device in CaptureDevices)
             action.ClearBindings(device);
-        var binding = new InputBinding(control, BindingAxis.Auto, DefaultTargetFor(action, control));
-        action.Bind(binding);
+        foreach (var binding in _captureBindings)
+            action.Bind(binding);
         action.IsOverridden = true;
 
-        CaptureConflicts = action.Set?.FindConflicts(action, control) ?? (IReadOnlyList<InputAction>)Array.Empty<InputAction>();
+        CaptureConflicts = action.Set?.FindConflicts(action, chord.Control) ?? (IReadOnlyList<InputAction>)Array.Empty<InputAction>();
         CaptureStatus = CaptureState.Captured;
         CaptureTarget = null;
+        ResetCaptureInput();
         BindingsChanged?.Invoke(action);
-        return true;
     }
 
     // A digital control bound onto a two-axis action has to say which half it drives, or it would

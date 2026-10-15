@@ -41,6 +41,12 @@ public class InputInterface : IDisposable
     private ITrackedDevice[] _bodyNodePlaceholders = null!;
 
     private List<IInputUpdateReceiver> _inputReceivers = new List<IInputUpdateReceiver>();
+    // Membership beside the ordered list. Every dispatch used to ask List.Contains under the lock for
+    // every receiver, twice a frame: square in the number of particle systems, bone chains, solvers and
+    // pose drivers a world holds. The removal count lets a pass skip the question entirely unless
+    // something actually left since its snapshot. -xlinka
+    private readonly HashSet<IInputUpdateReceiver> _receiverSet = new(ReferenceEqualityComparer.Instance);
+    private int _receiverRemovals;
 
     public TrackingSpace GlobalTrackingSpace { get; private set; } = new TrackingSpace();
 
@@ -100,10 +106,17 @@ public class InputInterface : IDisposable
     // read while the dash is closed, otherwise the newest clean one. Size is whatever the last clean
     // read asked for; both callers ask for the same 256x144. -xlinka
     private byte[]? _lastWorldView;
+    private World? _lastWorldViewOwner;
 
     public bool TryCaptureWorldView(int width, int height, out byte[] jpeg)
     {
         jpeg = System.Array.Empty<byte>();
+        var world = Engine.Current?.WorldManager?.FocusedWorld;
+        if (!ReferenceEquals(world, _lastWorldViewOwner))
+        {
+            _lastWorldViewOwner = world;
+            _lastWorldView = null;
+        }
         var capture = ViewCapture;
         if (capture == null)
             return false;
@@ -165,6 +178,31 @@ public class InputInterface : IDisposable
         if (float.IsNaN(distance) || distance < 0f)
             return float.PositiveInfinity;
         return distance;
+    }
+
+    // A hand something has taken for its own buttons for a while, a viewfinder's or a camera's shutter: the
+    // hand's tool and beam take no trigger or secondary until it lets go; the grip still holds. One claim per
+    // hand; the owner that took it gives it back.
+    private readonly object?[] _handClaims = new object?[3];
+
+    public void ClaimHand(Chirality side, object owner)
+    {
+        int i = (int)side;
+        if (i >= 0 && i < _handClaims.Length)
+            _handClaims[i] = owner;
+    }
+
+    public void ReleaseHand(Chirality side, object owner)
+    {
+        int i = (int)side;
+        if (i >= 0 && i < _handClaims.Length && ReferenceEquals(_handClaims[i], owner))
+            _handClaims[i] = null;
+    }
+
+    public bool IsHandClaimed(Chirality side)
+    {
+        int i = (int)side;
+        return i >= 0 && i < _handClaims.Length && _handClaims[i] != null;
     }
 
     public bool IsUserspaceLaserActive(Chirality side)
@@ -278,6 +316,12 @@ public class InputInterface : IDisposable
 
     public void ReportHeadsetFocus(bool focused) => IsHeadsetFocused = focused;
 
+    // Whether our own window holds the desktop's keyboard focus. Reported by the platform layer; one that
+    // never says counts as focused, the safe answer for anything that types into other windows.
+    public bool IsWindowFocused { get; private set; } = true;
+
+    public void ReportWindowFocus(bool focused) => IsWindowFocused = focused;
+
     public HeadOutputDevice CurrentHeadOutputDevice
     {
         get
@@ -388,8 +432,10 @@ public class InputInterface : IDisposable
             }
 
             var current = _bodyNodes[index];
+            // A remapped or disabled puck that is still tracking must not keep the node it left.
             if (!ReferenceEquals(current, placeholder) &&
-                (current == null || !current.IsDeviceActive || !current.IsTracking))
+                (current == null || !current.IsDeviceActive || !current.IsTracking
+                 || (int)current.CorrespondingBodyNode != index))
             {
                 _bodyNodes[index] = placeholder;
             }
@@ -416,7 +462,7 @@ public class InputInterface : IDisposable
                         if (!_loggedBodyNodeAssignments.Contains(logKey))
                         {
                             _loggedBodyNodeAssignments.Add(logKey);
-                            Logger.Log($"InputInterface: Assigned device '{device.Name}' to body node {trackedDevice.CorrespondingBodyNode}");
+                            Logger.Debug($"InputInterface: Assigned device '{device.Name}' to body node {trackedDevice.CorrespondingBodyNode}");
                         }
                     }
                 }
@@ -475,15 +521,33 @@ public class InputInterface : IDisposable
 
     public void RegisterInputEventReceiver(IInputUpdateReceiver receiver)
     {
-        if (!_inputReceivers.Contains(receiver))
+        lock (_pendingLock)
         {
-            _inputReceivers.Add(receiver);
+            if (_receiverSet.Add(receiver))
+                _inputReceivers.Add(receiver);
         }
     }
 
     public void UnregisterInputEventReceiver(IInputUpdateReceiver receiver)
     {
-        _inputReceivers.Remove(receiver);
+        lock (_pendingLock)
+        {
+            if (_receiverSet.Remove(receiver))
+            {
+                _inputReceivers.Remove(receiver);
+                _receiverRemovals++;
+            }
+            ForgetPending(receiver);
+        }
+    }
+
+    // Still registered? Only asked under the lock once a removal has happened since the caller looked.
+    private bool StillRegistered(IInputUpdateReceiver receiver, int removalsSeen)
+    {
+        if (System.Threading.Volatile.Read(ref _receiverRemovals) == removalsSeen)
+            return true;
+        lock (_pendingLock)
+            return _receiverSet.Contains(receiver);
     }
 
     #endregion
@@ -504,7 +568,7 @@ public class InputInterface : IDisposable
         }
         bucket.InputDrivers.Add(driver);
 
-        Logger.Log($"InputInterface: Registered driver with UpdateOrder {driver.UpdateOrder}");
+        Logger.Debug($"InputInterface: Registered driver with UpdateOrder {driver.UpdateOrder}");
     }
 
     public void RegisterKeyboardDriver(IKeyboardDriver keyboardDriver)
@@ -513,7 +577,7 @@ public class InputInterface : IDisposable
             throw new InvalidOperationException("Keyboard Driver is already registered");
 
         _keyboardDriver = keyboardDriver;
-        Logger.Log("InputInterface: Keyboard driver registered");
+        Logger.Debug("InputInterface: Keyboard driver registered");
     }
 
     public void RegisterMouseDriver(IMouseDriver mouseDriver)
@@ -525,7 +589,7 @@ public class InputInterface : IDisposable
         RegisterInputDevice(Mouse, "Mouse");
         _mouseDriver = mouseDriver;
 
-        Logger.Log("InputInterface: Mouse driver registered");
+        Logger.Debug("InputInterface: Mouse driver registered");
     }
 
     // Optional: with no driver the Gamepad device never connects and every pad binding stays inert.
@@ -535,7 +599,7 @@ public class InputInterface : IDisposable
             throw new InvalidOperationException("Gamepad Driver already registered!");
 
         _gamepadDriver = gamepadDriver;
-        Logger.Log("InputInterface: Gamepad driver registered");
+        Logger.Debug("InputInterface: Gamepad driver registered");
     }
 
     public IGamepadDriver GetGamepadDriver() => _gamepadDriver;
@@ -551,7 +615,7 @@ public class InputInterface : IDisposable
         _inputDevices.Add(device);
         device.Initialize(this, deviceIndex, name);
 
-        Logger.Log($"InputInterface: Registered device '{name}' (index {deviceIndex})");
+        Logger.Debug($"InputInterface: Registered device '{name}' (index {deviceIndex})");
 
         // A tracker without its saved mapping is a puck that has forgotten it is a foot. Applied here so
         // it happens on EVERY connect, not just the one where the user happened to calibrate: the store
@@ -605,11 +669,11 @@ public class InputInterface : IDisposable
             if (vrDriver is IInputDriver inputDriver)
             {
                 RegisterInputDriver(inputDriver);
-                Logger.Log($"InputInterface: VR driver '{vrDriver.VRSystemName}' registered as IInputDriver");
+                Logger.Debug($"InputInterface: VR driver '{vrDriver.VRSystemName}' registered as IInputDriver");
             }
             else
             {
-                Logger.Log($"InputInterface: VR driver '{vrDriver.VRSystemName}' registered (legacy only)");
+                Logger.Debug($"InputInterface: VR driver '{vrDriver.VRSystemName}' registered (legacy only)");
             }
         }
     }
@@ -634,7 +698,7 @@ public class InputInterface : IDisposable
     // phase labelled "sync (transport poll, queued actions)". A world full of particles therefore showed
     // up in the profiler as a networking cost, and nothing anywhere broke it down by type. That is the
     // single biggest thing the frame profiler could not see. -xlinka
-    private readonly Dictionary<string, ReceiverCost> _receiverCosts = new(StringComparer.Ordinal);
+    private readonly Dictionary<Type, ReceiverCost> _receiverCosts = new();
     private readonly object _receiverCostLock = new();
 
     public static bool ProfileReceivers;
@@ -658,28 +722,38 @@ public class InputInterface : IDisposable
         lock (_receiverCostLock)
         {
             foreach (var pair in _receiverCosts)
-                into.Add(new ReceiverProfileEntry(pair.Key, pair.Value.Ms, pair.Value.Count));
+            {
+                if (pair.Value.Count > 0)
+                    into.Add(new ReceiverProfileEntry(pair.Key.Name + " (input)", pair.Value.Ms, pair.Value.Count));
+            }
         }
     }
 
-    // Cleared when the callbacks are QUEUED and read after the world has drained them, which is the same
-    // frame: Engine.Update runs ProcessInput before WorldManager.Update.
+    // Zeroed when the callbacks are QUEUED and read after the world has drained them, which is the same
+    // frame: Engine.Update runs ProcessInput before WorldManager.Update. The buckets stay, so a profiled
+    // frame allocates nothing once every receiver type has been seen.
     private void ResetReceiverProfile()
     {
         lock (_receiverCostLock)
-            _receiverCosts.Clear();
+        {
+            foreach (var bucket in _receiverCosts.Values)
+            {
+                bucket.Ms = 0;
+                bucket.Count = 0;
+            }
+        }
     }
 
     private void RecordReceiverCost(IInputUpdateReceiver receiver, long ticks)
     {
-        string name = receiver.GetType().Name + " (input)";
+        var type = receiver.GetType();
         double ms = ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
         lock (_receiverCostLock)
         {
-            if (!_receiverCosts.TryGetValue(name, out var bucket))
+            if (!_receiverCosts.TryGetValue(type, out var bucket))
             {
                 bucket = new ReceiverCost();
-                _receiverCosts[name] = bucket;
+                _receiverCosts[type] = bucket;
             }
             bucket.Ms += ms;
             bucket.Count++;
@@ -721,9 +795,9 @@ public class InputInterface : IDisposable
             _gamepadDriver.UpdateGamepad(Gamepad, deltaTime);
         }
 
-        // Grip hysteresis and the menu charge step here, once, after every driver has written raw
-        // values for the frame. The VR driver is registered on two interfaces and writes twice a
-        // frame, so the edges cannot live in it. -xlinka
+        // Grip and trigger hysteresis, the trigger's deep edges and the menu charge step here, once,
+        // after every driver has written raw values for the frame. The VR driver is registered on two
+        // interfaces and writes twice a frame, so the edges cannot live in it. -xlinka
         LeftController?.Advance(deltaTime, RightController);
         RightController?.Advance(deltaTime, LeftController);
 
@@ -755,9 +829,10 @@ public class InputInterface : IDisposable
         if (actions == null)
             return;
 
-        // A focused text field owns the keyboard outright. Only the keyboard: a controller still
-        // works while somebody types.
-        actions.TextFocusHeld = Helio.UI.TextInput.Focused != null;
+        // A focused text field owns the keyboard outright, and so does a field in an app out in the room.
+        // Only the keyboard: a controller still works while somebody types.
+        actions.TextFocusHeld = Helio.UI.TextInput.Focused != null || Lumora.Core.Components.UI.DashWindowPanel.TakesKeys
+            || Lumora.Core.Components.UI.UserspaceDashboard.LocalInstance?.KeyScreen is Lumora.Core.Components.UI.IDashboardKeyInput { HasFieldFocus: true };
 
         actions.Menu.Set.Asserting = IsDashboardOpen;
     }
@@ -801,32 +876,57 @@ public class InputInterface : IDisposable
         // (-7500) consume them, and nested pose nodes rely on parent-before-
         // child ordering (EnsureCorrectUpdateOrder) - registration order made
         // both a matter of luck, costing a frame of lag per misordered link.
-        var snapshot = _inputReceivers.ToArray();
-        Array.Sort(snapshot, (a, b) =>
+        var snapshot = _dispatching ? new List<IInputUpdateReceiver>() : _dispatchSnapshot;
+        bool outermost = !_dispatching;
+        _dispatching = true;
+        try
         {
-            int orderA = (a as Component)?.UpdateOrder ?? 0;
-            int orderB = (b as Component)?.UpdateOrder ?? 0;
-            return orderA.CompareTo(orderB);
-        });
-        foreach (var receiver in snapshot)
-        {
-            if (!_inputReceivers.Contains(receiver))
-                continue;
-
-            if (ShouldPruneInputReceiver(receiver))
+            int removals;
+            lock (_pendingLock)
             {
-                _inputReceivers.Remove(receiver);
-                continue;
+                snapshot.Clear();
+                snapshot.AddRange(_inputReceivers);
+                removals = _receiverRemovals;
             }
-
-            InvokeInputReceiver(receiver, before);
-
-            if (ShouldPruneInputReceiver(receiver))
+            snapshot.Sort(ByUpdateOrder);
+            foreach (var receiver in snapshot)
             {
-                _inputReceivers.Remove(receiver);
+                if (!StillRegistered(receiver, removals))
+                    continue;
+                if (ShouldPruneInputReceiver(receiver))
+                {
+                    UnregisterInputEventReceiver(receiver);
+                    continue;
+                }
+
+                InvokeInputReceiver(receiver, before);
+
+                if (ShouldPruneInputReceiver(receiver))
+                {
+                    UnregisterInputEventReceiver(receiver);
+                }
+            }
+            QueueFilledBatches();
+        }
+        finally
+        {
+            if (outermost)
+            {
+                snapshot.Clear();
+                _dispatching = false;
             }
         }
     }
+
+    private static readonly Comparison<IInputUpdateReceiver> ByUpdateOrder = (a, b) =>
+    {
+        int orderA = (a as Component)?.UpdateOrder ?? 0;
+        int orderB = (b as Component)?.UpdateOrder ?? 0;
+        return orderA.CompareTo(orderB);
+    };
+
+    private readonly List<IInputUpdateReceiver> _dispatchSnapshot = new();
+    private bool _dispatching;
 
     private static bool ShouldPruneInputReceiver(IInputUpdateReceiver receiver)
     {
@@ -846,44 +946,49 @@ public class InputInterface : IDisposable
         return false;
     }
 
-    private void InvokeInputReceiver(IInputUpdateReceiver receiver, bool before)
+    // The engine sampling local hardware to pose the LOCAL user's OWN avatar/body is engine maintenance,
+    // not a permission-gated edit - a user always controls their own body. On a freshly-joined client the
+    // user's allocation + UserRoot ownership isn't wired the instant the body is built during state
+    // replay, so without this the own-body writes (Head/hand transforms, body-node slots) get denied
+    // every single frame and flood the log. Bypass perms for the duration of the local input callback;
+    // remote users' bodies arrive over the network and are validated separately on the host. -xlinka
+    private void InvokeNow(IInputUpdateReceiver receiver, bool before)
     {
-        void InvokeNow()
+        var permissions = (receiver as IWorldElement)?.World?.DataModelPermissions;
+        using var bypass = permissions?.EnterSystemBypass();
+        InvokeCallback(receiver, before);
+    }
+
+    private void InvokeCallback(IInputUpdateReceiver receiver, bool before)
+    {
+        try
         {
-            // The engine sampling local hardware to pose the LOCAL user's OWN avatar/body is engine maintenance,
-            // not a permission-gated edit - a user always controls their own body. On a freshly-joined client the
-            // user's allocation + UserRoot ownership isn't wired the instant the body is built during state
-            // replay, so without this the own-body writes (Head/hand transforms, body-node slots) get denied
-            // every single frame and flood the log. Bypass perms for the duration of the local input callback;
-            // remote users' bodies arrive over the network and are validated separately on the host. -xlinka
-            var permissions = (receiver as IWorldElement)?.World?.DataModelPermissions;
-            using var bypass = permissions?.EnterSystemBypass();
-            try
+            if (ProfileReceivers)
             {
-                if (ProfileReceivers)
-                {
-                    long start = System.Diagnostics.Stopwatch.GetTimestamp();
-                    if (before)
-                        receiver.BeforeInputUpdate();
-                    else
-                        receiver.AfterInputUpdate();
-                    RecordReceiverCost(receiver, System.Diagnostics.Stopwatch.GetTimestamp() - start);
-                }
-                else if (before)
-                {
+                long start = System.Diagnostics.Stopwatch.GetTimestamp();
+                if (before)
                     receiver.BeforeInputUpdate();
-                }
                 else
-                {
                     receiver.AfterInputUpdate();
-                }
+                RecordReceiverCost(receiver, System.Diagnostics.Stopwatch.GetTimestamp() - start);
             }
-            catch (Exception ex)
+            else if (before)
             {
-                Logger.Error($"InputInterface: Error in {(before ? "BeforeInputUpdate" : "AfterInputUpdate")}: {ex.Message}");
+                receiver.BeforeInputUpdate();
+            }
+            else
+            {
+                receiver.AfterInputUpdate();
             }
         }
+        catch (Exception ex)
+        {
+            Logger.Error($"InputInterface: Error in {(before ? "BeforeInputUpdate" : "AfterInputUpdate")}: {ex.Message}");
+        }
+    }
 
+    private void InvokeInputReceiver(IInputUpdateReceiver receiver, bool before)
+    {
         // World components modify Sync state in these callbacks.
         // Route through world sync queue while running so writes happen under the world's
         // implementer lock, avoiding cross-thread lock violations.
@@ -893,11 +998,146 @@ public class InputInterface : IDisposable
             !worldElement.World.IsDestroyed &&
             worldElement.World.State == World.WorldState.Running)
         {
-            worldElement.World.RunSynchronously(InvokeNow);
+            var world = worldElement.World;
+            var batches = before ? _beforeBatches : _afterBatches;
+            lock (_pendingLock)
+            {
+                if (!batches.TryGetValue(world, out var batch))
+                {
+                    batch = new ReceiverBatch(this, world, before);
+                    batches[world] = batch;
+                }
+                // Still waiting from an earlier frame: it runs once, with what it already holds.
+                if (batch.Queued)
+                    return;
+                if (!batch.Filled)
+                {
+                    batch.Filled = true;
+                    _filledBatches.Add(batch);
+                }
+                if (batch.Members.Add(receiver))
+                    batch.Receivers.Add(receiver);
+            }
             return;
         }
 
-        InvokeNow();
+        InvokeNow(receiver, before);
+    }
+
+    // One queued call per world and phase, running that world's receivers in update order under one
+    // permission bypass. A world that updates less often than input runs, a background world at 10 Hz,
+    // otherwise had every frame's call waiting and ran them all in one update: a soft body in a world nobody
+    // was in stepped eleven times at once, and two open Scratch Spaces halved the frame rate. A closure per
+    // receiver per phase was also three allocations each, sixty-odd a frame in an ordinary world. -xlinka
+    private sealed class ReceiverBatch
+    {
+        public readonly InputInterface Owner;
+        public readonly World World;
+        public readonly bool Before;
+        public readonly Action Run;
+        public List<IInputUpdateReceiver> Receivers = new();
+        public List<IInputUpdateReceiver> Running = new();
+        public readonly HashSet<IInputUpdateReceiver> Members = new(ReferenceEqualityComparer.Instance);
+        public bool Filled;
+        public bool Queued;
+
+        public ReceiverBatch(InputInterface owner, World world, bool before)
+        {
+            Owner = owner;
+            World = world;
+            Before = before;
+            Run = Execute;
+        }
+
+        private void Execute() => Owner.RunBatch(this);
+    }
+
+    private readonly Dictionary<World, ReceiverBatch> _beforeBatches = new();
+    private readonly Dictionary<World, ReceiverBatch> _afterBatches = new();
+    private readonly List<ReceiverBatch> _filledBatches = new();
+    private readonly List<ReceiverBatch> _queueing = new();
+    private readonly List<World> _goneWorlds = new();
+    private readonly object _pendingLock = new();
+
+    private void QueueFilledBatches()
+    {
+        lock (_pendingLock)
+        {
+            foreach (var batch in _filledBatches)
+            {
+                batch.Filled = false;
+                batch.Queued = true;
+            }
+            _queueing.AddRange(_filledBatches);
+            _filledBatches.Clear();
+            DropGoneWorlds(_beforeBatches);
+            DropGoneWorlds(_afterBatches);
+        }
+        foreach (var batch in _queueing)
+            batch.World.RunSynchronously(batch.Run);
+        _queueing.Clear();
+    }
+
+    // A world torn down with its batch still queued never drains it.
+    private void DropGoneWorlds(Dictionary<World, ReceiverBatch> batches)
+    {
+        foreach (var world in batches.Keys)
+        {
+            if (world.IsDisposed || world.IsDestroyed)
+                _goneWorlds.Add(world);
+        }
+        foreach (var world in _goneWorlds)
+            batches.Remove(world);
+        _goneWorlds.Clear();
+    }
+
+    private void RunBatch(ReceiverBatch batch)
+    {
+        // Swapped out under the lock, so the next dispatch fills a list nothing is reading.
+        int removals;
+        lock (_pendingLock)
+        {
+            batch.Queued = false;
+            (batch.Running, batch.Receivers) = (batch.Receivers, batch.Running);
+            batch.Members.Clear();
+            removals = _receiverRemovals;
+        }
+        try
+        {
+            if (batch.World.IsDisposed || batch.World.IsDestroyed)
+                return;
+            using var bypass = batch.World.DataModelPermissions?.EnterSystemBypass();
+            foreach (var receiver in batch.Running)
+            {
+                // Unregistering during an earlier callback also cancels the rest of this batch. Never
+                // hold the registry lock while executing world code.
+                if (!StillRegistered(receiver, removals) || ShouldPruneInputReceiver(receiver))
+                    continue;
+                InvokeCallback(receiver, batch.Before);
+            }
+        }
+        finally
+        {
+            batch.Running.Clear();
+        }
+    }
+
+    // A receiver going away is left out of any batch that has not started running.
+    private void ForgetPending(IInputUpdateReceiver receiver)
+    {
+        lock (_pendingLock)
+        {
+            foreach (var batch in _beforeBatches.Values)
+            {
+                if (batch.Members.Remove(receiver))
+                    batch.Receivers.Remove(receiver);
+            }
+            foreach (var batch in _afterBatches.Values)
+            {
+                if (batch.Members.Remove(receiver))
+                    batch.Receivers.Remove(receiver);
+            }
+        }
     }
 
     #endregion
@@ -951,7 +1191,15 @@ public class InputInterface : IDisposable
         if (!_initialized)
             return;
 
-        _inputReceivers.Clear();
+        lock (_pendingLock)
+        {
+            _inputReceivers.Clear();
+            _receiverSet.Clear();
+            _receiverRemovals++;
+            _beforeBatches.Clear();
+            _afterBatches.Clear();
+            _filledBatches.Clear();
+        }
 
         _inputDrivers.Clear();
         _inputDriverUpdateBuckets.Clear();

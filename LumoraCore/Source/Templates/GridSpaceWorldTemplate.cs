@@ -17,8 +17,8 @@ internal sealed class GridSpaceWorldTemplate : WorldTemplateDefinition
     protected override void Build(World world)
     {
         var spawnSlot = world.RootSlot.AddSlot("SpawnArea");
-        // The ground box is 0.1 thick centered at y=0, so its TOP surface is +0.05 - sit just above it.
-        spawnSlot.LocalPosition.Value = new float3(0f, 0.06f, 0f);
+        // The ground's top is y=0, the same surface its collider stops things on.
+        spawnSlot.LocalPosition.Value = new float3(0f, 0.01f, 0f);
         spawnSlot.Tag.Value = "spawn";
         spawnSlot.AttachComponent<SimpleUserSpawn>();
         var spawnArea = spawnSlot.AttachComponent<CommonSpawnArea>();
@@ -61,14 +61,18 @@ internal sealed class GridSpaceWorldTemplate : WorldTemplateDefinition
         skybox.SunGlowPower.Value = 48f;
         skybox.AmbientEnergy.Value = 0.70f;
 
+        // The box is centred on its slot, so the slot goes down half the thickness and the mesh and its
+        // collider share one top at y=0. Shifting only the collider would leave the drawn floor 5 cm above the
+        // surface everything stands on, and every dropped object would look sunk into it. -xlinka
+        const float groundThickness = 0.1f;
         var groundSlot = world.RootSlot.AddSlot("Ground");
-        groundSlot.LocalPosition.Value = new float3(0f, 0f, 0f);
+        groundSlot.LocalPosition.Value = new float3(0f, -groundThickness * 0.5f, 0f);
         groundSlot.Tag.Value = "floor";
 
         // 300 m so the far edge sits past the haze from anywhere near spawn; the grid is world-space
         // so the mesh size and UV scale do not touch its cell size. -xlinka
         var groundMesh = groundSlot.AttachComponent<BoxMesh>();
-        groundMesh.Size.Value = new float3(300f, 0.1f, 300f);
+        groundMesh.Size.Value = new float3(300f, groundThickness, 300f);
         groundMesh.UVScale.Value = new float3(300f, 1f, 300f);
 
         // Cool slate floor under a warm sky. The floor lights itself (ambient is off in its shader),
@@ -99,7 +103,6 @@ internal sealed class GridSpaceWorldTemplate : WorldTemplateDefinition
         var groundCollider = groundSlot.AttachComponent<BoxCollider>();
         groundCollider.Type.Value = ColliderType.Static;
         groundCollider.Size.Value = groundMesh.Size.Value;
-        groundCollider.Offset.Value = new float3(0f, -groundMesh.Size.Value.y * 0.5f, 0f);
 
         // Grabbable preview sphere. A satin dielectric with the PBS shader's own fresnel, so it shows
         // the sky and the sun the way a material ball should, instead of wearing the floor's planar

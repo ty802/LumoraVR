@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Helio.UI;
 using Helio.UI.Layout;
 using Lumora.Core;
@@ -72,32 +73,42 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
 
     public ScratchSpaceWorldTemplate() : base("Scratch") { }
 
-    protected override void Build(World world)
+    // Spawn, light and ground first, then an area a frame, so opening the world never stops one frame for all
+    // of it. -xlinka
+    protected override IEnumerable<Action> Steps(World world)
     {
-        CreateSpawn(world);
-        CreateLighting(world);
-        CreateGround(world);
+        yield return () =>
+        {
+            CreateSpawn(world);
+            CreateLighting(world);
+            CreateGround(world);
+        };
         // The panels area needs a real material to inspect, and the first orb's is as real as any.
-        var showcaseMaterial = CreateShaderOrbs(world);
-        CreatePhysicsShowcase(world);
-        CreateRenderingShowcase(world);
-        CreateMeshGallery(world);
-        CreateInteractionShowcase(world);
-        CreateVariableShowcase(world);
-        CreatePanelShowcase(world, showcaseMaterial);
-        CreateParticleShowcase(world);
-        CreateUiGallery(world);
-        CreateLightsAndText(world);
+        PBS_Metallic showcaseMaterial = null!;
+        yield return () => showcaseMaterial = CreateShaderOrbs(world);
+        yield return () => CreatePhysicsShowcase(world);
+        yield return () => CreateRenderingShowcase(world);
+        yield return () => CreateMeshGallery(world);
+        yield return () => CreateInteractionShowcase(world);
+        yield return () => CreateVariableShowcase(world);
+        foreach (var step in PanelShowcaseSteps(world, () => showcaseMaterial))
+            yield return step;
+        yield return () => CreateParticleShowcase(world);
+        yield return () => CreateUiGallery(world);
+        yield return () => CreateLightsAndText(world);
 
-        // Dead last, and it has to be: half the areas rotate or re-pose a parent AFTER its labels are
-        // built, and a label inherits that. -xlinka
-        AlignSigns(world);
+        yield return () =>
+        {
+            // Dead last, and it has to be: half the areas rotate or re-pose a parent AFTER its labels are
+            // built, and a label inherits that. -xlinka
+            AlignSigns(world);
 
-        // Every system in the world at once, rather than typed into two builders that both spawn them.
-        foreach (var system in world.RootSlot.GetComponentsInChildren<ParticleSystem>())
-            system.MaxViewDistance.Value = ParticleViewDistance;
+            // Every system in the world at once, rather than typed into two builders that both spawn them.
+            foreach (var system in world.RootSlot.GetComponentsInChildren<ParticleSystem>())
+                system.MaxViewDistance.Value = ParticleViewDistance;
 
-        BoundAreaProps(world);
+            BoundAreaProps(world);
+        };
     }
 
     // Props were the one thing the view-distance pass never covered. Particles, signs and panels all got a
@@ -1295,15 +1306,15 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
         railRenderer.Mesh.Target = railMesh;
         railRenderer.Material.Target = railMat;
 
-        CurtainPanel(root, new float3(-0.66f, 1.35f, 0f), new colorHDR(0.72f, 0.28f, 0.32f, 1f), 0.55f);
-        CurtainPanel(root, new float3(0.66f, 1.35f, 0f), new colorHDR(0.72f, 0.28f, 0.32f, 1f), -0.5f);
+        CurtainPanel(root, new float3(-0.66f, 1.35f, 0f), new colorHDR(0.72f, 0.28f, 0.32f, 1f), 2.2f);
+        CurtainPanel(root, new float3(0.66f, 1.35f, 0f), new colorHDR(0.72f, 0.28f, 0.32f, 1f), 1.8f);
 
         Sign(root, "Curtains (SquishyBody)\npinned top edge, wind, walk through them", new float3(0f, 2.7f, 0f), 0.1f);
     }
 
     // One panel. The grid is built on the local XY plane with its normal on +Z, which is already the way
     // a curtain hangs, so unlike the drape test this needs no rotation.
-    private static void CurtainPanel(Slot parent, float3 localPosition, in colorHDR tint, float windX)
+    private static void CurtainPanel(Slot parent, float3 localPosition, in colorHDR tint, float windZ)
     {
         var panel = parent.AddSlot("Curtain Panel");
         panel.LocalPosition.Value = localPosition;
@@ -1319,15 +1330,15 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
         material.Smoothness.Value = 0.25f;
         material.Culling.Value = Culling.None;
 
-        var renderer = panel.AttachComponent<MeshRenderer>();
-        renderer.Mesh.Target = mesh;
-        renderer.Material.Target = material;
-
+        // No MeshRenderer on the panel: the body draws the simulated sheet on its own child, and a second
+        // renderer on the grid would stand a flat copy in front of it.
         var cloth = panel.AttachComponent<SquishyBody>();
         cloth.SourceMesh.Target = mesh;
         cloth.Material.Target = material;
         cloth.Stiffness.Value = 0.75f;
-        cloth.Damping.Value = 0.12f;
+        cloth.BendStiffness.Value = 0.08f;    // soft enough to fold around a shoulder
+        cloth.Damping.Value = 0.03f;          // light, so a shove swings back past rest instead of creeping home
+        cloth.Friction.Value = 0.4f;          // a hand drags the fabric along instead of gluing it in place
         cloth.Iterations.Value = 12;
         cloth.Pressure.Value = 0f;
         cloth.ShapeRetention.Value = 0f;      // a sheet, not a shape that springs back
@@ -1336,7 +1347,10 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
         cloth.CollideWithWorld.Value = true;
         // The grid's local Y runs -0.9 to +0.9, so this pins the top row and nothing else.
         cloth.PinAboveLocalY.Value = 0.85f;
-        cloth.Wind.Value = new float3(windX, 0f, 0.22f);
+        // Wind is an acceleration on a face-on sheet, so this is a lean of about twelve degrees that the
+        // gusts swing between a few and twenty.
+        cloth.Wind.Value = new float3(0f, 0f, windZ);
+        cloth.WindGustiness.Value = 0.8f;
     }
 
     // A hanging banner: narrow, top-pinned, and in a stiffer breeze than the curtains so it visibly
@@ -1385,15 +1399,13 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
         material.Smoothness.Value = 0.3f;
         material.Culling.Value = Culling.None;
 
-        var renderer = banner.AttachComponent<MeshRenderer>();
-        renderer.Mesh.Target = mesh;
-        renderer.Material.Target = material;
-
         var cloth = banner.AttachComponent<SquishyBody>();
         cloth.SourceMesh.Target = mesh;
         cloth.Material.Target = material;
         cloth.Stiffness.Value = 0.8f;
-        cloth.Damping.Value = 0.08f;   // less bleed than the curtains, so the ripple carries
+        cloth.BendStiffness.Value = 0.06f;
+        cloth.Damping.Value = 0.02f;   // less bleed than the curtains, so the ripple carries
+        cloth.Friction.Value = 0.4f;
         cloth.Iterations.Value = 12;
         cloth.Pressure.Value = 0f;
         cloth.ShapeRetention.Value = 0f;
@@ -1401,7 +1413,8 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
         cloth.GroundY.Value = 0f;
         cloth.CollideWithWorld.Value = true;
         cloth.PinAboveLocalY.Value = 0.65f;   // local Y runs -0.7 to +0.7
-        cloth.Wind.Value = new float3(1.1f, 0.15f, 0.5f);
+        cloth.Wind.Value = new float3(0.3f, 0f, 3.2f);
+        cloth.WindGustiness.Value = 0.8f;
 
         Sign(root, "Banner (SquishyBody)\ntop-pinned, stiffer breeze", new float3(0f, 2.9f, 0f), 0.1f);
     }
@@ -1679,7 +1692,7 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
 
         var capsule = NewMeshStand(root, "Capsule", index++).AttachComponent<CapsuleMesh>();
         capsule.Radius.Value = 0.10f;
-        capsule.Height.Value = 0.34f;
+        capsule.Height.Value = 0.54f;
         capsule.Segments.Value = 22;
         capsule.Rings.Value = 8;
         BindMesh(capsule, shared);
@@ -1871,7 +1884,7 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
         z += spacing;
         RackTool<LightTool>(bench, "Light Tool", "Light (LightTool)\nhold after the click to size it", new float3(0f, shelfHeight + 0.16f, z));
         z += spacing;
-        RackTool<MaterialTool>(bench, "Material Tool", "Material (MaterialTool)\nclick a material, then click a surface", new float3(0f, shelfHeight + 0.16f, z));
+        RackTool<MaterialTool>(bench, "Material Tool", "Material (MaterialTool)\nsecondary loads a material, primary paints", new float3(0f, shelfHeight + 0.16f, z));
         z += spacing;
         RackTool<GlueTool>(bench, "Glue Tool", "Glue (GlueTool)\nclick A, then click B", new float3(0f, shelfHeight + 0.16f, z));
         z += spacing;
@@ -2505,7 +2518,7 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
         Sign(root, "Bobbing capsule (Oscillator3D)", new float3(0f, 2.2f, -1.5f), 0.08f);
         var bobberMesh = bobber.AttachComponent<CapsuleMesh>();
         bobberMesh.Radius.Value = 0.10f;
-        bobberMesh.Height.Value = 0.3f;
+        bobberMesh.Height.Value = 0.5f;
         bobberMesh.Segments.Value = 20;
         var bobberMat = bobber.AttachComponent<PBS_Metallic>();
         bobberMat.AlbedoColor.Value = new colorHDR(0.30f, 0.70f, 0.95f, 1f);
@@ -2857,45 +2870,66 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
     // Every one of these has a Spawn that poses itself off the LOCAL USER'S HEAD, and at template-build
     // time there is no head to pose off, so each Spawn quietly leaves the panel at the origin. That is
     // why the pose is written again here afterwards instead of trusted to the helper. -xlinka
-    private static void CreatePanelShowcase(World world, PBS_Metallic showcaseMaterial)
+    // The panels area a panel a frame: each lays itself out the frame after it is made, and made together
+    // they stopped one frame for all of them.
+    private static IEnumerable<Action> PanelShowcaseSteps(World world, Func<PBS_Metallic> showcaseMaterial)
     {
-        var root = world.RootSlot.AddSlot("Panels");
-        root.LocalPosition.Value = PanelsOrigin;
+        Slot root = null!;
+        Slot inspectorRoot = null!;
+        SceneInspectorPanel? inspector = null;
 
-        AreaPlate(world, "Panels", new float2(PanelsOrigin.x, PanelsOrigin.z),
-            new float2(9.6f, 7f), new colorHDR(0.19f, 0.19f, 0.27f, 1f));
-        Sign(root, "Panels\nthe in-world tools, already open", new float3(0f, 3f, -2.6f), 0.26f);
-
-        CreateUIShowcase(world, PanelsOrigin + new float3(-3f, 0f, -2f));
-
-        // The scene inspector is pointed at the interaction area rather than at the world root, so it
-        // opens on a subtree with something in it instead of on a list of area names.
-        var inspectorRoot = world.RootSlot.FindChild("Interaction Showcase") ?? world.RootSlot;
-        var inspector = SceneInspectorPanel.Spawn(world, inspectorRoot);
-        if (inspector != null)
+        yield return () =>
         {
-            StandPanel(root, inspector.Slot, "Scene inspector (SceneInspectorPanel)\nbrowsing the interaction area",
-                new float3(-1f, 0f, -2f));
-        }
+            root = world.RootSlot.AddSlot("Panels");
+            root.LocalPosition.Value = PanelsOrigin;
 
-        var materialPanel = MaterialInspectorPanel.Spawn(world, showcaseMaterial, float3.Zero, floatQ.Identity);
-        StandPanel(root, materialPanel.Slot, "Material inspector (MaterialInspectorPanel)\nediting the first orb's material",
-            new float3(1f, 0f, -2f));
+            AreaPlate(world, "Panels", new float2(PanelsOrigin.x, PanelsOrigin.z),
+                new float2(9.6f, 7f), new colorHDR(0.19f, 0.19f, 0.27f, 1f));
+            Sign(root, "Panels\nthe in-world tools, already open", new float3(0f, 3f, -2.6f), 0.26f);
 
-        // Straight at the same material's albedo. An empty member path means the whole colour rather
-        // than one channel of it, which is what the inspector's own colour rows pass.
-        var colorPanel = ColorPickerPanel.Spawn(world, showcaseMaterial.AlbedoColor, "", float3.Zero);
-        StandPanel(root, colorPanel.Slot, "Colour picker (ColorPickerPanel)\nsame material, albedo field",
-            new float3(3f, 0f, -2f));
+            CreateUIShowcase(world, PanelsOrigin + new float3(-3f, 0f, -2f));
+        };
 
-        if (inspector != null)
+        yield return () =>
         {
+            // The scene inspector is pointed at the interaction area rather than at the world root, so it
+            // opens on a subtree with something in it instead of on a list of area names.
+            inspectorRoot = world.RootSlot.FindChild("Interaction Showcase") ?? world.RootSlot;
+            inspector = SceneInspectorPanel.Spawn(world, inspectorRoot);
+            if (inspector != null)
+            {
+                StandPanel(root, inspector.Slot, "Scene inspector (SceneInspectorPanel)\nbrowsing the interaction area",
+                    new float3(-1f, 0f, -2f));
+            }
+        };
+
+        yield return () =>
+        {
+            var materialPanel = MaterialInspectorPanel.Spawn(world, showcaseMaterial(), float3.Zero, floatQ.Identity);
+            StandPanel(root, materialPanel.Slot, "Material inspector (MaterialInspectorPanel)\nediting the first orb's material",
+                new float3(1f, 0f, -2f));
+        };
+
+        yield return () =>
+        {
+            // Straight at the same material's albedo. An empty member path means the whole colour rather
+            // than one channel of it, which is what the inspector's own colour rows pass.
+            var colorPanel = ColorPickerPanel.Spawn(world, showcaseMaterial().AlbedoColor, "", float3.Zero);
+            StandPanel(root, colorPanel.Slot, "Colour picker (ColorPickerPanel)\nsame material, albedo field",
+                new float3(3f, 0f, -2f));
+        };
+
+        yield return () =>
+        {
+            if (inspector == null)
+                return;
             var selector = ComponentSelectorPanel.Spawn(inspector, inspectorRoot);
+            selector.CloseAfterAttach.Value = false;
             StandPanel(root, selector.Slot, "Component browser (ComponentSelectorPanel)\nowned by the inspector next door",
                 new float3(-2f, 0f, 1.5f));
-        }
+        };
 
-        CreateAvatarStudioStand(world, root, new float3(2f, 0f, 1.5f));
+        yield return () => CreateAvatarStudioStand(world, root, new float3(2f, 0f, 1.5f));
     }
 
     // Drop a spawned panel onto a stand: a post, a nameplate, and a pose that actually faces spawn.
@@ -2992,7 +3026,6 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
             // Handlers come off a component so a duplicated panel drives its own labels. A closure
             // would not survive the copy.
             var actions = panel.Slot.GetComponent<HelioTestActions>() ?? panel.Slot.AttachComponent<HelioTestActions>();
-            actions.Panel.Target = panel;
             actions.Status.Target = status;
 
             var button = ui.Button("Button", actions.OnLaserPressed, new color(0.16f, 0.30f, 0.44f, 0.96f));
@@ -3958,8 +3991,7 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
         AddDialogStand<ModelImportDialog>(world, root, "Model import", "demo/sample.glb", GalleryCell(index++));
         AddDialogStand<ShaderImportDialog>(world, root, "Shader import", "demo/sample.gdshader", GalleryCell(index++));
         AddDialogStand<VideoImportDialog>(world, root, "Video import", "demo/sample.mp4", GalleryCell(index++));
-        AddDialogStand<UnsupportedImportDialog>(world, root, "Unsupported import", "demo/sample.wav", GalleryCell(index++))
-            .ClassName = "Audio";
+        AddDialogStand<UnsupportedImportDialog>(world, root, "Unsupported import", "demo/sample.wav", GalleryCell(index++)).ClassName = "Audio";
         AddFolderDialogStand(world, root, "Folder import", GalleryCell(index++));
         AddImportIndicatorStand(world, root, "Import indicator", GalleryCell(index++));
     }
@@ -3993,15 +4025,25 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
     private static void AddScreenStand<T>(World world, Slot areaRoot, string label, float2 cell)
         where T : DashboardScreen, new()
     {
+        if (!ComponentExecutionPolicy.CanAttach(typeof(T), world))
+        {
+            AddPrivateUiStand(areaRoot, label, cell);
+            return;
+        }
         var host = GalleryStand(areaRoot, label, label + " screen\n(" + typeof(T).Name + ")", cell, 0.001f);
         var dash = NewGalleryDashboard(world, host, label);
-        dash.AddScreen<T>(label).ShowScreen();
+        dash.OpenFilled(dash.AddScreen<T>(label));
     }
 
     // The plain screen with a hand-built body, which is exactly how the dashboard makes a tab for a
     // feature that has no backend yet.
     private static void AddComingSoonStand(World world, Slot areaRoot, string label, float2 cell)
     {
+        if (!ComponentExecutionPolicy.CanAttach(typeof(DashboardScreen), world))
+        {
+            AddPrivateUiStand(areaRoot, label, cell);
+            return;
+        }
         var host = GalleryStand(areaRoot, label, "Placeholder tab\n(DashboardScreen, built by hand)", cell, 0.001f);
         var dash = NewGalleryDashboard(world, host, label);
 
@@ -4027,7 +4069,7 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
         body.VerticalAlignment.Value = TextVerticalAlignment.Top;
 
         builder.NestOut();
-        screen.ShowScreen();
+        dash.OpenFilled(screen);
     }
 
     private static Dashboard NewGalleryDashboard(World world, Slot host, string title)
@@ -4041,8 +4083,8 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
     // A dialog builds its own panel on its first update, so all this stand does is put it somewhere and
     // hand it a path. The path points at nothing on purpose: pressing Import logs that the file is
     // missing (the async read fails and warns, or a null handler drops a labelled placeholder) and the
-    // world carries on. Nothing here calls SetLocalUserAsImporting - with no importing user claimed,
-    // whoever walks up can press the buttons. -xlinka
+    // world carries on. Like any import dialog, it claims its creator on startup and is visible
+    // to everyone. -xlinka
     private static T AddDialogStand<T>(World world, Slot areaRoot, string label, string samplePath, float2 cell)
         where T : ImportDialog, new()
     {
@@ -4060,7 +4102,17 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
             label + "\ndemo dialog, sample path, Import will report the missing folder", cell, 1f);
         var dialog = host.AttachComponent<FolderImportDialog>();
         dialog.TargetWorld = world;
-        dialog.Path.Value = "demo/sample-folder";
+        dialog.Path = "demo/sample-folder";
+    }
+
+    private static void AddPrivateUiStand(Slot areaRoot, string label, float2 cell)
+    {
+        var host = GalleryStand(areaRoot, label, label, cell, 0.001f);
+        var shell = host.AttachComponent<PanelShell>();
+        shell.Title.Value = label;
+        shell.Size.Value = new float2(760f, 260f);
+        shell.Font.Target = SharedFont(areaRoot.World);
+        shell.RebuildContent(ui => ui.Text("Open this in your dashboard.\nPersonal controls stay in your private userspace.", 26f, color.White));
     }
 
     // The indicator floats itself above whatever anchor it is given and follows the local user's head, so

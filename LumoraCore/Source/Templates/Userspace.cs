@@ -22,16 +22,15 @@ namespace Lumora.Core.Templates
 
         public static World SetupUserspace(Engine engine)
         {
-            Logger.Log("Userspace: Setting up userspace world");
+            Logger.Debug("Userspace: Setting up userspace world");
 
-            // Create local userspace world
-            var world = World.LocalWorld(engine, "Userspace", (w) =>
+            var world = World.CreateUserspace(engine, (w) =>
             {
-                Logger.Log("Userspace: Initializing userspace world");
+                Logger.Debug("Userspace: Initializing userspace world");
 
-                // Create root structure
                 var userspaceRoot = w.RootSlot.AddSlot("UserspaceRoot");
                 LocalRoot = userspaceRoot;
+                userspaceRoot.AddSlot("Clipboard Import").AttachComponent<ClipboardImporter>();
 
                 // Userspace dashboard root. UserspaceDashboard owns the open
                 // state and positions the Helio dash surface in front of the
@@ -48,10 +47,13 @@ namespace Lumora.Core.Templates
                 keyboardSlot.ActiveSelf.Value = false;
                 keyboardSlot.AttachComponent<VrKeyboard>();
 
+                // The hand menu's overlay shaders, drawn unseen once so its first open does not compile them.
+                userspaceRoot.AddSlot("Overlay Warm-Up").AttachComponent<OverlayShaderWarmUp>();
+
                 // The radial context menu lives per-user in the game world
                 // (built by AvatarAssembler, opened by HandTool). Items
                 // come from ContextMenuItemSource components at open time.
-                Logger.Log("Userspace: Userspace world initialized");
+                Logger.Debug("Userspace: Userspace world initialized");
             });
 
             // The local user only exists AFTER LocalWorld returns - the init callback above runs

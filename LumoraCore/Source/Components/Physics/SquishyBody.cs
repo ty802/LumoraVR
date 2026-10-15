@@ -3,11 +3,13 @@
 
 using System;
 using System.Collections.Generic;
+using Helio.UI;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
+using Lumora.Core.Phos;
 using Lumora.Simulation.SoftBody;
 
 namespace Lumora.Core.Components;
@@ -16,15 +18,22 @@ namespace Lumora.Core.Components;
 // collision against dynamic-bone colliders + a ground plane. Unlike Godot's Jolt soft body this
 // actually collides, holds pins, and can be grabbed - we own every step. Deforms a source mesh and
 // renders the result on a child DeformableMesh. Simulation is LOCAL per peer (visual), like dynamic
-// bones: same rest-anchored, no-drift model, runs after IK. -xlinka
+// bones: same rest-anchored, no-drift model. -xlinka
+//
+// ANY MESH GOES IN. A procedural mesh, an imported one, a mesh renderer (its mesh, and its materials when Material
+// is empty), a skinned mesh renderer, or a deformable mesh, which is then bent where it already is. A skinned mesh
+// is followed: every frame its posed vertices are where the body wants to be, so it jiggles around the animation,
+// with the vertices its weights hold sitting right on the skin. Or the pose it has now is taken once and simulated
+// as a still shape (SkinMode). Seam copies become one particle, and a mesh with more points than MaxParticles is
+// simplified to fit with every vertex riding the particles around it. -xlinka
 [ComponentCategory("Physics")]
-[DefaultUpdateOrder(-4000)] // after AvatarIK (-5000), like dynamic bones
-public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISoftBodyCollisionHandler
+[DefaultUpdateOrder(-4000)]
+public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISoftBodyCollisionHandler, IMeshSourceReader, ICustomInspectorUI
 {
-    // read once for topology + rest verts
     [Group("General")]
     public readonly SyncRef<Component> SourceMesh;
 
+    // empty: the source renderer's own materials
     public readonly AssetRef<MaterialAsset> Material;
 
     // 0..1; exponent-corrected per iteration so the same setting means the same stiffness at 4 or 16 iterations
@@ -34,14 +43,15 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
     // resistance to folding, 0..1: 0 = folds like wet paper, ~0.1-0.3 = fabric that holds a drape, higher = stiff sheet
     public readonly Sync<float> BendStiffness;
 
-    // 0 = bouncy, higher = sluggish
+    // share of velocity lost per sixtieth of a second, whatever the refresh rate; 0 = bouncy, higher = sluggish
     public readonly Sync<float> Damping;
 
     // 0..1; 1 = full stick on contact, lower keeps tangential sliding so cloth slips down slopes instead of gluing
     public readonly Sync<float> Friction;
 
-    // applied per triangle projected on its facing (edge-on catches nothing, face-on catches everything),
-    // so flags/capes billow instead of translating
+    // air velocity, applied per triangle projected on its facing (edge-on catches nothing, face-on catches
+    // everything), so flags/capes billow instead of translating; a still sheet face-on accelerates at its
+    // length in m/s^2, and cloth already moving with the air is not pushed further
     [Group("Wind")]
     public readonly Sync<float3> Wind;
 
@@ -88,18 +98,69 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
     [Group("Simulation")]
     public readonly Sync<float> MaxViewDistance;
 
+    // Most particles one body simulates. A mesh with more distinct points is simplified to fit and its vertices ride
+    // the particles around them; the inspector says when that happened.
+    public readonly Sync<int> MaxParticles;
+
+    // A skinned source: follow its pose every frame, or take the pose it has now and simulate that as a still shape.
+    [Group("Skin")]
+    public readonly Sync<SoftBodySkinMode> SkinMode;
+
+    // While following, the share of the way back onto the posed skin every free vertex is pulled each step: 0 hangs
+    // from what is held like cloth, around 0.3 keeps the pose and jiggles around it, 1 sits on the skin.
+    public readonly Sync<float> SkinFollow;
+
+    // Only vertices weighted to these bones, or to bones under them, move; the rest stays on the skin and the skinned
+    // mesh keeps drawing it. Empty moves the whole mesh and holds it by whatever its top-most bones carry.
+    public readonly SyncRefList<Slot> SimulateBones;
+
     // The simulation itself lives in LumoraSimulation. This component owns one solver, feeds it the
     // topology and the tunables, and answers its two questions: where is the anchor space, and what did
     // this particle just hit. Nothing about the maths lives here any more. -xlinka
     private readonly SoftBodySolver _solver = new();
-    private float3[]? _writeBuffer;   // local-space positions handed to the DeformableMesh
     private float3[]? _uploadedLocal; // last local positions actually pushed to the mesh (rest skip check)
     private readonly List<Slot> _selfExclude = new();
     private readonly List<Slot> _overlapScratch = new(); // broadphase: is anything near the body this frame?
     private DeformableMesh? _deformed;
+    private MeshRenderer? _deformedRenderer;
     private bool _registered;
     private bool _built;
-    private int _readyRetries;
+
+    // What is being bent and how. The anchor is the slot the bent mesh draws in: the body's own child, or the
+    // deformable mesh's slot when one is bent where it is.
+    private Slot? _anchorSlot;
+    private bool _bendsSource;
+    private SoftBodyMeshMap? _map;
+    private SkinnedPose? _skin;
+    private bool _follows;
+    private int[] _skinVertices = Array.Empty<int>();    // mesh vertex behind every body vertex
+    private float[] _freedom = Array.Empty<float>();     // per body vertex, 0 held on the skin, 1 free
+    private float[] _particleFreedom = Array.Empty<float>();
+    private bool[]? _skinTriangles;                      // source triangles drawn here instead, null = all of them
+    private int _skinTriangleCount;
+    private string _heldBy = "";
+    private SkinnedMeshRenderer? _hiddenSkin;
+    private MeshRenderer? _hiddenRenderer;
+    private string? _status;
+    private bool _buildQueued;
+    private bool _building;
+    private int _builtBaseVersion = -1;
+    private readonly MeshSourceWatch _watch;
+    private double _lastStepMs;
+
+    // Per-frame working arrays, sized at build.
+    private float3[] _particleLocal = Array.Empty<float3>();
+    private float3[] _particleReference = Array.Empty<float3>();
+    private float3[] _vertexReference = Array.Empty<float3>();
+    private float3[] _vertexOut = Array.Empty<float3>();
+    private float3[] _poseWorld = Array.Empty<float3>();
+    private float3[] _poseNormalWorld = Array.Empty<float3>();
+    private float4[]? _poseTangentWorld;
+    private float3[] _referenceNormals = Array.Empty<float3>();
+    private float4[]? _referenceTangents;
+    private float3[] _goalWorld = Array.Empty<float3>();
+    private float3[] _lastGoal = Array.Empty<float3>();
+    private bool _poseSampled;
 
     // Sleep/wake: a settled body stops simulating AND stops re-uploading its mesh (the expensive part).
     // It wakes only when something can perturb it - its own slot moving, or one of its colliders moving.
@@ -116,6 +177,13 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
     private float3 _boundsSize;
     private SoftBodyBudget? _budget;
     private World? _budgetWorld;
+
+    // This frame's step, queued on the world's soft body batch: the constraint half runs on the pool
+    // against the anchor frozen here, the contact half back on the world thread.
+    private readonly FrozenAnchor _anchor = new();
+    private int _batchSteps;
+    private float _batchSub;
+    private double _batchNow;
 
     public SquishyBody()
     {
@@ -137,6 +205,33 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
         GroundY = new Sync<float>(this, float.NaN);
         CollideWithWorld = new Sync<bool>(this, false);
         MaxViewDistance = new Sync<float>(this, 0f);
+        MaxParticles = new Sync<int>(this, DefaultMaxParticles);
+        SkinMode = new Sync<SoftBodySkinMode>(this, SoftBodySkinMode.FollowPose);
+        SkinFollow = new Sync<float>(this, 0.3f);
+        SimulateBones = new SyncRefList<Slot>(this);
+        _watch = new MeshSourceWatch(() =>
+        {
+            if (!IsDestroyed && !_built)
+                RequestBuild();
+        });
+    }
+
+    // Big enough for any cloth or jelly built by hand, small enough that a dense import costs about a millisecond.
+    public const int DefaultMaxParticles = 2048;
+
+    // Beyond this nothing is simulated whatever the field says: build time and memory grow past what a frame can pay.
+    private const int HardMaxParticles = 16384;
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        SourceMesh.OnChanged += _ => RequestBuild();
+        SkinMode.OnChanged += _ => RequestBuild();
+        MaxParticles.OnChanged += _ => RequestBuild();
+        PinAboveLocalY.OnChanged += _ => RequestBuild();
+        SimulateBones.OnChanged += _ => RequestBuild();
+        SkinFollow.OnChanged += _ => UpdatePulls();
+        ShapeRetention.OnChanged += _ => UpdatePulls();
     }
 
     public override void OnStart()
@@ -148,14 +243,135 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
             input.RegisterInputEventReceiver(this);
             _registered = true;
         }
-        ArmReadyRetry();
+        RequestBuild();
     }
 
     public override void OnDestroy()
     {
         if (_registered)
             Engine.Current?.InputInterface?.UnregisterInputEventReceiver(this);
+        if (World != null)
+            SoftBodyStepBatch.For(World).Remove(this);
+        _watch.Watch(null);
+        WatchDeformable(null);
+        ApplyRendererHiding(false);
+        ReleaseHiddenSources();
+        // A copy drawn beside a renderer elsewhere is not under this slot and would outlive the body.
+        if (_ownSlot != null && !_ownSlot.IsDestroyed && !ReferenceEquals(_ownSlot.Parent, Slot)
+            && World != null && !World.IsDisposed && World.State == World.WorldState.Running)
+            _ownSlot.Destroy();
         base.OnDestroy();
+    }
+
+    public override void OnEnabled()
+    {
+        base.OnEnabled();
+        ApplyRendererHiding(_built);
+    }
+
+    public override void OnDisabled()
+    {
+        base.OnDisabled();
+        ApplyRendererHiding(false);
+    }
+
+    // What the body is doing, or why it is not, in words.
+    public string? Status => _status;
+
+    public int ParticleCount => _solver.ParticleCount;
+
+    public int PinnedCount => _solver.PinnedCount;
+
+    public bool IsBuilt => _built;
+
+    public bool FollowsPose => _follows;
+
+    public DeformableMesh? Deformed => _deformed;
+
+    public SoftBodyMeshMap? ParticleMap => _map;
+
+    public double LastStepMilliseconds => _lastStepMs;
+
+    // ONE SHEET ON SCREEN.
+    //
+    // The simulated copy draws on the Deformed child, so a renderer on this slot still drawing
+    // SourceMesh puts the undeformed sheet in the rest plane, and the sim only shows where it pokes out of it.
+    // Putting a soft body on a mesh that already renders is the obvious way to build one, so while this
+    // body simulates it hides those renderers. While it does not, and such a renderer exists, it hides its
+    // own frozen child instead and the plain mesh comes back. Local to every machine: each peer builds and
+    // runs its own body, and the flag on the renderer is never replicated. -xlinka
+    //
+    // A renderer handed in as the source is hidden the same way wherever it sits, and a skinned one leaves out
+    // exactly the triangles this body draws, all of them unless SimulateBones names a part.
+    private void ApplyRendererHiding(bool simulating)
+    {
+        var slot = Slot;
+        if (slot == null || slot.IsDestroyed || _bendsSource)
+            return;
+        var source = SourceMesh.Target;
+        var mesh = MeshSource.MeshOf(source);
+        bool drawnHere = false;
+        foreach (var renderer in slot.GetComponents<MeshRenderer>())
+        {
+            if (renderer.IsDestroyed)
+                continue;
+            if (mesh != null && ReferenceEquals(renderer.Mesh.Target, mesh))
+                drawnHere = true;
+            renderer.SetLocallyHiddenMesh(simulating ? mesh : null);
+        }
+
+        // What this body hid stays recorded, so whatever the source is by now, the one it hid is the one shown again.
+        if (source is MeshRenderer || source is SkinnedMeshRenderer)
+            drawnHere = true;
+        if (simulating && _built)
+        {
+            if (source is MeshRenderer sourceRenderer && !sourceRenderer.IsDestroyed && !ReferenceEquals(sourceRenderer.Slot, slot))
+            {
+                if (!ReferenceEquals(_hiddenRenderer, sourceRenderer))
+                    ShowRenderer();
+                sourceRenderer.SetLocallyHiddenMesh(mesh);
+                _hiddenRenderer = sourceRenderer;
+            }
+            if (source is SkinnedMeshRenderer skinned && !skinned.IsDestroyed && _skin != null)
+            {
+                if (!ReferenceEquals(_hiddenSkin, skinned))
+                    ShowSkin();
+                skinned.SetLocalHide(this, _skinTriangles == null, _skinTriangles);
+                _hiddenSkin = skinned;
+            }
+        }
+        else
+        {
+            ShowRenderer();
+            ShowSkin();
+        }
+
+        if (_deformedRenderer != null && !_deformedRenderer.IsDestroyed)
+            _deformedRenderer.SetLocallyHiddenMesh(!simulating && drawnHere ? _deformed : null);
+    }
+
+    private void ShowRenderer()
+    {
+        if (_hiddenRenderer != null && !_hiddenRenderer.IsDestroyed)
+            _hiddenRenderer.SetLocallyHiddenMesh(null);
+        _hiddenRenderer = null;
+    }
+
+    private void ShowSkin()
+    {
+        if (_hiddenSkin != null && !_hiddenSkin.IsDestroyed)
+            _hiddenSkin.ClearLocalHide(this);
+        _hiddenSkin = null;
+    }
+
+    // A source renderer this body hid that is no longer its source draws again.
+    private void ReleaseHiddenSources()
+    {
+        var source = SourceMesh.Target;
+        if (_hiddenRenderer != null && (!ReferenceEquals(_hiddenRenderer, source) || IsDestroyed))
+            ShowRenderer();
+        if (_hiddenSkin != null && (!ReferenceEquals(_hiddenSkin, source) || IsDestroyed || _skin == null))
+            ShowSkin();
     }
 
     public void BeforeInputUpdate() { }
@@ -167,7 +383,8 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
             _solver.ResetVelocities();
             return;
         }
-        if (!_built)
+        // A followed skin is stepped after the bones have moved this frame, in the late update.
+        if (!_built || _follows)
             return;
 
         // Not while the world is still building. IsLoading covers PendingHookCreations, which means
@@ -203,14 +420,10 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
         // Fully at rest and nothing can have disturbed it -> skip the sim AND the mesh upload entirely.
         if (!_solver.IsAwake && !_perturbedThisFrame)
             return;
+        _solver.Wake();
 
         PushSolverParameters();
-        if (!ReferenceEquals(_budgetWorld, World))
-        {
-            _budgetWorld = World;
-            _budget = SoftBodyBudget.For(World);
-        }
-        var budget = _budget;
+        var budget = Budget();
         _solver.Iterations = ScaleIterations(IterationsForDistance(), budget);
         _queryMargin = MathF.Max(_solver.AverageEdgeLength * 2f, MathF.Max(ParticleRadius.Value, 0f));
 
@@ -220,35 +433,252 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
         // land on is thick, and the sheet goes straight through and ends up on the floor. The clock
         // already publishes a clamped Delta for exactly this ("what simulation code wants"); substepping
         // on top keeps one slow frame from tunnelling through anything. -xlinka
-        float dt = World?.Time.Delta ?? (1f / 60f);
-        double now = World?.Time.TotalTime ?? 0.0;
-        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        var world = World;
+        float dt = world?.Time.Delta ?? (1f / 60f);
         int steps = (int)MathF.Ceiling(dt / MaxSubstep);
         if (steps < 1)
             steps = 1;
         else if (steps > MaxSubsteps)
             steps = MaxSubsteps;
-        float sub = dt / steps;
+        _batchSteps = steps;
+        _batchSub = MathF.Min(dt / steps, MaxSubstep);
+        _batchNow = world?.Time.TotalTime ?? 0.0;
+        _anchor.Capture(AnchorSlot);
+        if (world != null)
+        {
+            SoftBodyStepBatch.For(world).Enqueue(this, world.Time.UpdateIndex);
+            return;
+        }
+
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
         for (int i = 0; i < steps; i++)
         {
-            _stepIndex++;
-            _solver.Step(sub, now, this, this);
+            SolveBatchedStep(i);
+            ResolveBatchedStep(i);
         }
+        FinishBatchedStep((System.Diagnostics.Stopwatch.GetTimestamp() - start) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+    }
+
+    private SoftBodyBudget? Budget()
+    {
+        if (!ReferenceEquals(_budgetWorld, World))
+        {
+            _budgetWorld = World;
+            _budget = SoftBodyBudget.For(World);
+        }
+        return _budget;
+    }
+
+    internal int BatchedSteps => _batchSteps;
+
+    // Pool thread: the arithmetic half of one substep. Touches only the solver and the frozen anchor.
+    internal void SolveBatchedStep(int substep)
+    {
+        if (substep < _batchSteps)
+            _solver.SolveConstraints(_batchSub, _batchNow, _anchor);
+    }
+
+    // World thread, once every body has solved the same substep: world contacts, ground, sleep.
+    internal void ResolveBatchedStep(int substep)
+    {
+        if (substep >= _batchSteps || IsDestroyed)
+            return;
+        _stepIndex++;
+        _solver.ResolveContacts(this, this);
+    }
+
+    internal void FinishBatchedStep(double milliseconds)
+    {
+        _batchSteps = 0;
+        if (IsDestroyed)
+            return;
         WriteBack();
-        budget?.Report(World?.Time.UpdateIndex ?? 0UL,
-            (System.Diagnostics.Stopwatch.GetTimestamp() - start) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+        _lastStepMs = milliseconds;
+        _budget?.Report(World?.Time.UpdateIndex ?? 0UL, milliseconds);
+    }
+
+    // The slot's transform as it stood when the frame's step was queued, for the half of the step that
+    // runs off the world thread and must not read the slot. Same matrices the slot converts through.
+    private sealed class FrozenAnchor : ISoftBodySpace
+    {
+        private float4x4 _toWorld = float4x4.Identity;
+        private float4x4 _toLocal = float4x4.Identity;
+
+        public void Capture(Slot slot)
+        {
+            _toWorld = slot.LocalToWorld;
+            _toLocal = slot.WorldToLocal;
+        }
+
+        public float3 LocalPointToGlobal(in float3 local) => _toWorld.MultiplyPoint(in local);
+
+        public float3 GlobalPointToLocal(in float3 global) => _toLocal.MultiplyPoint(in global);
     }
 
     // Longest slice the solver is allowed to integrate in one go, and the cap on how many of them one
-    // frame may pay for. Past the cap the body simply runs slow rather than eating the frame.
+    // frame may pay for. Past the cap the body simply runs slow rather than eating the frame: four steps a
+    // frame through a world load made every slow frame slower, 50 ms of cloth in a Scratch Space opening,
+    // and a capped step stretched past this slice besides. -xlinka
     private const float MaxSubstep = 1f / 60f;
-    private const int MaxSubsteps = 4;
+    private const int MaxSubsteps = 2;
 
     private static int ScaleIterations(int iterations, SoftBodyBudget? budget)
     {
         if (budget == null || budget.IterationScale >= 1f)
             return iterations;
         return System.Math.Max(1, (int)MathF.Round(iterations * budget.IterationScale));
+    }
+
+    // FOLLOWING A SKIN
+    //
+    // The bones are where they end up this frame only after IK, animation and the bone chains have run, all of them
+    // ordinary updates, and the skinned mesh draws from that pose. Stepping in the input pass like a plain body would
+    // read last frame's pose and leave the soft part a frame behind the rest of the skin, a gap at the seam the
+    // moment anyone walks. So a followed body steps in the late update, after all of them, and alone rather than on
+    // the batch: its result has to be on the mesh before this frame's hooks run.
+    //
+    // Out of range or while the world loads it still rides the pose, unsimulated, so the part never freezes in
+    // the air while the rest of the avatar walks off. -xlinka
+    public override void OnLateUpdate(float delta)
+    {
+        if (!_follows || !_built || IsDestroyed || _skin == null || _map == null)
+            return;
+        if (!Enabled)
+        {
+            _solver.ResetVelocities();
+            return;
+        }
+
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool moved = _skin.Refresh() || !_poseSampled;
+        if (moved)
+            SamplePose();
+
+        if (World?.IsLoading == true || IsBeyondViewDistance())
+        {
+            _paused = true;
+            _solver.ResetVelocities();
+            if (moved)
+                WriteFollowing(rigid: true);
+            return;
+        }
+
+        bool jumped = false;
+        if (moved || _paused)
+        {
+            _solver.SetGoals(_goalWorld);
+            jumped = GoalsJumped();
+        }
+        if (_paused || jumped)
+        {
+            _paused = false;
+            _solver.ResetToRest(this);
+            _uploadedLocal = null;
+            InvalidateContacts();
+        }
+
+        SnapshotColliders();
+        _perturbedThisFrame = CheckPerturbed() || moved;
+        if (!_solver.IsAwake && !_perturbedThisFrame)
+            return;
+        _solver.Wake();
+
+        PushSolverParameters();
+        _solver.Iterations = ScaleIterations(IterationsForDistance(), Budget());
+        _queryMargin = MathF.Max(_solver.AverageEdgeLength * 2f, MathF.Max(ParticleRadius.Value, 0f));
+
+        var world = World;
+        float dt = world?.Time.Delta ?? (1f / 60f);
+        int steps = System.Math.Clamp((int)MathF.Ceiling(dt / MaxSubstep), 1, MaxSubsteps);
+        float sub = MathF.Min(dt / steps, MaxSubstep);
+        double now = world?.Time.TotalTime ?? 0.0;
+        for (int i = 0; i < steps; i++)
+        {
+            _solver.SolveConstraints(sub, now, this);
+            _stepIndex++;
+            _solver.ResolveContacts(this, this);
+        }
+
+        WriteFollowing(rigid: false);
+        double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - start) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        _lastStepMs = ms;
+        _budget?.Report(World?.Time.UpdateIndex ?? 0UL, ms);
+    }
+
+    // This frame's posed skin under every body vertex, and the goal of every particle: the mean of its vertices.
+    private void SamplePose()
+    {
+        _skin!.Sample(_skinVertices, _poseWorld, _poseNormalWorld, _poseTangentWorld);
+        _map!.Average(_poseWorld, _goalWorld);
+        _poseSampled = true;
+    }
+
+    // A respawn or a seat change moves the whole avatar further in one frame than any body could follow; it starts
+    // again from the pose rather than being flung after it.
+    private bool GoalsJumped()
+    {
+        bool jumped = false;
+        if (_lastGoal.Length == _goalWorld.Length)
+        {
+            float limit = MathF.Max(1.5f, _solver.AverageEdgeLength * 40f);
+            float limitSq = limit * limit;
+            for (int i = 0; i < _goalWorld.Length; i++)
+            {
+                if (float3.DistanceSquared(_goalWorld[i], _lastGoal[i]) > limitSq)
+                {
+                    jumped = true;
+                    break;
+                }
+            }
+        }
+        if (_lastGoal.Length != _goalWorld.Length)
+            _lastGoal = new float3[_goalWorld.Length];
+        Array.Copy(_goalWorld, _lastGoal, _goalWorld.Length);
+        return jumped;
+    }
+
+    // The bent mesh: the posed skin, every vertex moved by how far its particles stray from their goals.
+    private void WriteFollowing(bool rigid)
+    {
+        var deformed = _deformed;
+        var map = _map;
+        var anchor = AnchorSlot;
+        if (deformed == null || map == null || anchor == null || anchor.IsDestroyed)
+            return;
+
+        var toLocal = anchor.WorldToLocal;
+        for (int v = 0; v < _vertexReference.Length; v++)
+        {
+            _vertexReference[v] = toLocal.MultiplyPoint(in _poseWorld[v]);
+            var n = toLocal.MultiplyVector(in _poseNormalWorld[v]);
+            float l = n.LengthSquared;
+            _referenceNormals[v] = l > 1e-20f ? n / MathF.Sqrt(l) : float3.Up;
+        }
+        if (_poseTangentWorld != null && _referenceTangents != null)
+        {
+            for (int v = 0; v < _referenceTangents.Length; v++)
+            {
+                var t = _poseTangentWorld[v];
+                var d = toLocal.MultiplyVector(new float3(t.x, t.y, t.z));
+                float l = d.LengthSquared;
+                d = l > 1e-20f ? d / MathF.Sqrt(l) : float3.Right;
+                _referenceTangents[v] = new float4(d.x, d.y, d.z, t.w);
+            }
+        }
+
+        if (rigid)
+        {
+            deformed.UpdatePositions(_vertexReference, _vertexReference, _referenceNormals, _referenceTangents);
+            return;
+        }
+
+        for (int p = 0; p < _particleLocal.Length; p++)
+        {
+            _particleLocal[p] = toLocal.MultiplyPoint(_solver.GetPosition(p));
+            _particleReference[p] = toLocal.MultiplyPoint(in _goalWorld[p]);
+        }
+        map.Displace(_particleLocal, _particleReference, _vertexReference, _vertexOut);
+        deformed.UpdatePositions(_vertexOut, _vertexReference, _referenceNormals, _referenceTangents);
     }
 
     // DISTANCE GATING
@@ -333,8 +763,9 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
         if (Wind.Value.LengthSquared > 1e-8f)
             moved = true;
 
-        float3 pos = Slot.GlobalPosition;
-        floatQ rot = Slot.GlobalRotation;
+        var anchor = AnchorSlot;
+        float3 pos = anchor.GlobalPosition;
+        floatQ rot = anchor.GlobalRotation;
         if (float3.DistanceSquared(pos, _lastSlotPos) > 1e-8f)
             moved = true;
         else
@@ -449,65 +880,202 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
         return displacement > 0f || rotated;
     }
 
-    private void ArmReadyRetry()
+    // BUILD
+    //
+    // Everything the body is built from can change under it: the source field, the skin settings, the source's own
+    // geometry (a procedural mesh edited, an asset landing). Every one of those asks for a build, the asks fold into
+    // one, and it runs on the world thread outside any step.
+
+    private Slot AnchorSlot => _anchorSlot != null && !_anchorSlot.IsDestroyed ? _anchorSlot : Slot;
+
+    private void RequestBuild()
     {
-        if (IsDestroyed || World == null || _built)
+        if (_buildQueued || IsDestroyed || World == null)
             return;
-        var source = ResolveSourceMesh();
-        if (source != null)
+        _buildQueued = true;
+        World.RunSynchronously(() =>
         {
-            Build(source.Value.positions, source.Value.indices, source.Value.uvs);
-            return;
-        }
-        if (SourceMesh.Target == null || _readyRetries++ > 600)
-            return;
-        World.RunInUpdates(10, ArmReadyRetry);
+            _buildQueued = false;
+            if (!IsDestroyed)
+                Rebuild();
+        });
     }
 
-    private (float3[] positions, int[] indices, float2[]? uvs)? ResolveSourceMesh()
+    private void Teardown()
     {
-        Phos.PhosMesh? mesh = SourceMesh.Target switch
-        {
-            Meshes.ProceduralMesh procedural => procedural.PhosMesh,
-            MeshProvider provider => provider.Asset?.MeshData,
-            _ => null
-        };
-        if (mesh == null || mesh.VertexCount == 0)
-            return null;
+        if (_built)
+            ApplyRendererHiding(false);
+        _built = false;
+        _follows = false;
+        _map = null;
+        _skin = null;
+        _skinTriangles = null;
+        _poseSampled = false;
+        _paused = false;
+        _uploadedLocal = null;
+        ReleaseHiddenSources();
+    }
 
-        var positions = new float3[mesh.VertexCount];
-        Array.Copy(mesh.RawPositions, positions, mesh.VertexCount);
-        var uvs = mesh.HasUV0s ? (float2[]?)mesh.RawUV0s.Clone() : null;
-
-        var indices = new List<int>();
-        foreach (var submesh in mesh.Submeshes)
+    private void Rebuild()
+    {
+        if (IsDestroyed || World == null || Slot == null)
+            return;
+        _building = true;
+        try
         {
-            if (submesh.Topology != Phos.PhosTopology.Triangles)
-                continue;
-            var raw = submesh.RawIndices;
-            for (int i = 0; i + 2 < submesh.IndexCount; i += 3)
+            Teardown();
+            _status = null;
+            var source = SourceMesh.Target;
+            if (source == null)
             {
-                indices.Add(raw[i]);
-                indices.Add(raw[i + 1]);
-                indices.Add(raw[i + 2]);
+                WatchDeformable(null);
+                _watch.Watch(null);
+                return;
             }
+
+            string? problem = MeshSource.Refusal(source, keepsRenderers: true);
+            if (problem == null && IsOwnOutput(source))
+                problem = "that is this body's own output";
+            if (problem != null)
+            {
+                _status = $"not used: {problem}";
+                WatchDeformable(null);
+                _watch.Watch(null);
+                return;
+            }
+
+            _watch.Watch(MeshSource.Provider(source));
+
+            if (source is SkinnedMeshRenderer skinned)
+            {
+                BuildFromSkin(skinned);
+                return;
+            }
+
+            DeformableMesh target;
+            if (source is DeformableMesh plugged)
+            {
+                target = plugged;
+                _bendsSource = true;
+                _deformedRenderer = null;
+                // A child left from bending a copy would stand a stale one beside it.
+                var own = Slot.FindChild("Deformed");
+                own?.GetComponent<MeshRenderer>()?.SetLocallyHiddenMesh(own.GetComponent<DeformableMesh>());
+            }
+            else
+            {
+                _bendsSource = false;
+                target = OwnDeformable(HomeOf(source));
+                var mesh = MeshSource.MeshOf(source);
+                target.ClearHandedGeometry();
+                if (!ReferenceEquals(target.Mesh.Target, mesh))
+                    target.Mesh.Target = mesh!;
+            }
+            UseDeformable(target);
+
+            if (!target.HasBase)
+            {
+                _status = target.SourceProblem != null ? $"not used: {target.SourceProblem}" : "waiting for the mesh to load";
+                return;
+            }
+
+            if (!BuildFromBase(target.BasePositions, target.BaseTriangles, null))
+                return;
+            ConfigureRenderer(source, null);
+            _builtBaseVersion = target.BaseVersion;
+            Finish();
         }
-        if (indices.Count == 0)
-            return null;
-        return (positions, indices.ToArray(), uvs);
+        finally
+        {
+            _building = false;
+        }
     }
 
-    private void Build(float3[] localPositions, int[] indices, float2[]? uvs)
+    // A source that is what this body draws would feed its own output back in.
+    public bool IsOwnOutput(Component source)
     {
-        int n = localPositions.Length;
+        if (MeshSource.MeshOf(source) is not DeformableMesh mesh || mesh.Slot == null)
+            return false;
+        return ReferenceEquals(mesh, _deformed) && !_bendsSource
+            || mesh.Slot.SlotName.Value == "Deformed" && ReferenceEquals(mesh.Slot.Parent, Slot);
+    }
+
+    // Where the bent copy draws: beside the renderer it stands in for, so it shows up where that renderer drew and
+    // rides along when that object is moved. A bare mesh has no place of its own and draws on this body's slot.
+    private Slot HomeOf(Component source)
+        => source is MeshRenderer renderer && renderer.Slot is { IsDestroyed: false } home ? home : Slot;
+
+    private Slot? _ownSlot;
+
+    private DeformableMesh OwnDeformable(Slot home)
+    {
+        // Render the deformed result on a child slot; the source mesh is data only.
+        var deformedSlot = home.FindChildOrAdd("Deformed");
+        // A copy this body drew somewhere else before goes with the move.
+        if (_ownSlot != null && !_ownSlot.IsDestroyed && !ReferenceEquals(_ownSlot, deformedSlot))
+            _ownSlot.Destroy();
+        _ownSlot = deformedSlot;
+        return deformedSlot.GetComponent<DeformableMesh>() ?? deformedSlot.AttachComponent<DeformableMesh>();
+    }
+
+    private DeformableMesh? _watchedDeformable;
+
+    private void UseDeformable(DeformableMesh target)
+    {
+        _deformed = target;
+        _anchorSlot = _bendsSource ? target.Slot : target.Slot?.Parent ?? Slot;
+        WatchDeformable(target);
+    }
+
+    private void WatchDeformable(DeformableMesh? target)
+    {
+        if (ReferenceEquals(target, _watchedDeformable))
+            return;
+        if (_watchedDeformable != null)
+            _watchedDeformable.BaseChanged -= OnBaseChanged;
+        _watchedDeformable = target;
+        if (target != null)
+            target.BaseChanged += OnBaseChanged;
+    }
+
+    // The shape being bent changed under the body (its mesh edited or loaded). A shape this body handed in itself is
+    // not news.
+    private void OnBaseChanged(DeformableMesh deformable)
+    {
+        if (_building || IsDestroyed || _skin != null || deformable.BaseVersion == _builtBaseVersion)
+            return;
+        RequestBuild();
+    }
+
+    // Particles, the solver and the working arrays from the shape in the anchor's space. hold is per vertex.
+    private bool BuildFromBase(float3[] positions, int[] triangles, float[]? vertexHold)
+    {
+        int cap = System.Math.Clamp(MaxParticles.Value <= 0 ? HardMaxParticles : MaxParticles.Value, 16, HardMaxParticles);
+        var map = SoftBodyMeshMap.Build(positions, triangles, cap);
+        if (map.ParticleCount == 0 || map.ParticleTriangles.Length == 0)
+        {
+            _status = "not used: the mesh has no triangles";
+            return false;
+        }
+        _map = map;
+
+        float[]? hold = null;
+        if (vertexHold != null)
+        {
+            hold = new float[map.ParticleCount];
+            map.Average(vertexHold, hold);
+        }
 
         // The solver derives the stretch edges, the bend cross-edges, the rest volume, the shape-match
         // offsets and the long-range attachment map from the topology; all this component supplies is the
         // geometry and where the pin line sits.
         PushSolverParameters();
-        _solver.Build(localPositions, indices, PinAboveLocalY.Value, this);
+        _solver.Build(map.ParticleRest, map.ParticleTriangles, PinAboveLocalY.Value, hold, this);
 
-        _writeBuffer = new float3[n];
+        int n = map.ParticleCount;
+        _particleLocal = new float3[n];
+        _particleReference = new float3[n];
+        _vertexOut = new float3[map.VertexCount];
         _uploadedLocal = null; // force the first upload
 
         _lastColliderPos = null;
@@ -516,27 +1084,342 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
         _nearRot.Clear();
         _contacts = new WorldContact[n];
         InvalidateContacts();
-        _lastSlotPos = Slot.GlobalPosition;
-        _lastSlotRot = Slot.GlobalRotation;
+        var anchor = AnchorSlot;
+        _lastSlotPos = anchor.GlobalPosition;
+        _lastSlotRot = anchor.GlobalRotation;
 
         _selfExclude.Clear();
         _selfExclude.Add(Slot);
+        if (!ReferenceEquals(anchor, Slot))
+            _selfExclude.Add(anchor);
+        return true;
+    }
 
-        // Render the deformed result on a child slot (the source mesh is data only, hidden by MeshHook).
-        var deformedSlot = Slot.FindChildOrAdd("Deformed");
-        _deformed = deformedSlot.GetComponent<DeformableMesh>() ?? deformedSlot.AttachComponent<DeformableMesh>();
-        _deformed.SetGeometry((float3[])localPositions.Clone(), indices, uvs);
+    private void Finish()
+    {
+        _built = true;
+        _solver.ResetVelocities();
+        ApplyRendererHiding(Enabled.Value);
+        if (_status == null)
+            _status = Describe();
+    }
+
+    // THE SKIN
+    //
+    // The part of the mesh this body owns: every triangle touching a vertex with any weight on SimulateBones (all of
+    // them when it is empty). Vertices of those triangles carrying none of that weight sit on the skin, which is
+    // what stitches the soft part to the rest without a seam. How free a vertex is goes by the same weights: a
+    // vertex half on a held bone is held half as loosely. With SimulateBones empty the held bones are the mesh's
+    // top-most ones, which is what an ear, a tail or a skirt hangs from.
+    private void BuildFromSkin(SkinnedMeshRenderer skinned)
+    {
+        var pose = SkinnedPose.TryCreate(skinned, out string? problem);
+        if (pose == null)
+        {
+            _status = problem;
+            // The mesh lands through the watch; a skeleton becomes usable without telling anyone.
+            if (problem != null && problem.StartsWith("waiting"))
+                World!.RunInUpdates(30, () => { if (!IsDestroyed && !_built) RequestBuild(); });
+            return;
+        }
+
+        var mesh = pose.Mesh;
+        int vertexCount = mesh.VertexCount;
+        var allVertices = new int[vertexCount];
+        for (int v = 0; v < vertexCount; v++)
+            allVertices[v] = v;
+
+        // Freedom per mesh vertex.
+        var freedom = new float[vertexCount];
+        bool region = SimulateBones.Count > 0;
+        if (region)
+        {
+            var roots = new List<Slot>();
+            foreach (var bone in SimulateBones)
+                if (bone != null && !bone.IsDestroyed)
+                    roots.Add(bone);
+            var free = pose.BonesUnder(roots);
+            for (int v = 0; v < vertexCount; v++)
+                freedom[v] = pose.WeightOn(v, free);
+            _heldBy = "all but " + pose.BoneNames(free);
+        }
+        else if (pose.IsRigid)
+        {
+            for (int v = 0; v < vertexCount; v++)
+                freedom[v] = 1f;
+            _heldBy = "nothing, no bones";
+        }
+        else
+        {
+            var anchors = pose.AnchorBones(allVertices);
+            for (int v = 0; v < vertexCount; v++)
+                freedom[v] = 1f - pose.WeightOn(v, anchors);
+            _heldBy = pose.BoneNames(anchors);
+        }
+
+        // Triangles this body takes over, counted over every triangle submesh in order.
+        int triangleTotal = 0;
+        foreach (var submesh in mesh.Submeshes)
+            if (submesh != null && submesh.Topology == PhosTopology.Triangles)
+                triangleTotal += submesh.IndexCount / 3;
+        var taken = new bool[triangleTotal];
+        var used = new int[vertexCount];
+        Array.Fill(used, -1);
+        var bodyVertices = new List<int>();
+        var shapeSubmeshes = new List<(int source, List<int> indices)>();
+        int takenCount = 0;
+        int triangleBase = 0;
+        for (int s = 0; s < mesh.Submeshes.Count; s++)
+        {
+            var submesh = mesh.Submeshes[s];
+            if (submesh == null || submesh.Topology != PhosTopology.Triangles)
+                continue;
+            var raw = submesh.RawIndices;
+            int triangles = submesh.IndexCount / 3;
+            List<int>? kept = null;
+            for (int t = 0; t < triangles; t++)
+            {
+                int a = raw[t * 3], b = raw[t * 3 + 1], c = raw[t * 3 + 2];
+                if (region && freedom[a] <= 0.001f && freedom[b] <= 0.001f && freedom[c] <= 0.001f)
+                    continue;
+                taken[triangleBase + t] = true;
+                takenCount++;
+                kept ??= new List<int>();
+                kept.Add(Take(a));
+                kept.Add(Take(b));
+                kept.Add(Take(c));
+            }
+            if (kept != null)
+                shapeSubmeshes.Add((s, kept));
+            triangleBase += triangles;
+        }
+
+        if (takenCount == 0)
+        {
+            _status = region
+                ? "not used: nothing here is weighted to SimulateBones"
+                : "not used: the skinned mesh has no triangles";
+            return;
+        }
+
+        _skin = pose;
+        _skinVertices = bodyVertices.ToArray();
+        _skinTriangles = takenCount == triangleTotal ? null : taken;
+        _skinTriangleCount = takenCount;
+        pose.Use(_skinVertices);
+        pose.Refresh();
+
+        int n = _skinVertices.Length;
+        _freedom = new float[n];
+        for (int i = 0; i < n; i++)
+            _freedom[i] = freedom[_skinVertices[i]];
+
+        _poseWorld = new float3[n];
+        _poseNormalWorld = new float3[n];
+        _poseTangentWorld = mesh.HasTangents ? new float4[n] : null;
+        _vertexReference = new float3[n];
+        _referenceNormals = new float3[n];
+        _referenceTangents = mesh.HasTangents ? new float4[n] : null;
+        pose.Sample(_skinVertices, _poseWorld, _poseNormalWorld, _poseTangentWorld);
+
+        // The shape as posed right now, in the anchor's space: the rest a baked body keeps, the first frame of a
+        // followed one.
+        _bendsSource = false;
+        var target = OwnDeformable(Slot);
+        UseDeformable(target);
+        var anchor = AnchorSlot;
+        var toLocal = anchor.WorldToLocal;
+        var shape = new PhosMesh
+        {
+            HasNormals = true,
+            HasTangents = mesh.HasTangents,
+            HasColors = mesh.HasColors,
+        };
+        bool uv0 = mesh.HasUV0s, uv1 = mesh.HasUV1s;
+        if (uv0)
+            shape.SetHasUV(0, true);
+        if (uv1)
+            shape.SetHasUV(1, true);
+        shape.IncreaseVertexCount(n);
+        for (int i = 0; i < n; i++)
+        {
+            int v = _skinVertices[i];
+            shape.RawPositions[i] = toLocal.MultiplyPoint(in _poseWorld[i]);
+            var normal = toLocal.MultiplyVector(in _poseNormalWorld[i]);
+            shape.RawNormals[i] = normal.LengthSquared > 1e-20f ? normal.Normalized : float3.Up;
+            if (shape.HasTangents && _poseTangentWorld != null)
+            {
+                var t = _poseTangentWorld[i];
+                var d = toLocal.MultiplyVector(new float3(t.x, t.y, t.z));
+                d = d.LengthSquared > 1e-20f ? d.Normalized : float3.Right;
+                shape.RawTangents[i] = new float4(d.x, d.y, d.z, t.w);
+            }
+            if (shape.HasColors)
+                shape.RawColors[i] = mesh.RawColors[v];
+            if (uv0)
+                shape.RawUV0s[i] = mesh.RawUV0s[v];
+            if (uv1)
+                shape.RawUV1s[i] = mesh.RawUV1s[v];
+        }
+        var sourceSubmeshes = new List<int>();
+        foreach (var (source, indices) in shapeSubmeshes)
+        {
+            var submesh = new PhosTriangleSubmesh(shape);
+            shape.Submeshes.Add(submesh);
+            for (int t = 0; t + 2 < indices.Count; t += 3)
+                submesh.AddTriangle(indices[t], indices[t + 1], indices[t + 2]);
+            sourceSubmeshes.Add(source);
+        }
+
+        if (target.Mesh.Target != null)
+            target.Mesh.Target = null!;
+        target.SetGeometry(shape);
+        _builtBaseVersion = target.BaseVersion;
+
+        _follows = SkinMode.Value == SoftBodySkinMode.FollowPose;
+        var vertexHold = new float[n];
+        for (int i = 0; i < n; i++)
+            vertexHold[i] = HoldFor(_freedom[i]);
+        if (!BuildFromBase(target.BasePositions, target.BaseTriangles, vertexHold))
+        {
+            _skin = null;
+            return;
+        }
+        _particleFreedom = new float[_map!.ParticleCount];
+        _map.Average(_freedom, _particleFreedom);
+        _goalWorld = new float3[_map.ParticleCount];
+        _lastGoal = Array.Empty<float3>();
+        _map.Average(_poseWorld, _goalWorld);
+        _poseSampled = true;
+        if (_follows)
+        {
+            _solver.SetGoals(_goalWorld);
+            GoalsJumped();
+        }
+        UpdatePulls();
+
+        ConfigureRenderer(skinned, sourceSubmeshes);
+        Finish();
+        if (pose.UnresolvedBones > 0)
+            _status += $"; {pose.UnresolvedBones} bones missing from the skeleton";
+
+        int Take(int vertex)
+        {
+            if (used[vertex] < 0)
+            {
+                used[vertex] = bodyVertices.Count;
+                bodyVertices.Add(vertex);
+            }
+            return used[vertex];
+        }
+    }
+
+    // A vertex with no freedom is pinned. While following, a free one is pulled onto the skin by SkinFollow and a
+    // part-held one more, with ShapeRetention on top since the rest shape of a followed body is the pose; a baked
+    // body pulls only its part-held vertices back to the pose it was baked in, and keeps its own shape matching.
+    private float HoldFor(float freedom)
+    {
+        if (freedom <= 0.001f)
+            return 1f;
+        float free = System.Math.Clamp(freedom, 0f, 1f);
+        if (SkinMode.Value == SoftBodySkinMode.FollowPose)
+        {
+            float follow = 1f - free * (1f - System.Math.Clamp(SkinFollow.Value, 0f, 1f));
+            float shape = System.Math.Clamp(ShapeRetention.Value, 0f, 1f);
+            return System.Math.Min(1f - (1f - follow) * (1f - shape), 0.999f);
+        }
+        return System.Math.Min(1f - free, 0.999f);
+    }
+
+    private void UpdatePulls()
+    {
+        if (!_built || _skin == null || _map == null || _particleFreedom.Length != _map.ParticleCount)
+            return;
+        var pull = new float[_particleFreedom.Length];
+        for (int p = 0; p < pull.Length; p++)
+            pull[p] = _particleFreedom[p] <= 0.001f ? 0f : HoldFor(_particleFreedom[p]);
+        _solver.SetPull(pull);
+    }
+
+    // The child's renderer draws the bent mesh. Material wins when set; otherwise each surface wears what the
+    // source wore on the submesh it came from.
+    private void ConfigureRenderer(Component source, List<int>? skinSubmeshes)
+    {
+        if (_bendsSource || _deformed == null)
+            return;
+        var deformedSlot = _deformed.Slot;
         var renderer = deformedSlot.GetComponent<MeshRenderer>() ?? deformedSlot.AttachComponent<MeshRenderer>();
         // Cloth is a single thin layer, so its shadow has to be cast from both faces. Under the default
         // mode the shadow pass culls back faces and the sheet stops casting the moment a light is on
         // its far side - the shadow lands on the wrong side of the surface, or vanishes.
-        renderer.ShadowCastMode.Value = Components.ShadowCastMode.DoubleSided;
-        renderer.Mesh.Target = _deformed;
-        if (Material.Target != null)
-            renderer.Material.Target = Material.Target;
+        if (renderer.ShadowCastMode.Value != Components.ShadowCastMode.DoubleSided)
+            renderer.ShadowCastMode.Value = Components.ShadowCastMode.DoubleSided;
+        if (!ReferenceEquals(renderer.Mesh.Target, _deformed))
+            renderer.Mesh.Target = _deformed;
+        _deformedRenderer = renderer;
 
-        _built = true;
-        _solver.ResetVelocities();
+        if (Material.Target != null)
+        {
+            if (!ReferenceEquals(renderer.Material.Target, Material.Target))
+                renderer.Material.Target = Material.Target;
+            return;
+        }
+
+        // A bare mesh wears what a renderer drawing it beside the body, or beside the mesh, wears.
+        if (MeshSource.IsMesh(source))
+            source = RendererDrawing(source, Slot) ?? RendererDrawing(source, source.Slot) ?? source;
+
+        var wanted = new List<IAssetProvider<MaterialAsset>?>();
+        if (source is SkinnedMeshRenderer skinned && skinSubmeshes != null)
+        {
+            foreach (int submesh in skinSubmeshes)
+                wanted.Add(skinned.MaterialFor(submesh));
+        }
+        else if (source is MeshRenderer sourceRenderer)
+        {
+            // Materials go by submesh on an asset mesh and by drawing surface on a procedural one.
+            var mesh = MeshSource.Geometry(sourceRenderer);
+            bool bySubmesh = sourceRenderer.Mesh.Target is not ProceduralMesh;
+            int surface = 0;
+            if (mesh != null)
+            {
+                for (int s = 0; s < mesh.Submeshes.Count; s++)
+                {
+                    var submesh = mesh.Submeshes[s];
+                    if (submesh is not PhosTriangleSubmesh || submesh.IndexCount < 3)
+                        continue;
+                    wanted.Add(sourceRenderer.SurfaceMaterialProvider(bySubmesh ? s : surface));
+                    surface++;
+                }
+            }
+        }
+        if (wanted.Count == 0)
+            return;
+
+        bool same = renderer.Materials.Count == wanted.Count;
+        for (int i = 0; same && i < wanted.Count; i++)
+            same = ReferenceEquals(renderer.Materials[i], wanted[i]);
+        if (same)
+            return;
+        while (renderer.Materials.Count > wanted.Count)
+            renderer.Materials.RemoveAt(renderer.Materials.Count - 1);
+        for (int i = 0; i < wanted.Count; i++)
+        {
+            if (i < renderer.Materials.Count)
+                renderer.Materials.GetElement(i).Target = wanted[i]!;
+            else
+                renderer.Materials.Add(wanted[i]!);
+        }
+    }
+
+    private static MeshRenderer? RendererDrawing(Component mesh, Slot? slot)
+    {
+        if (slot == null || slot.IsDestroyed)
+            return null;
+        foreach (var renderer in slot.GetComponents<MeshRenderer>())
+            if (!renderer.IsDestroyed && ReferenceEquals(renderer.Mesh.Target, mesh) && renderer.Materials.Count > 0)
+                return renderer;
+        return null;
     }
 
     // cheap enough to call every step
@@ -556,11 +1439,11 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
         _solver.GroundY = GroundY.Value;
     }
 
-    // The solver's anchor space is this component's slot: pinned particles are rebuilt through it every
+    // The solver's anchor space is the slot the bent mesh draws in: pinned particles are rebuilt through it every
     // step, which is what carries a grabbed body along with whatever is holding it.
-    float3 ISoftBodySpace.LocalPointToGlobal(in float3 local) => Slot.LocalPointToGlobal(local);
+    float3 ISoftBodySpace.LocalPointToGlobal(in float3 local) => AnchorSlot.LocalPointToGlobal(local);
 
-    float3 ISoftBodySpace.GlobalPointToLocal(in float3 global) => Slot.GlobalPointToLocal(global);
+    float3 ISoftBodySpace.GlobalPointToLocal(in float3 global) => AnchorSlot.GlobalPointToLocal(global);
 
     // Collision back end for the solver. World geometry first, then the assigned dynamic-bone colliders;
     // the ground plane is the solver's own last word so nothing can push a particle back under it.
@@ -737,6 +1620,7 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
     private void SnapshotColliders()
     {
         _shapeCount = 0;
+        _solver.CollidersNear = false;
         float radius = MathF.Max(ParticleRadius.Value, 0f);
         _solver.ComputeBounds(radius, out var centre, out var size);
         _boundsCentre = centre;
@@ -780,25 +1664,90 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
         if (bones == null)
             return;
 
+        // The body capsule stays out of whatever its own wearer has on: a skirt or a cape hangs closer to
+        // the torso than the capsule's radius and would be shoved off it. The wearer's head and hands still count.
+        // People nearby also hold the solver awake, so cloth resting against a hand answers when it moves.
+        var wearer = Slot.ActiveUser;
         var playerShapes = bones.PlayerColliders;
         for (int i = 0; i < players && _shapeCount < _shapes.Length; i++)
         {
             var shape = playerShapes[i];
+            if (shape.SoftBodyOnly && wearer != null && ReferenceEquals(shape.Owner, wearer))
+                continue;
             if (!shape.BoundsOverlap(in min, in max, margin))
                 continue;
             _shapes[_shapeCount++] = shape;
+            _solver.CollidersNear = true;
         }
     }
 
     private void WriteBack()
     {
-        if (_deformed == null || _writeBuffer == null)
+        var deformed = _deformed;
+        var map = _map;
+        if (deformed == null || map == null || deformed.IsDestroyed)
             return;
 
         // The solver converts to local and reports whether anything actually moved since the last upload.
         // The mesh re-upload (ArrayMesh rebuild) is the single most expensive step per frame, so when a
         // body is settled we skip it entirely - a resting cloth/jelly does no GPU work. -xlinka
-        if (_solver.WriteLocalPositions(this, _writeBuffer, ref _uploadedLocal))
-            _deformed.UpdatePositions(_writeBuffer);
+        if (!_solver.WriteLocalPositions(this, _particleLocal, ref _uploadedLocal))
+            return;
+        if (deformed.VertexCount != map.VertexCount)
+            return;
+        map.Displace(_particleLocal, map.ParticleRest, deformed.BasePositions, _vertexOut);
+        deformed.UpdatePositions(_vertexOut);
     }
+
+    // INSPECTOR
+
+    private string Describe()
+    {
+        var source = SourceMesh.Target;
+        string name = source?.Slot?.SlotName.Value ?? "";
+        return source switch
+        {
+            SkinnedMeshRenderer when _follows => $"skin of '{name}', following its pose",
+            SkinnedMeshRenderer => $"skin of '{name}', baked as posed",
+            MeshRenderer => $"what the renderer on '{name}' draws",
+            DeformableMesh when _bendsSource => $"'{name}', bent where it is",
+            null => "nothing",
+            _ => $"{source.GetType().Name} on '{name}'",
+        };
+    }
+
+    public void BuildInspectorBody(UIBuilder ui)
+    {
+        var source = SourceMesh.Target;
+        if (source == null)
+        {
+            InspectorStats.AddRow(ui, "Source", "none: a mesh or a renderer of one");
+            return;
+        }
+        InspectorStats.AddRow(ui, "Source", _status ?? Describe());
+        var map = _map;
+        if (!_built || map == null)
+            return;
+
+        InspectorStats.AddRow(ui, "Particles", $"{map.ParticleCount:N0} for {map.VertexCount:N0} vertices");
+        if (map.Simplified)
+            InspectorStats.AddRow(ui, "", $"simplified to fit MaxParticles");
+        InspectorStats.AddRow(ui, "Pinned", $"{_solver.PinnedCount:N0}");
+        if (_skin != null)
+        {
+            InspectorStats.AddRow(ui, "Held by", _heldBy);
+            InspectorStats.AddRow(ui, "Drawn here", _skinTriangles == null
+                ? $"whole mesh, {_skinTriangleCount:N0} triangles"
+                : $"{_skinTriangleCount:N0} of {_skinTriangles.Length:N0} triangles");
+            if (_skinTriangles == null && SimulateBones.Count == 0 && map.VertexCount > 4000)
+                InspectorStats.AddRow(ui, "", "costly: name a part in SimulateBones");
+        }
+        InspectorStats.AddRow(ui, "Last step", $"{_lastStepMs:F2} ms");
+    }
+}
+
+public enum SoftBodySkinMode
+{
+    FollowPose = 0,
+    BakePose = 1,
 }

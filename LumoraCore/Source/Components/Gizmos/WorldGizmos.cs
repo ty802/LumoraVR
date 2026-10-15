@@ -116,6 +116,10 @@ public sealed class WorldGizmos
         {
             var tint = TintFor(kind);
             material = host.AttachComponent<OverlayUnlitMaterial>();
+            // Blended, never added: a handle is a colour drawn over the scene, not light. Added, its front and
+            // back faces stacked onto whatever lay behind and ran past white, and the glow pass bloomed it
+            // across the room, green worst of all.
+            material.BlendMode.Value = BlendMode.Alpha;
             material.FrontTintColor.Value = new colorHDR(tint.r, tint.g, tint.b, 1f);
             // Dimmed ghost when occluded, so handles stay findable behind the object they annotate.
             material.BehindTintColor.Value = new colorHDR(tint.r, tint.g, tint.b, 0.28f);

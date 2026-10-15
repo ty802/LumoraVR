@@ -110,10 +110,10 @@ public abstract class TransformHandle : Component, IGrabbable, ILaserPointerTarg
         ForceActivate = false,
     };
 
-    // A handle is reachable through whatever it is annotating, always. It only exists while its gizmo
+    // With a DevTip, a handle is reachable through whatever it is annotating. It only exists while its gizmo
     // is up and its mode group is showing, and the whole point of it is to edit the object it is
     // buried in - being occluded by that object is the one behaviour it can never have. -xlinka
-    public bool PreferLaserHit(InteractionLaser laser) => true;
+    public bool PreferLaserHit(InteractionLaser laser) => DevToolItem.CanManipulateGizmos(laser);
 
     // runs in the handle slot's local space, so the rig's distance scaling is carried by the transform
     // instead of being re-derived; the resulting point is measured back in world space because that is
@@ -123,7 +123,7 @@ public abstract class TransformHandle : Component, IGrabbable, ILaserPointerTarg
     {
         hit = default;
         var slot = Slot;
-        if (slot == null || slot.IsDestroyed)
+        if (slot == null || slot.IsDestroyed || !DevToolItem.CanManipulateGizmos(laser))
             return false;
 
         var size = PickSize.Value;
@@ -205,7 +205,8 @@ public abstract class TransformHandle : Component, IGrabbable, ILaserPointerTarg
     public bool IsDragging => _grabber != null || _toolDrag;
 
     public bool CanGrab(Grabber grabber)
-        => _grabber == null && !_toolDrag && grabber != null && TargetSlot.Target is { IsDestroyed: false };
+        => _grabber == null && !_toolDrag && grabber != null && TargetSlot.Target is { IsDestroyed: false }
+           && DevToolItem.CanManipulateGizmos(ResolveLaser(grabber));
 
     public IGrabbable Grab(Grabber grabber, Slot holdSlot, bool suppressEvents = false)
     {
@@ -244,7 +245,7 @@ public abstract class TransformHandle : Component, IGrabbable, ILaserPointerTarg
 
     public bool BeginToolDrag(InteractionLaser laser)
     {
-        if (IsDragging || laser == null || laser.IsDestroyed)
+        if (IsDragging || !DevToolItem.CanManipulateGizmos(laser))
             return false;
         if (TargetSlot.Target is not { IsDestroyed: false } target)
             return false;
@@ -290,7 +291,7 @@ public abstract class TransformHandle : Component, IGrabbable, ILaserPointerTarg
             return;
 
         var target = TargetSlot.Target;
-        if (target == null || target.IsDestroyed || _laser == null || _laser.IsDestroyed)
+        if (target == null || target.IsDestroyed || _laser == null || !DevToolItem.CanManipulateGizmos(_laser))
         {
             // Route through the owning session's release so the undo batch still commits.
             if (_grabber != null)

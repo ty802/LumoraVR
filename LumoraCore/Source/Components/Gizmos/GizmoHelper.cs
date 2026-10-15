@@ -7,8 +7,27 @@ namespace Lumora.Core.Components.Gizmos;
 
 public static class GizmoHelper
 {
+    private static bool _loggedLocalTarget;
+
+    // A gizmo and every handle on it replicate, and a replicated reference cannot name a slot that exists on one
+    // machine only: pointing the hand tool at a script node's card threw from the tool's update every frame. A
+    // local slot stands for the nearest replicated slot above it, which for a card is the node itself. -xlinka
+    public static Slot? ReplicatedOwner(Slot? slot)
+    {
+        var owner = slot;
+        while (owner != null && owner.IsLocalElement)
+            owner = owner.Parent;
+        if (owner != slot && !_loggedLocalTarget)
+        {
+            _loggedLocalTarget = true;
+            Logger.Log($"GizmoHelper: '{slot!.Name.Value}' is local to this machine, using '{owner?.Name.Value ?? "nothing"}' above it");
+        }
+        return owner;
+    }
+
     public static SlotGizmo SpawnGizmoFor(Slot targetSlot)
     {
+        targetSlot = ReplicatedOwner(targetSlot)!;
         if (targetSlot == null)
         {
             Logger.Warn("GizmoHelper.SpawnGizmoFor: Target slot is null");
@@ -59,6 +78,7 @@ public static class GizmoHelper
 
     public static void DestroyGizmo(Slot targetSlot)
     {
+        targetSlot = ReplicatedOwner(targetSlot)!;
         if (targetSlot == null) return;
 
         var gizmo = WorldGizmos.For(targetSlot.World)?.Get(targetSlot);
@@ -67,10 +87,11 @@ public static class GizmoHelper
     }
 
     public static bool HasGizmo(Slot targetSlot)
-        => targetSlot != null && WorldGizmos.For(targetSlot.World)?.Has(targetSlot) == true;
+        => ReplicatedOwner(targetSlot) is { } owner && WorldGizmos.For(owner.World)?.Has(owner) == true;
 
     public static SlotGizmo GetGizmo(Slot targetSlot)
     {
+        targetSlot = ReplicatedOwner(targetSlot)!;
         if (targetSlot == null)
             return null!;
         return WorldGizmos.For(targetSlot.World)?.Get(targetSlot) ?? null!;
@@ -161,7 +182,7 @@ public static class GizmoHelper
 
     public static ComponentGizmo? SpawnComponentGizmo(Component? component)
     {
-        if (component == null || component.IsDestroyed || component.Slot == null)
+        if (component == null || component.IsDestroyed || component.Slot == null || component.IsLocalElement)
             return null;
 
         var gizmoType = GizmoRegistry.GetComponentGizmoType(component.GetType());

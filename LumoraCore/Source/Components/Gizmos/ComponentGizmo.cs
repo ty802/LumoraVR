@@ -474,6 +474,7 @@ public abstract class ComponentGizmo : ImplementableComponent, IComponentGizmo, 
             mesh.Size.Value = float3.One * PadSize;
             var renderer = host.AttachComponent<MeshRenderer>();
             renderer.Mesh.Target = mesh;
+            renderer.ShadowCastMode.Value = ShadowCastMode.Off;
             var shared = WorldGizmos.For(World)?.GetMaterial(World, material);
             if (shared != null)
                 renderer.Material.Target = shared;

@@ -32,17 +32,17 @@ public sealed class GizmoModeButton : Component, ILaserPointerTarget, ILaserPref
     public InteractionDescription GetInteractionDescription(InteractionLaser laser) => new()
     {
         Name = Mode.Value switch { 0 => "Move", 1 => "Rotate", 2 => "Scale",
-            _ => IsSelected ? "Local axes — switch to world" : "World axes — switch to local" },
+            _ => IsSelected ? "Local axes, switch to world" : "World axes, switch to local" },
         Cursor = LaserCursor.Default,
     };
 
-    public bool PreferLaserHit(InteractionLaser laser) => CanUse;
+    public bool PreferLaserHit(InteractionLaser laser) => CanUse && DevToolItem.CanManipulateGizmos(laser);
 
     public bool TryGetLaserPointerHit(InteractionLaser laser, in float3 origin, in float3 direction,
         float maxDistance, out LaserPointerHit hit)
     {
         hit = default;
-        if (!CanUse)
+        if (!CanUse || !DevToolItem.CanManipulateGizmos(laser))
             return false;
         var localOrigin = Slot.GlobalPointToLocal(origin);
         var localDirection = Slot.GlobalDirectionToLocal(direction);

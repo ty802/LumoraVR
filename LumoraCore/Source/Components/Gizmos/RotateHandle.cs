@@ -84,7 +84,7 @@ public class RotateHandle : TransformHandle
     {
         hit = default;
         var slot = Slot;
-        if (slot == null || slot.IsDestroyed)
+        if (slot == null || slot.IsDestroyed || !DevToolItem.CanManipulateGizmos(laser))
             return false;
 
         var normal = (slot.GlobalRotation * float3.Up).Normalized;

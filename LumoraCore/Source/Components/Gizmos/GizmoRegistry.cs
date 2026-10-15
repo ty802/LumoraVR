@@ -94,7 +94,7 @@ public static class GizmoRegistry
         }
 
         _gizmoTypes[componentType] = gizmoType;
-        Logger.Log($"GizmoRegistry: Registered {gizmoType.Name} for {componentType.Name}");
+        Logger.Debug($"GizmoRegistry: Registered {gizmoType.Name} for {componentType.Name}");
     }
 
     public static Type GetGizmoType(Type componentType)

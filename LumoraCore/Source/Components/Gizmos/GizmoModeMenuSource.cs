@@ -6,17 +6,24 @@ using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core.Components.Gizmos;
 
-// The developer tool's actions on the root ring: the selection's gizmo modes behind one Gizmo item, the
-// lighting and probe setups, and clearing the selection. Create New and Inspector come from their own
-// sources.
+// The developer tool's Gizmo item on the root ring: the selection's gizmo modes and clearing the
+// selection, behind one wedge. Create New and Inspector come from their own sources and go before it; the
+// lighting and probe setups live in Create New's Editor folder.
 [ComponentCategory("Utility/Gizmos")]
 public class GizmoModeMenuSource : ContextMenuItemSource
 {
     public readonly SyncRef<Interaction.DevToolItem> Tool;
 
+    // After the Create New and Inspector sources, which are the tool's first two items.
+    public const int RingPriority = -10;
+
+    // Older sessions can already contain several sources for the same tool. Collapse those while
+    // keeping the two hands separate, so an ineligible source cannot hide the other hand's entry.
+    public override string? SingleItemKey => Tool.Target is { } tool ? $"Gizmo/{tool.ReferenceID}" : null;
+    public override bool KeepFirstSingleItem => true;
+
     private static readonly float[] GizmoFill = { 0.20f, 0.17f, 0.30f, 0.92f };
     private static readonly float[] ItemFill = { 0.16f, 0.15f, 0.24f, 0.92f };
-    private static readonly float[] ActiveFill = { 0.35f, 0.28f, 0.62f, 0.95f };
     private static readonly float[] ClearFill = { 0.42f, 0.16f, 0.18f, 0.94f };
 
     public GizmoModeMenuSource()
@@ -26,38 +33,44 @@ public class GizmoModeMenuSource : ContextMenuItemSource
 
     public override void PopulateContextMenu(ContextMenuPage page, ContextMenuContext context)
     {
-        // A user with only component gizmos still needs the selection utilities.
-        var gizmo = ResolveGizmo();
-        if (gizmo == null && !GizmoHelper.HasLocalGizmos(World) && GizmoHelper.AnyGizmo(World) == null)
+        if (Tool.Target is not { ActiveTool: Interaction.HandTool hand } tool || !tool.IsEquippedInHand(hand))
             return;
-
-        // Equipped in the other hand, the tool's actions are on that hand's ring.
-        if (context?.Side != null && Tool.Target is { IsEquipped: true, ActiveTool: Interaction.HandTool hand } && hand.Side.Value != context.Side)
+        // A carried spare or another user's DevTip must not contribute to this hand's ring.
+        if (context?.Side != null && hand.Side.Value != context.Side)
+            return;
+        if (context?.Pointer is { } pointer && !ReferenceEquals(pointer, hand.Laser?.Slot))
             return;
 
         int first = page.Items.Count;
+        var gizmos = GizmoPage();
+        if (gizmos.Items.Count > 0)
+        {
+            page.AddItem(new ContextMenuItem
+            {
+                Label = "Gizmo",
+                FillColor = GizmoFill,
+                SubPage = gizmos,
+            });
+        }
+
+        for (int i = first; i < page.Items.Count; i++)
+            page.Items[i].Group = ContextMenuGroup.Tool;
+    }
+
+    // The selection's gizmo: its modes, its space, and clearing the selection. Empty while nothing is
+    // selected anywhere in the world.
+    private ContextMenuPage GizmoPage()
+    {
         var modes = new ContextMenuPage("Gizmo");
+        var gizmo = ResolveGizmo();
+        if (gizmo == null && !GizmoHelper.HasLocalGizmos(World) && GizmoHelper.AnyGizmo(World) == null)
+            return modes;
+
         if (gizmo != null && EngineSettings.GizmoControls == EngineSettings.GizmoControlStyle.ContextMenu)
         {
-            int mode = gizmo.ActiveMode.Value;
-            modes.AddItem(new ContextMenuItem
-            {
-                Label = "Translate",
-                FillColor = mode == 0 ? ActiveFill : ItemFill,
-                OnPressed = _ => { if (!gizmo.IsDestroyed) gizmo.SwitchToTranslation(); },
-            });
-            modes.AddItem(new ContextMenuItem
-            {
-                Label = "Rotate",
-                FillColor = mode == 1 ? ActiveFill : ItemFill,
-                OnPressed = _ => { if (!gizmo.IsDestroyed) gizmo.SwitchToRotation(); },
-            });
-            modes.AddItem(new ContextMenuItem
-            {
-                Label = "Scale",
-                FillColor = mode == 2 ? ActiveFill : ItemFill,
-                OnPressed = _ => { if (!gizmo.IsDestroyed) gizmo.SwitchToScale(); },
-            });
+            modes.AddItem(ModeItem(gizmo, "Translate", 0, g => g.SwitchToTranslation()));
+            modes.AddItem(ModeItem(gizmo, "Rotate", 1, g => g.SwitchToRotation()));
+            modes.AddItem(ModeItem(gizmo, "Scale", 2, g => g.SwitchToScale()));
         }
         // Cubes include their own axes button. The combined gizmo still needs a local/world switch.
         if (gizmo != null && EngineSettings.GizmoControls != EngineSettings.GizmoControlStyle.Cubes)
@@ -69,37 +82,15 @@ public class GizmoModeMenuSource : ContextMenuItemSource
                 OnPressed = _ => { if (!gizmo.IsDestroyed) gizmo.ToggleSpace(); },
             });
         }
-        if (modes.Items.Count > 0)
-        {
-            page.AddItem(new ContextMenuItem
-            {
-                Label = "Gizmo",
-                FillColor = GizmoFill,
-                SubPage = modes,
-            });
-        }
 
-        page.AddItem(new ContextMenuItem
-        {
-            Label = "Reflection Probes",
-            FillColor = ItemFill,
-            OnPressed = _ => OpenProbeWizard(),
-        });
-        page.AddItem(new ContextMenuItem
-        {
-            Label = "Lighting",
-            FillColor = ItemFill,
-            OnPressed = _ => OpenLightingWizard(),
-        });
-
-        // Deselect Local only appears when there is something of YOURS to clear; without that check the
-        // item sits there doing nothing while somebody else's selection is the only one in the room.
+        // Deselect Mine only when there is something of YOURS to clear; without that check the item sits
+        // there doing nothing while somebody else's selection is the only one in the room.
         var tool = Tool.Target;
         if (GizmoHelper.HasLocalGizmos(World))
         {
-            page.AddItem(new ContextMenuItem
+            modes.AddItem(new ContextMenuItem
             {
-                Label = "Deselect Local",
+                Label = "Deselect Mine",
                 FillColor = ClearFill,
                 OnPressed = _ =>
                 {
@@ -109,8 +100,7 @@ public class GizmoModeMenuSource : ContextMenuItemSource
                 },
             });
         }
-
-        page.AddItem(new ContextMenuItem
+        modes.AddItem(new ContextMenuItem
         {
             Label = "Deselect All",
             FillColor = ClearFill,
@@ -121,13 +111,34 @@ public class GizmoModeMenuSource : ContextMenuItemSource
                     tool.ClearSelection();
             },
         });
-
-        for (int i = first; i < page.Items.Count; i++)
-            page.Items[i].Group = ContextMenuGroup.Tool;
+        return modes;
     }
 
-    // The tool's own selection wins; otherwise fall back to any live gizmo (the inspector spawns one
-    // on tree selection), so the menu works no matter which flow put the gizmo up.
+    // One of the gizmo's modes, lit while it is the one in use. The ring stays up, so a switch shows on the
+    // plates straight away and another needs no reopen.
+    private static ContextMenuItem ModeItem(SlotGizmo gizmo, string label, int mode, System.Action<SlotGizmo> switchTo)
+    {
+        return new ContextMenuItem
+        {
+            Label = label,
+            FillColor = ItemFill,
+            IsToggle = true,
+            IsToggled = gizmo.ActiveMode.Value == mode,
+            KeepsOpen = true,
+            OnPressed = _ => { if (!gizmo.IsDestroyed) switchTo(gizmo); },
+            Refresh = item =>
+            {
+                bool on = !gizmo.IsDestroyed && gizmo.ActiveMode.Value == mode;
+                if (item.IsToggled == on)
+                    return false;
+                item.IsToggled = on;
+                return true;
+            },
+        };
+    }
+
+    // The tool's own selection wins; otherwise use a local selection from the inspector. Another
+    // user's selection must not silently become the target of this hand's mode controls.
     private SlotGizmo? ResolveGizmo()
     {
         var selected = Tool.Target?.SelectedSlot.Target;
@@ -137,38 +148,7 @@ public class GizmoModeMenuSource : ContextMenuItemSource
             if (owned != null && !owned.IsDestroyed)
                 return owned;
         }
-        return GizmoHelper.AnyGizmo(World);
-    }
-
-    private void OpenProbeWizard()
-    {
-        var world = World;
-        if (world?.RootSlot == null)
-            return;
-
-        var existing = world.RootSlot.GetComponentInChildren<ReflectionProbeWizard>();
-        if (existing != null && !existing.IsDestroyed)
-        {
-            existing.Slot.Destroy();
-            return;
-        }
-
-        ReflectionProbeWizard.Spawn(world);
-    }
-
-    private void OpenLightingWizard()
-    {
-        var world = World;
-        if (world?.RootSlot == null)
-            return;
-
-        var existing = world.RootSlot.GetComponentInChildren<LightingWizard>();
-        if (existing != null && !existing.IsDestroyed)
-        {
-            existing.Slot.Destroy();
-            return;
-        }
-
-        LightingWizard.Spawn(world);
+        var local = WorldGizmos.For(World)?.OwnedBy(World?.LocalUser);
+        return local is { Count: > 0 } ? local[0] : null;
     }
 }

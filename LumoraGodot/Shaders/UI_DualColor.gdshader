@@ -6,7 +6,7 @@ render_mode unshaded, blend_mix, depth_draw_never, cull_front;
 
 uniform vec4 albedo_color : source_color = vec4(1.0);   // color at luminance 0
 uniform vec4 second_color : source_color = vec4(1.0);   // color at luminance 1
-uniform sampler2D albedo_texture : source_color, filter_linear, repeat_disable;
+uniform sampler2D albedo_texture : source_color, filter_linear_mipmap, repeat_disable;
 uniform bool use_albedo_texture = false;
 
 uniform vec2 uv_scale = vec2(1.0);

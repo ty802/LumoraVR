@@ -7,7 +7,7 @@ render_mode unshaded, blend_mix, depth_draw_never, cull_front;
 stencil_mode read, compare_equal, 1;
 
 uniform vec4 albedo_color : source_color = vec4(1.0);
-uniform sampler2D albedo_texture : source_color, filter_linear, repeat_disable;
+uniform sampler2D albedo_texture : source_color, filter_linear_mipmap, repeat_disable;
 uniform bool use_albedo_texture = false;
 
 uniform vec2 uv_scale = vec2(1.0);
@@ -25,6 +25,9 @@ uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.01;
 // rect = orthogonal AABB bound, applied together). -xlinka
 uniform bool rect_clip = false;
 uniform vec4 rect = vec4(0.0);
+// Scroll offset, same as UI_Unlit: a masked picture inside a scrolled list has to slide with the rest of
+// its chunk. Without it the frame and the text moved and the art, chips and letter stayed behind. -xlinka
+uniform vec2 clip_offset = vec2(0.0);
 
 uniform int color_mask = 15;
 
@@ -40,6 +43,7 @@ float rect_alpha(vec2 pos, vec4 clip_rect) {
 }
 
 void vertex() {
+	VERTEX.xy += clip_offset;
 	local_pos = VERTEX.xy;
 	UV = UV * uv_scale + uv_offset;
 }

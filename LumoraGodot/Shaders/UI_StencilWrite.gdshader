@@ -8,7 +8,7 @@ render_mode unshaded, blend_mix, depth_draw_never, cull_front;
 stencil_mode write, compare_always, 1;
 
 uniform vec4 albedo_color : source_color = vec4(1.0);
-uniform sampler2D albedo_texture : source_color, filter_linear, repeat_disable;
+uniform sampler2D albedo_texture : source_color, filter_linear_mipmap, repeat_disable;
 uniform bool use_albedo_texture = false;
 uniform vec2 uv_scale = vec2(1.0);
 uniform vec2 uv_offset = vec2(0.0);
@@ -21,7 +21,18 @@ uniform bool show_mask_graphic = false;
 // The mask SHAPE is where coverage (texture alpha * color alpha) is at/above this cutoff. -xlinka
 uniform float mask_cutoff : hint_range(0.0, 1.0) = 0.5;
 
+// The writer rides the scroll and keeps to its window like any other UI surface. A mask in a scrolled list
+// otherwise stamped the stencil where it sat at scroll 0, and past the viewport edge once it scrolled
+// out, so the content it clips was cut against the wrong place. -xlinka
+uniform bool rect_clip = false;
+uniform vec4 rect = vec4(0.0);
+uniform vec2 clip_offset = vec2(0.0);
+
+varying vec2 local_pos;
+
 void vertex() {
+	VERTEX.xy += clip_offset;
+	local_pos = VERTEX.xy;
 	UV = UV * uv_scale + uv_offset;
 }
 
@@ -36,6 +47,9 @@ void fragment() {
 	// leaves the outside unstenciled. INSIDE the shape the fragment is kept and still rasterizes (even with
 	// ALPHA=0), so the stencil write lands. This is what makes the stencil follow the mask's real shape. -xlinka
 	if (out_color.a < mask_cutoff) {
+		discard;
+	}
+	if (rect_clip && (local_pos.x < rect.x || local_pos.y < rect.y || local_pos.x > rect.z || local_pos.y > rect.w)) {
 		discard;
 	}
 	ALBEDO = out_color.rgb;

@@ -33,10 +33,14 @@ uniform bool alpha_clip = true;
 
 uniform bool rect_clip = false;
 uniform vec4 rect = vec4(0.0);
+// Scroll offset, same as UI_Text.
+uniform vec2 clip_offset = vec2(0.0);
 
 uniform int color_mask = 15;
 
 varying vec2 local_pos;
+// Per-glyph edge push for bold letters, from UV2.x; 0 for regular text.
+varying float glyph_dilate;
 
 float rect_alpha(vec2 pos, vec4 clip_rect) {
 	vec2 edge = max(fwidth(pos), vec2(0.0001));
@@ -58,7 +62,9 @@ float msdf_screen_range(vec2 uv) {
 }
 
 void vertex() {
+	VERTEX.xy += clip_offset;
 	local_pos = VERTEX.xy;
+	glyph_dilate = UV2.x;
 	UV = UV * uv_scale + uv_offset;
 }
 
@@ -75,14 +81,14 @@ void fragment() {
 		float sd = median3(msd.r, msd.g, msd.b);
 		float range = msdf_screen_range(UV);
 		float spread = 1.0 / max(range, 0.0001) + face_softness;
-		float face_edge = 0.5 - face_dilate;
+		float face_edge = 0.5 - face_dilate - glyph_dilate;
 		float face = clamp((sd - face_edge) / spread + 0.5, 0.0, 1.0);
 		if (outline_thickness > 0.0) {
 			float outer = clamp((sd - (face_edge - min(outline_thickness, 0.45))) / spread + 0.5, 0.0, 1.0);
-			float face_a = out_color.a * face;
-			float ring_a = outline_color.a * outer;
-			float comb_a = max(face_a, ring_a);
-			out_color = vec4(mix(outline_color.rgb, out_color.rgb, face_a / max(comb_a, 0.0001)), comb_a);
+			// Inside the face the face colour shows, in the ring the outline's, and the alpha follows the colour
+			// that shows: a face with almost no alpha leaves an outlined glyph hollow. -xlinka
+			vec4 ringed = mix(out_color, outline_color, 1.0 - face);
+			out_color = vec4(ringed.rgb, ringed.a * outer);
 		} else {
 			out_color.a *= face;
 		}

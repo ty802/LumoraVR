@@ -3,7 +3,9 @@
 
 using System.Collections.Generic;
 using Lumora.Core.Components.Avatar;
+using Lumora.Core.Components.Scripting;
 using Lumora.Core.Components.UI;
+using Lumora.Core.Scripting;
 
 namespace Lumora.Core.Components.Interaction;
 
@@ -23,20 +25,25 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
         if (grabber == null || grabber.IsDestroyed || !grabber.IsHoldingObjects)
             return;
 
+        // An object marked to stay as it is keeps these off it; a hand holding only such objects shows them off.
+        bool canDestroy = AnyGrabbed(grabber, slot => !DestroyBlock.Blocks(slot));
         page.AddItem(new ContextMenuItem
         {
             Group = ContextMenuGroup.Held,
             Label = "Destroy",
+            IsEnabled = canDestroy,
             FillColor = new[] { 0.32f, 0.10f, 0.10f, 0.92f },
-            OnPressed = _ => DestroyGrabbed(grabber),
+            OnPressed = canDestroy ? _ => DestroyGrabbed(grabber) : null,
         });
 
+        bool canDuplicate = AnyGrabbed(grabber, slot => !DuplicateBlock.Blocks(slot));
         page.AddItem(new ContextMenuItem
         {
             Group = ContextMenuGroup.Held,
             Label = "Duplicate",
+            IsEnabled = canDuplicate,
             FillColor = new[] { 0.10f, 0.28f, 0.14f, 0.92f },
-            OnPressed = _ => DuplicateGrabbed(grabber),
+            OnPressed = canDuplicate ? _ => DuplicateGrabbed(grabber) : null,
         });
 
         // Asked here rather than only in the handler so the refusal is something the user can SEE:
@@ -112,6 +119,11 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
                 Logging.Logger.Log($"Save to Inventory refused for '{slot.Name}': marked not saveable.");
                 continue;
             }
+            if (IsGraphNode(slot))
+            {
+                Logging.Logger.Log($"Save to Inventory refused for '{slot.Name}': a graph node means nothing outside its graph.");
+                continue;
+            }
             // This one IS the boundary. Holding something is not owning it: a grab parents the object
             // under your hand, which reads as ownership everywhere else, so the copy question has to be
             // asked of the gate rather than of where the thing currently hangs. -xlinka
@@ -146,7 +158,7 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
         {
             if (slot.IsDestroyed)
                 continue;
-            if (GrabSaveBlock.BlocksInventorySave(slot))
+            if (GrabSaveBlock.BlocksInventorySave(slot) || IsGraphNode(slot))
             {
                 marked = true;
                 continue;
@@ -163,17 +175,40 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
         return false;
     }
 
-    private void DestroyGrabbed(Grabber grabber)
+    private void DestroyGrabbed(Grabber grabber) => DestroyGrabbed(grabber, FindUndoManager());
+
+    // Shared by the held-object menu and the desktop Delete shortcut.
+    internal static void DestroyGrabbed(Grabber grabber, UndoManager? manager)
     {
         var slots = CollectGrabbedSlots(grabber);
-        grabber.ReleaseAll();
+        slots.RemoveAll(DestroyBlock.Blocks);
+        if (slots.Count == 0)
+            return;
+        // Release only the objects being deleted; protected items in a mixed hand-load stay held.
+        foreach (var held in new List<IGrabbable>(grabber.GrabbedObjects))
+        {
+            if (held is Component component && slots.Contains(component.Slot))
+                grabber.Release(held);
+        }
+
+        // Nodes go through their graph, which takes a group that loses every node with them; the lot is one step.
+        var nodes = TakeGraphNodes(slots);
+        using var step = manager != null && nodes.Count > 0 ? manager.BeginBatch(UndoLocale.Destroy) : default;
+        if (nodes.Count > 0)
+        {
+            ScriptGraphEditing.DeleteNodes(nodes, out var refused);
+            if (refused != null)
+                Logging.Logger.Log($"Destroy: {refused}.");
+        }
+        if (slots.Count == 0)
+            return;
 
         // Undoable destroy: the batch parks the slots in the graveyard and only
         // destroys for real once it leaves the history.
-        var batch = SlotExistenceUndoBatch.Destroy(World, slots);
+        var batch = manager != null ? SlotExistenceUndoBatch.Destroy(grabber.World, slots) : null;
         if (batch != null)
         {
-            FindUndoManager()?.Record(batch);
+            manager!.Record(batch);
             return;
         }
 
@@ -190,8 +225,15 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
         if (root == null)
             return;
 
-        var duplicates = new List<Slot>();
-        foreach (var slot in CollectGrabbedSlots(grabber))
+        // A copy is the copier's own, the host's included.
+        using var own = World!.EnterSpawnAllocation();
+
+        // Nodes are copied into their own graphs, together, so a wire between two of them joins the copies.
+        var held = CollectGrabbedSlots(grabber);
+        held.RemoveAll(DuplicateBlock.Blocks);
+        var nodes = TakeGraphNodes(held);
+        var duplicates = nodes.Count > 0 ? ScriptGraphEditing.CopyNodes(nodes) : new List<Slot>();
+        foreach (var slot in held)
         {
             if (slot.IsDestroyed)
                 continue;
@@ -211,6 +253,16 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
                ?? Slot?.ActiveUserRoot?.Slot?.GetComponentInChildren<UndoManager>();
     }
 
+    private static bool AnyGrabbed(Grabber grabber, System.Predicate<Slot> match)
+    {
+        foreach (var slot in CollectGrabbedSlots(grabber))
+        {
+            if (match(slot))
+                return true;
+        }
+        return false;
+    }
+
     private static List<Slot> CollectGrabbedSlots(Grabber grabber)
     {
         var slots = new List<Slot>();
@@ -221,5 +273,22 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
                 slots.Add(slot);
         }
         return slots;
+    }
+
+    // A script or shader node means something only in its graph, so one is never filed away on its own.
+    private static bool IsGraphNode(Slot slot) => slot.GetComponent<ScriptGraphNode>() is { IsDestroyed: false };
+
+    // The nodes among held slots that are in a graph, taken out of the list: the graph deletes and copies those.
+    private static List<ScriptGraphNode> TakeGraphNodes(List<Slot> slots)
+    {
+        var nodes = new List<ScriptGraphNode>();
+        for (int i = 0; i < slots.Count; i++)
+        {
+            if (slots[i].GetComponent<ScriptGraphNode>() is not { IsDestroyed: false, Space: not null } node)
+                continue;
+            nodes.Add(node);
+            slots.RemoveAt(i--);
+        }
+        return nodes;
     }
 }

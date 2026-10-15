@@ -76,7 +76,7 @@ public static class TouchUserFilterExtensions
         {
             if (user == null || user.IsDestroyed)
                 continue;
-            if (user.AllocationID.Value == ownerByte || user.ReferenceID.GetUserByte() == ownerByte)
+            if (user.HoldsByte(ownerByte) || user.ReferenceID.GetUserByte() == ownerByte)
                 return user;
         }
         return null;

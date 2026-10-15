@@ -12,6 +12,7 @@ namespace Lumora.Core.Components.Interaction;
 public class ToolContextActions : ContextMenuItemSource
 {
     private CreateNewPanel? _createPanel;
+    private string _createCategory = "";
 
     public override void PopulateContextMenu(ContextMenuPage page, ContextMenuContext context)
     {
@@ -92,13 +93,20 @@ public class ToolContextActions : ContextMenuItemSource
 
     private void ToggleCreateNew()
     {
+        // The panel closes itself once it has made something, and the next one opens on the category it
+        // was left on. A closed panel still holds the path.
+        if (_createPanel != null)
+            _createCategory = _createPanel.CategoryPath.Value ?? "";
         if (_createPanel is { IsDestroyed: false })
         {
             _createPanel.Slot.Destroy();
             _createPanel = null;
             return;
         }
-        if (World?.RootSlot != null)
-            _createPanel = CreateNewPanel.Spawn(World);
+        if (World?.RootSlot == null)
+            return;
+        _createPanel = CreateNewPanel.Spawn(World);
+        if (_createPanel != null && _createCategory.Length > 0)
+            _createPanel.CategoryPath.Value = _createCategory;
     }
 }

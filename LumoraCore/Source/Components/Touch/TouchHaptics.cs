@@ -53,6 +53,11 @@ public static class Haptics
         if (preset == TouchHaptics.None || hand == Chirality.None)
             return;
 
+        // Off in Settings. Above zero the controller scales every pulse by the same strength, this one
+        // included.
+        if (EngineSettings.HapticsStrength <= 0f)
+            return;
+
         var input = Engine.Current?.InputInterface;
         if (input == null || !input.IsVRActive)
             return;

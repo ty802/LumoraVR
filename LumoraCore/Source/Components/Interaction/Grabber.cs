@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using Lumora.Core.Components.Touch;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Interaction;
@@ -19,6 +20,25 @@ public class Grabber : Component
     // How far around the hand to look for a drop target when letting go. - xlinka
     private const float ReleaseCheckRadius = 1.5f;
 
+    // DISPENSE REQUESTS
+    // A dispenser the world's author placed makes world things. Someone whose role may not bring things into
+    // the world still pulls from one: the hand asks here, and the authority makes the copy as the world and
+    // puts it in this hand. Only the hand's own user writes these; only the authority acts on them, at most
+    // ten times a second per hand, whatever arrives. - xlinka
+    [NonPersistent]
+    public readonly SyncRef<GrabSpawner> DispenseFrom = new();
+
+    [NonPersistent]
+    public readonly Sync<int> DispenseCount = new();
+
+    private const double DispenseInterval = 0.1;
+    private const double DispenseWait = 5.0;
+    private int _dispenseSeen;
+    private double _lastServed = double.NegativeInfinity;
+    private bool _awaitingDispense;
+    private bool _dispenseLetGo;
+    private double _requestedAt;
+
     // lazy: create a child "Holder" slot the first time something is grabbed. - xlinka
     public Slot? HolderSlot
     {
@@ -26,7 +46,9 @@ public class Grabber : Component
         {
             if (_holderSlot != null && !_holderSlot.IsRemoved) return _holderSlot;
             if (Slot == null || Slot.IsRemoved) return null;
-            _holderSlot = Slot.AddSlot("Holder");
+            // The host's own hand is made in the host rig scope (World.EnterHostRigScope).
+            using (World?.EnterHostRigScope(Slot))
+                _holderSlot = Slot.AddSlot("Holder");
             return _holderSlot;
         }
     }
@@ -62,6 +84,18 @@ public class Grabber : Component
     public bool IsScaling => _scaleReference != null;
 
     public Grabber? ScaleReference => _scaleReference;
+
+    // A hand may narrow its own stretch further for the gesture under way: the userspace pointer keeps a
+    // carried panel between a size that can still be read and one that does not swallow the view. Zero is
+    // no limit, and every new gesture starts with none. - xlinka
+    private float _gestureMinFactor;
+    private float _gestureMaxFactor;
+
+    public void LimitScaleFactor(float min, float max)
+    {
+        _gestureMinFactor = min;
+        _gestureMaxFactor = max;
+    }
 
     // One record per held object: the throw window plus the holder scale the object came in under, so a
     // release can tell a stretch that landed on the object from one that did not. - xlinka
@@ -142,13 +176,28 @@ public class Grabber : Component
         // Fresh record per hold: whatever the object was doing before the hand closed on it is not a throw.
         _holds[grabbed] = new Hold { HolderScaleAtGrab = holder.LocalScale.Value };
         held = grabbed;
+        Pulse(TouchHaptics.Medium);
         return true;
     }
 
-    // Touch / proximity grab: sphere-overlap at 'point' and grab the best grabbable found in the overlapped
-    // colliders' parents (highest GrabPriority, nearest on a tie). Unlike the laser path this DOES accept
-    // AllowOnlyPhysicalGrab objects - that flag means "only reachable by hand". Arbitration still runs
-    // through CanGrab/TryGrab (host authority); 'grabbed' is set only when the hold is actually recorded. - xlinka
+    // The hand this grabber is: the world hand tool above it, or the userspace pointer it sits on. Only this
+    // machine's own hand is felt, never a hand somebody else is moving here. - xlinka
+    private void Pulse(TouchHaptics preset)
+    {
+        if (Slot == null)
+            return;
+        if (Slot.GetComponentInParents<HandTool>() is { } hand)
+            Haptics.Pulse(OwningUser, hand.Side.Value, preset);
+        else if (Slot.GetComponent<UserspacePointer>() is { } pointer)
+            Haptics.Pulse(pointer.Side.Value, preset);
+    }
+
+    // Touch / proximity grab: sphere-overlap at 'point'; each overlapped collider offers the nearest grabbable
+    // at or above it, and the hand takes every one of those sharing the best GrabPriority, the ones it may
+    // take now ahead of the rest and the nearest first, except one that hangs under another it is taking.
+    // Unlike the laser path this DOES accept AllowOnlyPhysicalGrab objects - that flag means "only reachable
+    // by hand". Arbitration still runs through CanGrab/TryGrab (host authority); 'grabbed' is the first hold
+    // actually recorded. - xlinka
     public bool TryGrabNearby(float3 point, float radius, out IGrabbable? grabbed)
     {
         grabbed = null;
@@ -156,15 +205,12 @@ public class Grabber : Component
         if (world?.Physics == null) return false;
 
         var hits = new List<Slot>();
-        // Grabbables are sensor (Trigger/Area3D) colliders on this platform, so the overlap must include
-        // triggers or it would never find anything to grab. - xlinka
+        // Plenty of grabbables are held by Trigger colliders (orbs, grab handles, query-only parts), so the
+        // overlap includes triggers or it would miss them. - xlinka
         world.Physics.OverlapSphere(point, radius, hits, hitTriggers: true);
         if (hits.Count == 0) return false;
 
-        IGrabbable? best = null;
-        int bestPriority = int.MinValue;
-        float bestDistSq = float.MaxValue;
-
+        var candidates = new List<(IGrabbable Grabbable, bool Now, float DistSq)>();
         foreach (var slot in hits)
         {
             var candidate = FindGrabbableInParents(slot);
@@ -174,18 +220,45 @@ public class Grabber : Component
             if (candidate is Component cc && cc.Slot != null && cc.Slot.IsDescendantOf(Slot)) continue;
 
             float distSq = (slot.GlobalPosition - point).LengthSquared;
-            if (candidate.GrabPriority > bestPriority ||
-                (candidate.GrabPriority == bestPriority && distSq < bestDistSq))
-            {
-                best = candidate;
-                bestPriority = candidate.GrabPriority;
-                bestDistSq = distSq;
-            }
+            int at = candidates.FindIndex(c => ReferenceEquals(c.Grabbable, candidate));
+            if (at < 0)
+                candidates.Add((candidate, candidate.CanGrab(this), distSq));
+            else if (distSq < candidates[at].DistSq)
+                candidates[at] = (candidate, candidates[at].Now, distSq);
         }
+        if (candidates.Count == 0) return false;
 
-        // Report what is actually in the hand, not what was reached for: a dispenser under the fingers
-        // answers a grip with a fresh copy, and the caller's in-hand alignment has to act on that.
-        return best != null && TryGrab(best, out grabbed) && grabbed != null;
+        candidates.Sort((a, b) => a.Now != b.Now ? (a.Now ? -1 : 1)
+            : a.Grabbable.GrabPriority != b.Grabbable.GrabPriority ? b.Grabbable.GrabPriority.CompareTo(a.Grabbable.GrabPriority)
+            : a.DistSq.CompareTo(b.DistSq));
+
+        int? taken = null;
+        foreach (var (candidate, _, _) in candidates)
+        {
+            if (taken.HasValue && candidate.GrabPriority != taken.Value) break;
+            if (UnderAnother(candidate, candidates)) continue;
+
+            // Report what is actually in the hand, not what was reached for: a dispenser under the fingers
+            // answers a grip with a fresh copy, and the caller's in-hand alignment has to act on that.
+            if (!TryGrab(candidate, out var held) || held == null) continue;
+            grabbed ??= held;
+            taken = candidate.GrabPriority;
+            // A second hand on the other hand's load is a resize, not a grab of everything around it.
+            if (IsScaling) break;
+        }
+        return grabbed != null;
+    }
+
+    private bool UnderAnother(IGrabbable candidate, List<(IGrabbable Grabbable, bool Now, float DistSq)> candidates)
+    {
+        if (candidate is not Component { Slot: { } slot }) return false;
+        foreach (var (other, now, _) in candidates)
+        {
+            if (!ReferenceEquals(other, candidate) && now && other.GrabPriority == candidate.GrabPriority
+                && other is Component { Slot: { } otherSlot } && slot.IsDescendantOf(otherSlot))
+                return true;
+        }
+        return false;
     }
 
     // Walk up from a hit slot for the first grabbable this grabber may take. Stops at a SearchBlock (a
@@ -194,10 +267,14 @@ public class Grabber : Component
     private IGrabbable? FindGrabbableInParents(Slot? hitSlot)
     {
         var current = hitSlot;
-        while (current != null && !current.IsRemoved)
+        while (current != null && !current.IsRemoved && !current.IsRootSlot)
         {
             if (!ReferenceEquals(current, hitSlot) && current.GetComponent<SearchBlock>() != null)
                 break;
+
+            // Nothing at or above a grab block is offered from below it.
+            if (current.GetComponent<GrabBlock>() is { IsDestroyed: false } block && block.Enabled.Value)
+                return null;
 
             foreach (var g in current.GetComponentsImplementing<IGrabbable>())
             {
@@ -240,11 +317,14 @@ public class Grabber : Component
         target.Release(this);
         RecordScaleUndo(target, hold);
         _holds.Remove(target);
+        Pulse(TouchHaptics.Light);
     }
 
     // Something THIS user already holds in the OTHER hand, and that hand's load may be resized: grabbing
     // it with this hand is the two-hand resize gesture. CanGrab deliberately rejects same-user steals, so
     // the candidate filters must accept these explicitly or the second grip never reaches TryGrab. - xlinka
+    internal bool IsScaleCandidate(IGrabbable target) => IsScaleReferenceCandidate(target);
+
     private bool IsScaleReferenceCandidate(IGrabbable target)
         => target.Grabber is { } other && !ReferenceEquals(other, this)
            && other.OwningUser != null && ReferenceEquals(other.OwningUser, OwningUser)
@@ -256,11 +336,14 @@ public class Grabber : Component
             return false;
 
         _scaleReference = partner;
+        _gestureMinFactor = 0f;
+        _gestureMaxFactor = 0f;
         _baseScale = partner.HolderSlot.LocalScale.Value;
         _baseDistance = HolderDistanceTo(partner);
         if (_baseDistance < MinScaleGrabDistance)
             _baseDistance = MinScaleGrabDistance;
         partner.NoteScaleAssist();
+        Pulse(TouchHaptics.Medium);
         return true;
     }
 
@@ -271,10 +354,75 @@ public class Grabber : Component
         _scaleAssistedStamp = World?.Time.TotalTime ?? 0d;
     }
 
+    public override void OnStart()
+    {
+        base.OnStart();
+        // Whatever count is already there the first time the authority sees this hand is history.
+        _dispenseSeen = DispenseCount.Value;
+    }
+
     public override void OnUpdate(float delta)
     {
         SampleHeldMotion();
         UpdateScaleReference();
+        if (World?.IsAuthority == true && DispenseCount.Value != _dispenseSeen)
+            ServeDispense();
+    }
+
+    // On this hand's own machine: ask the authority for a copy from a world dispenser. The same grip asking
+    // twice (the touch grab and then the laser) asks once.
+    internal void RequestDispense(GrabSpawner spawner)
+    {
+        double now = World?.Time.TotalTime ?? 0d;
+        if (_awaitingDispense && !_dispenseLetGo && ReferenceEquals(DispenseFrom.Target, spawner) && now - _requestedAt < 0.5)
+            return;
+        if (!ReferenceEquals(DispenseFrom.Target, spawner))
+            DispenseFrom.Target = spawner;
+        DispenseCount.Value = DispenseCount.Value + 1;
+        _awaitingDispense = true;
+        _dispenseLetGo = false;
+        _requestedAt = now;
+    }
+
+    private void ServeDispense()
+    {
+        _dispenseSeen = DispenseCount.Value;
+        double now = World!.Time.TotalTime;
+        if (now - _lastServed < DispenseInterval)
+            return;
+        var owner = OwningUser;
+        if (owner == null || ReferenceEquals(owner, World.LocalUser) || DispenseFrom.Target is not { IsDestroyed: false } spawner)
+            return;
+        _lastServed = now;
+        spawner.DispenseFor(this);
+    }
+
+    // What the authority put in this hand for a dispense it asked for: held from now on as if gripped here.
+    // One that arrives after the grip has already let go is let go again on the next update, once the
+    // batch that brought it has finished landing. Anything else the authority hands this hand unasked is
+    // left to it.
+    internal bool Adopt(IGrabbable grabbable)
+    {
+        if (_grabbed.Contains(grabbable))
+            return false;
+        double now = World?.Time.TotalTime ?? 0d;
+        if (!_awaitingDispense || now - _requestedAt > DispenseWait)
+            return false;
+        bool letGo = _dispenseLetGo;
+        _awaitingDispense = false;
+        _dispenseLetGo = false;
+        if (letGo)
+        {
+            RunInUpdates(1, () =>
+            {
+                if (ReferenceEquals(grabbable.Grabber, this))
+                    grabbable.Release(this);
+            });
+            return false;
+        }
+        _grabbed.Add(grabbable);
+        _holds[grabbable] = new Hold { HolderScaleAtGrab = _holderSlot?.LocalScale.Value ?? float3.One };
+        return true;
     }
 
     private void SampleHeldMotion()
@@ -365,6 +513,8 @@ public class Grabber : Component
     {
         if (factor < MinScaleFactor) factor = MinScaleFactor;
         if (factor > MaxScaleFactor) factor = MaxScaleFactor;
+        if (_gestureMinFactor > 0f && factor < _gestureMinFactor) factor = _gestureMinFactor;
+        if (_gestureMaxFactor > 0f && factor > _gestureMaxFactor) factor = _gestureMaxFactor;
 
         var permissions = World?.DataModelPermissions;
         if (permissions != null && permissions.TryGetScaleBounds(OwningUser, out float min, out float max))
@@ -383,9 +533,12 @@ public class Grabber : Component
         return min > 0f && max > 0f && min >= max;
     }
 
-    private void EndScaleReference()
+    // Also ended by a hand that takes over the load it was stretching when the holding hand lets go.
+    public void EndScaleReference()
     {
         _scaleReference = null;
+        _gestureMinFactor = 0f;
+        _gestureMaxFactor = 0f;
     }
 
     // A stretch lives on the holder until the release bakes it into the object, so this is the first
@@ -393,6 +546,9 @@ public class Grabber : Component
     // at to the size it did; undo after a plain hold records nothing. - xlinka
     private void RecordScaleUndo(IGrabbable target, Hold? hold)
     {
+        // Ordinary grabbables record their complete pose, including holder-driven scaling.
+        // Specialized grabbables (such as handles) keep their existing path.
+        if (target is Grabbable) return;
         if (hold == null) return;
         var slot = (target as Component)?.Slot;
         if (slot == null || slot.IsDestroyed) return;
@@ -413,6 +569,8 @@ public class Grabber : Component
     public void ReleaseAll()
     {
         EndScaleReference();
+        if (_awaitingDispense)
+            _dispenseLetGo = true;
         // Snapshot what we're letting go so the receivable ones can be offered to a drop target after
         // they've been released back to the world. - xlinka
         var released = new List<IGrabbable>(_grabbed);
@@ -426,6 +584,8 @@ public class Grabber : Component
         }
         _grabbed.Clear();
         _holds.Clear();
+        if (released.Count > 0)
+            Pulse(TouchHaptics.Light);
         InformOfReleasedObjects(released);
         ResetHolderTransform();
     }
@@ -454,8 +614,8 @@ public class Grabber : Component
             return;
 
         var hits = new List<Slot>();
-        // Receiver surfaces ride on grabbable/sensor slots (Trigger/Area3D), so include triggers here too
-        // or the drop-into-receiver overlap finds nothing. - xlinka
+        // Receiver surfaces often ride on Trigger colliders, so include triggers here too or the
+        // drop-into-receiver overlap finds nothing. - xlinka
         world.Physics.OverlapSphere(point, radius, hits, hitTriggers: true);
 
         // Collect enabled, active receivers in the parents of each overlapped slot, deduped. - xlinka

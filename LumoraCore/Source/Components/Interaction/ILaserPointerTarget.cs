@@ -35,11 +35,23 @@ public interface ILaserPointerTarget : IInteractionTarget
         bool isPressed);
 
     void ClearLaserPointer(InteractionLaser laser, int pointerId);
+
+    // Where a press held on this target is being dragged to while the ray is off it: the point the drag
+    // itself reads, on the target's surface carried on past its edge. False leaves the beam ending on the
+    // ray at the depth the press went down at.
+    bool TryGetLaserDragPoint(InteractionLaser laser, in float3 rayOrigin, in float3 rayDirection, out float3 point)
+    {
+        point = default;
+        return false;
+    }
 }
 
 public interface ILaserAxisTarget
 {
     bool ProcessLaserAxis(InteractionLaser laser, int pointerId, in float2 axis);
+
+    // True while what this laser points at would scroll with the stick.
+    bool WantsLaserAxis(InteractionLaser laser, int pointerId) => false;
 }
 
 public interface ILaserSecondaryTarget

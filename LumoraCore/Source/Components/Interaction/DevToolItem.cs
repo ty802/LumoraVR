@@ -18,7 +18,7 @@ public sealed class DevToolItem : ToolItem, ILaserHitClassifier
         Multi
     }
 
-    // marks a slot as editing chrome: the hit filter pulls it in front of the world
+    // Identifies developer content; this tag does not grant priority through other objects.
     private const string DeveloperTag = "Developer";
 
     public readonly Sync<SelectionMode> Selection = new();
@@ -26,6 +26,7 @@ public sealed class DevToolItem : ToolItem, ILaserHitClassifier
     public readonly SyncRef<Slot> CurrentGizmoSlot = new();
 
     private TransformHandle? _activeHandle;
+    internal bool IsDraggingGizmo => _activeHandle is { IsDestroyed: false, IsDragging: true };
     private Slot? _visualSlot;
     private OverlayFresnelMaterial? _visualMaterial;
 
@@ -33,7 +34,7 @@ public sealed class DevToolItem : ToolItem, ILaserHitClassifier
 
     public override bool UsesLaser => true;
 
-    public override bool UsesSecondary => true;
+    public override bool UsesSecondary => Engine.Current?.InputInterface?.IsVRActive != true;
 
     protected override float3 DefaultLocalTip => float3.Backward * 0.075f;
 
@@ -47,17 +48,23 @@ public sealed class DevToolItem : ToolItem, ILaserHitClassifier
     public override void OnStart()
     {
         base.OnStart();
+        // The creator supplies the visual and menu source. A peer can start this component before
+        // those children arrive; creating them there adds another replicated source per participant.
+        if (!IsMintedHere)
+            return;
         // Tag as a developer/editing tool so it's identifiable and excluded from social spaces.
         if (Slot != null && string.IsNullOrEmpty(Slot.Tag.Value))
             Slot.Tag.Value = DeveloperTag;
         EnsureVisual();
 
-        // Gizmo mode items (Translate/Rotate/Scale/space) ride the radial menu while this tool is in a
-        // hand - the menu collector only scans the user hierarchy, so equip state gates them for free.
+        // The source checks equip state and the summoning hand; held and cached tools also live
+        // under the user hierarchy and must not contribute their own menu entries.
         if (Slot != null)
         {
             var menuSource = Slot.GetComponent<GizmoModeMenuSource>() ?? Slot.AttachComponent<GizmoModeMenuSource>();
             menuSource.Tool.Target = this;
+            if (menuSource.Priority.Value != GizmoModeMenuSource.RingPriority)
+                menuSource.Priority.Value = GizmoModeMenuSource.RingPriority;
         }
     }
 
@@ -70,22 +77,32 @@ public sealed class DevToolItem : ToolItem, ILaserHitClassifier
     public override bool AllowsEquip(User? user)
         => World?.DataModelPermissions?.AllowsDomain(user, DataModelPermissionDomain.ToolUse) != false;
 
-    // HIT FILTER: while this tool is the one pointing, editor chrome comes forward through whatever is
-    // in front of it. The handles ask for that themselves (a bare hand can drag them with no tool
-    // equipped), so what this adds is the rest of the rig - the base gizmo interaction shapes and
-    // anything wearing the Developer tag - which have ordinary colliders and would otherwise be
-    // occluded by the object they are attached to. Nothing is dropped: a tool that needs to ignore
-    // hits returns Ignore here and the laser skips them entirely. -xlinka
+    internal bool IsEquippedInHand(HandTool hand)
+        => !IsDestroyed && Enabled.Value && Slot.IsActive && !EditingDisabled
+           && hand is { IsDestroyed: false, IsUnderLocalUser: true }
+           && ReferenceEquals(ActiveTool, hand) && ReferenceEquals(hand.ActiveToolItem.Target, this)
+           && AllowsEquip(World?.LocalUser);
+
+    internal static bool CanManipulateGizmos(InteractionLaser? laser)
+    {
+        if (laser == null || laser.IsDestroyed)
+            return false;
+        var hand = laser.Slot.GetComponentInParent<HandTool>(includeSelf: true);
+        return hand != null && ReferenceEquals(hand.Laser, laser)
+            && hand.ActiveToolItem.Target is DevToolItem tool && tool.IsEquippedInHand(hand);
+    }
+
+    // Only gizmo controls may take priority through geometry while this DevTip is equipped. The Developer tag is
+    // shared by tools and panels, which must obey normal occlusion or tools behind an inspector
+    // steal its clicks and open their equip confirmation.
     public LaserHitClass ClassifyLaserHit(InteractionLaser laser, Slot hitSlot, IInteractionTarget target)
     {
-        if (EditingDisabled || hitSlot == null || hitSlot.IsDestroyed)
+        if (!CanManipulateGizmos(laser) || hitSlot == null || hitSlot.IsDestroyed)
             return LaserHitClass.Allow;
         if (target is TransformHandle)
             return LaserHitClass.Prefer;
         if (hitSlot.GetComponentInParents<SlotGizmo>() != null
             || hitSlot.GetComponentInParents<ComponentGizmo>() != null)
-            return LaserHitClass.Prefer;
-        if (hitSlot.Tag.Value == DeveloperTag)
             return LaserHitClass.Prefer;
         return LaserHitClass.Allow;
     }
@@ -147,9 +164,11 @@ public sealed class DevToolItem : ToolItem, ILaserHitClassifier
         return false;
     }
 
-    public override bool OnSecondaryPress()
+    public override bool OnSecondaryPress() => SelectTarget();
+
+    public bool SelectTarget()
     {
-        if (EditingDisabled)
+        if (ActiveTool is not HandTool hand || !IsEquippedInHand(hand))
         {
             return false;
         }
@@ -245,7 +264,8 @@ public sealed class DevToolItem : ToolItem, ILaserHitClassifier
             return null;
         }
 
-        return hitSlot;
+        // A card, a cursor or any other local visual stands for the replicated object it belongs to.
+        return GizmoHelper.ReplicatedOwner(hitSlot);
     }
 
     private bool IsInActiveToolHierarchy(Slot slot)

@@ -250,6 +250,12 @@ public abstract class TouchControl : Component, ITouchTarget, IInteractionTarget
             Logging.Logger.Error($"Touch control {ParentHierarchyToString()} local handler threw: {ex}");
         }
 
+        // The control's press is a press like a panel button's, so whatever on this slot answers presses
+        // answers this one. It runs here, inside the author scope, which is why only the author's own
+        // receivers are asked. -xlinka
+        if (ReferenceEquals(ResponseSlot(TouchResponse.Pressed), slot))
+            new PressEvent(this, boundContact.User, boundContact.Point).Send(Slot, sameAuthor: true);
+
         var responded = Responded;
         if (responded == null)
             return;

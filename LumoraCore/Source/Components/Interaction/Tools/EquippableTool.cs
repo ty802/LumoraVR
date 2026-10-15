@@ -132,11 +132,20 @@ public abstract class EquippableTool : ToolItem
             return false;
         direction = direction.Normalized;
 
+        // The laser's own collider hit stands in when what is under the beam is not something to interact
+        // with: a floor, a wall, a world mesh, at any distance the beam reaches. The cast below is for the
+        // normal, and for a laser that has hit nothing at all.
         var hitSlot = laser.CurrentHitSlot;
+        var hitPoint = laser.CurrentHitPoint;
+        if (hitSlot == null && laser.CurrentColliderHitSlot is { IsDestroyed: false } surface)
+        {
+            hitSlot = surface;
+            hitPoint = laser.CurrentColliderHitPoint;
+        }
         aim.HitSlot = hitSlot;
         aim.Origin = origin;
         aim.Direction = direction;
-        aim.Point = hitSlot != null ? laser.CurrentHitPoint : origin + direction * AimRange;
+        aim.Point = hitSlot != null ? hitPoint : origin + direction * AimRange;
         aim.Normal = -direction;
 
         // Second cast purely for the surface normal. Skipping our own user root keeps a tool held

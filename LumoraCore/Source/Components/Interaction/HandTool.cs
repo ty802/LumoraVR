@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using Lumora.Core.Components.Avatar;
+using Lumora.Core.Components.Touch;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 
@@ -55,6 +56,7 @@ public sealed class HandTool : Tool
     private Slot? _grabberSlot;
     private Slot? _laserSlot;
     private Slot? _toolHolderSlot;
+    private Slot? _toolCacheSlot;
     private Grabber? _grabber;
     private InteractionLaser? _laser;
 
@@ -128,12 +130,18 @@ public sealed class HandTool : Tool
 
     private bool _primaryHeld;
     private bool _prevPrimaryHeld;
+    // Something else owns the trigger (UserInputState.TriggerCaptured) and this hand has no menu up. The
+    // second flag outlives the capture until the trigger is let go, so a pull that began captured never
+    // turns into a press the moment the capture ends.
+    private bool _triggerCaptured;
+    private bool _primaryHeldOff;
+    // Whether this hand's menu was up when the laser cast this frame. A plate acts as the press lands, inside
+    // the cast, and the one that closes the menu would otherwise leave the same press free to reach the tool.
+    private bool _menuOpenAtCast;
     private bool _secondaryHeld;
     private bool _prevSecondaryHeld;
     private bool _gripHeld;
     private bool _prevGripHeld;
-    // Handle drag started by a bare-hand primary press (no tool equipped); the dev tool tracks its own.
-    private Gizmos.TransformHandle? _bareHandle;
     private ToolItem? _activePrimaryToolItem;
     private ToolItem? _activeSecondaryToolItem;
     private bool _isHoldingWithLaser;
@@ -163,6 +171,12 @@ public sealed class HandTool : Tool
     private bool _desktopInputSuppressed;
     private bool _scrollWheelCaptured;
     private bool _stickPressCaptured;
+    private bool _carryStickHeld;
+    // The input state each hold was raised on, so letting go lands on that same one whichever world is
+    // focused by then. Asking for the focused world's on both ends let a world switch mid-hold strand it.
+    private UserInputState? _desktopSuppressedOn;
+    private UserInputState? _wheelCapturedOn;
+    private UserInputState? _stickPressCapturedOn;
     private double _lastAlignPress = -1000.0;
     private long _holdPoseFrame = long.MinValue;
     private long _holdPoseWrittenFrame = long.MinValue;
@@ -254,13 +268,22 @@ public sealed class HandTool : Tool
     public override void OnStart()
     {
         base.OnStart();
+        BindCarryInput();
         EnsureRig();
     }
 
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+        BindCarryInput();
         EnsureRig();
+
+        if (IsUnderLocalUser && World?.IsFocused != true)
+        {
+            _laser?.SetToolState(false, false);
+            _laser?.SetDormant(true);
+            return;
+        }
 
         // Ahead of the dash stand-down below on purpose: the hold is a body pose, not an interaction, and
         // bailing out of it while the dash is up would freeze the arm halfway wherever the dash caught it.
@@ -270,6 +293,15 @@ public sealed class HandTool : Tool
         UpdateAvatarAnchors();
         // And the beam starts off the tool, so it goes after the anchors and before the laser casts.
         UpdateLaserAnchor();
+
+        // Everything below reads this machine's buttons and acts with this hand. Another user's hand is
+        // theirs to work: run here, a click on this machine grabbed and pressed with every hand in the room,
+        // and two machines fought over the same held object. What their hand holds and where it points
+        // arrive with their own state. -xlinka
+        if (!IsUnderLocalUser)
+        {
+            return;
+        }
 
         if (_laser == null)
         {
@@ -293,11 +325,15 @@ public sealed class HandTool : Tool
             SetDesktopInputSuppression(false);
             SetScrollWheelCapture(false);
             PublishToolUse(false);
+            HoldCarryStick(false);
+            SetStickPressCapture(false);
             return;
         }
-        _laser.SetDormant(false);
 
         SampleInput(_laser);
+        // A beam whose trigger is taken can click nothing, so it shows nothing either; one already carrying
+        // a load keeps it on the beam.
+        _laser.SetDormant(_triggerCaptured && !IsHoldingObjectsWithLaser);
         // In VR the laser stays visible while this hand's menu is open so the
         // user can see what they're aiming at. On desktop the menu owns a
         // mouse-driven pointer instead, so the laser goes fully inactive to
@@ -328,8 +364,9 @@ public sealed class HandTool : Tool
         // UpdateMenuPush) and the beam, ending on it, is what picks the wedges, with the ring the only
         // thing it may touch. On desktop the menu owns the pointer and the hold pauses where it is.
         bool carryingOnLaser = IsHoldingObjectsWithLaser && (!menuVisible || vrActive);
-        // Damp the aim only while something is actually riding the laser. A bare pointer wants to be
-        // pixel-exact, and while the desktop menu is open the mouse IS the pointer.
+        // Damp the whole cast only while something is actually riding the laser. A bare VR pointer is
+        // steadied inside the laser instead, on the target it is already on (StepPointerSmoothing there),
+        // and while the desktop menu is open the mouse IS the pointer.
         _laser.ArmRaySmoothing(carryingOnLaser, GrabSmoothing.Value);
         _laser.SetToolState(uiPress, carryingOnLaser);
         // The beam's own on/off rule reads these: a tool that wants the laser or an open menu keeps it
@@ -344,8 +381,15 @@ public sealed class HandTool : Tool
         // the modal filter would be fighting it. Pushed per frame rather than on equip because the
         // beam is built lazily and an equip can land before it exists. -xlinka
         _laser.SetHitClassifier(menuVisible ? null : ActiveToolItem.Target as ILaserHitClassifier);
+        _menuOpenAtCast = menuVisible;
         _laser.RefreshNow(delta);
+        // A nearby object starts as a physical grab. Deflecting the stick explicitly asks to move
+        // it along the beam; without this transition that grab never reaches the distance controls.
+        if (vrActive && !menuVisible)
+            TryExtendTouchHold(_laser);
+        carryingOnLaser = IsHoldingObjectsWithLaser && (!menuVisible || vrActive);
         ProcessPrimary(_laser);
+        ProcessSelection(_laser);
         ProcessSecondary(_laser);
         ProcessMenuKey(_laser);
         ProcessGrip(_laser);
@@ -354,9 +398,12 @@ public sealed class HandTool : Tool
         // The wheel is the held object's distance control while something rides the laser. Say so, or the
         // third-person orbit zooms the camera on the same notch that pulls the object in. -xlinka
         SetScrollWheelCapture(!vrActive && IsHoldingObjectsWithLaser && !menuVisible);
-        // The VR twin: the stick click is the scale modifier while something rides the laser, and jump
-        // sits on the same click. -xlinka
-        SetStickPressCapture(vrActive && IsHoldingObjectsWithLaser);
+        // Selection and carried-object scaling share the stick click with jump.
+        RefreshStickPressCapture();
+        // And the stick itself: its slide and twist are the stick that turns, walks and hops. Kept past the
+        // drop until the stick is back in the middle, or one still pushed at the release turns or walks the
+        // moment the load is gone. -xlinka
+        HoldCarryStick(vrActive && UsesCarryStick);
 
         if (carryingOnLaser)
         {
@@ -1053,7 +1100,7 @@ public sealed class HandTool : Tool
         _gripInBone = (inverse * avatar.LocalRotationToGlobal(grip.LocalRotation)).Normalized;
 
         _handFrameValid = true;
-        Logging.Logger.Log($"HandTool: {side} hand frame in '{bone.SlotName.Value}' space fingers={_boneFingerAxis} back={_boneBackAxis}");
+        Logging.Logger.Debug($"HandTool: {side} hand frame in '{bone.SlotName.Value}' space fingers={_boneFingerAxis} back={_boneBackAxis}");
     }
 
     private static Slot? FirstBone(HumanoidRig rig, params BodyNode[] nodes)
@@ -1207,8 +1254,8 @@ public sealed class HandTool : Tool
     // key. 7, 8 and Minus stay empty on purpose: they are held for tools not built yet, so those keys
     // never move under anyone once the tools land.
     //
-    // The tool component goes on a child of the tool holder named after its type, reused when one is
-    // already there. -xlinka
+    // Shortcuts keep tools in an inactive cache beside the holder when put away. Only the equipped
+    // item belongs in the holder: EnsureRig automatically equips anything it finds there.
     private static readonly System.Type?[] ShortcutTools =
     {
         typeof(GlueTool),          // 0
@@ -1238,8 +1285,16 @@ public sealed class HandTool : Tool
 
         // Typing must never fire a shortcut. The dash owns the keyboard whenever it is open, and a
         // focused text field owns it wherever it lives.
-        if (input.IsDashboardOpen || Helio.UI.TextInput.Focused != null)
+        if (input.IsDashboardOpen || Helio.UI.TextInput.Focused != null || UI.DashWindowPanel.TakesKeys)
             return;
+
+        // Delete acts on the desktop hand's load, through the same undoable path as the held-object
+        // menu. A selected or hovered object is not a held object.
+        if (keyboard.IsKeyJustPressed(Key.Delete) && _grabber is { IsHoldingObjects: true })
+        {
+            var history = Slot.ActiveUserRoot?.Slot?.GetComponentInChildren<UndoManager>();
+            GrabbedObjectContextActions.DestroyGrabbed(_grabber, history);
+        }
 
         for (int i = 0; i < ShortcutTools.Length; i++)
         {
@@ -1263,6 +1318,9 @@ public sealed class HandTool : Tool
     // shortcut path calls exactly this, so a scripted run exercises the same code a person does.
     public void EquipToolByType(System.Type toolType)
     {
+        if (!IsUnderLocalUser)
+            return;
+
         if (ActiveToolItem.Target != null && ActiveToolItem.Target.GetType() == toolType)
         {
             StashOrDequipTool();
@@ -1277,29 +1335,57 @@ public sealed class HandTool : Tool
     private ToolItem? EquipNewToolItemOfType(System.Type toolType, string slotName)
     {
         EnsureRig();
-        var holder = _toolHolderSlot ?? Slot;
-        if (holder == null || holder.IsDestroyed)
+        var cache = EnsureToolCache();
+        if (cache == null)
             return null;
 
-        var itemSlot = holder.FindChild(slotName, recursive: false) ?? holder.AddSlot(slotName);
-        var item = itemSlot.GetComponent(toolType) as ToolItem
-                   ?? itemSlot.AttachComponent(toolType) as ToolItem;
+        var item = _toolHolderSlot?.FindChild(slotName, recursive: false)?.GetComponent(toolType) as ToolItem;
+        if (item == null)
+        {
+            foreach (var child in cache.Children)
+            {
+                if (child.GetComponent(toolType) is ToolItem cached && !cached.IsDestroyed)
+                {
+                    item = cached;
+                    break;
+                }
+            }
+        }
+
+        // Build under the inactive cache too: a denied equip must not leave a visible tool behind.
+        item ??= cache.AddSlot(slotName).AttachComponent(toolType) as ToolItem;
         if (item == null)
             return null;
 
-        EquipToolItem(item);
+        EquipToolItem(item, pulse: true, stashPrevious: true);
         return item;
+    }
+
+    private Slot? EnsureToolCache()
+    {
+        if (!IsUnderLocalUser || Slot == null || Slot.IsRemoved)
+            return null;
+
+        _toolCacheSlot = RigSlot(_toolCacheSlot, "Tool Cache", build: true);
+        if (_toolCacheSlot != null)
+        {
+            _toolCacheSlot.ActiveSelf.Value = false;
+            _toolCacheSlot.Persistent.Value = false;
+        }
+        return _toolCacheSlot;
     }
 
     private void StashOrDequipTool()
     {
         if (ActiveToolItem.Target == null)
             return;
-        EquipToolItem(null);
+        EquipToolItem(null, pulse: false, stashPrevious: true);
     }
 
     public override void OnDestroy()
     {
+        if (_carryInput != null) _carryInput.BeforeEvaluate -= CaptureCarryInput;
+        _carryInput = null;
         ResetInteraction(releaseHeld: true);
         // The published tip pose is this world's; the next focused hand republishes on its first frame.
         if (IsUnderLocalUser)
@@ -1348,6 +1434,8 @@ public sealed class HandTool : Tool
         // link lands after a join, and its writes can be refused for that beat too; this runs every frame as
         // well as at OnStart, so the next frame retries. -xlinka
         bool owner = IsUnderLocalUser;
+        // The host's own rig is made in the host rig scope (World.EnterHostRigScope); a built rig opens nothing.
+        using var hostRig = owner && !RigBuilt ? World?.EnterHostRigScope(Slot) : null;
         _grabberSlot = RigSlot(_grabberSlot, "Grabber", owner);
         _laserSlot = RigSlot(_laserSlot, "Laser", owner);
         _toolHolderSlot = RigSlot(_toolHolderSlot, "Tool Holder", owner);
@@ -1392,10 +1480,13 @@ public sealed class HandTool : Tool
             var item = _toolHolderSlot.GetComponentInChildren<ToolItem>(includeSelf: false);
             if (item != null)
             {
-                EquipToolItem(item);
+                EquipToolItem(item, pulse: false);
             }
         }
     }
+
+    private bool RigBuilt => _grabber is { IsDestroyed: false } && _laser is { IsDestroyed: false }
+        && _toolHolderSlot is { IsDestroyed: false } && _grabberSlot is { IsDestroyed: false } && _laserSlot is { IsDestroyed: false };
 
     // The rig slot this hand holds, else the owner's found by name, else a new one when building.
     private Slot? RigSlot(Slot? held, string name, bool build)
@@ -1416,7 +1507,10 @@ public sealed class HandTool : Tool
         return slot.GetComponent<T>() ?? (build ? slot.AttachComponent<T>() : null);
     }
 
-    public void EquipToolItem(ToolItem? item)
+    public void EquipToolItem(ToolItem? item) => EquipToolItem(item, pulse: true);
+
+    // The hand feels a tool go into it. Not the one the rig already holds being picked up again at start.
+    private void EquipToolItem(ToolItem? item, bool pulse, bool stashPrevious = false)
     {
         var previous = ActiveToolItem.Target;
         if (ReferenceEquals(previous, item))
@@ -1440,9 +1534,20 @@ public sealed class HandTool : Tool
 
         if (previous != null)
         {
+            // A held trigger must stop driving the tool as soon as it is put away.
+            if (ReferenceEquals(_activePrimaryToolItem, previous))
+            {
+                _activePrimaryToolItem = null;
+                previous.OnPrimaryRelease();
+            }
+            if (ReferenceEquals(_activeSecondaryToolItem, previous))
+            {
+                _activeSecondaryToolItem = null;
+                previous.OnSecondaryRelease();
+            }
             previous.OnDequipped();
             previous.SetActiveTool(null);
-            ReleaseFromHolder(previous);
+            ReleaseFromHolder(previous, stashPrevious);
         }
 
         ActiveToolItem.Target = item!;
@@ -1451,7 +1556,11 @@ public sealed class HandTool : Tool
             item.SetActiveTool(this);
             item.OnEquipped();
             DockInHolder(item);
+            if (pulse)
+                Haptics.Pulse(Slot?.ActiveUser, Side.Value, TouchHaptics.Medium);
         }
+        // Locomotion runs before hand updates: reserve the click on equip, before its first press.
+        RefreshStickPressCapture();
     }
 
     // Physically snap the equipped item into the Tool Holder (a world tool stays put without this - the equip
@@ -1478,8 +1587,8 @@ public sealed class HandTool : Tool
 
     // Dequip must physically remove the item from the Tool Holder, otherwise
     // EnsureRig's auto-equip finds it there next update and snaps it right back.
-    // Drop it into the world just off the hand.
-    private void ReleaseFromHolder(ToolItem item)
+    // Shortcuts put it away; explicit world-tool unequips still drop it just off the hand.
+    private void ReleaseFromHolder(ToolItem item, bool stash)
     {
         if (_suppressHolderRelease)
             return;
@@ -1488,6 +1597,12 @@ public sealed class HandTool : Tool
             return;
         if (itemSlot != _toolHolderSlot && !itemSlot.IsDescendantOf(_toolHolderSlot))
             return;
+
+        if (stash && EnsureToolCache() is { } cache)
+        {
+            itemSlot.SetParent(cache, preserveGlobalTransform: false);
+            return;
+        }
 
         var userRootSlot = Slot?.ActiveUserRoot?.Slot;
         var newParent = userRootSlot?.Parent ?? World?.RootSlot;
@@ -1504,12 +1619,8 @@ public sealed class HandTool : Tool
 
     public T EquipNewToolItem<T>(string slotName) where T : ToolItem, new()
     {
-        EnsureRig();
-        var holder = _toolHolderSlot ?? Slot;
-        var itemSlot = holder.FindChild(slotName, recursive: false) ?? holder.AddSlot(slotName);
-        var item = itemSlot.GetComponent<T>() ?? itemSlot.AttachComponent<T>();
-        EquipToolItem(item);
-        return item;
+        return EquipNewToolItemOfType(typeof(T), slotName) as T
+            ?? throw new InvalidOperationException("Cannot create a tool without a local hand rig.");
     }
 
     private ToolItem? GetUsableToolItem()
@@ -1541,8 +1652,17 @@ public sealed class HandTool : Tool
         // Tool secondary on desktop is a KEY, and a focused text field owns the keyboard outright -
         // the keyboard source is gated at that point, so typing never reaches an action and the VR
         // controller buttons carry on regardless.
-        _primaryHeld = ReadPrimaryPressed(laser);
-        _secondaryHeld = ReadSecondaryPressed(laser);
+        // A hand taken for something else's buttons presses nothing here; its grip still holds what it holds.
+        bool claimed = Engine.Current?.InputInterface?.IsHandClaimed(Side.Value) == true;
+        // A captured trigger presses nothing but this hand's own menu, the way out of whatever holds it.
+        _triggerCaptured = OwnInputState()?.TriggerCaptured == true && !IsContextMenuOpenByThisHand();
+        bool primaryRaw = ReadPrimaryPressed(laser);
+        if (_triggerCaptured)
+            _primaryHeldOff = true;
+        else if (!primaryRaw)
+            _primaryHeldOff = false;
+        _primaryHeld = !claimed && !_primaryHeldOff && primaryRaw;
+        _secondaryHeld = !claimed && ReadSecondaryPressed(laser);
         _gripHeld = ReadGripPressed(laser);
     }
 
@@ -1565,11 +1685,6 @@ public sealed class HandTool : Tool
                 _activePrimaryToolItem.OnPrimaryRelease();
                 _activePrimaryToolItem = null;
             }
-            if (_bareHandle != null)
-            {
-                _bareHandle.EndToolDrag();
-                _bareHandle = null;
-            }
             _prevPrimaryHeld = _primaryHeld;
             return;
         }
@@ -1578,7 +1693,7 @@ public sealed class HandTool : Tool
         // receives it (uiPress stays true with the menu open so held-object actions are clickable), so
         // letting the chain below run too meant "Destroy" on a held reference card first activated the
         // card - it opened its inspector and spent itself - and Destroy then found an empty hand. -xlinka
-        if (_primaryHeld && !_prevPrimaryHeld && IsContextMenuOpenByThisHand())
+        if (_primaryHeld && !_prevPrimaryHeld && (_menuOpenAtCast || IsContextMenuOpenByThisHand()))
         {
             _prevPrimaryHeld = _primaryHeld;
             return;
@@ -1611,15 +1726,8 @@ public sealed class HandTool : Tool
                 // assigning it: you aim at the field you wanted to fill, click, and lose the card. So:
                 // a receiver under the pointer wins, then the held object's own action, then align.
                 // -xlinka
-                if (!TryDropProxyOnUI(laser) && !TryActivateHeldObject())
+                if (!TryDropProxyOnUI(laser, pastLoad: true) && !TryActivateHeldObject())
                     ProcessAlignPress(laser);
-            }
-            else if (laser.CurrentTarget is Gizmos.TransformHandle handle && handle.BeginToolDrag(laser))
-            {
-                // A gizmo handle is a control, not an object: primary on it drags whether or not a tool is
-                // equipped. The inspector spawns gizmos with no tool in hand, and a handle that only answers
-                // the dev tool's primary (or a grip) reads as dead to a mouse user. -xlinka
-                _bareHandle = handle;
             }
             else if (laser.CurrentTarget != null && laser.CurrentPointerTarget == null)
             {
@@ -1646,20 +1754,20 @@ public sealed class HandTool : Tool
         {
             _activePrimaryToolItem.OnPrimaryHold();
         }
-        else if (_primaryHeld && _bareHandle != null)
+        else if (_primaryHeld && !IsHoldingObjectsWithLaser && laser.CurrentTarget is { } deepTarget && laser.CurrentPointerTarget == null
+            && !_menuOpenAtCast && !IsContextMenuOpenByThisHand() && EyedropperFor(laser) == null && ReadPrimaryDeepPressed(laser))
         {
-            if (!_bareHandle.IsDragging || _bareHandle.IsDestroyed)
-                _bareHandle = null;
+            // A trigger resting part way in, squeezed on to the full pull, is a press of its own: a light rest
+            // never counts as letting go, and the squeeze has to act on what the beam is on now. Bare world
+            // targets only; an equipped tool keeps the plain press so its holds and strokes never split. -xlinka
+            laser.CurrentRayTarget?.NotifyActivated(laser.CurrentHitPoint);
+            laser.NotifyActivatedByTool(deepTarget, laser.CurrentHitPoint);
+            laser.ResetLaserTimeout();
         }
         else if (!_primaryHeld && _prevPrimaryHeld && _activePrimaryToolItem != null)
         {
             _activePrimaryToolItem.OnPrimaryRelease();
             _activePrimaryToolItem = null;
-        }
-        else if (!_primaryHeld && _prevPrimaryHeld && _bareHandle != null)
-        {
-            _bareHandle.EndToolDrag();
-            _bareHandle = null;
         }
 
         _prevPrimaryHeld = _primaryHeld;
@@ -1751,6 +1859,17 @@ public sealed class HandTool : Tool
             }
         }
         return false;
+    }
+
+    private void ProcessSelection(InteractionLaser laser)
+    {
+        var input = Engine.Current?.InputInterface;
+        if (input?.IsVRActive != true || IsHoldingObjects || IsScalingObjects || _triggerCaptured || DashOwnsThisHand()
+            || _menuOpenAtCast || IsContextMenuOpenByThisHand())
+            return;
+        if (input.Actions?.Interaction(Side.Value).Select.Pressed == true
+            && GetUsableToolItem() is DevToolItem dev && dev.IsEquippedInHand(this))
+            dev.SelectTarget();
     }
 
     private void ProcessSecondary(InteractionLaser laser)
@@ -1888,7 +2007,7 @@ public sealed class HandTool : Tool
     private UI.ContextMenuSystem? FindContextMenu()
     {
         if (_contextMenu == null || _contextMenu.IsDestroyed)
-            _contextMenu = Slot?.ActiveUserRoot?.Slot?.GetComponentInChildren<UI.ContextMenuSystem>();
+            _contextMenu = Slot?.ActiveUserRoot is { Slot: not null } root ? root.ContextMenu : null;
         return _contextMenu;
     }
 
@@ -1899,7 +2018,7 @@ public sealed class HandTool : Tool
         // "no menu", so the laser keeps its world aim and the prompt can't be clicked until the
         // radial menu has been opened once by hand. -xlinka
         var menu = FindContextMenu();
-        if (menu == null || menu.IsDestroyed || !menu.IsOpen.Value)
+        if (menu == null || menu.IsDestroyed || !menu.IsShown)
             return false;
         return menu.CurrentContext?.Side == Side.Value;
     }
@@ -1913,11 +2032,20 @@ public sealed class HandTool : Tool
         if (IsContextMenuOpenByThisHand())
             return;
 
-        if (_gripHeld && !_prevGripHeld)
+        // A grip the dash pointer owns is the dash's, the way a press is: the hand standing at a panel in the
+        // world behind it takes nothing. -xlinka
+        if (_gripHeld && !_prevGripHeld && !DashOwnsThisHand())
         {
             // Prefer a touch (physical) grab when something is within reach of the hand; fall back to the
-            // laser grab when nothing is. -xlinka
-            if (!TryTouchGrab())
+            // laser grab when nothing is. A member card pulled off the row under the beam comes first:
+            // panels take a hand grab too, and gripping a member row beside one has to still pull the card
+            // rather than take the whole panel. -xlinka
+            var card = TryPullProxyFromUI(laser);
+            if (card != null)
+            {
+                TryGrabCurrentTarget(laser, card);
+            }
+            else if (!TryTouchGrab())
             {
                 TryGrabCurrentTarget(laser);
             }
@@ -1934,7 +2062,7 @@ public sealed class HandTool : Tool
         _prevGripHeld = _gripHeld;
     }
 
-    private void TryGrabCurrentTarget(InteractionLaser laser)
+    private void TryGrabCurrentTarget(InteractionLaser laser, IGrabbable? pulled = null)
     {
         if (_grabber == null)
         {
@@ -1943,7 +2071,7 @@ public sealed class HandTool : Tool
 
         // A UI row under the pointer that offers a reference card wins over grabbing the panel:
         // gripping a member row pulls the card, gripping the frame still moves the window. -xlinka
-        var grabbable = TryPullProxyFromUI(laser) ?? FindBestGrabbable(laser.CurrentTarget, laser.CurrentHitSlot);
+        var grabbable = pulled ?? TryPullProxyFromUI(laser) ?? FindBestGrabbable(_grabber, laser.CurrentTarget, laser.CurrentHitSlot);
         if (grabbable == null)
         {
             return;
@@ -1980,12 +2108,32 @@ public sealed class HandTool : Tool
         holder.GlobalScale = float3.One;
         UpdateHolderRotation(laser, holder);
 
-        if (!_grabber.TryGrab(grabbable))
+        if (!_grabber.TryGrab(grabbable, out var held) || held == null)
         {
             return;
         }
 
         _isHoldingWithLaser = true;
+        GrabCompanions(held);
+    }
+
+    // Whatever the equipped tool asks to take along with a grab, taken by this hand where it is, so the whole
+    // load rides the holder together. A grab that became a scale reference holds nothing of its own. -xlinka
+    private void GrabCompanions(IGrabbable grabbed)
+    {
+        if (_grabber == null || _grabber.IsScaling || ActiveToolItem.Target is not { IsDestroyed: false } tool || !tool.Enabled.Value
+            || !tool.AllowsEquip(World?.LocalUser) || tool.GrabCompanions(_grabber, grabbed) is not { } companions)
+        {
+            return;
+        }
+
+        foreach (var companion in companions)
+        {
+            if (companion != null && !ReferenceEquals(companion, grabbed))
+            {
+                _grabber.TryGrab(companion);
+            }
+        }
     }
 
     // Pull a reference card out of a hovered UI panel: resolve the exact row under the pointer
@@ -2008,13 +2156,24 @@ public sealed class HandTool : Tool
     // Offer everything in the hand to a reference receiver under the pointer. Two callers: the grip
     // release edge (before the release puts the held items back into the world) and the primary press
     // while laser-holding. Returns true when a receiver consumed something. -xlinka
-    private bool TryDropProxyOnUI(InteractionLaser laser)
+    // The press also looks past the load (pastLoad): the beam stops at what it carries, and the field being
+    // clicked is usually behind it. A release only drops onto a panel the beam already reaches.
+    private bool TryDropProxyOnUI(InteractionLaser laser, bool pastLoad = false)
     {
         if (_grabber == null || !_grabber.IsHoldingObjects)
         {
             return false;
         }
-        if (laser.CurrentTarget is not Helio.UI.Canvas canvas || canvas.Slot == null)
+        var canvas = laser.CurrentTarget as Helio.UI.Canvas;
+        if (canvas == null && pastLoad)
+        {
+            canvas = laser.NearestPanelOnBeam();
+            if (canvas?.Slot != null && IsUnderHeld(canvas.Slot))
+            {
+                canvas = null;
+            }
+        }
+        if (canvas?.Slot == null)
         {
             return false;
         }
@@ -2031,6 +2190,23 @@ public sealed class HandTool : Tool
         }
         var held = new List<IGrabbable>(_grabber.GrabbedObjects);
         return held.Count > 0 && receiver.TryReceiveProxy(held, _grabber);
+    }
+
+    // A panel that is part of something in this hand is the load, not a place to put it.
+    private bool IsUnderHeld(Slot slot)
+    {
+        if (_grabber == null)
+        {
+            return false;
+        }
+        foreach (var item in _grabber.GrabbedObjects)
+        {
+            if (item is Component { Slot: { } heldSlot } && (ReferenceEquals(slot, heldSlot) || slot.IsDescendantOf(heldSlot)))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     // First T on the slot or its parents, stopping at the canvas root (UI rows never reach outside
@@ -2098,6 +2274,7 @@ public sealed class HandTool : Tool
         {
             TryAlignGrabbed(grabbed);
         }
+        GrabCompanions(grabbed);
 
         // Touch-held objects follow the hand through the hierarchy, so the laser-hold path must not drive
         // them. Leaving _isHoldingWithLaser false also keeps the laser cursor in its normal state. -xlinka
@@ -2130,6 +2307,43 @@ public sealed class HandTool : Tool
                 return;
             }
         }
+    }
+
+    private void TryExtendTouchHold(InteractionLaser laser)
+    {
+        if (!CanExtendTouchHold())
+            return;
+        var hand = Engine.Current?.InputInterface?.Actions?.Interaction(Side.Value);
+        if (hand == null || hand.HoldAxis.Value == float2.Zero)
+            return;
+        var holder = _grabber!.HolderSlot;
+        if (holder == null)
+            return;
+
+        _laserGrabDistance = MathF.Max(0.05f, float3.Distance(laser.RayOrigin, holder.GlobalPosition));
+        _holderAxisOffset = 0f;
+        _holderRotationOffset = floatQ.Identity;
+        _holderRotationReference = null;
+        _originalTwistOffset = TwistAngle(laser);
+        RotationMode.Value = LaserRotationMode.AxisY;
+        _menuPushActive = false;
+        // Changing the holder's frame must not snap the object away from the grip point.
+        PreserveHeldGlobalTransforms(() =>
+        {
+            UpdateHolderPosition(laser, holder);
+            UpdateHolderRotation(laser, holder);
+        });
+        _isHoldingWithLaser = true;
+    }
+
+    private bool CanExtendTouchHold()
+    {
+        if (_isHoldingWithLaser || _grabber == null || !_grabber.IsHoldingObjects || _grabber.IsScaling)
+            return false;
+        foreach (var item in _grabber.GrabbedObjects)
+            if (item.AllowOnlyPhysicalGrab || item is Gizmos.TransformHandle)
+                return false;
+        return true;
     }
 
     private void ProcessLaserHold(InteractionLaser laser, float delta, bool menuOpen)
@@ -2258,6 +2472,9 @@ public sealed class HandTool : Tool
     {
         base.OnLateUpdate(delta);
 
+        if (World?.IsFocused != true)
+            return;
+
         long frame = Engine.Current?.FrameCount ?? -1;
         if (frame < 0 || _holdPoseFrame != frame || _laser == null || _grabber == null)
         {
@@ -2310,18 +2527,10 @@ public sealed class HandTool : Tool
         bool freezeCursor = hand.HoldFreeze.Held;
         SetDesktopInputSuppression(freezeCursor);
 
-        float scroll = hand.HoldScroll.Value;
-        if (scroll != 0f)
+        LaserCarry.ApplyWheel(hand, HoldScrollStep.Value, HoldScaleStep.Value, CanScaleHeldObjects(), ref _laserGrabDistance, out float wheelScale);
+        if (wheelScale != 0f)
         {
-            if (hand.HoldModifier.Held && CanScaleHeldObjects())
-            {
-                ScaleHolder(holder, scroll * HoldScaleStep.Value);
-            }
-            else
-            {
-                float step = MathF.Max(0.05f, _laserGrabDistance * HoldScrollStep.Value);
-                _laserGrabDistance += scroll * step;
-            }
+            ScaleHolder(holder, wheelScale);
         }
 
         if (!freezeCursor)
@@ -2350,24 +2559,10 @@ public sealed class HandTool : Tool
 
     private void ApplyVrHoldInputs(Input.Actions.InteractionActions hand, float delta, Slot holder)
     {
-        // The axis action applies its own PER-AXIS deadzone, so slide and twist stay independent: a
-        // hard pull toward you must not smear rotation onto the object as well.
-        var axis = hand.HoldAxis.Value;
-        float slide = axis.y;
-        float rotate = axis.x;
-
-        if (hand.HoldModifier.Held && slide != 0f && CanScaleHeldObjects())
+        LaserCarry.ApplyVrAxis(hand, delta, CanScaleHeldObjects(), ref _laserGrabDistance, ref _holderAxisOffset, out float scaleStep);
+        if (scaleStep != 0f)
         {
-            ScaleHolder(holder, slide * delta);
-        }
-        else if (slide != 0f)
-        {
-            _laserGrabDistance += slide * MathF.Max(1f, _laserGrabDistance) * 4f * delta;
-        }
-
-        if (rotate != 0f)
-        {
-            _holderAxisOffset += rotate * MathF.PI * 2f * delta;
+            ScaleHolder(holder, scaleStep);
         }
     }
 
@@ -2415,51 +2610,24 @@ public sealed class HandTool : Tool
         }
         rightAxis = rightAxis.Normalized;
 
-        float3 forward;
+        floatQ facing;
         if (vr)
         {
-            // THE FACING IS THE HAND'S, EVERY FRAME. Where the beam points from the head, flattened in
-            // the root's frame, plus where the tool's tip points, flattened the same way: turn the wrist
-            // and the object turns with it, walk round it and it comes with you, because both terms move
-            // with the person. Neither is a stored world heading. -xlinka
+            // THE FACING IS THE HAND'S, EVERY FRAME (see LaserCarry.UprightRotation): turn the wrist and the
+            // object turns with it, walk round it and it comes with you. Wrist roll at half rate, so a full
+            // twist of the controller is a half turn of the object. -xlinka
             float3 headPos = head?.GlobalPosition ?? Slot.GlobalPosition;
-            float3 toHolder = FlattenInRoot(root, holder.GlobalPosition - headPos);
-            float3 tip = FlattenInRoot(root, laser.RayDirection);
-            forward = toHolder + tip;
-            if (forward.LengthSquared <= 1e-8f)
-                forward = tip.LengthSquared > 1e-8f ? tip : reference * float3.Backward;
+            float angle = _holderAxisOffset + DeltaAngle(_originalTwistOffset, TwistAngle(laser)) * 0.5f;
+            facing = LaserCarry.UprightRotation(RotationMode.Value, rootUp, headPos, holder.GlobalPosition,
+                laser.RayDirection, rightAxis, reference * float3.Backward, angle);
         }
         else
         {
             // A desktop laser hold keeps its captured orientation while its position follows the beam.
-            forward = reference * float3.Backward;
-        }
-        if (forward.Length <= 0.0001f)
-        {
-            forward = float3.Backward;
-        }
-        forward = forward.Normalized;
-
-        float angle = _holderAxisOffset;
-        if (vr)
-        {
-            // Wrist roll, at half rate, so a full twist of the controller is a half turn of the object.
-            angle += DeltaAngle(_originalTwistOffset, TwistAngle(laser)) * 0.5f;
-        }
-        switch (RotationMode.Value)
-        {
-            case LaserRotationMode.AxisX:
-                forward = (floatQ.AxisAngle(rightAxis, angle) * forward).Normalized;
-                break;
-            case LaserRotationMode.AxisY:
-                forward = (floatQ.AxisAngle(rootUp, angle) * forward).Normalized;
-                break;
-            case LaserRotationMode.AxisZ:
-                rootUp = (floatQ.AxisAngle(forward, angle) * rootUp).Normalized;
-                break;
+            facing = LaserCarry.TurnedFacing(RotationMode.Value, reference * float3.Backward, rootUp, rightAxis, _holderAxisOffset);
         }
 
-        holder.GlobalRotation = _holderRotationOffset * FacingRotation(forward, rootUp);
+        holder.GlobalRotation = _holderRotationOffset * facing;
     }
 
     private void ApplyFreeformRotation(InteractionLaser laser, float3 rotation)
@@ -2493,10 +2661,12 @@ public sealed class HandTool : Tool
         }
     }
 
+    // One press straightens; a second inside the window switches between upright and free, and straightens
+    // again, so a load let loose to follow the hand comes out of it level as well. -xlinka
     private void ProcessAlignPress(InteractionLaser laser)
     {
         double now = World?.TotalTime ?? 0.0;
-        if (now - _lastAlignPress < 0.5)
+        if (now - _lastAlignPress < LaserCarry.DoublePressWindow)
         {
             RotationMode.Value = RotationMode.Value == LaserRotationMode.AxisY
                 ? LaserRotationMode.Unconstrained
@@ -2508,28 +2678,29 @@ public sealed class HandTool : Tool
                     UpdateHolderRotation(laser, _grabber.HolderSlot);
                 }
             });
-            AlignHeldObjects(laser, GetLaserRotationAxis());
+            AlignHeldObjects(laser);
             _lastAlignPress = -1000.0;
             return;
         }
 
-        AlignHeldObjects(laser, float3.Up);
+        AlignHeldObjects(laser);
         _lastAlignPress = now;
     }
 
-    private void AlignHeldObjects(InteractionLaser laser, float3 referenceAxis)
+    private void AlignHeldObjects(InteractionLaser laser)
     {
+        float3 rootUp = FindUserRootSlot()?.Up ?? float3.Up;
         foreach (var slot in GetGrabbedSlots())
         {
-            if (TryAlignUiSlot(laser, slot))
+            if (TryAlignUiSlot(laser, slot, rootUp))
             {
                 continue;
             }
-            AlignSlotToReferenceAxis(slot, referenceAxis);
+            LaserCarry.Straighten(slot, rootUp);
         }
     }
 
-    private static bool TryAlignUiSlot(InteractionLaser laser, Slot slot)
+    private bool TryAlignUiSlot(InteractionLaser laser, Slot slot, float3 rootUp)
     {
         if (slot.GetComponent<Helio.UI.Canvas>() == null && slot.GetComponent<Helio.UI.RectTransform>() == null)
         {
@@ -2537,66 +2708,13 @@ public sealed class HandTool : Tool
         }
 
         var head = laser.FindHeadSlot();
-        if (head == null)
+        if (head == null || !LaserCarry.TryFaceRotation(head.GlobalPosition, head.Forward, head.Up, rootUp, slot.GlobalPosition, slot.Up, out var facing))
         {
             return false;
         }
 
-        float3 faceDirection = head.GlobalPosition - slot.GlobalPosition;
-        if (faceDirection.Length <= 0.0001f)
-        {
-            faceDirection = head.Forward;
-        }
-        if (faceDirection.Length <= 0.0001f)
-        {
-            return false;
-        }
-        faceDirection = faceDirection.Normalized;
-
-        float3 upDirection = ProjectOnPlane(head.Up, faceDirection);
-        if (upDirection.Length <= 0.0001f)
-        {
-            upDirection = ProjectOnPlane(float3.Up, faceDirection);
-        }
-        if (upDirection.Length <= 0.0001f)
-        {
-            upDirection = float3.Right;
-        }
-
-        // Point the readable front (+Z) at the head. With the corrected facing this takes the toward-head
-        // direction directly; the old code negated it to compensate for LookRotation's inverse. -xlinka
-        slot.GlobalRotation = FacingRotation(faceDirection, upDirection.Normalized);
+        slot.GlobalRotation = facing;
         return true;
-    }
-
-    private void AlignSlotToReferenceAxis(Slot slot, float3 referenceAxis)
-    {
-        var root = FindUserRootSlot();
-        float3 referenceGlobal = root != null ? root.LocalDirectionToGlobal(referenceAxis) : referenceAxis;
-        if (referenceGlobal.Length <= 0.0001f)
-        {
-            return;
-        }
-        referenceGlobal = referenceGlobal.Normalized;
-
-        float3 referenceInTarget = slot.GlobalDirectionToLocal(referenceGlobal);
-        if (referenceInTarget.Length <= 0.0001f)
-        {
-            return;
-        }
-
-        float3 localAxis = GetClosestLocalAxis(referenceInTarget.Normalized);
-        float3 selectedGlobal = slot.LocalDirectionToGlobal(localAxis);
-        if (selectedGlobal.Length <= 0.0001f)
-        {
-            return;
-        }
-
-        var parent = slot.Parent;
-        float3 selectedParent = parent != null ? parent.GlobalDirectionToLocal(selectedGlobal.Normalized) : selectedGlobal.Normalized;
-        float3 referenceParent = parent != null ? parent.GlobalDirectionToLocal(referenceGlobal) : referenceGlobal;
-        floatQ delta = RotationFromTo(selectedParent, referenceParent);
-        slot.GlobalRotation = delta * slot.GlobalRotation;
     }
 
     private void PreserveHeldGlobalTransforms(Action action)
@@ -2673,94 +2791,55 @@ public sealed class HandTool : Tool
         return slots;
     }
 
-    private static IGrabbable? FindBestGrabbable(IInteractionTarget? target, Slot? hitSlot)
+    // The nearest grabbable at or above what the laser hit: on each slot, the first switched on that this
+    // hand may take, or that the other hand holds for a two-hand resize. Nothing above a grab block is
+    // offered from below it, and the walk ends at a search block. A target the laser found with no slot
+    // under the ray (a hover sphere) answers for itself.
+    private static IGrabbable? FindBestGrabbable(Grabber grabber, IInteractionTarget? target, Slot? hitSlot)
     {
-        IGrabbable? best = target as IGrabbable;
-        int bestPriority = best?.GrabPriority ?? int.MinValue;
+        if (hitSlot == null)
+            return target is IGrabbable { AllowOnlyPhysicalGrab: false } own && own is not Component { Enabled.Value: false } ? own : null;
 
-        var current = hitSlot;
-        while (current != null)
+        for (var current = hitSlot; current != null && !current.IsRemoved && !current.IsRootSlot; current = current.Parent)
         {
             if (!ReferenceEquals(current, hitSlot) && current.GetComponent<SearchBlock>() != null)
             {
                 break;
             }
+            if (current.GetComponent<GrabBlock>() is { IsDestroyed: false } block && block.Enabled.Value)
+            {
+                return null;
+            }
 
             foreach (var grabbable in current.GetComponentsImplementing<IGrabbable>())
             {
-                if (grabbable.AllowOnlyPhysicalGrab)
+                if (grabbable.AllowOnlyPhysicalGrab || grabbable is Component { Enabled.Value: false })
                 {
                     continue;
                 }
-
-                if (grabbable.GrabPriority > bestPriority)
+                if (grabbable.CanGrab(grabber) || grabber.IsScaleCandidate(grabbable))
                 {
-                    best = grabbable;
-                    bestPriority = grabbable.GrabPriority;
+                    return grabbable;
                 }
             }
-
-            current = current.Parent;
         }
 
-        return best;
-    }
-
-    private float3 GetLaserRotationAxis()
-    {
-        return RotationMode.Value switch
-        {
-            LaserRotationMode.AxisX => float3.Right,
-            LaserRotationMode.AxisY => float3.Up,
-            LaserRotationMode.AxisZ => float3.Forward,
-            _ => float3.Zero
-        };
+        return null;
     }
 
     private Slot? FindUserRootSlot() => Slot?.ActiveUserRoot?.Slot;
 
-    // floatQ.LookRotation builds its basis from matrix ROWS, so it returns the INVERSE of the intended
-    // facing (see FaceLocalUser). Inverting it yields a usable facing whose local +Z points along
-    // 'forward'. Held-object orientation, twist (axis offset), and align all depend on this being correct -
-    // the raw LookRotation made objects face/rotate the wrong way. -xlinka
-    private static floatQ FacingRotation(float3 forward, float3 up) => floatQ.LookRotation(forward, up).Inverse;
+    private static floatQ FacingRotation(float3 forward, float3 up) => LaserCarry.FacingRotation(forward, up);
 
-    // A direction with its root-up component removed, so the person's own tilt does not enter the aim.
-    private static float3 FlattenInRoot(Slot? root, float3 direction)
-    {
-        float3 up = root?.Up ?? float3.Up;
-        if (up.LengthSquared <= 1e-8f)
-            up = float3.Up;
-        up = up.Normalized;
-        return direction - up * float3.Dot(direction, up);
-    }
-
-    // The controller's roll about the beam, in the root's frame, radians. Only ever read as a DELTA
-    // from the value at grab, so which way is "zero" does not matter, only that it is stable.
+    // The controller's roll about the beam, in the root's frame, radians.
     private float TwistAngle(InteractionLaser laser)
     {
-        var root = FindUserRootSlot();
-        float3 forward = laser.RayDirection;
-        if (forward.LengthSquared <= 1e-8f || _laserSlot == null || _laserSlot.IsDestroyed)
+        if (_laserSlot == null || _laserSlot.IsDestroyed)
             return 0f;
-        float3 rootUp = (root?.Up ?? float3.Up).Normalized;
-        float3 tipUp = _laserSlot.Up;
-        // Beam-perpendicular frame: the flat side axis, then the beam's own up in that frame.
-        float3 side = float3.Cross(rootUp, forward);
-        if (side.LengthSquared <= 1e-8f)
-            return 0f;
-        side = side.Normalized;
-        float3 levelUp = float3.Cross(forward.Normalized, side);
-        return MathF.Atan2(float3.Dot(tipUp, side), float3.Dot(tipUp, levelUp));
+        return LaserCarry.TwistAngle(FindUserRootSlot()?.Up ?? float3.Up, laser.RayDirection, _laserSlot.Up);
     }
 
-    private static float DeltaAngle(float from, float to)
-    {
-        float delta = to - from;
-        while (delta > MathF.PI) delta -= 2f * MathF.PI;
-        while (delta < -MathF.PI) delta += 2f * MathF.PI;
-        return delta;
-    }
+    private static float DeltaAngle(float from, float to) => LaserCarry.DeltaAngle(from, to);
 
     private static floatQ? GetHeadFacingRotation(InteractionLaser laser)
     {
@@ -2807,8 +2886,7 @@ public sealed class HandTool : Tool
 
     private void ScaleHolder(Slot holder, float delta)
     {
-        float factor = MathF.Max(0.05f, 1f + delta);
-        holder.GlobalScale = holder.GlobalScale * factor;
+        holder.GlobalScale = holder.GlobalScale * LaserCarry.ScaleFactor(delta);
     }
 
     private void SetDesktopInputSuppression(bool active)
@@ -2819,8 +2897,15 @@ public sealed class HandTool : Tool
         }
 
         _desktopInputSuppressed = active;
-        UserInputState.ForFocusedLocalUser?.SetDesktopInputSuppressed(this, active);
+        if (active)
+            _desktopSuppressedOn = OwnInputState();
+        _desktopSuppressedOn?.SetDesktopInputSuppressed(this, active);
+        if (!active)
+            _desktopSuppressedOn = null;
     }
+
+    private UserInputState? OwnInputState()
+        => Slot?.ActiveUserRoot?.Slot?.GetComponent<UserInputState>() ?? UserInputState.ForFocusedLocalUser;
 
     private void SetScrollWheelCapture(bool active)
     {
@@ -2830,7 +2915,11 @@ public sealed class HandTool : Tool
         }
 
         _scrollWheelCaptured = active;
-        UserInputState.ForFocusedLocalUser?.SetScrollWheelCaptured(this, active);
+        if (active)
+            _wheelCapturedOn = OwnInputState();
+        _wheelCapturedOn?.SetScrollWheelCaptured(this, active);
+        if (!active)
+            _wheelCapturedOn = null;
     }
 
     private void SetStickPressCapture(bool active)
@@ -2841,68 +2930,49 @@ public sealed class HandTool : Tool
         }
 
         _stickPressCaptured = active;
-        UserInputState.ForFocusedLocalUser?.SetStickPressCaptured(this, active);
+        if (active)
+            _stickPressCapturedOn = OwnInputState();
+        _stickPressCapturedOn?.SetStickPressCaptured(this, active);
+        if (!active)
+            _stickPressCapturedOn = null;
     }
 
-    private static float3 ProjectOnPlane(float3 vector, float3 normal)
+    private void RefreshStickPressCapture()
     {
-        if (normal.Length <= 0.0001f)
-        {
-            return vector;
-        }
-        normal = normal.Normalized;
-        return vector - normal * float3.Dot(vector, normal);
+        var input = Engine.Current?.InputInterface;
+        bool selectsWithStick = input != null && GetUsableToolItem() is DevToolItem
+            && !Input.Actions.VRControllerSource.SelectionUsesTouchpad(input, Side.Value);
+        SetStickPressCapture(IsUnderLocalUser && input?.IsVRActive == true
+            && (IsHoldingObjectsWithLaser || CanExtendTouchHold() || selectsWithStick));
     }
 
-    private static float3 GetClosestLocalAxis(float3 direction)
+    private void HoldCarryStick(bool carrying)
+        => LaserCarry.HoldStickWhile(Engine.Current?.InputInterface?.Actions?.Interaction(Side.Value), carrying, ref _carryStickHeld);
+
+    private Input.Actions.InputBindingMap? _carryInput;
+
+    private void BindCarryInput()
     {
-        float3 best = float3.Up;
-        float bestDot = float3.Dot(best, direction);
-        TestLocalAxis(float3.Down, direction, ref best, ref bestDot);
-        TestLocalAxis(float3.Right, direction, ref best, ref bestDot);
-        TestLocalAxis(float3.Left, direction, ref best, ref bestDot);
-        TestLocalAxis(float3.Forward, direction, ref best, ref bestDot);
-        TestLocalAxis(float3.Backward, direction, ref best, ref bestDot);
-        return best;
+        var map = Engine.Current?.InputInterface?.Actions;
+        if (ReferenceEquals(map, _carryInput)) return;
+        if (_carryInput != null) _carryInput.BeforeEvaluate -= CaptureCarryInput;
+        _carryInput = map;
+        if (map != null) map.BeforeEvaluate += CaptureCarryInput;
     }
 
-    private static void TestLocalAxis(float3 axis, float3 direction, ref float3 best, ref float bestDot)
+    private void CaptureCarryInput()
     {
-        float dot = float3.Dot(axis, direction);
-        if (dot > bestDot)
-        {
-            bestDot = dot;
-            best = axis;
-        }
+        var input = Engine.Current?.InputInterface;
+        if (IsDestroyed || !Enabled.Value || !Slot.IsActive || !IsUnderLocalUser
+            || World.Focus != World.WorldFocus.Focused || input?.IsVRActive != true)
+            return;
+        HoldCarryStick(UsesCarryStick);
     }
 
-    private static floatQ RotationFromTo(float3 from, float3 to)
-    {
-        if (from.Length <= 0.0001f || to.Length <= 0.0001f)
-        {
-            return floatQ.Identity;
-        }
+    private bool UsesCarryStick => IsHoldingObjectsWithLaser || CanExtendTouchHold()
+        || GetUsableToolItem() is DevToolItem { IsDraggingGizmo: true };
 
-        from = from.Normalized;
-        to = to.Normalized;
-        float dot = System.Math.Clamp(float3.Dot(from, to), -1f, 1f);
-        if (dot > 0.9999f)
-        {
-            return floatQ.Identity;
-        }
-
-        if (dot < -0.9999f)
-        {
-            float3 fallback = MathF.Abs(float3.Dot(from, float3.Up)) > 0.9f ? float3.Right : float3.Up;
-            float3 axis = float3.Cross(from, fallback);
-            return axis.Length <= 0.0001f ? floatQ.Identity : floatQ.AxisAngle(axis.Normalized, MathF.PI);
-        }
-
-        float3 rotationAxis = float3.Cross(from, to);
-        return rotationAxis.Length <= 0.0001f
-            ? floatQ.Identity
-            : floatQ.AxisAngle(rotationAxis.Normalized, MathF.Acos(dot));
-    }
+    private static float3 ProjectOnPlane(float3 vector, float3 normal) => LaserCarry.ProjectOnPlane(vector, normal);
 
     private static bool ReadPrimaryPressed(InteractionLaser laser)
     {
@@ -2914,6 +2984,9 @@ public sealed class HandTool : Tool
 
         return input.Actions?.Interaction(laser.ControllerSide.Value).Primary.Held == true;
     }
+
+    private static bool ReadPrimaryDeepPressed(InteractionLaser laser)
+        => Engine.Current?.InputInterface?.Actions?.Interaction(laser.ControllerSide.Value).Primary.DeepPressed == true;
 
     private static bool ReadGripPressed(InteractionLaser laser)
     {

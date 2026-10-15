@@ -87,11 +87,22 @@ public class GrabSpawner : GrabSpawnerBase, IGrabbable, ICustomInspectorUI
         if (!CanGrab(grabber) || holdSlot == null || holdSlot.IsDestroyed)
             return this;
 
-        var pose = SpawnAtHand.Value ? holdSlot : Slot;
+        // Made by the authority and handed to this hand a moment later; nothing is held yet.
+        if (AsksWorld)
+        {
+            grabber.RequestDispense(this);
+            if (!suppressEvents)
+                OnLocalGrabbed?.Invoke(this);
+            return this;
+        }
+
+        // Where the template stands, unless the copy is meant for the hand or for the dispenser's own spot.
+        bool atHand = SpawnAtHand.Value;
+        var pose = atHand ? holdSlot : Slot;
         float3 position = pose?.GlobalPosition ?? float3.Zero;
         floatQ rotation = pose?.GlobalRotation ?? floatQ.Identity;
 
-        var spawned = Spawn(in position, in rotation, overridePose: true);
+        var spawned = Spawn(in position, in rotation, overridePose: atHand);
         if (spawned == null)
             return this;
 
@@ -99,6 +110,27 @@ public class GrabSpawner : GrabSpawnerBase, IGrabbable, ICustomInspectorUI
             OnLocalGrabbed?.Invoke(this);
 
         return spawned.Grab(grabber, holdSlot, suppressEvents);
+    }
+
+    // On the authority, for a hand that asked (Grabber.DispenseFrom): the copy made as the world, put in
+    // that hand the way its own grab would have. The hand's holder is the one its machine made; the
+    // authority never makes one of its own under someone else's hand.
+    internal void DispenseFor(Grabber grabber)
+    {
+        if (!MakesAsWorld || grabber == null || grabber.IsDestroyed || !CanGrab(grabber))
+            return;
+        var holder = grabber.Slot?.FindChild("Holder");
+        if (holder == null || holder.IsDestroyed)
+            return;
+        bool atHand = SpawnAtHand.Value;
+        var pose = atHand ? holder : Slot;
+        float3 position = pose?.GlobalPosition ?? float3.Zero;
+        floatQ rotation = pose?.GlobalRotation ?? floatQ.Identity;
+        var spawned = Spawn(in position, in rotation, overridePose: atHand);
+        // Putting the world's copy in the hand that asked is the world's own doing too, so a Social or Event
+        // world's freeze lets it through the way it lets the copy be made.
+        using (World?.DataModelPermissions?.EnterAuthoredContentScope(this))
+            spawned?.Grab(grabber, holder, suppressEvents: true);
     }
 
     public void Release(Grabber grabber, bool suppressEvents = false)

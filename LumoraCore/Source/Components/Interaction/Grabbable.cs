@@ -22,7 +22,7 @@ public interface IGrabHolderSurface
 }
 
 [ComponentCategory("Interaction")]
-public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, IGrabHolderSurface
+public sealed class Grabbable : Component, IGrabbable, ISlotGrabSurface, IGrabHolderSurface
 {
     public readonly Sync<bool> AllowGrab = new();
     public readonly Sync<bool> FollowRotation = new();
@@ -43,6 +43,25 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
     // avatar object can be picked up off the ground / passed around, but you can't yank someone's worn
     // avatar: no grabbing into a live user hierarchy. - xlinka
     public readonly Sync<bool> BlockWhenWorn = new();
+
+    // Let go, it goes back under the parent it was taken from; off, it goes to the world root. Either way a
+    // parent that refuses it back (IReleaseReturnBlock: a socket, a drop surface) sends it to the root.
+    public readonly Sync<bool> ReturnToParent = new();
+
+    // Gone once let go. The authority does it when the release lands, so letting go of world content
+    // removes it for a guest too.
+    public readonly Sync<bool> DestroyOnRelease = new();
+
+    // Only grabbable in a world that allows editing.
+    public readonly Sync<bool> EditModeOnly = new();
+
+    public readonly Sync<GrabUserFilter> UserFilter = new();
+
+    // When it lists anyone, only they may pick it up.
+    public readonly SyncRefList<User> OnlyUsers = new();
+
+    // The priority it competes with while already in a hand; none keeps GrabPriority.
+    public readonly Sync<int?> HeldGrabPriority = new();
 
     // THROW TUNABLES
     // KeepMomentum off is the old behaviour: let go and it stops dead. ThrowMultiplier scales the linear AND
@@ -68,11 +87,35 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
     // holder disconnects) can put it back - not just the one machine that grabbed it. Null when not held. - xlinka
     public readonly SyncRef<Slot> LastParentRef = new();
 
+    // The hand that let go of this while whatever it was let go into is still putting it down: a socket or
+    // a surface easing it into place after the hand is gone. Until that ends, or someone takes it, the
+    // gate lets that hand's user keep writing where it sits and how it lies (IPermissionGrabSurface.Placer).
+    // Written in the release itself, so only the holder can ever name a hand here. Not saved. - xlinka
+    [NonPersistent]
+    public readonly SyncRef<Grabber> PlacedBy = new();
+
+    // The hand of the release under way on this machine, good for the update it happened in: a placer
+    // claims the placing during the release, in the same batch as the holder clear. - xlinka
+    private Grabber? _releasedBy;
+    private ulong _releasedUpdate;
+    private int _placings;
+
+    // Set while this machine's own grab writes the holder, so the change it raises is not taken for one
+    // the authority made.
+    private bool _grabbingHere;
+
     // The last holder we saw locally, so we can spot a steal (the ref changing out from under us). Local. - xlinka
     private Grabber? _lastKnownHolder;
 
     // Whether the release about to happen came through a hand that measured a throw. Local to the releaser. - xlinka
     private bool _momentumStaged;
+
+    private GrabMoveUndo? _moveUndo;
+    internal int GrabRevision { get; private set; }
+    internal bool IsBeingPlaced => _placings > 0;
+
+    // A specialized carry (graph nodes, magnets) records its own complete operation.
+    internal void SuppressMoveUndo() => _moveUndo = null;
 
     public bool IsGrabbed => GrabberRef.Target != null;
     public Grabber? Grabber => GrabberRef.Target;
@@ -88,6 +131,8 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
 
     IPermissionActor? IPermissionGrabSurface.CurrentHolder => GrabberRef.Target?.OwningUser;
 
+    IPermissionActor? IPermissionGrabSurface.Placer => PlacedBy.Target?.OwningUser;
+
     RefID IGrabHolderSurface.GrabHolderRefId => GrabberRef.ReferenceID;
 
     GrabWriteKind IPermissionGrabSurface.ClassifyGrabWrite(IPermissionTarget? member)
@@ -96,15 +141,19 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
             return GrabWriteKind.HolderRef;
         if (ReferenceEquals(member, LastParentRef)
             || ReferenceEquals(member, ReleaseLinearVelocity)
-            || ReferenceEquals(member, ReleaseAngularVelocity))
+            || ReferenceEquals(member, ReleaseAngularVelocity)
+            || ReferenceEquals(member, PlacedBy))
             return GrabWriteKind.GrabState;
         return GrabWriteKind.None;
     }
 
+    // A carried object moves its slot whole: parent, position, rotation and scale.
+    bool ISlotGrabSurface.MovesSlotMember(Slot slot, IPermissionTarget member) => ReferenceEquals(slot, Slot);
+
     bool IGrabbable.Scalable => Scalable.Value;
     bool IGrabbable.Receivable => Receivable.Value;
     bool IGrabbable.AllowOnlyPhysicalGrab => AllowOnlyPhysicalGrab.Value;
-    int IGrabbable.GrabPriority => GrabPriority.Value;
+    int IGrabbable.GrabPriority => IsGrabbed && HeldGrabPriority.Value is int held ? held : GrabPriority.Value;
     bool IGrabbable.CanBeStolen => AllowSteal.Value;
 
     public int InteractionTargetPriority => InteractionPriority.Value;
@@ -114,7 +163,8 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
         // Only offer the grab cursor when we could actually grab it: grabbing is allowed AND it's
         // either free or stealable. A locked-in held object reads as disabled so you don't try. - xlinka
         bool grabbable = AllowGrab.Value && (!IsGrabbed || AllowSteal.Value)
-            && !(BlockWhenWorn.Value && Slot?.ActiveUserRoot != null);
+            && !(BlockWhenWorn.Value && Slot?.ActiveUserRoot != null)
+            && PassesUserGates(World?.LocalUser);
         return new InteractionDescription
         {
             Name = Slot?.SlotName.Value,
@@ -134,6 +184,17 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
         GrabberRef.OnTargetChange += OnHolderChanged;
     }
 
+    // A copy the authority made and handed to one of this machine's hands arrives holding it already, and
+    // the holder set while it was being built raised nothing.
+    public override void OnStart()
+    {
+        base.OnStart();
+        var holder = GrabberRef.Target;
+        _lastKnownHolder ??= holder;
+        if (holder != null && IsLocalGrabber(holder) && holder.Adopt(this))
+            OnLocalGrabbed?.Invoke(this);
+    }
+
     public override void OnInit()
     {
         base.OnInit();
@@ -147,11 +208,30 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
         AllowSteal.Value = false;
         DropOnDisable.Value = true;
         BlockWhenWorn.Value = false;
+        ReturnToParent.Value = true;
+        DestroyOnRelease.Value = false;
+        EditModeOnly.Value = false;
+        UserFilter.Value = GrabUserFilter.Anyone;
         KeepMomentum.Value = true;
         ThrowMultiplier.Value = 1f;
         // Matches the hard cap the physics side enforces on any live body, so the tunable is the one that
         // actually decides the throw until someone lowers it. - xlinka
         MaxThrowSpeed.Value = 8f;
+    }
+
+    // A copy is a new object in nobody's hand. Made while its original is held, it would otherwise claim that
+    // holder too, a hand that does not list it, and nothing could ever pick it up. -xlinka
+    public override void OnDuplicate()
+    {
+        base.OnDuplicate();
+        if (GrabberRef.Value.IsNull && LastParentRef.Value.IsNull && PlacedBy.Value.IsNull)
+            return;
+        using (World?.DataModelPermissions?.EnterSystemBypass())
+        {
+            GrabberRef.Target = null!;
+            LastParentRef.Target = null!;
+            PlacedBy.Target = null!;
+        }
     }
 
     public override void OnDisabled()
@@ -168,10 +248,20 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
 
     public bool CanGrab(Grabber grabber)
     {
-        if (IsDestroyed || !AllowGrab.Value) return false;
+        // A switched-off grabbable is how a world locks a prop in place.
+        if (IsDestroyed || !Enabled.Value || !AllowGrab.Value) return false;
 
         // Worn avatar/equipment: parented under a live user root - not grabbable.
         if (BlockWhenWorn.Value && Slot?.ActiveUserRoot != null) return false;
+
+        if (!PassesUserGates(grabber.OwningUser ?? World?.LocalUser)) return false;
+
+        // The host's own grab is written past the gate and never judged anywhere else, so in a Social or Event
+        // world it is judged here, as a guest's claim is when it arrives: the world's things, not a user's.
+        // -xlinka
+        if (World is { IsAuthority: true } world && world.DataModelPermissions?.SocialLock == true && IsLocalGrabber(grabber)
+            && !GrabberRef.IsWriteAllowed())
+            return false;
 
         // A driven transform is owned by whatever drives it. Grabbing would just fight the driver every
         // frame - reparent, the driver overwrites the local pose, the object snaps back. So don't offer
@@ -207,12 +297,31 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
         // bypass is so a guest can write the holder/parent of an object it doesn't own - the host still
         // arbitrates. Remember the original parent in the data model (not just locally) so anyone can
         // restore it later. - xlinka
-        using (World?.DataModelPermissions?.EnterSystemBypass())
+        _grabbingHere = true;
+        try
         {
-            LastParentRef.Target = Slot?.Parent!;
-            GrabberRef.Target = grabber;
+            using (World?.DataModelPermissions?.EnterSystemBypass())
+            {
+                LastParentRef.Target = Slot?.Parent!;
+                GrabberRef.Target = grabber;
+                if (!PlacedBy.Value.IsNull)
+                    PlacedBy.Target = null!;
+            }
+        }
+        finally
+        {
+            _grabbingHere = false;
         }
         _lastKnownHolder = grabber;
+        _placings = 0;
+        _releasedBy = null;
+
+        // Capture before the temporary parent under the hand changes what the local pose means.
+        // A steal starts under another moving hand, so it has no stable parent to restore here.
+        _moveUndo = prior == null ? GrabMoveUndo.Begin(this, grabber) : null;
+
+        // A moving body's object can trail its last physics step by a few steps; it is taken where it is.
+        FindMomentumBody()?.RefreshPose();
 
         // preserveGlobalTransform: keep world position when grabbed, so the object
         // doesn't snap to the hand origin. - xlinka
@@ -229,12 +338,15 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
         // to yank the object out of the new holder's hands with a stale release. - xlinka
         if (!ReferenceEquals(GrabberRef.Target, grabber)) return;
 
+        var moveUndo = _moveUndo;
+        _moveUndo = null;
+
         // A release that didn't come through a hand (disable, steal cleanup, teardown) carries no throw. Wipe
         // the staged values or every peer replays the last one. - xlinka
         if (!_momentumStaged) WriteReleaseMomentum(float3.Zero, float3.Zero);
         _momentumStaged = false;
 
-        var restoreParent = LastParentRef.Target;
+        var restoreParent = ReturnToParent.Value ? LastParentRef.Target : null;
 
         using (World?.DataModelPermissions?.EnterSystemBypass())
         {
@@ -243,14 +355,49 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
             LastParentRef.Target = null!;
         }
         _lastKnownHolder = null;
+        _releasedBy = grabber;
+        _releasedUpdate = World?.Time.UpdateIndex ?? 0;
+        _placings = 0;
 
-        if (restoreParent == null || restoreParent.IsDestroyed || (Slot != null && restoreParent.IsDescendantOf(Slot)))
+        // Back where it came from, unless that is gone, inside the object itself, or something that does
+        // not take it back: then the world root. - xlinka
+        if (restoreParent == null || restoreParent.IsDestroyed || (Slot != null && restoreParent.IsDescendantOf(Slot))
+            || ReleaseReturnGuard.Blocks(restoreParent))
         {
             restoreParent = World?.RootSlot;
         }
         Slot?.SetParent(restoreParent!, preserveGlobalTransform: true);
 
         if (!suppressEvents) OnLocalReleased?.Invoke(this);
+        moveUndo?.Released();
+    }
+
+    // The hand holding it left the session with its user. The authority lets go for that hand before the
+    // body is taken down, or a world prop a guest walked off holding went down with the body: no throw,
+    // back where it came from unless that goes too, else the world root, as a release. -xlinka
+    internal void ReleaseForLeaver(Slot leaving)
+    {
+        if (World is not { IsAuthority: true } world || Slot is not { IsDestroyed: false } slot)
+            return;
+
+        WriteReleaseMomentum(float3.Zero, float3.Zero);
+        _momentumStaged = false;
+        var restoreParent = ReturnToParent.Value ? LastParentRef.Target : null;
+        if (restoreParent == null || restoreParent.IsDestroyed || restoreParent.IsDescendantOf(slot)
+            || ReferenceEquals(restoreParent, leaving) || restoreParent.IsDescendantOf(leaving) || ReleaseReturnGuard.Blocks(restoreParent))
+        {
+            restoreParent = world.RootSlot;
+        }
+
+        using (world.DataModelPermissions?.EnterSystemBypass())
+        {
+            GrabberRef.Target = null!;
+            LastParentRef.Target = null!;
+            slot.SetParent(restoreParent, preserveGlobalTransform: true);
+        }
+        _lastKnownHolder = null;
+        _releasedBy = null;
+        _placings = 0;
     }
 
     private void OnHolderChanged(SyncRef<Grabber> reference)
@@ -267,12 +414,17 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
 
         if (ReferenceEquals(oldHolder, newHolder)) return;
 
+        GrabRevision++;
+        _moveUndo = null;
+
         // Let go. Deferred one update on purpose: the release arrives as a delta batch and there is no
         // guarantee the velocity fields decode before the holder ref that triggers this. One update later
         // the whole batch has landed, on every peer, including the one that did the releasing. - xlinka
         if (oldHolder != null && newHolder == null)
         {
             RunInUpdates(1, ApplyReleaseMomentum);
+            if (DestroyOnRelease.Value && World?.IsAuthority == true)
+                RunInUpdates(1, DestroyReleased);
         }
 
         // The holder flipped to someone else while WE were holding it = the host handed it off (a
@@ -284,6 +436,67 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, I
             oldHolder.NotifyStolen(this);
             OnLocalReleased?.Invoke(this);
         }
+
+        // Put into one of this machine's hands by the authority (a dispense it served for that hand): the
+        // hand takes it as if it had gripped it here.
+        if (newHolder != null && !_grabbingHere && IsLocalGrabber(newHolder) && newHolder.Adopt(this))
+            OnLocalGrabbed?.Invoke(this);
+    }
+
+    // The world's own grabbable goes in a Social or Event world too: letting go of it is part of the grab, not
+    // an edit, so it runs in the authored-content scope, which reaches only the world's own things. -xlinka
+    private void DestroyReleased()
+    {
+        if (IsDestroyed || IsGrabbed || !DestroyOnRelease.Value || Slot is not { IsDestroyed: false } slot || slot.IsProtected)
+            return;
+        using (World?.DataModelPermissions?.EnterAuthoredContentScope(this))
+            slot.Destroy();
+    }
+
+    // The per-person gates, asked about whoever would be doing the grabbing.
+    private bool PassesUserGates(User? user)
+    {
+        if (EditModeOnly.Value && World?.AllowsWorldEditing != true)
+            return false;
+        if (!UserFilter.Value.Allows(Slot, user))
+            return false;
+        if (OnlyUsers.Count == 0)
+            return true;
+        foreach (var listed in OnlyUsers)
+        {
+            if (listed != null && ReferenceEquals(listed, user))
+                return true;
+        }
+        return false;
+    }
+
+    // PLACING
+    // Something that takes this out of the release and puts it down over time (a socket's glide, a drop
+    // surface's) claims the placing while the release is still under way on this machine, so the claim
+    // rides the release's own batch, and ends it once the object is down. Nothing to claim from a release
+    // that happened on another machine or in an earlier update. - xlinka
+    public bool BeginPlacing()
+    {
+        var by = _releasedBy;
+        if (by == null || by.IsDestroyed || IsGrabbed || World == null || World.Time.UpdateIndex != _releasedUpdate)
+            return false;
+        _placings++;
+        if (!ReferenceEquals(PlacedBy.Target, by))
+        {
+            using (World.DataModelPermissions?.EnterSystemBypass())
+                PlacedBy.Target = by;
+        }
+        return true;
+    }
+
+    public void EndPlacing()
+    {
+        if (_placings <= 0)
+            return;
+        if (--_placings > 0 || IsDestroyed || PlacedBy.Value.IsNull)
+            return;
+        using (World?.DataModelPermissions?.EnterSystemBypass())
+            PlacedBy.Target = null!;
     }
 
     private bool IsLocalGrabber(Grabber grabber)

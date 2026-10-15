@@ -19,7 +19,17 @@ namespace Lumora.Core.Components.Interaction;
 // The template is duplicated rather than loaded from a saved graph on purpose: duplication remaps
 // every reference that pointed inside the template so drives, colour drivers and field targets
 // follow the copy instead of the original. Stamp one out with a saved graph and half the wiring
-// still points at the thing on the shelf. -xlinka
+// still points at the thing on the shelf.
+//
+// The template may be the dispenser's own slot, or hold it: a cigar on the table that hands out cigars.
+// The copy then carries a dispenser of its own, pointed at itself, and the grabbable switched on in the
+// copy is what a hand finds first on it from then on, so the copy is picked up rather than copied again.
+// A copy put inside the template would be inside the thing being copied, so it goes to the world root.
+//
+// A dispenser the world's author placed makes world things, so on the authority it needs no spawn right
+// of its own, and someone whose role may not bring things into the world asks the authority to make the
+// copy rather than being refused (GrabSpawner.DispenseFor). Not in a frozen world: there nobody may move
+// the world's things, so a copy made as the world could never leave the hand. -xlinka
 public abstract class GrabSpawnerBase : Component
 {
     // May be an inactive child of the dispenser.
@@ -42,6 +52,9 @@ public abstract class GrabSpawnerBase : Component
 
     public readonly Sync<bool> PersistInstances;
 
+    // The copy saves or not as the template does, and PersistInstances is not asked.
+    public readonly Sync<bool> KeepTemplatePersistence;
+
     // Let go of a copy this close to the dispenser and it goes away again.
     public readonly Sync<bool> DestroyOnReturn;
 
@@ -61,6 +74,7 @@ public abstract class GrabSpawnerBase : Component
         // Dispensed props are litter. A world that saves every copy anyone ever pulled reloads
         // buried in them, so a copy stays out of the save unless the author asks for it.
         PersistInstances = new Sync<bool>(this, false);
+        KeepTemplatePersistence = new Sync<bool>(this, false);
         DestroyOnReturn = new Sync<bool>(this, true);
         ReturnRadius = new Sync<float>(this, 0.25f);
     }
@@ -81,24 +95,22 @@ public abstract class GrabSpawnerBase : Component
         var world = World;
         if (world == null)
             return "no world";
-        if (!world.AllowsItemSpawning)
-            return "spawning is off in this world";
 
-        // The mode ceiling above and the ROLE cap here are two different questions, and both bind. The
-        // mode answer stands even with the gate switched off (a local world runs with it off), so it
-        // stays where it is rather than being folded into the domain query. -xlinka
-        if (world.DataModelPermissions?.AllowsDomain(world.LocalUser, DataModelPermissionDomain.Spawn) == false)
-            return "you may not spawn items in this world";
+        // The mode ceiling and the ROLE cap are two different questions, and both bind on what a person
+        // brings into the world. The mode answer stands even with the gate switched off (a local world runs
+        // with it off), so it stays here rather than being folded into the domain query. Neither is asked
+        // of the world making its own things on the authority. -xlinka
+        if (!MakesAsWorld && !AsksWorld)
+        {
+            if (!world.AllowsItemSpawning)
+                return "spawning is off in this world";
+            if (world.DataModelPermissions?.AllowsDomain(world.LocalUser, DataModelPermissionDomain.Spawn) == false)
+                return "you may not spawn items in this world";
+        }
 
         var template = Template.Target;
         if (template == null || template.IsDestroyed)
             return "no template";
-
-        // A dispenser that lives inside its own template copies itself along with everything else,
-        // and the copy is a working dispenser pointed at a template that no longer exists.
-        var slot = Slot;
-        if (slot != null && (ReferenceEquals(slot, template) || slot.IsDescendantOf(template)))
-            return "template contains the dispenser";
 
         if (template.GetComponentInChildren<Grabbable>() == null)
             return "template has no grabbable";
@@ -110,11 +122,19 @@ public abstract class GrabSpawnerBase : Component
         return null;
     }
 
+    // The world's own dispenser, on the machine that makes world things.
+    protected bool MakesAsWorld => ReferenceID.IsAuthorityID && World?.IsAuthority == true;
+
+    // The world's own dispenser, used by someone who may not make the copy themselves, in a world whose
+    // things may still be moved: the authority makes it instead.
+    protected bool AsksWorld => ReferenceID.IsAuthorityID && World is { IsAuthority: false, AllowsWorldEditing: true } world
+        && (!world.AllowsItemSpawning || world.DataModelPermissions?.AllowsDomain(world.LocalUser, DataModelPermissionDomain.Spawn) == false);
+
     // Null when the dispenser refused. position/rotation apply only when overridePose is set; false
     // keeps the template's own world pose.
     protected Grabbable? Spawn(in float3 position, in floatQ rotation, bool overridePose)
     {
-        string? blocked = DescribeBlock();
+        string? blocked = DescribeBlock() ?? (AsksWorld ? "only the authority makes these for you" : null);
         if (blocked != null)
         {
             Logging.Logger.Warn($"GrabSpawner on {ParentHierarchyToString()} refused: {blocked}");
@@ -134,7 +154,11 @@ public abstract class GrabSpawnerBase : Component
         Slot? copy;
         try
         {
-            copy = template.Duplicate(parent, preserveGlobalTransform: true);
+            // On a locked world the authority's own writes are frozen too, all but the world's authored
+            // logic acting on authored content, which this is. Anyone else's dispenser makes the copy as
+            // the person using it, the host included.
+            using (MakesAsWorld ? world.DataModelPermissions?.EnterAuthoredContentScope(this) : world.EnterSpawnAllocation())
+                copy = Stamp(template, parent, position, rotation, overridePose);
         }
         catch (Exception ex)
         {
@@ -146,16 +170,6 @@ public abstract class GrabSpawnerBase : Component
         if (copy == null || copy.IsDestroyed)
             return null;
 
-        if (ActivateInstance.Value)
-            copy.ActiveSelf.Value = true;
-        copy.Persistent.Value = PersistInstances.Value;
-
-        if (overridePose || ResetTemplateTransform.Value)
-        {
-            copy.GlobalPosition = position;
-            copy.GlobalRotation = rotation;
-        }
-
         var grabbable = copy.GetComponentInChildren<Grabbable>();
         if (grabbable == null)
         {
@@ -164,6 +178,33 @@ public abstract class GrabSpawnerBase : Component
             copy.Destroy();
             return null;
         }
+
+        InspectorUndo.Record(this, SlotExistenceUndoBatch.Created(world, new[] { copy }, UndoLocale.Spawn));
+        return grabbable;
+    }
+
+    // The copy, set up: switched on, saved or not, posed, its grabbable switched on and marked as ours.
+    private Slot? Stamp(Slot template, Slot parent, in float3 position, in floatQ rotation, bool overridePose)
+    {
+        var copy = template.Duplicate(parent, preserveGlobalTransform: true);
+        if (copy == null || copy.IsDestroyed)
+            return copy;
+
+        if (ActivateInstance.Value)
+            copy.ActiveSelf.Value = true;
+        if (!KeepTemplatePersistence.Value)
+            copy.Persistent.Value = PersistInstances.Value;
+
+        if (overridePose || ResetTemplateTransform.Value)
+        {
+            copy.GlobalPosition = position;
+            copy.GlobalRotation = rotation;
+        }
+
+        // The first grabbable in the copy is the one handed out, switched on or not on the shelf.
+        var grabbable = copy.GetComponentInChildren<Grabbable>();
+        if (grabbable == null)
+            return copy;
         if (EnableGrabbable.Value)
             grabbable.Enabled.Value = true;
 
@@ -171,9 +212,7 @@ public abstract class GrabSpawnerBase : Component
         var mark = markSlot.GetComponent<GrabSpawnMark>() ?? markSlot.AttachComponent<GrabSpawnMark>();
         mark.Source.Target = this;
         mark.Instance.Target = copy;
-
-        InspectorUndo.Record(this, SlotExistenceUndoBatch.Created(world, new[] { copy }, UndoLocale.Spawn));
-        return grabbable;
+        return copy;
     }
 
     internal void RegisterInstance(GrabSpawnMark mark)

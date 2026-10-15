@@ -1,6 +1,7 @@
 ﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System.Collections.Generic;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Interaction;
@@ -146,7 +147,7 @@ public abstract class ToolItem : Component
             owner.EquipToolItem(this);
             return;
         }
-        if (menu.IsOpen.Value)
+        if (menu.IsShown)
             return;
 
         string name = string.IsNullOrWhiteSpace(EquipName.Value) ? Slot.SlotName.Value ?? "Tool" : EquipName.Value;
@@ -213,6 +214,13 @@ public abstract class ToolItem : Component
     public virtual bool OnGrabbing(bool isLaserGrab)
     {
         return false;
+    }
+
+    // What a grab in this tool's hand takes along: asked once the hand has hold of something, and each one
+    // given back is taken by the same hand where it is, so the lot moves together. -xlinka
+    public virtual IEnumerable<IGrabbable>? GrabCompanions(Grabber grabber, IGrabbable grabbed)
+    {
+        return null;
     }
 
     public virtual void OnEquipped()

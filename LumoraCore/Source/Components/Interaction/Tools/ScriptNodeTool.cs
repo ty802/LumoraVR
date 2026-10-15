@@ -19,24 +19,48 @@ namespace Lumora.Core.Components.Interaction;
 // Builds scripts in the world.
 //
 // The node browser has every node by folder and by search. Picking one readies it on the tool, and a
-// double press on empty space puts it at the tool's tip (VR) or where the pointer is (desktop), in a group
-// of its own that nothing shows of but its nodes. The browser stays open for the next one.
+// double press on empty space puts it at the tool's tip (VR) or half a metre out along the pointer
+// (desktop), in a group of its own that nothing shows of but its nodes. The browser stays open for the
+// next one.
 //
 // On a card: press a port and drag onto another to wire them, or off into space to let go of an input's
 // wire; press the header and drag to move the node. Wiring nodes of two groups puts the groups together,
 // whichever tool placed them. Secondary while dragging a wire makes the node that wire wants where it
-// ends, wired in: a Constant, a Display, a Call or a Pulse. Grab a node's body to carry it. Secondary on a
-// node readies that node's type; secondary on empty space opens the browser on desktop, and in VR opens
-// the menu, which has the browser on its ring.
+// ends, wired in: a Constant, a Display, a Call or a Pulse. Grab a node's body to carry it; let go, it lands
+// back on its graph's plane. Secondary on empty space opens the browser on desktop, and in VR opens the
+// menu, which has the browser on its ring. A hand holding something leaves secondary to the menu.
+//
+// Secondary held on a node for half a second selects every node wired to it in its graph, or deselects them
+// all when that node was selected; let go sooner, it readies the node's type. A selection adds up across sets
+// and graphs, and every machine sees it. A hand grabbing a selected node takes the whole selection along in
+// one piece. The menu clears it, deletes it, or packs the scripts it is in where they stand; with a slot card
+// in the hand, every group of it standing on its own packs into that slot.
 //
 // In VR a dragged wire's end is pulled onto the nearest port it fits within a few centimetres, through
 // ScriptPortSnap, in its own graph or any other it could join. Two ports whose types differ offer the
 // conversion nodes that fit between them. Pressing on a graph away from any card and swiping across wires
 // cuts every wire the swipe crossed, in every graph it went over, when it lets go.
 //
+// The beam finds a script's wires along their curves, and the wire it is on is drawn brighter. A press there
+// puts a relay on the wire at that point, the wire running through it, and the press carries on as a press on
+// the relay's middle: it moves with the pointer until let go, and the relay and where it went are one undo
+// step. Wires drag from the relay like any port, so one value can branch off to more inputs.
+//
+// A field card in the menu's hand, gripped off an inspector row, offers a node for it put down by the tool,
+// already pointed at it: a Drive that holds it, a Write that sets it on a pulse, a Read, or the field itself as
+// a Reference to wire anywhere. The row's "..." menu offers the same while the tool is equipped.
+//
+// Writers show where they write: a line from the port naming the target to it, in the target's own colour,
+// for the node the pointer is on and the nodes selected, or for every writer of every open script with "Show
+// writes" on.
+//
 // Shader graphs are built the same way from shader nodes. The browser switches between the two lists; a
 // material orb's graph opens from its menu; a shader node placed on empty space starts a loose group that
 // joins a material's graph when it is wired into it.
+//
+// A slot card in the menu's hand, gripped off an inspector row, stands for that slot. The menu unpacks
+// every script under it at once, or packs them all back; the nodes standing on their own worked on last
+// pack into it as its script; a slot with no graph under it takes a new script.
 //
 // What the tool changes is the shared graph, gated like any other edit. When an edit is refused or two
 // ports do not join, the reason floats by the laser for a moment. -xlinka
@@ -48,6 +72,9 @@ public sealed class ScriptNodeTool : EquippableTool
     private const float TipReach = 0.075f;
     private const float GraphReach = 2.5f;
 
+    // How far out along the pointer a node is put on desktop, in metres at the user's own size.
+    private const float PlaceDistance = 0.5f;
+
     // How close a wire end has to come to a port it fits before it is pulled on, in metres.
     public const float SnapReach = 0.035f;
 
@@ -56,6 +83,18 @@ public sealed class ScriptNodeTool : EquippableTool
 
     // How far outside its cards a graph still takes a swipe, in metres.
     private const float GraphMargin = 0.15f;
+
+    // How long secondary is held on a node before it selects or deselects the node's set, in seconds.
+    public const double SelectHoldSeconds = 0.5;
+
+    // What this tool has selected, a wired set at a time. Synced, so every machine tints the cards.
+    public readonly SyncRefList<ScriptGraphNode> Selected = new();
+
+    private ScriptGraphNode? _holding;
+    private HashSet<ScriptGraphNode>? _holdSet;
+    private double _holdStart;
+    private bool _holdSelects;
+    private bool _holdDone;
 
     private ScriptCardHandle? _wireFrom;
     private ScriptGraphNode? _moving;
@@ -92,6 +131,26 @@ public sealed class ScriptNodeTool : EquippableTool
     private Slot? _snapMarkSlot;
     private ScriptPulseMesh? _snapMark;
 
+    // A relay the press still held made: its step is written when the press lets go, where the relay landed.
+    private ScriptGraphNode? _newRelay;
+    private List<IUndoBatch>? _newRelayWires;
+
+    private bool _showWrites;
+    private ScriptWriteMarks? _writeMarks;
+    private readonly List<ScriptGraphNode> _writeFocus = new();
+
+    // How near the graph worked on last a node made from a field has to be put down to go into it, in metres.
+    private const float FieldNodeReach = 0.75f;
+
+    public static readonly Localization.LocaleText ShowWritesLabel = Localization.LocaleText.Keyed("Loom.Tool.ShowWrites", "Show writes");
+    public static readonly Localization.LocaleText DrivenAlready =
+        Localization.LocaleText.Keyed("Loom.Tool.DrivenAlready", "another drive holds that field: this one takes it when that one lets go");
+    public static readonly Localization.LocaleText WriteDriven =
+        Localization.LocaleText.Keyed("Loom.Tool.WriteDriven", "a drive holds that field: writes to it are refused until it lets go");
+
+    // Every node tool of a world, so a wire can ask whether a node tool drives a beam.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<World, List<ScriptNodeTool>> InWorld = new();
+
     protected override colorHDR VisualTint => new(0.86f, 0.52f, 0.25f, 1f);
 
     public string? ReadyType => _readyType;
@@ -100,7 +159,7 @@ public sealed class ScriptNodeTool : EquippableTool
     public GraphKind ReadyKind => _readyKind;
 
     // The graph worked on last, while it is out: one joined into another is parked.
-    public ScriptGraphSpace? CurrentSpace => _lastSpace is { IsDestroyed: false, Slot.IsActive: true } space ? space : null;
+    public ScriptGraphSpace? CurrentSpace => _lastSpace is { IsDestroyed: false, IsShown: true } space ? space : null;
 
     // The port a dragged wire's end is pulled onto right now, if any.
     public (ScriptGraphNode Node, ScriptCardHandleKind Kind, string Port)? SnappedPort => _snap?.Snapped;
@@ -114,6 +173,45 @@ public sealed class ScriptNodeTool : EquippableTool
     {
         base.OnInit();
         EquipName.Value = "Script Node Tool";
+    }
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        if (World != null)
+        {
+            ScriptNodeSelection.For(World).Watch(Selected);
+            var tools = InWorld.GetValue(World, static _ => new List<ScriptNodeTool>());
+            lock (tools)
+                tools.Add(this);
+        }
+    }
+
+    // Whether a beam is an equipped node tool's: a script's wires answer that beam and no other.
+    public static bool Drives(InteractionLaser? laser)
+    {
+        if (laser?.World is not { } world || !InWorld.TryGetValue(world, out var tools))
+            return false;
+        lock (tools)
+        {
+            foreach (var tool in tools)
+            {
+                if (!tool.IsDestroyed && ReferenceEquals(tool.ActiveTool?.Laser, laser))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    // A shared browser always arms the tool held by the person using it.
+    public static ScriptNodeTool? ForLocalUser(World world)
+    {
+        if (!InWorld.TryGetValue(world, out var tools)) return null;
+        lock (tools)
+            foreach (var tool in tools)
+                if (!tool.IsDestroyed && tool.IsEquipped && tool.Slot.ActiveUserRoot?.ActiveUser == world.LocalUser)
+                    return tool;
+        return null;
     }
 
     protected override void BuildVisualExtras(Slot visual)
@@ -142,6 +240,12 @@ public sealed class ScriptNodeTool : EquippableTool
             return true;
         }
 
+        if (WireUnderLaser() is { } wire)
+        {
+            AddRelay(wire.Space, wire.Hit);
+            return true;
+        }
+
         // A node's body is for the hand to grab, and a panel's presses are the panel's; neither is empty
         // space.
         if (NodeUnderLaser() != null || ActiveTool?.Laser?.CurrentPointerTarget != null)
@@ -162,6 +266,54 @@ public sealed class ScriptNodeTool : EquippableTool
         }
 
         return _readyType != null && TapEmpty();
+    }
+
+    // The wire the beam is on and where, as the wire took the beam's last look.
+    private (ScriptGraphSpace Space, ScriptWireHit Hit)? WireUnderLaser()
+    {
+        var laser = ActiveTool?.Laser;
+        return laser?.CurrentPointerTarget is ScriptWireTarget { Space: { IsDestroyed: false } space } wires
+            && wires.HoveredBy(laser.PointerId) is { } hit
+            ? (space, hit)
+            : null;
+    }
+
+    // The press that makes a relay goes on as a press on its middle, so the relay rides the pointer until it lets go.
+    private void AddRelay(ScriptGraphSpace space, ScriptWireHit hit)
+    {
+        SettleRelay();
+        ScriptGraphNode? relay = null;
+        List<IUndoBatch>? wires = null;
+        string? error = null;
+        if (!Guarded(() => relay = ScriptGraphEditing.MakeRelay(hit.Key, hit.Point, out error, out wires)))
+        {
+            Notice("you may not change that graph");
+            return;
+        }
+        if (relay == null || wires == null)
+        {
+            Notice(error ?? "no relay was made");
+            return;
+        }
+        _lastSpace = space;
+        _newRelay = relay;
+        _newRelayWires = wires;
+        _moving = relay;
+        _moveStart = relay.Slot.LocalPosition.Value;
+        _grabOffset = RayOnGraph(space, out var local) ? local - _moveStart : float3.Zero;
+    }
+
+    // The relay made by the last press, into the history where it stands.
+    private void SettleRelay()
+    {
+        var relay = _newRelay;
+        var wires = _newRelayWires;
+        _newRelay = null;
+        _newRelayWires = null;
+        if (ReferenceEquals(_moving, relay))
+            _moving = null;
+        if (relay != null && wires != null)
+            ScriptGraphEditing.RecordRelay(relay, wires);
     }
 
     // The double press on empty space that puts the readied node there.
@@ -210,6 +362,11 @@ public sealed class ScriptNodeTool : EquippableTool
         {
             var moving = _moving;
             _moving = null;
+            if (ReferenceEquals(moving, _newRelay))
+            {
+                SettleRelay();
+                return true;
+            }
             if (!moving.IsDestroyed && moving.Slot.LocalPosition.Value != _moveStart)
                 RecordUndo(new FieldEditUndoBatch(moving.Slot.LocalPosition, _moveStart, moving.Slot.LocalPosition.Value, ScriptGraphEditing.ValueStep));
             return true;
@@ -227,7 +384,8 @@ public sealed class ScriptNodeTool : EquippableTool
             return false;
 
         var to = snapped ?? HandleUnderLaser();
-        if (to != null && to.IsPort && !ReferenceEquals(to, from))
+        // A Write Value's or a call's pointer takes the node it is dropped on by its header as well as by a port.
+        if (to != null && (to.IsPort || from.Kind == ScriptCardHandleKind.Variable) && !ReferenceEquals(to, from))
             Join(from, to);
         else if (to == null)
             ScriptGraphEditing.Unwire(from);
@@ -252,7 +410,7 @@ public sealed class ScriptNodeTool : EquippableTool
     {
         var world = World;
         var menu = world?.LocalUser?.Root?.Slot?.GetComponentInChildren<ContextMenuSystem>();
-        if (menu == null || menu.IsOpen.Value)
+        if (menu == null || menu.IsShown)
             return false;
 
         // The ends as they are now: the cards may be rebuilt before anything is picked.
@@ -297,6 +455,10 @@ public sealed class ScriptNodeTool : EquippableTool
 
     public override bool OnSecondaryPress()
     {
+        // A hand holding something leaves secondary to the menu, which has what can be done with what it holds.
+        if (ActiveTool is HandTool { IsHoldingObjects: true })
+            return false;
+
         // Secondary with a wire in hand makes the node that wire wants where the wire ends, wired in.
         if (_wireFrom is { Node: { IsDestroyed: false } dragged } from)
         {
@@ -314,10 +476,12 @@ public sealed class ScriptNodeTool : EquippableTool
             return true;
         }
 
+        // On a node the press is a hold: long enough, it selects or deselects the node's set; let go sooner, it
+        // readies the node's type.
         var node = HandleUnderLaser()?.Node ?? NodeUnderLaser();
         if (node is { IsDestroyed: false })
         {
-            Ready(node.NodeType.Value ?? string.Empty, node.Signature.Value, node.Space?.Kind.Value ?? GraphKind.Script);
+            BeginHold(node);
             return true;
         }
         if (Engine.Current?.InputInterface?.IsVRActive == true)
@@ -326,14 +490,62 @@ public sealed class ScriptNodeTool : EquippableTool
         return true;
     }
 
+    public override bool OnSecondaryHold()
+    {
+        if (_holding == null)
+            return false;
+        // Something taken into the hand meanwhile ends the hold; nothing comes of it.
+        if (_holding.IsDestroyed || ActiveTool is HandTool { IsHoldingObjects: true })
+        {
+            EndHold();
+            return true;
+        }
+        if (_holdDone)
+            return true;
+        double held = (World?.Time.TotalTime ?? 0.0) - _holdStart;
+        if (held >= SelectHoldSeconds)
+        {
+            _holdDone = true;
+            ToggleSet(_holding);
+            ShowHold(null, 0f);
+        }
+        else
+        {
+            ShowHold(_holdSet, (float)(held / SelectHoldSeconds));
+        }
+        return true;
+    }
+
+    public override bool OnSecondaryRelease()
+    {
+        var node = _holding;
+        if (node == null)
+            return false;
+        bool done = _holdDone;
+        // A hold the frames never caught up with still counts by the clock.
+        if (!done && !node.IsDestroyed && (World?.Time.TotalTime ?? 0.0) - _holdStart >= SelectHoldSeconds)
+        {
+            ToggleSet(node);
+            done = true;
+        }
+        EndHold();
+        if (!done && !node.IsDestroyed)
+            Ready(node.NodeType.Value ?? string.Empty, node.Signature.Value, node.Space?.Kind.Value ?? GraphKind.Script);
+        return true;
+    }
+
     public override void OnDequipped()
     {
+        SettleRelay();
         _wireFrom = null;
         _moving = null;
+        _writeMarks?.Hide();
         EndSnap();
         HidePreview();
         CancelCut();
         ShowReady(false);
+        EndHold();
+        ClearSelection();
         base.OnDequipped();
     }
 
@@ -345,11 +557,58 @@ public sealed class ScriptNodeTool : EquippableTool
             slot.ActiveSelf.Value = false;
         if (_readyType != null && IsEquipped)
             ShowReady(true);
+        UpdateWriteMarks();
     }
+
+    // The writers whose targets show on this machine: every one with Show writes on, else the node the pointer
+    // is on and the nodes selected. Only for whoever holds the tool.
+    private void UpdateWriteMarks()
+    {
+        var world = World;
+        bool mine = IsEquipped && world != null && Slot.ActiveUserRoot?.ActiveUser == world.LocalUser;
+        _writeFocus.Clear();
+        if (mine && !_showWrites)
+        {
+            if ((HandleUnderLaser()?.Node ?? NodeUnderLaser()) is { IsDestroyed: false } under && ScriptWriteTargets.Writes(under))
+                _writeFocus.Add(under);
+            foreach (var node in Selected)
+            {
+                if (node is { IsDestroyed: false } && ScriptWriteTargets.Writes(node) && !_writeFocus.Contains(node))
+                    _writeFocus.Add(node);
+            }
+        }
+        if (!mine || (!_showWrites && _writeFocus.Count == 0))
+        {
+            _writeMarks?.Hide();
+            return;
+        }
+        if (_writeMarks == null || _writeMarks.IsDestroyed)
+            _writeMarks = ScriptWriteMarks.Make(world!);
+        _writeMarks.Show(_showWrites, _writeFocus);
+    }
+
+    public bool ShowWrites
+    {
+        get => _showWrites;
+        set => _showWrites = value;
+    }
+
+    public ScriptWriteMarks? WriteMarks => _writeMarks;
 
     public override void OnDestroy()
     {
+        SettleRelay();
+        if (_writeMarks is { IsDestroyed: false } marks)
+            marks.Slot.Destroy();
         EndSnap();
+        EndHold();
+        if (World != null && InWorld.TryGetValue(World, out var tools))
+        {
+            lock (tools)
+                tools.Remove(this);
+        }
+        // The list goes with the tool, and its nodes stop wearing the tint everywhere.
+        ScriptNodeSelection.Of(World)?.Forget(Selected);
         foreach (var slot in new[] { _previewSlot, _noticeSlot, _readySlot, _cutSlot, _snapMarkSlot })
         {
             if (slot is { IsDestroyed: false })
@@ -362,6 +621,10 @@ public sealed class ScriptNodeTool : EquippableTool
 
     public override void PopulateToolActions(ContextMenuPage page, ContextMenuContext context)
     {
+        PruneSelection();
+        // A field card in the hand is what the menu was opened for: its nodes come first.
+        if (HeldMember(context) is { } member)
+            PopulateFieldActions(page, member);
         page.AddItem(new ContextMenuItem
         {
             Label = _browser is { IsDestroyed: false } ? "Close node browser" : "Node browser",
@@ -378,6 +641,24 @@ public sealed class ScriptNodeTool : EquippableTool
                     LoomDiagnostic.Toggle(World);
             },
         });
+        // Stays up, so the lines can be looked at with it on and off.
+        page.AddItem(new ContextMenuItem
+        {
+            Label = ShowWritesLabel.Resolve(),
+            FillColor = _showWrites ? ActiveFill : ItemFill,
+            IsToggle = true,
+            IsToggled = _showWrites,
+            KeepsOpen = true,
+            OnPressed = _ => _showWrites = !_showWrites,
+            Refresh = item =>
+            {
+                if (item.IsToggled == _showWrites)
+                    return false;
+                item.IsToggled = _showWrites;
+                item.FillColor = _showWrites ? ActiveFill : ItemFill;
+                return true;
+            },
+        });
         if (_readyType != null)
         {
             page.AddItem(new ContextMenuItem
@@ -390,7 +671,13 @@ public sealed class ScriptNodeTool : EquippableTool
 
         var under = HandleUnderLaser()?.Node ?? NodeUnderLaser();
         var space = under?.Space ?? CurrentSpace;
-        if (space is { IsDestroyed: false } && space.Kind.Value == GraphKind.Script)
+        if (Selected.Count > 0)
+            PopulateSelectionActions(page);
+        if (HeldSlot(context) is { } held)
+            PopulateSlotCardActions(page, held, space);
+        // Pointing at a selected node, the selection is what packs.
+        bool onSelection = under != null && Selected.Contains(under);
+        if (!onSelection && space is { IsDestroyed: false } && space.Kind.Value == GraphKind.Script)
         {
             page.AddItem(new ContextMenuItem
             {
@@ -508,8 +795,9 @@ public sealed class ScriptNodeTool : EquippableTool
         return node;
     }
 
-    // The tip in VR; on desktop, where the pointer meets the graph being worked on, else what it points at
-    // within reach, else a metre out.
+    // The tip in VR; on desktop half a metre out along the pointer, at the user's own size, whatever the
+    // pointer is on. A node put where the beam lands ends up on the floor or in a wall metres away, and has
+    // to be fished back out. -xlinka
     private float3 PlacementPoint()
     {
         if (Engine.Current?.InputInterface?.IsVRActive == true)
@@ -517,22 +805,356 @@ public sealed class ScriptNodeTool : EquippableTool
         var laser = ActiveTool?.Laser;
         if (laser == null)
             return Tip;
-        if (CurrentSpace is { } space && RayOnGraph(space, out var onGraph)
-            && (space.Slot.LocalPointToGlobal(onGraph) - laser.RayOrigin).Length <= GraphReach)
-            return space.Slot.LocalPointToGlobal(onGraph);
-        if (laser.HasAimPoint && (laser.AimPoint - laser.RayOrigin).Length <= GraphReach)
-            return laser.AimPoint;
-        return laser.RayOrigin + laser.RayDirection * 1f;
+        float scale = World?.LocalUser?.Root?.GlobalScale ?? 1f;
+        return laser.RayOrigin + laser.RayDirection * (PlaceDistance * (scale > 0f ? scale : 1f));
     }
 
-    private void Pack(ScriptGraphSpace space)
+    private void Pack(ScriptGraphSpace space) => Report(ScriptGraphEditing.PackAsync(space));
+
+    private void Report(System.Threading.Tasks.Task<string?> task)
     {
-        var task = ScriptGraphEditing.PackAsync(space);
         task.ContinueWith(done =>
         {
             if (done.Result is string error)
                 World?.RunSynchronously(() => Notice(error));
         }, System.Threading.Tasks.TaskScheduler.Default);
+    }
+
+    // The slot a card in the summoning hand stands for: a slot picked up from the inspector by its row.
+    private Slot? HeldSlot(ContextMenuContext? context)
+    {
+        if (context?.Grabber is not { IsDestroyed: false } grabber)
+            return null;
+        foreach (var grabbed in grabber.GrabbedObjects)
+        {
+            var slot = (grabbed as Component)?.Slot;
+            var card = slot?.GetComponent<ReferenceProxy>() ?? slot?.GetComponentInChildren<ReferenceProxy>();
+            if (card is { IsDestroyed: false } && card.Target.Target is Slot { IsDestroyed: false } target && !IsOffLimits(target))
+                return target;
+        }
+        return null;
+    }
+
+    // What a slot card offers: every script under the slot unpacked or packed back at once, the nodes
+    // standing on their own worked on last packed into it, or a new script on it when it has none.
+    private void PopulateSlotCardActions(ContextMenuPage page, Slot held, ScriptGraphSpace? space)
+    {
+        var graphs = ScriptGraphEditing.GraphsUnder(held);
+        string name = CardName(held);
+        if (graphs.AnyPacked)
+        {
+            page.AddItem(new ContextMenuItem
+            {
+                Label = "Unpack " + name,
+                FillColor = ArmFill,
+                OnPressed = _ =>
+                {
+                    var opened = ScriptGraphEditing.UnpackAll(held, out var error);
+                    foreach (var graph in opened)
+                    {
+                        if (graph.Kind.Value == GraphKind.Script)
+                        {
+                            _lastSpace = graph;
+                            break;
+                        }
+                    }
+                    if (error != null)
+                        Notice(error);
+                },
+            });
+        }
+        if (graphs.AnyOpen)
+        {
+            page.AddItem(new ContextMenuItem
+            {
+                Label = "Pack " + name,
+                FillColor = ItemFill,
+                OnPressed = _ => Report(ScriptGraphEditing.PackAllAsync(held)),
+            });
+        }
+        // With nodes selected, every group of them standing on its own packs into the slot at once.
+        var selected = SelectedLooseGroups(held);
+        if (selected.Count > 0)
+        {
+            page.AddItem(new ContextMenuItem
+            {
+                Label = "Pack into " + name,
+                FillColor = ArmFill,
+                OnPressed = _ =>
+                {
+                    ClearSelection();
+                    Report(ScriptGraphEditing.PackIntoAsync(selected, held));
+                },
+            });
+        }
+        else if (space is { IsDestroyed: false } loose && loose.Kind.Value == GraphKind.Script && ScriptGraphEditing.IsImplicit(loose)
+            && loose.Slot?.Parent is { } group && !ReferenceEquals(held, group) && !held.IsDescendantOf(group))
+        {
+            page.AddItem(new ContextMenuItem
+            {
+                Label = "Pack into " + name,
+                FillColor = ArmFill,
+                OnPressed = _ => Report(ScriptGraphEditing.PackIntoAsync(loose, held)),
+            });
+        }
+        else if (!graphs.Any)
+        {
+            page.AddItem(new ContextMenuItem
+            {
+                Label = "New script on " + name,
+                FillColor = ArmFill,
+                OnPressed = _ =>
+                {
+                    var opened = ScriptGraphEditing.EditScriptOn(held, out var error);
+                    if (opened != null)
+                        _lastSpace = opened;
+                    else
+                        Notice(error ?? "no script");
+                },
+            });
+        }
+    }
+
+    // FIELDS. The field a card in the summoning hand stands for: a value or reference field gripped off its
+    // inspector row.
+    private static IWorldElement? HeldMember(ContextMenuContext? context)
+    {
+        if (context?.Grabber is not { IsDestroyed: false } grabber)
+            return null;
+        foreach (var grabbed in grabber.GrabbedObjects)
+        {
+            var slot = (grabbed as Component)?.Slot;
+            var card = slot?.GetComponent<ReferenceProxy>() ?? slot?.GetComponentInChildren<ReferenceProxy>();
+            if (card is { IsDestroyed: false } && card.Target.Target is { IsDestroyed: false } target && ScriptFieldNodes.Offers(target).Count > 0)
+                return target;
+        }
+        return null;
+    }
+
+    // Drive, Write, Read and Reference for a field, each making its node by the tool, pointed at the field.
+    public void PopulateFieldActions(ContextMenuPage page, IWorldElement member, Action? picked = null)
+    {
+        foreach (var kind in ScriptFieldNodes.Offers(member))
+        {
+            var chosen = kind;
+            page.AddItem(new ContextMenuItem
+            {
+                Label = ScriptFieldNodes.Label(chosen),
+                FillColor = chosen == ScriptFieldNodeKind.Drive ? ArmFill : ActiveFill,
+                OnPressed = _ =>
+                {
+                    picked?.Invoke();
+                    SpawnFieldNode(member, chosen);
+                },
+            });
+        }
+    }
+
+    // A node for a field put down where the tool puts nodes, into the graph worked on last when that is where it
+    // lands, else into a group of its own that joins a graph once wired into it.
+    public ScriptGraphNode? SpawnFieldNode(IWorldElement member, ScriptFieldNodeKind kind)
+    {
+        var world = World;
+        if (world == null)
+            return null;
+        if (EditingBlocked || SpawnBlocked)
+        {
+            Notice("building is not allowed here");
+            return null;
+        }
+        var point = PlacementPoint();
+        var facing = world.LocalUser?.Root?.HeadPosition ?? point + float3.Backward;
+        var into = SpaceNear(point);
+        ScriptGraphNode? node = null;
+        string? error = null;
+        if (!Guarded(() => node = ScriptFieldNodes.Spawn(world, member, kind, point, facing, into, out error)) || node == null)
+        {
+            Notice(error ?? "that node could not be added");
+            return null;
+        }
+        _lastSpace = node.Space;
+        if (member is ILinkable { IsDriven: true })
+        {
+            if (kind == ScriptFieldNodeKind.Drive)
+                Notice(DrivenAlready.Resolve());
+            else if (kind == ScriptFieldNodeKind.Write)
+                Notice(WriteDriven.Resolve());
+        }
+        return node;
+    }
+
+    // The script worked on last, when a point is close enough to its cards to be working on it.
+    private ScriptGraphSpace? SpaceNear(float3 point)
+    {
+        if (CurrentSpace is not { Kind.Value: GraphKind.Script } space)
+            return null;
+        var local = space.Slot.GlobalPointToLocal(point);
+        local.z = 0f;
+        if ((space.Slot.LocalPointToGlobal(local) - point).Length > FieldNodeReach)
+            return null;
+        return NearCards(space, local, FieldNodeReach) ? space : null;
+    }
+
+    private static string CardName(Slot slot)
+    {
+        var name = slot.Name.Value?.Trim();
+        if (string.IsNullOrEmpty(name))
+            return "slot";
+        return name.Length > 22 ? name[..21] + "..." : name;
+    }
+
+    // SELECTION. What the menu offers for it: letting go of it, deleting it, and packing the scripts it is in
+    // where they stand. Each of those lets go of it too.
+    private void PopulateSelectionActions(ContextMenuPage page)
+    {
+        page.AddItem(new ContextMenuItem
+        {
+            Label = "Clear selection",
+            FillColor = ItemFill,
+            OnPressed = _ => ClearSelection(),
+        });
+        page.AddItem(new ContextMenuItem
+        {
+            Label = "Delete selected",
+            FillColor = ClearFill,
+            OnPressed = _ =>
+            {
+                var nodes = SelectedNodes();
+                ClearSelection();
+                string? error = null;
+                if (Guarded(() => ScriptGraphEditing.DeleteNodes(nodes, out error)) && error != null)
+                    Notice(error);
+            },
+        });
+        bool scripts = false;
+        foreach (var node in SelectedNodes())
+            scripts |= node.Space?.Kind.Value == GraphKind.Script;
+        if (!scripts)
+            return;
+        page.AddItem(new ContextMenuItem
+        {
+            Label = "Pack selected",
+            FillColor = ItemFill,
+            OnPressed = _ =>
+            {
+                var nodes = SelectedNodes();
+                ClearSelection();
+                Report(ScriptGraphEditing.PackGraphsOf(nodes));
+            },
+        });
+    }
+
+    // The groups standing on their own that selected nodes are in, but for one the slot is part of.
+    private List<ScriptGraphSpace> SelectedLooseGroups(Slot held)
+    {
+        var groups = new List<ScriptGraphSpace>();
+        foreach (var node in SelectedNodes())
+        {
+            if (node.Space is { Kind.Value: GraphKind.Script } space && !groups.Contains(space) && ScriptGraphEditing.IsImplicit(space)
+                && space.Slot?.Parent is { } group && !ReferenceEquals(held, group) && !held.IsDescendantOf(group))
+                groups.Add(space);
+        }
+        return groups;
+    }
+
+    // The selection as it stands, once what is gone has been let go of.
+    private List<ScriptGraphNode> SelectedNodes()
+    {
+        PruneSelection();
+        var nodes = new List<ScriptGraphNode>();
+        foreach (var node in Selected)
+        {
+            if (node != null)
+                nodes.Add(node);
+        }
+        return nodes;
+    }
+
+    // Lets go of selected nodes that are gone: deleted, parked, or in a graph packed away or closed.
+    private void PruneSelection()
+    {
+        for (int i = Selected.Count - 1; i >= 0; i--)
+        {
+            if (Selected[i] is { IsDestroyed: false } node && node.Space is { IsShown: true })
+                continue;
+            int at = i;
+            Guarded(() => Selected.RemoveAt(at));
+        }
+    }
+
+    public void ClearSelection()
+    {
+        if (!IsDestroyed && Selected.Count > 0)
+            Guarded(() => Selected.Clear());
+    }
+
+    // A node's whole wired set into the selection, or out of it when that node was in already.
+    private void ToggleSet(ScriptGraphNode node)
+    {
+        PruneSelection();
+        var set = new HashSet<ScriptGraphNode>(ScriptGraphEditing.ConnectedSet(node));
+        if (Selected.Contains(node))
+        {
+            Guarded(() =>
+            {
+                for (int i = Selected.Count - 1; i >= 0; i--)
+                {
+                    if (Selected[i] is { } each && set.Contains(each))
+                        Selected.RemoveAt(i);
+                }
+            });
+            return;
+        }
+        var had = new HashSet<ScriptGraphNode>(SelectedNodes());
+        Guarded(() =>
+        {
+            foreach (var each in set)
+            {
+                if (had.Add(each))
+                    Selected.Add(each);
+            }
+        });
+    }
+
+    private void BeginHold(ScriptGraphNode node)
+    {
+        EndHold();
+        _holding = node;
+        _holdStart = World?.Time.TotalTime ?? 0.0;
+        _holdSelects = !Selected.Contains(node);
+        _holdSet = new HashSet<ScriptGraphNode>(ScriptGraphEditing.ConnectedSet(node));
+        _holdDone = false;
+    }
+
+    private void EndHold()
+    {
+        _holding = null;
+        _holdSet = null;
+        _holdDone = false;
+        ShowHold(null, 0f);
+    }
+
+    // The cards of a held set ramping toward what the hold will make them, on this machine.
+    private void ShowHold(HashSet<ScriptGraphNode>? set, float progress)
+    {
+        if (World != null)
+            ScriptNodeSelection.Of(World)?.SetHold(this, set, _holdSelects, progress);
+    }
+
+    // A hand grabbing a selected node takes every other selected node too, each where it is, so the selection
+    // moves as one piece.
+    public override IEnumerable<IGrabbable>? GrabCompanions(Grabber grabber, IGrabbable grabbed)
+    {
+        if ((grabbed as Component)?.Slot?.GetComponent<ScriptGraphNode>() is not { } node || !Selected.Contains(node))
+            return null;
+        var companions = new List<IGrabbable>();
+        foreach (var other in SelectedNodes())
+        {
+            if (!ReferenceEquals(other, node) && other.Slot.GetComponent<Grabbable>() is { IsDestroyed: false, IsGrabbed: false } grab
+                && grab.Enabled.Value)
+                companions.Add(grab);
+        }
+        return companions;
     }
 
     private ScriptCardHandle? HandleUnderLaser()
@@ -604,12 +1226,7 @@ public sealed class ScriptNodeTool : EquippableTool
                 _previewSlot.Destroy();
             _previewSlot = space.Slot.AddLocalSlot("Wire preview");
             _preview = _previewSlot.AttachComponent<ScriptWireMesh>();
-            var material = _previewSlot.AttachComponent<UnlitMaterial>();
-            material.UseVertexColor.Value = true;
-            var renderer = _previewSlot.AttachComponent<MeshRenderer>();
-            renderer.Mesh.Target = _preview;
-            renderer.Material.Target = material;
-            renderer.ShadowCastMode.Value = ShadowCastMode.Off;
+            ScriptGraphView.DrawPipe(_previewSlot, _preview);
         }
         _previewSlot.ActiveSelf.Value = true;
 
@@ -717,7 +1334,7 @@ public sealed class ScriptNodeTool : EquippableTool
         ScriptGraphSpace.GetAll(World, _spaces);
         foreach (var other in _spaces)
         {
-            if (other.Slot?.IsActive == true && RayOnGraph(other, out var start)
+            if (other.IsShown && RayOnGraph(other, out var start)
                 && (other.Slot.LocalPointToGlobal(start) - laser.RayOrigin).Length <= GraphReach)
                 _cutStarts[other] = start;
         }
@@ -737,7 +1354,7 @@ public sealed class ScriptNodeTool : EquippableTool
             if (space.IsDestroyed || space.View is not { } view)
                 continue;
             _crossing.Clear();
-            if (space.Slot?.IsActive == true && RayOnGraph(space, out var to)
+            if (space.IsShown && RayOnGraph(space, out var to)
                 && (space.Slot.LocalPointToGlobal(to) - laser.RayOrigin).Length <= GraphReach)
                 view.WiresCrossing(from, to, _crossing);
             if (_crossing.Count > 0)
@@ -833,7 +1450,7 @@ public sealed class ScriptNodeTool : EquippableTool
 
     private void Consider(ScriptGraphSpace candidate, InteractionLaser laser, ref ScriptGraphSpace space, ref float3 local, ref float best)
     {
-        if (candidate.IsDestroyed || candidate.Slot?.IsActive != true || !RayOnGraph(candidate, out var point))
+        if (candidate.IsDestroyed || !candidate.IsShown || !RayOnGraph(candidate, out var point))
             return;
         float distance = (candidate.Slot.LocalPointToGlobal(point) - laser.RayOrigin).Length;
         if (distance > best || !NearCards(candidate, point))
@@ -844,9 +1461,9 @@ public sealed class ScriptNodeTool : EquippableTool
     }
 
     // Within the margin around the graph's cards, in the graph's own space.
-    private static bool NearCards(ScriptGraphSpace space, float3 point)
+    private static bool NearCards(ScriptGraphSpace space, float3 point, float reach = GraphMargin)
     {
-        float margin = space.Slot.GlobalScaleToLocal(GraphMargin);
+        float margin = space.Slot.GlobalScaleToLocal(reach);
         foreach (var node in space.Nodes)
         {
             // One in a hand has its place in the hand.
@@ -906,7 +1523,7 @@ public sealed class ScriptNodeTool : EquippableTool
 
     private void Notice(string text)
     {
-        LumoraLogger.Log($"Script Node Tool: {text}");
+        LumoraLogger.Debug($"Script Node Tool: {text}");
         var world = World;
         var laser = ActiveTool?.Laser;
         if (world == null || laser == null)

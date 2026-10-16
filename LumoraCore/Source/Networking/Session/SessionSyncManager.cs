@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using Lumora.Core;
 using Lumora.Core.Networking.Streams;
@@ -146,12 +147,54 @@ public class SessionSyncManager : IDisposable
 
     // Pending data records that couldn't decode yet (missing elements)
     private readonly Dictionary<RefID, PendingRecord> _pendingFullRecords = new();
-    private readonly Dictionary<RefID, PendingRecord> _pendingDeltaRecords = new();
+    // Deltas are operations against the previous value, not replacement snapshots. Keep every
+    // record for a late element in arrival order or list additions disappear while it is loading.
+    private readonly Dictionary<RefID, Queue<PendingRecord>> _pendingDeltaRecords = new();
     private readonly object _pendingLock = new();
     private const int PendingRecordMaxAttempts = 20;
     private const int PendingRecordMaxAgeTicks = 400;
+    private const int MaxPendingRecordsPerElement = 256;
     private readonly List<User> _newUsersToInitialize = new();
     private readonly object _newUsersLock = new();
+
+    // JOIN SLICES. A joiner used to get the whole world encoded in one go under the lock, which parked the
+    // host's world thread for all of it: 100 ms on a warm 10,000 slot world, 330 ms on the first join of a
+    // session. Now the elements are fixed when the send begins, in RefID order, and each cycle encodes the
+    // next few milliseconds of them straight after that cycle's deltas, in the same hold, so a slice and the
+    // deltas before it describe one moment. From the first slice on the joiner gets every numbered message,
+    // cut down to the elements it already holds or that no slice will carry: one whose slice is still to
+    // come is left out, since that slice carries it as it stands by then. Every element reaches the joiner
+    // once in full and every change after it in order, so the backlog it replays once running lands on the
+    // host's state. -xlinka
+    private sealed class FullStateSend
+    {
+        public readonly List<User> Users;
+        public ulong[] Keys = Array.Empty<ulong>();
+        public SyncElement[] Elements = Array.Empty<SyncElement>();
+        public int Next;
+        public ulong Tag;
+        public bool Started;
+
+        public FullStateSend(List<User> users) => Users = users;
+
+        // Sent already, or never part of the send: a change to it reaches the joiner as a change.
+        public bool Holds(RefID id)
+        {
+            int at = Array.BinarySearch(Keys, (ulong)id);
+            return at < 0 || at < Next;
+        }
+    }
+
+    private readonly Queue<FullStateSend> _queuedSends = new();
+
+    // Authority side: every peer's link, under _linkLock (the transport's close callback drops one).
+    private readonly Dictionary<IConnection, PeerBacklog> _backlogs = new();
+    private readonly List<IConnection> _behindScratch = new();
+    private const double OwedFlushBudgetMs = 1.5;
+    private long _lastBacklogLog;
+    private FullStateSend? _send;
+    private readonly List<IConnection> _sendTargets = new();
+    private const double SliceBudgetMs = 4.0;
 
     // Local user pending initialization (wait for sync-created User)
     internal RefID LocalUserRefIDToInit { get; private set; }
@@ -179,6 +222,14 @@ public class SessionSyncManager : IDisposable
     public int TotalListMismatches { get; private set; }
     public int TotalTargetedResyncs { get; private set; }
     public bool IsDesynced => _desynced;
+
+    // Link pacing on the authority: values a peer behind on its link skipped for a newer one, values sent to
+    // catch it up, and the worst peer right now.
+    public long TotalCoalescedRecords { get; private set; }
+    public long TotalOwedSent { get; private set; }
+    public int PeersBehind { get; private set; }
+    public long WorstPeerBacklog { get; private set; }
+    public int WorstPeerOwed { get; private set; }
 
     // Live queue depths for diagnostics (the Network debug tab). Reads of ConcurrentQueue.Count are safe
     // from any thread; the plain Queue count is a benign racy read used for display only.
@@ -264,7 +315,7 @@ public class SessionSyncManager : IDisposable
             LumoraLogger.Error("[Sync] SessionSyncManager: sync thread did not initialize within 10s - join may fail");
         }
 
-        LumoraLogger.Log("[Sync] SessionSyncManager: All threads started");
+        LumoraLogger.Debug("[Sync] SessionSyncManager: All threads started");
     }
 
     // Called from main thread after World.Update(). Allows the sync thread to advance past the refresh wait.
@@ -303,14 +354,14 @@ public class SessionSyncManager : IDisposable
 
     public void QueueUserForInitialization(User user)
     {
-        LumoraLogger.Log($"[Sync] QueueUserForInitialization: Queuing user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
+        LumoraLogger.Debug($"[Sync] QueueUserForInitialization: Queuing user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
         // Hold off all live fan-out to this user until its full state is on the wire (re-enabled once
         // initialization finishes). The flag already defaults false, but a re-init of an existing user needs the reset. -xlinka
         user.StopTransmittingStreamData();
         lock (_newUsersLock)
         {
             _newUsersToInitialize.Add(user);
-            LumoraLogger.Log($"[Sync] QueueUserForInitialization: Queue now has {_newUsersToInitialize.Count} users");
+            LumoraLogger.Debug($"[Sync] QueueUserForInitialization: Queue now has {_newUsersToInitialize.Count} users");
         }
     }
 
@@ -318,7 +369,7 @@ public class SessionSyncManager : IDisposable
 
     private void DecodeLoop()
     {
-        LumoraLogger.Log("[Sync] DecodeLoop started");
+        LumoraLogger.Debug("[Sync] DecodeLoop started");
 
         while (_running && !_isDisposed)
         {
@@ -354,14 +405,14 @@ public class SessionSyncManager : IDisposable
             }
         }
 
-        LumoraLogger.Log("[Sync] DecodeLoop stopped");
+        LumoraLogger.Debug("[Sync] DecodeLoop stopped");
     }
 
     // ENCODE THREAD
 
     private void EncodeLoop()
     {
-        LumoraLogger.Log("[Sync] EncodeLoop started");
+        LumoraLogger.Debug("[Sync] EncodeLoop started");
 
         while (_running && !_isDisposed)
         {
@@ -395,7 +446,7 @@ public class SessionSyncManager : IDisposable
                     int threshold = message.CompressionThreshold;
                     if (threshold > 0 && encoded.Length >= threshold)
                         encoded = SyncFrameCodec.WrapCompressed(encoded);
-                    Session.Connections.Broadcast(encoded, message.Targets, message.Reliable);
+                    Session.Connections.Broadcast(encoded, message.Targets, message.Reliable, message.Background, message.Bulk);
                 }
                 catch (Exception ex)
                 {
@@ -408,14 +459,14 @@ public class SessionSyncManager : IDisposable
             }
         }
 
-        LumoraLogger.Log("[Sync] EncodeLoop stopped");
+        LumoraLogger.Debug("[Sync] EncodeLoop stopped");
     }
 
     // SYNC THREAD
 
     private void SyncLoop()
     {
-        LumoraLogger.Log("[Sync] SyncLoop started");
+        LumoraLogger.Debug("[Sync] SyncLoop started");
 
         var controlMessagesToProcess = new List<ControlMessage>();
         ulong lastDeltaSyncTime = 0;
@@ -489,9 +540,10 @@ public class SessionSyncManager : IDisposable
 
                     // A minimum bite so a steady trickle of small deltas never pays the cost of a clock
                     // read per message, and so progress is guaranteed even if one message alone is over
-                    // budget (a single huge FullBatch still applies whole; it cannot be split here).
+                    // budget. A full batch is never small, so it answers to the clock straight away: a
+                    // world handed over in slices takes one slice a cycle, not four. -xlinka
                     drained++;
-                    if (drained < MessageDrainMinBite)
+                    if (drained < MessageDrainMinBite && message is not FullBatch)
                         continue;
                     if ((System.Diagnostics.Stopwatch.GetTimestamp() - drainStart) * drainTicksToMs >= MessageDrainBudgetMs)
                         break;
@@ -515,8 +567,12 @@ public class SessionSyncManager : IDisposable
 
                 // Everything this cycle decoded has applied, so the members of what it created stop
                 // loading, bar any still waiting on a pending record. Before the lock drops: the world
-                // thread must never see a member that is loading only because nobody let it go.
-                World.SyncController.ReleaseHeldLoading(IsPendingTarget);
+                // thread must never see a member that is loading only because nobody let it go. A client
+                // still taking in its initial state keeps them held until the last slice is in: slices
+                // land over many cycles, and a member let go before its own record arrives dirties on the
+                // first write a decode handler makes, which a client that is not running refuses. -xlinka
+                if (World.IsAuthority || _joinStartDeltaSeen)
+                    World.SyncController.ReleaseHeldLoading(IsPendingTarget);
 
                 if (World.IsAuthority)
                 {
@@ -529,7 +585,10 @@ public class SessionSyncManager : IDisposable
 
                 DEBUG_SyncLoopStage = SyncLoopStage.ProcessingStopped;
 
-                if (!_refreshFinished.WaitOne(1000))
+                // A world that is not running has no frame to wait for: its Update returns at the first
+                // line and never signals, so this wait ran out its full second every cycle of a join,
+                // once for the challenge, once for the grant, once more behind the world state. -xlinka
+                if (World.State == World.WorldState.Running && !_refreshFinished.WaitOne(1000))
                 {
                     if (_newUsersToInitialize.Count > 0)
                     {
@@ -549,8 +608,15 @@ public class SessionSyncManager : IDisposable
 
                 DEBUG_SyncLoopStage = SyncLoopStage.GeneratingDeltaBatch;
 
-                // Null on an idle tick - nothing was dirty, so no batch was built at all.
-                var deltaBatch = World.SyncController.CollectDeltaMessages();
+                // Null on an idle tick - nothing was dirty, so no batch was built at all. A host alone in its
+                // session has nobody to send to, and sorting and encoding every moving object's pose under the
+                // data model lock for a batch that is thrown away kept the world thread waiting for nothing.
+                bool anyReceiver = !World.IsAuthority
+                    || Session.Connections.ConnectionCount > 0 || _send != null || _queuedSends.Count > 0;
+                if (World.IsAuthority)
+                    UpdateBacklogs();
+                World.SyncController.DropFieldDeltas = !anyReceiver;
+                var deltaBatch = World.SyncController.CollectDeltaMessages(anyReceiver);
                 LastGeneratedDeltaChanges = deltaBatch?.DataRecordCount ?? 0;
 
                 if (deltaBatch != null && deltaBatch.DataRecordCount > 0)
@@ -568,7 +634,9 @@ public class SessionSyncManager : IDisposable
                         }
                     }
 
-                    if (deltaBatch.Targets.Count > 0)
+                    // A joiner being handed the world in slices takes this number too.
+                    bool toJoiners = World.IsAuthority && _send is { Started: true };
+                    if (deltaBatch.Targets.Count > 0 || toJoiners)
                     {
                         if (!World.IsAuthority)
                         {
@@ -591,7 +659,9 @@ public class SessionSyncManager : IDisposable
                         // number it takes by carrying it to the excluded peer in that peer's
                         // confirmation. -xlinka
                         deltaBatch.LinkSequence = NextOutSequence();
-                        EnqueueForTransmission(deltaBatch);
+                        if (toJoiners)
+                            ShareWithJoiners(deltaBatch);
+                        EnqueueDelta(deltaBatch);
                     }
                     else
                     {
@@ -601,6 +671,14 @@ public class SessionSyncManager : IDisposable
                 else
                 {
                     deltaBatch?.Dispose();
+                }
+
+                // The joiners' next slice, straight after the deltas and in the same hold, before
+                // anything else in this cycle can change the world under it.
+                if (World.IsAuthority)
+                {
+                    SendFullStateSlice();
+                    CarryOwed();
                 }
 
                 DEBUG_SyncLoopStage = SyncLoopStage.GeneratingCorrections;
@@ -617,6 +695,19 @@ public class SessionSyncManager : IDisposable
 
                     if (released.Count > 0)
                     {
+                        // A joiner mid-send never gets this batch. What it already holds, from a slice
+                        // encoded while the drive still had it, rides the next delta instead, in order
+                        // with the rest of its backlog; what it does not hold yet comes in a later slice
+                        // as it stands then. -xlinka
+                        if (_send is { Started: true } send)
+                        {
+                            foreach (var element in released)
+                            {
+                                if (send.Holds(element.ReferenceID))
+                                    element.InvalidateSyncElement();
+                            }
+                        }
+
                         // Partial full batch: LinkSequence stays 0 so it repairs the records it
                         // carries without moving anyone's cursor past deltas still in flight for
                         // everything else.
@@ -685,6 +776,7 @@ public class SessionSyncManager : IDisposable
                 SendClockProbe();
                 SendPendingResyncRequests();
                 PruneStaleChangeConfirmations();
+                Session.AssetTransferer?.Update();
 
                 // Keep a deferred join advancing - OnFullStateReceived may have held Running back waiting for
                 // the local user, and every sync cycle is a chance to claim it. Cheap + idempotent. -xlinka
@@ -704,47 +796,11 @@ public class SessionSyncManager : IDisposable
                         }
                     }
 
+                    // Their world goes out a slice a cycle from the next cycle's deltas on.
                     if (usersToInit != null && usersToInit.Count > 0)
                     {
-                        LumoraLogger.Log($"[Sync] Stage 8: Encoding FullBatch for {usersToInit.Count} new users");
-                        var fullBatch = World.SyncController.EncodeFullBatch();
-                        // Tag, not a consumed number: this snapshot supersedes every delta issued so
-                        // far, so the joiner's cursor starts here and the first live delta it sees is
-                        // the next one we send.
-                        fullBatch.LinkSequence = _outSequence;
-                        LumoraLogger.Log($"[Sync] Stage 8: FullBatch has {fullBatch.DataRecordCount} records at sequence {fullBatch.LinkSequence}");
-
-                        foreach (var user in usersToInit)
-                        {
-                            if (Session.Connections.TryGetConnection(user, out var connection))
-                            {
-                                LumoraLogger.Log($"[Sync] Stage 8: Adding target connection for user '{user.UserName.Value}'");
-                                fullBatch.Targets.Add(connection);
-                            }
-                            else
-                            {
-                                LumoraLogger.Warn($"[Sync] Stage 8: No connection found for user '{user.UserName.Value}'");
-                            }
-                        }
-
-                        LumoraLogger.Log($"[Sync] Stage 8: Enqueueing FullBatch with {fullBatch.Targets.Count} targets");
-                        EnqueueForTransmission(fullBatch);
-
-                        var startDeltaMessage = new ControlMessage(ControlMessage.Message.JoinStartDelta);
-                        foreach (var user in usersToInit)
-                        {
-                            if (Session.Connections.TryGetConnection(user, out var connection))
-                            {
-                                startDeltaMessage.Targets.Add(connection);
-                                // Full state + the "deltas may flow now" signal are on the wire for this
-                                // user, so open its gate. The very next sync tick's fan-out will start
-                                // including it. Order matters: full batch enqueued, then JoinStartDelta,
-                                // then gate open - so live traffic only ever trails full state. -xlinka
-                                user.StartTransmittingStreamData();
-                            }
-                        }
-                        LumoraLogger.Log($"[Sync] Stage 8: Enqueueing JoinStartDelta with {startDeltaMessage.Targets.Count} targets");
-                        EnqueueForTransmission(startDeltaMessage);
+                        LumoraLogger.Debug($"[Sync] Stage 8: {usersToInit.Count} new user(s) queued for the world in slices");
+                        _queuedSends.Enqueue(new FullStateSend(usersToInit));
                     }
                 }
 
@@ -767,7 +823,7 @@ public class SessionSyncManager : IDisposable
             }
         }
 
-        LumoraLogger.Log("[Sync] SyncLoop stopped");
+        LumoraLogger.Debug("[Sync] SyncLoop stopped");
     }
 
     private bool ProcessMessage(SyncMessage msg, ulong lastDeltaSyncTime, List<ControlMessage> controlMessagesToProcess)
@@ -1007,6 +1063,7 @@ public class SessionSyncManager : IDisposable
         lock (_linkLock)
         {
             _linkSequences.Remove(connection);
+            _backlogs.Remove(connection);
         }
     }
 
@@ -1207,6 +1264,9 @@ public class SessionSyncManager : IDisposable
             return;
         }
 
+        // The whole world in one batch supersedes any slices still on their way to this user.
+        DropFromSends(user);
+
         var fullBatch = World.SyncController.EncodeFullBatch();
         fullBatch.LinkSequence = _outSequence;
         fullBatch.Targets.Add(connection);
@@ -1222,6 +1282,342 @@ public class SessionSyncManager : IDisposable
         user?.StartTransmittingStreamData();
 
         LumoraLogger.Log($"[Sync] Sent full world state to {LinkName(connection)} ({reason}): {fullBatch.DataRecordCount} records tagged at sequence {fullBatch.LinkSequence}");
+    }
+
+    // One cycle's slice of the world for the joiners being handed it.
+    private void SendFullStateSlice()
+    {
+        if (_send == null)
+        {
+            if (_queuedSends.Count == 0)
+                return;
+            _send = _queuedSends.Dequeue();
+        }
+
+        var send = _send;
+        if (!CollectSendTargets(send))
+        {
+            LumoraLogger.Log($"[Sync] Join slices: nobody left to send to, dropped at {send.Next}/{send.Elements.Length}");
+            _send = null;
+            return;
+        }
+
+        // A joiner whose link still holds the last slices gets the next one later, as the world stands then:
+        // queued slices only go stale while they wait, and what a joiner holds already gets every change.
+        if (send.Started && AnyLinkFull(_sendTargets))
+            return;
+
+        if (!send.Started)
+        {
+            (send.Keys, send.Elements) = World.SyncController.SnapshotReplicated();
+            // Tag, not a consumed number: the slices supersede every delta issued so far, so the joiner's
+            // cursor starts here and the first live delta it sees is the next one we number.
+            send.Tag = _outSequence;
+            send.Started = true;
+            LumoraLogger.Debug($"[Sync] Join slices: {send.Elements.Length} records for {_sendTargets.Count} joiner(s) from sequence {send.Tag}");
+        }
+
+        var slice = new FullBatch(World.StateVersion, World.SyncTick) { ExpectedRecords = send.Elements.Length };
+        // Only the first slice moves the joiner's cursor; the rest are partial and leave it there.
+        if (send.Next == 0)
+            slice.LinkSequence = send.Tag;
+
+        var elements = send.Elements;
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        long budget = (long)(SliceBudgetMs * System.Diagnostics.Stopwatch.Frequency / 1000.0);
+        while (send.Next < elements.Length)
+        {
+            var element = elements[send.Next++];
+            // Gone since the send began: whatever owned it says so in a change the joiner gets.
+            if (!element.IsDisposed)
+                World.SyncController.EncodeFullRecord(element, slice);
+            if ((send.Next & 15) == 0 && System.Diagnostics.Stopwatch.GetTimestamp() - started >= budget)
+                break;
+        }
+
+        slice.Targets.AddRange(_sendTargets);
+        EnqueueForTransmission(slice);
+
+        if (send.Next < elements.Length)
+            return;
+
+        // Every slice is on the wire. JoinStartDelta follows them, then the gate opens, so live traffic only
+        // ever trails full state, and from here the joiners get the same messages as everyone.
+        var startDeltaMessage = new ControlMessage(ControlMessage.Message.JoinStartDelta);
+        foreach (var user in send.Users)
+        {
+            if (Session.Connections.TryGetConnection(user, out var connection))
+            {
+                startDeltaMessage.Targets.Add(connection);
+                user.StartTransmittingStreamData();
+            }
+        }
+        LumoraLogger.Debug($"[Sync] Join slices: all {elements.Length} records sent, JoinStartDelta to {startDeltaMessage.Targets.Count} joiner(s)");
+        EnqueueForTransmission(startDeltaMessage);
+        _send = null;
+    }
+
+    // A numbered message every live peer got goes to the joiners being handed the world as well, under the
+    // same number, less the records of elements a slice still to come carries. Sent even with nothing left
+    // in it: it carries the number, and a number the joiner never sees reads as a hole. -xlinka
+    private void ShareWithJoiners(DeltaBatch batch)
+    {
+        var send = _send;
+        if (send == null || !send.Started || !CollectSendTargets(send))
+            return;
+
+        var copy = new DeltaBatch(batch.SenderStateVersion, batch.SenderSyncTick)
+        {
+            LinkSequence = batch.LinkSequence
+        };
+        for (int i = 0; i < batch.DataRecordCount; i++)
+        {
+            if (send.Holds(batch.GetDataRecord(i).TargetID))
+                batch.CopyDataRecordTo(i, copy);
+        }
+        copy.Targets.AddRange(_sendTargets);
+        EnqueueDelta(copy);
+    }
+
+    // The joiners a send is for that are still connected, into _sendTargets.
+    private bool CollectSendTargets(FullStateSend send)
+    {
+        _sendTargets.Clear();
+        foreach (var user in send.Users)
+        {
+            if (Session.Connections.TryGetConnection(user, out var connection))
+                _sendTargets.Add(connection);
+        }
+        return _sendTargets.Count > 0;
+    }
+
+    private void DropFromSends(User? user)
+    {
+        if (user == null)
+            return;
+        _send?.Users.Remove(user);
+        foreach (var queued in _queuedSends)
+            queued.Users.Remove(user);
+    }
+
+    // LINK PACING
+
+    private void UpdateBacklogs()
+    {
+        var connections = Session.Connections.GetAllConnections();
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        int behind = 0;
+        long worst = 0;
+        int worstOwed = 0;
+        PeerBacklog? worstPeer = null;
+        IConnection? worstLink = null;
+        foreach (var connection in connections)
+        {
+            if (!connection.IsOpen)
+                continue;
+            ulong sent = connection.SentBytes;
+            long pending = connection.PendingSendBytes;
+            lock (_linkLock)
+            {
+                if (!_backlogs.TryGetValue(connection, out var backlog))
+                    _backlogs[connection] = backlog = new PeerBacklog();
+                backlog.Update(sent, pending, now);
+                if (backlog.Behind)
+                    behind++;
+                if (pending >= worst)
+                {
+                    worst = pending;
+                    worstPeer = backlog;
+                    worstLink = connection;
+                }
+                worstOwed = System.Math.Max(worstOwed, backlog.OwedCount);
+            }
+        }
+        lock (_linkLock)
+        {
+            if (_backlogs.Count > connections.Count)
+            {
+                foreach (var gone in _backlogs.Keys.Where(c => !c.IsOpen || !connections.Contains(c)).ToList())
+                    _backlogs.Remove(gone);
+            }
+        }
+        PeersBehind = behind;
+        WorstPeerBacklog = worst;
+        WorstPeerOwed = worstOwed;
+
+        if (worstPeer is { Behind: true } && now - _lastBacklogLog > 10 * System.Diagnostics.Stopwatch.Frequency)
+        {
+            _lastBacklogLog = now;
+            LumoraLogger.Log($"[Sync] {LinkName(worstLink)} is behind: {worst / 1024} KB waiting (peak {worstPeer.PeakPending / 1024} KB), "
+                + $"drains ~{worstPeer.DrainRate / 1024:0} KB/s, {worstPeer.OwedCount} values owed; {TotalCoalescedRecords} skipped for newer so far");
+        }
+    }
+
+    private bool AnyLinkFull(List<IConnection> links)
+    {
+        lock (_linkLock)
+        {
+            foreach (var link in links)
+            {
+                if (_backlogs.TryGetValue(link, out var backlog) && backlog.Full)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    // Sends a numbered delta to its targets. One that is behind gets a copy under the same number without the
+    // values a newer one will carry, and owes those elements instead. Everything else in it, creations,
+    // removals, list ops and one-off edits, still arrives in order. -xlinka
+    private void EnqueueDelta(DeltaBatch batch)
+    {
+        if (World.IsAuthority && PeersBehind > 0 && batch.Targets.Count > 0)
+            SplitBehind(batch);
+        if (batch.Targets.Count > 0)
+            EnqueueForTransmission(batch);
+        else
+            batch.Dispose();
+    }
+
+    private void SplitBehind(DeltaBatch batch)
+    {
+        var behind = _behindScratch;
+        behind.Clear();
+        lock (_linkLock)
+        {
+            for (int i = batch.Targets.Count - 1; i >= 0; i--)
+            {
+                if (_backlogs.TryGetValue(batch.Targets[i], out var backlog) && backlog.Behind)
+                {
+                    behind.Add(batch.Targets[i]);
+                    batch.Targets.RemoveAt(i);
+                }
+            }
+
+            foreach (var target in behind)
+            {
+                var backlog = _backlogs[target];
+                var copy = new DeltaBatch(batch.SenderStateVersion, batch.SenderSyncTick)
+                {
+                    LinkSequence = batch.LinkSequence
+                };
+                int skipped = 0;
+                for (int i = 0; i < batch.DataRecordCount; i++)
+                {
+                    var record = batch.GetDataRecord(i);
+                    if (record.Coalescable)
+                    {
+                        backlog.Owe(record.TargetID);
+                        skipped++;
+                    }
+                    else
+                    {
+                        batch.CopyDataRecordTo(i, copy);
+                    }
+                }
+                TotalCoalescedRecords += skipped;
+                AppendOwed(copy, backlog);
+                copy.Targets.Add(target);
+                EnqueueForTransmission(copy);
+            }
+        }
+    }
+
+    // What a peer is owed rides its own copy of a numbered delta, as each value stands now, so it lands in
+    // order with everything else that peer is sent: a joiner still holding its deltas, or a peer replaying a
+    // backlog, applies it where it belongs instead of under older values. The delta of a plain value is the
+    // value whole, so the record reads the same as any other. -xlinka
+    private void AppendOwed(DeltaBatch copy, PeerBacklog backlog)
+    {
+        backlog.Served = true;
+        if (backlog.OwedCount == 0 || backlog.CycleRoom <= 0)
+            return;
+        long budget = (long)(OwedFlushBudgetMs * System.Diagnostics.Stopwatch.Frequency / 1000.0);
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        int before = copy.PayloadByteSize;
+        long limit = before + backlog.CycleRoom;
+        int appended = 0;
+        while (copy.PayloadByteSize < limit && backlog.TryTakeOwed(out var id))
+        {
+            if (!World.SyncController.TryGetElement(id, out var element) || element.IsDisposed
+                || element.IsLocalElement || !element.IsValid || !element.DeltaIsCurrentValue)
+                continue;
+            var writer = copy.BeginNewDataRecord(id);
+            try
+            {
+                element.EncodeFull(writer, copy, forFullBatch: true);
+                copy.FinishDataRecord(id);
+                appended++;
+            }
+            catch (Exception ex)
+            {
+                copy.CancelDataRecord();
+                LumoraLogger.Debug($"[Sync] owed value {id} skipped: {ex.Message}");
+            }
+            if ((appended & 63) == 0 && System.Diagnostics.Stopwatch.GetTimestamp() - started > budget)
+                break;
+        }
+        backlog.CycleRoom -= copy.PayloadByteSize - before;
+        TotalOwedSent += appended;
+    }
+
+    // A peer owed values that no numbered delta reached this cycle gets them on one made for the purpose. It
+    // takes the next number, so it goes to every peer, empty to those that are caught up.
+    private void CarryOwed()
+    {
+        if (PeersBehind == 0)
+            return;
+        bool waiting = false;
+        lock (_linkLock)
+        {
+            foreach (var backlog in _backlogs.Values)
+            {
+                if (backlog.Behind && !backlog.Served && backlog.OwedCount > 0 && backlog.CycleRoom > 0)
+                {
+                    waiting = true;
+                    break;
+                }
+            }
+        }
+        if (!waiting)
+            return;
+
+        var carrier = new DeltaBatch(World.StateVersion, World.SyncTick);
+        AddAuthorityFanoutTargets(carrier);
+        bool toJoiners = _send is { Started: true };
+        if (carrier.Targets.Count == 0 && !toJoiners)
+        {
+            carrier.Dispose();
+            return;
+        }
+        carrier.LinkSequence = NextOutSequence();
+        if (toJoiners)
+            ShareWithJoiners(carrier);
+        EnqueueDelta(carrier);
+    }
+
+    // A peer's relayed changes: its own values are newer than anything it is owed for them, and the ones that
+    // keep changing may be skipped for peers that are behind, like the authority's own.
+    private void NoteRelayedValues(DeltaBatch forward, IConnection? sender)
+    {
+        if (PeersBehind == 0)
+            return;
+        lock (_linkLock)
+        {
+            PeerBacklog? own = null;
+            if (sender != null && _backlogs.TryGetValue(sender, out var found) && found.OwedCount > 0)
+                own = found;
+            for (int i = 0; i < forward.DataRecordCount; i++)
+            {
+                var id = forward.GetDataRecord(i).TargetID;
+                own?.Forgive(id);
+                if (World.SyncController.TryGetElement(id, out var element) && element.DeltaIsCurrentValue
+                    && element.StampDelta(World.SyncTick))
+                {
+                    forward.MarkCoalescable(i);
+                }
+            }
+        }
     }
 
     // ELEMENT-LEVEL RESYNC
@@ -1259,7 +1655,7 @@ public class SessionSyncManager : IDisposable
     {
         if (_elementsAwaitingResync.Remove(id))
         {
-            LumoraLogger.Log($"[Sync] Collection {id} repaired from a full record - resuming its deltas");
+            LumoraLogger.Debug($"[Sync] Collection {id} repaired from a full record - resuming its deltas");
         }
     }
 
@@ -1379,7 +1775,7 @@ public class SessionSyncManager : IDisposable
         batch.Targets.Add(message.Sender);
         EnqueueForTransmission(batch);
         TotalTargetedResyncs++;
-        LumoraLogger.Log($"[Sync] ResyncElements: re-encoded {elements.Count}/{requested} element(s) for {LinkName(message.Sender)}");
+        LumoraLogger.Debug($"[Sync] ResyncElements: re-encoded {elements.Count}/{requested} element(s) for {LinkName(message.Sender)}");
     }
 
     // The authority refuses a peer's deltas outright while that peer is resyncing, so those ticks never get
@@ -1571,19 +1967,13 @@ public class SessionSyncManager : IDisposable
 
         var forward = CopyDeltaBatch(batch);
         forward.LinkSequence = relaySequence;
+        NoteRelayedValues(forward, batch.Sender);
 
         // Relay this peer's delta to everyone else who's live, but never echo it back to the
         // sender that produced it. -xlinka
         AddAuthorityFanoutTargets(forward, batch.Sender);
-
-        if (forward.Targets.Count > 0)
-        {
-            EnqueueForTransmission(forward);
-        }
-        else
-        {
-            forward.Dispose();
-        }
+        ShareWithJoiners(forward);
+        EnqueueDelta(forward);
 
         if (batch.Sender != null)
         {
@@ -1824,6 +2214,14 @@ public class SessionSyncManager : IDisposable
                 }
 
                 bool decoded = false;
+                if (batch is DeltaBatch && IsPendingTarget(targetID))
+                {
+                    QueuePendingRecord(batch, i);
+                    batch.MarkDataRecordAsProcessed(i);
+                    remaining--;
+                    decodedThisPass++;
+                    continue;
+                }
                 try
                 {
                     decoded = batch switch
@@ -1841,6 +2239,13 @@ public class SessionSyncManager : IDisposable
 
                         if (batch is FullBatch)
                         {
+                            // Full records replace the state represented by all earlier operations
+                            // for this element. Replaying an older deferred record would undo the repair.
+                            lock (_pendingLock)
+                            {
+                                _pendingFullRecords.Remove(targetID);
+                                _pendingDeltaRecords.Remove(targetID);
+                            }
                             ClearElementResync(targetID);
                         }
                         // Count records that actually MATERIALIZED, so the loading bar reflects real
@@ -1890,9 +2295,9 @@ public class SessionSyncManager : IDisposable
                     var obj = World.ReferenceController?.GetObjectOrNull(record.TargetID);
                     LumoraLogger.Debug($"[Sync]   FAILED RefID={record.TargetID} Type={obj?.GetType().Name ?? "NOT_FOUND"}");
 
-                    // An unjudged record never waits on the authority. Its target was not created by
-                    // this batch, and the pending queue decodes with no sender to judge it as. Marked
-                    // invalid so the relay leaves it out as well. -xlinka
+                    // An unjudged record never waits on the authority: its target was not created by
+                    // this batch, so its write permission could not be established before relay.
+                    // Mark it invalid so the relay leaves it out as well. -xlinka
                     if (batch is DeltaBatch && World.IsAuthority && !record.Validated)
                     {
                         batch.InvalidateDataRecord(i, conflict: false);
@@ -1929,26 +2334,42 @@ public class SessionSyncManager : IDisposable
             Data = buffer,
             SenderStateVersion = batch.SenderStateVersion,
             SenderSyncTick = batch.SenderSyncTick,
+            Sender = batch.Sender,
+            SenderUser = batch.SenderUser,
             FirstSeenTick = World.SyncTick,
             Attempts = 0
         };
 
         var isFull = batch is FullBatch;
-        var map = isFull ? _pendingFullRecords : _pendingDeltaRecords;
-
         lock (_pendingLock)
         {
-            if (map.TryGetValue(record.TargetID, out var existing))
+            if (!isFull)
             {
-                if (pending.SenderSyncTick >= existing.SenderSyncTick)
+                if (!_pendingDeltaRecords.TryGetValue(record.TargetID, out var queue))
+                    _pendingDeltaRecords[record.TargetID] = queue = new Queue<PendingRecord>();
+                if (queue.Count >= MaxPendingRecordsPerElement)
                 {
-                    map[record.TargetID] = pending;
+                    // An element that never arrives must not accumulate an unlimited operation log.
+                    // Repair its full value instead of trimming operations out of the middle.
+                    NoteElementNeedsResync(record.TargetID, "pending operation limit reached");
+                    DropPendingRecord(record.TargetID, isFull: false, "pending operation limit reached");
+                    return;
                 }
+                queue.Enqueue(pending);
+                return;
             }
-            else
+
+            if (_pendingFullRecords.TryGetValue(record.TargetID, out var existing))
             {
-                map[record.TargetID] = pending;
+                if (pending.SenderSyncTick < existing.SenderSyncTick)
+                    return;
             }
+            _pendingFullRecords[record.TargetID] = pending;
+            // Reliable messages are processed in arrival order. This snapshot includes earlier
+            // deltas; only operations arriving AFTER it may replay when its target becomes ready.
+            // Do this now, not during replay, or those newer operations would also be discarded.
+            _pendingDeltaRecords.Remove(record.TargetID);
+            ClearElementResync(record.TargetID);
         }
     }
 
@@ -1958,7 +2379,7 @@ public class SessionSyncManager : IDisposable
             return;
 
         List<PendingRecord> fullRecords;
-        List<PendingRecord> deltaRecords;
+        List<RefID> deltaTargets;
 
         lock (_pendingLock)
         {
@@ -1966,7 +2387,7 @@ public class SessionSyncManager : IDisposable
                 return;
 
             fullRecords = new List<PendingRecord>(_pendingFullRecords.Values);
-            deltaRecords = new List<PendingRecord>(_pendingDeltaRecords.Values);
+            deltaTargets = new List<RefID>(_pendingDeltaRecords.Keys);
         }
 
         foreach (var record in fullRecords)
@@ -1980,9 +2401,22 @@ public class SessionSyncManager : IDisposable
 
         if (World.State == World.WorldState.Running && (_acceptDeltas || World.IsAuthority))
         {
-            foreach (var record in deltaRecords)
+            foreach (var id in deltaTargets)
             {
-                ProcessPendingRecord(record, isFull: false);
+                // Keep a single late element from monopolizing the sync cycle as its backlog clears.
+                for (int replayed = 0; replayed < 32; replayed++)
+                {
+                    PendingRecord record;
+                    lock (_pendingLock)
+                    {
+                        if (!_pendingDeltaRecords.TryGetValue(id, out var queue) || queue.Count == 0)
+                            break;
+                        record = queue.Peek();
+                    }
+                    // A blocked predecessor must stay ahead of all later operations on this element.
+                    if (!ProcessPendingRecord(record, isFull: false))
+                        break;
+                }
             }
         }
     }
@@ -2066,10 +2500,10 @@ public class SessionSyncManager : IDisposable
         World.OnFullStateReceived();
     }
 
-    private void ProcessPendingRecord(PendingRecord record, bool isFull)
+    private bool ProcessPendingRecord(PendingRecord record, bool isFull)
     {
         if (World == null || World.ReferenceController == null || World.SyncController == null)
-            return;
+            return false;
 
         // During the initial join we keep retrying instead of giving
         // up after a few frames - a record is usually only pending because its owner hasn't decoded
@@ -2092,33 +2526,50 @@ public class SessionSyncManager : IDisposable
             {
                 DropPendingRecord(record.TargetID, isFull, "expired");
             }
-            return;
+            return true;
         }
 
         if (!World.ReferenceController.ContainsObject(record.TargetID))
         {
-            return;
+            return false;
         }
 
         if (!isFull)
         {
+            lock (_pendingLock)
+            {
+                if (_pendingFullRecords.ContainsKey(record.TargetID))
+                    return false;
+            }
             var syncElement = World.ReferenceController.GetObjectOrNull(record.TargetID) as SyncElement;
             if (syncElement != null && syncElement.IsSyncDirty)
             {
                 // Defer pending delta while local changes are still dirty.
-                return;
+                return false;
             }
         }
 
         var decoded = TryDecodePendingRecord(record, isFull);
         if (decoded)
         {
+            if (isFull)
+                ClearElementResync(record.TargetID);
             if (isFull && !World.IsAuthority)
             {
                 lock (_progressLock) { _initializedComponents++; }
             }
-            DropPendingRecord(record.TargetID, isFull, null!);
-            return;
+            lock (_pendingLock)
+            {
+                if (isFull)
+                    _pendingFullRecords.Remove(record.TargetID);
+                else if (_pendingDeltaRecords.TryGetValue(record.TargetID, out var queue))
+                {
+                    queue.Dequeue();
+                    if (queue.Count == 0)
+                        _pendingDeltaRecords.Remove(record.TargetID);
+                }
+            }
+            return true;
         }
 
         record.Attempts++;
@@ -2128,10 +2579,10 @@ public class SessionSyncManager : IDisposable
         if (record.Attempts >= maxAttempts)
         {
             DropPendingRecord(record.TargetID, isFull, "attempts exceeded");
-            return;
+            return true;
         }
 
-        UpdatePendingRecord(record, isFull);
+        return false;
     }
 
     private bool TryDecodePendingRecord(PendingRecord record, bool isFull)
@@ -2139,6 +2590,8 @@ public class SessionSyncManager : IDisposable
         BinaryMessageBatch batch = isFull
             ? new FullBatch(record.SenderStateVersion, record.SenderSyncTick)
             : new DeltaBatch(record.SenderStateVersion, record.SenderSyncTick);
+        batch.Sender = record.Sender;
+        batch.SenderUser = record.SenderUser;
 
         try
         {
@@ -2173,24 +2626,12 @@ public class SessionSyncManager : IDisposable
         }
     }
 
-    private void UpdatePendingRecord(PendingRecord record, bool isFull)
-    {
-        lock (_pendingLock)
-        {
-            var map = isFull ? _pendingFullRecords : _pendingDeltaRecords;
-            if (map.ContainsKey(record.TargetID))
-            {
-                map[record.TargetID] = record;
-            }
-        }
-    }
-
     private void DropPendingRecord(RefID targetId, bool isFull, string reason)
     {
         lock (_pendingLock)
         {
-            var map = isFull ? _pendingFullRecords : _pendingDeltaRecords;
-            if (map.Remove(targetId) && !string.IsNullOrEmpty(reason))
+            bool removed = isFull ? _pendingFullRecords.Remove(targetId) : _pendingDeltaRecords.Remove(targetId);
+            if (removed && !string.IsNullOrEmpty(reason))
             {
                 // Per-record, at Debug: a joiner can pend+drop dozens of records (e.g. its own avatar
                 // echoed back before its local copy exists), and a Warn-per-record buries the console.
@@ -2200,10 +2641,12 @@ public class SessionSyncManager : IDisposable
         }
     }
 
-    private struct PendingRecord
+    private sealed class PendingRecord
     {
         public RefID TargetID;
-        public byte[] Data;
+        public byte[] Data = null!;
+        public IConnection Sender = null!;
+        public User SenderUser = null!;
         public ulong SenderStateVersion;
         public ulong SenderSyncTick;
         public ulong FirstSeenTick;
@@ -2217,8 +2660,9 @@ public class SessionSyncManager : IDisposable
             if (!_initialFullBatchReceived)
             {
                 _initialFullBatchReceived = true;
-                _expectedComponents = fullBatch.DataRecordCount;
-                LumoraLogger.Log($"[Sync] TrackFullBatchProgress: Expecting {_expectedComponents} components from initial FullBatch");
+                // A slice names the size of the whole world it is part of.
+                _expectedComponents = fullBatch.ExpectedRecords > 0 ? fullBatch.ExpectedRecords : fullBatch.DataRecordCount;
+                LumoraLogger.Debug($"[Sync] TrackFullBatchProgress: Expecting {_expectedComponents} components from initial FullBatch");
             }
 
             for (int i = 0; i < fullBatch.DataRecordCount; i++)
@@ -2231,11 +2675,11 @@ public class SessionSyncManager : IDisposable
                 }
             }
 
-            LumoraLogger.Log($"[Sync] TrackFullBatchProgress: Received {_receivedComponents}/{_expectedComponents} components ({(_receivedComponents * 100.0f / _expectedComponents):F1}%)");
+            LumoraLogger.Debug($"[Sync] TrackFullBatchProgress: Received {_receivedComponents}/{_expectedComponents} components ({(_receivedComponents * 100.0f / _expectedComponents):F1}%)");
         }
     }
 
-    // NOTE: World transitions to Running when JoinStartDelta is received,
+    // The world goes to Running when JoinStartDelta arrives,
     // not based on percentage of components synchronized.
 
     public float GetInitializationProgress()
@@ -2310,7 +2754,7 @@ public class SessionSyncManager : IDisposable
                     }
 
                     var requestData = LegacyJoinRequestData.Decode(message.Payload);
-                    LumoraLogger.Log($"[Sync] ProcessControlMessage: JoinRequest from '{requestData.UserName}'");
+                    LumoraLogger.Debug($"[Sync] ProcessControlMessage: JoinRequest from '{requestData.UserName}'");
                     Session.Connections.HandleJoinRequest(message.Sender, requestData);
                 }
                 break;
@@ -2353,7 +2797,7 @@ public class SessionSyncManager : IDisposable
                 }
 
                 var grantData = LegacyJoinGrantData.Decode(message.Payload);
-                LumoraLogger.Log($"[Sync] ProcessControlMessage: JoinGrant UserID={grantData.AssignedUserID}");
+                LumoraLogger.Debug($"[Sync] ProcessControlMessage: JoinGrant UserID={grantData.AssignedUserID}");
 
                 var assignedRefID = new RefID(grantData.AssignedUserID);
 
@@ -2364,7 +2808,7 @@ public class SessionSyncManager : IDisposable
                 _pendingAllocationStart = grantData.AllocationIDStart;
                 _pendingAllocationEnd = grantData.AllocationIDEnd;
 
-                LumoraLogger.Log($"[Sync] ProcessControlMessage: Stored pending local user RefID {assignedRefID} - waiting for User to sync from host");
+                LumoraLogger.Debug($"[Sync] ProcessControlMessage: Stored pending local user RefID {assignedRefID} - waiting for User to sync from host");
 
                 Session.World.SetStateVersion(grantData.StateVersion);
 
@@ -2390,7 +2834,7 @@ public class SessionSyncManager : IDisposable
                 World.ReferenceController.SetOwnedStartPosition(userByte, startPos);
                 // Where the host mints for this user's scripts; nothing minted here goes that far.
                 World.ReferenceController.SetScriptFence(userByte, RefIDConstants.ScriptRangeStart(grantedStart.GetPosition()));
-                LumoraLogger.Log($"[Sync] Scoped allocation to user namespace: byte={userByte}, startPos={startPos}");
+                LumoraLogger.Debug($"[Sync] Scoped allocation to user namespace: byte={userByte}, startPos={startPos}");
 
                 Session.World.OnJoinGrantReceived();
                 break;
@@ -2415,9 +2859,12 @@ public class SessionSyncManager : IDisposable
                 // (as it saw it) had a hole - not that we are joining.
                 bool isResync = _joinStartDeltaSeen && !World.IsAuthority;
 
-                LumoraLogger.Log("[Sync] ProcessControlMessage: JoinStartDelta received - can now accept delta updates");
+                LumoraLogger.Debug("[Sync] ProcessControlMessage: JoinStartDelta received - can now accept delta updates");
                 _acceptDeltas = true;
                 _joinStartDeltaSeen = true;
+                // The last slice is in. What the initial state created stops loading before the world can
+                // run a frame, or the first writes its components make would never replicate.
+                World.SyncController.ReleaseHeldLoading(IsPendingTarget);
                 if (!World.IsAuthority && World.InitState == World.InitializationState.InitializingDataModel)
                 {
                     // Enter the world now. The host considers us initialized once it has sent the full
@@ -2473,11 +2920,11 @@ public class SessionSyncManager : IDisposable
                 break;
 
             case ControlMessage.Message.RequestFullState:
-                LumoraLogger.Log("[Sync] ProcessControlMessage: RequestFullState received from client");
+                LumoraLogger.Debug("[Sync] ProcessControlMessage: RequestFullState received from client");
                 
                 if (World.IsAuthority && Session.Connections.TryGetUser(message.Sender, out var requestingUser))
                 {
-                    LumoraLogger.Log($"[Sync] ProcessControlMessage: Sending full world state to user {requestingUser.UserName.Value}");
+                    LumoraLogger.Debug($"[Sync] ProcessControlMessage: Sending full world state to user {requestingUser.UserName.Value}");
                     SendFullWorldState(message.Sender, requestingUser, "peer requested full state");
 
                     // Our cursor for ITS deltas is deliberately left alone: the peer lost OUR traffic,
@@ -2510,6 +2957,22 @@ public class SessionSyncManager : IDisposable
                 {
                     World.SessionClock.ReceiveReply(replyStamp, authoritySeconds);
                 }
+                break;
+
+            case ControlMessage.Message.AccountChange:
+                if (World.IsAuthority)
+                    Session.Connections.HandleAccountChange(message.Sender, message.Payload);
+                break;
+
+            case ControlMessage.Message.AccountChallenge:
+                if (!World.IsAuthority)
+                    Session.Connections.HandleAccountChallenge(message.Sender, message.Payload);
+                break;
+
+            case ControlMessage.Message.AccountProof:
+                // Off the message loop: the check asks the accounts service twice.
+                if (World.IsAuthority)
+                    _ = Session.Connections.HandleAccountProof(message.Sender, message.Payload);
                 break;
 
             case ControlMessage.Message.AssetRequest:
@@ -2570,7 +3033,6 @@ public class SessionSyncManager : IDisposable
             _pendingStreamMessages.Dequeue().Dispose();
         }
 
-        LumoraLogger.Log("[Sync] SessionSyncManager disposed");
+        LumoraLogger.Debug("[Sync] SessionSyncManager disposed");
     }
 }
-

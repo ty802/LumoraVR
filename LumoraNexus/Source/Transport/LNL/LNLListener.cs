@@ -45,11 +45,10 @@ public class LNLListener : IListener, INetEventListener
         GlobalUri = new Uri($"lnl://0.0.0.0:{port}/{_sessionId}");
 
         _server = new NetManager(this);
-        _server.UpdateTime = 15;
+        LNLLanes.Configure(_server);
         _server.UseNativeSockets = false;
         _server.UnsyncedEvents = true;
-        _server.DisconnectTimeout = 30000;
-        _server.ChannelsCount = 2;
+        _server.DisconnectTimeout = LNLLanes.SilenceTimeoutMs;
         _server.AutoRecycle = false;
         _server.UnconnectedMessagesEnabled = true;
         _server.EnableStatistics = true;
@@ -60,7 +59,7 @@ public class LNLListener : IListener, INetEventListener
 
             if (IsInitialized)
             {
-                LumoraLogger.Log($"[lnl] LNL Listener started on {bindIP}:{port}");
+                LumoraLogger.Debug($"[lnl] LNL Listener started on {bindIP}:{port}");
             }
             else
             {
@@ -92,7 +91,7 @@ public class LNLListener : IListener, INetEventListener
             _peers.Clear();
 
             _server.Stop();
-            LumoraLogger.Log($"[lnl] LNL Listener stopped on {_bindIP}:{_port}");
+            LumoraLogger.Debug($"[lnl] LNL Listener stopped on {_bindIP}:{_port}");
         }
     }
 
@@ -107,7 +106,7 @@ public class LNLListener : IListener, INetEventListener
 
     public void OnPeerConnected(NetPeer peer)
     {
-        LumoraLogger.Log($"[lnl] Peer connected: {peer.Address}:{peer.Port}");
+        LumoraLogger.Debug($"[lnl] Peer connected: {peer.Address}:{peer.Port}");
 
         var lnlPeer = new LNLPeer(_server, peer);
         lnlPeer.CryptoEstablished += OnPeerCryptoEstablished;
@@ -134,6 +133,9 @@ public class LNLListener : IListener, INetEventListener
 
     public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod deliveryMethod)
     {
+        if (deliveryMethod is DeliveryMethod.ReliableOrdered or DeliveryMethod.ReliableUnordered)
+            _server.TriggerUpdate();
+
         if (_peers.TryGetValue(peer, out var lnlPeer))
         {
             int length = reader.AvailableBytes;
@@ -156,6 +158,8 @@ public class LNLListener : IListener, INetEventListener
         // Can be used to update peer statistics
     }
 
+    public void OnMessageDelivered(NetPeer peer, object userData) => LNLLanes.Delivered(userData);
+
     public void OnConnectionRequest(ConnectionRequest request)
     {
         // Read the key once (GetString consumes the reader). If this log never appears for a client that's
@@ -168,7 +172,7 @@ public class LNLListener : IListener, INetEventListener
         if (received == _appId)
         {
             request.Accept();
-            LumoraLogger.Log($"[lnl] Accepted connection request from {request.RemoteEndPoint}");
+            LumoraLogger.Debug($"[lnl] Accepted connection request from {request.RemoteEndPoint}");
         }
         else
         {

@@ -144,7 +144,7 @@ public sealed class RelayConnection : IConnection
         if (!wasEstablished && _crypto.IsEstablished)
         {
             IsOpen = true;
-            LumoraLogger.Log($"[lnl] RelayConnection: crypto established for session '{_sessionId}'");
+            LumoraLogger.Debug($"[lnl] RelayConnection: crypto established for session '{_sessionId}'");
             Connected?.Invoke(this);
         }
 

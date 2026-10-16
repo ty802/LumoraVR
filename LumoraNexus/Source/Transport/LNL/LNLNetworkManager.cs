@@ -39,7 +39,7 @@ public sealed class LNLNetworkManager : INetworkManager
         if (listener.IsInitialized)
         {
             _listeners.Add(listener);
-            LumoraLogger.Log($"[lnl] LNLNetworkManager: listener up on 0.0.0.0:{port}");
+            LumoraLogger.Debug($"[lnl] LNLNetworkManager: listener up on 0.0.0.0:{port}");
         }
         else
         {

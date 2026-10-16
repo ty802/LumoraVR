@@ -17,7 +17,9 @@ public static class NetworkLimits
 
     public const int MaxStreamEntryData = 64 * 1024; // 64 KB
 
-    public const int MaxAssetTransferTotalBytes = 256 * 1024 * 1024; // 256 MB
+    // A transfer streams to disk a chunk at a time, so this bounds the file a peer can make us write,
+    // not memory.
+    public const long MaxAssetTransferTotalBytes = 64L * 1024 * 1024 * 1024; // 64 GB
 
     public const int MaxAssetChunkBytes = 256 * 1024; // 256 KB
 

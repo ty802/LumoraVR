@@ -24,7 +24,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
 
-public class SessionConnectionManager : IDisposable
+public partial class SessionConnectionManager : IDisposable
 {
     private readonly object _lock = new();
     private readonly Dictionary<IConnection, User> _connectionToUser = new();
@@ -162,10 +162,10 @@ public class SessionConnectionManager : IDisposable
 
     public async Task<bool> ConnectToAsync(IEnumerable<Uri> addresses)
     {
-        // Try every advertised address in order (LAN, public, relay, ...), falling through to the next on
-        // failure instead of giving up after the first. Returns on the first that connects. -xlinka
+        // Try every advertised address, nearest first (see SessionAddressOrder), falling through to the next
+        // on failure instead of giving up after the first. Returns on the first that connects. -xlinka
         int attempts = 0;
-        foreach (var address in addresses)
+        foreach (var address in SessionAddressOrder.Order(addresses))
         {
             if (address == null)
                 continue;
@@ -197,7 +197,7 @@ public class SessionConnectionManager : IDisposable
             uri = loopback;
         }
 
-        LumoraLogger.Log($"[lnl] Connecting to {uri}");
+        LumoraLogger.Debug($"[lnl] Connecting to {uri}");
 
         var manager = NetworkManagerRegistry.FindForUri(uri);
         if (manager == null)
@@ -241,7 +241,7 @@ public class SessionConnectionManager : IDisposable
         connection.DataReceived += (data, length) => OnConnectionDataReceived(connection, data, length);
         connection.Connect(null!);
 
-        var timeoutTask = Task.Delay(10000);
+        var timeoutTask = Task.Delay(SessionAddressOrder.ConnectTimeoutMs(uri));
         var completedTask = await Task.WhenAny(taskCompletionSource.Task, timeoutTask);
         bool success = completedTask == taskCompletionSource.Task && taskCompletionSource.Task.Result;
 
@@ -312,7 +312,8 @@ public class SessionConnectionManager : IDisposable
 
         var requestData = new LegacyJoinRequestData
         {
-            UserName = Environment.MachineName,
+            // Only for the host's log: the host names us from what we prove, never from this.
+            UserName = Engine.Current?.LocalUserName ?? Environment.MachineName,
             // MachineID is now the self-certifying hash of our public key, not a free-text string. We
             // prove we hold the matching private key when the host challenges us. -xlinka
             MachineID = identity.MachineId,
@@ -334,11 +335,14 @@ public class SessionConnectionManager : IDisposable
         byte[] encoded = controlMessage.Encode();
         HostConnection.Send(encoded, encoded.Length, reliable: true, background: false);
 
-        LumoraLogger.Log($"[lnl] Sent JoinRequest to host - UserName='{requestData.UserName}'");
+        LumoraLogger.Debug($"[lnl] Sent JoinRequest to host - UserName='{requestData.UserName}'");
     }
 
     private void OnPeerConnected(IConnection peer)
     {
+        // From here on what changes may have to go to someone: the sync loop decides again on its next cycle.
+        if (World?.SyncController is { } sync)
+            sync.DropFieldDeltas = false;
         var ip = GetIpKey(peer);
 
         // Cap both total pending connections and pending per source IP, so a flood of
@@ -347,6 +351,14 @@ public class SessionConnectionManager : IDisposable
         List<IConnection>? reclaimed;
         lock (_lock)
         {
+            // A peer this session already has, told again: a second handler on it would run every message
+            // twice, and a second count against its address would never be paid back. -xlinka
+            if (_pendingConnections.Contains(peer) || _pendingAuth.ContainsKey(peer) || _connectionToUser.ContainsKey(peer))
+            {
+                LumoraLogger.Debug($"[lnl] Peer {peer.Identifier} announced again; already known");
+                return;
+            }
+
             // First reclaim any join challenges that timed out, so a flood of unanswered ones can't be what's
             // holding the cap against a legit peer trying to connect right now. -xlinka
             reclaimed = ReclaimStalePendingAuthLocked();
@@ -380,7 +392,7 @@ public class SessionConnectionManager : IDisposable
 
         LumoraLogger.Log($"[lnl] Peer connected: {peer.Identifier}");
         peer.DataReceived += (data, length) => OnConnectionDataReceived(peer, data, length);
-        LumoraLogger.Log($"[lnl] Peer {peer.Identifier} added to pending - waiting for JoinRequest");
+        LumoraLogger.Debug($"[lnl] Peer {peer.Identifier} added to pending - waiting for JoinRequest");
     }
 
     private void OnPeerDisconnected(IConnection peer)
@@ -397,6 +409,8 @@ public class SessionConnectionManager : IDisposable
         {
             RemovePendingLocked(peer);
             _pendingAuth.Remove(peer); // drop any half-finished handshake so it can't leak. -xlinka
+            _pendingClaims.Remove(peer);
+            _lastClaimAt.Remove(peer);
             if (_connectionToUser.TryGetValue(peer, out var user))
             {
                 _connectionToUser.Remove(peer);
@@ -475,7 +489,7 @@ public class SessionConnectionManager : IDisposable
             return;
         }
 
-        LumoraLogger.Log($"[lnl] HandleJoinRequest: Received from {connection.Identifier} - UserName='{requestData.UserName}'");
+        LumoraLogger.Debug($"[lnl] HandleJoinRequest: Received from {connection.Identifier} - UserName='{requestData.UserName}'");
         var rejectReason = ValidateJoinRequest(connection, requestData);
         if (rejectReason != null)
         {
@@ -594,8 +608,9 @@ public class SessionConnectionManager : IDisposable
         });
     }
 
-    private void SendJoinGrant(IConnection connection, string userName, string machineId, string accountId = "", bool forceSilenced = false)
+    private void SendJoinGrant(IConnection connection, AccountCard? account, string machineId, bool forceSilenced = false)
     {
+        var userName = account?.Username ?? AccountCard.GuestName(machineId);
         if (!World.IsAuthority)
         {
             LumoraLogger.Error("[lnl] Only authority can send JoinGrant");
@@ -634,7 +649,7 @@ public class SessionConnectionManager : IDisposable
         byte[] encoded = controlMessage.Encode();
         connection.Send(encoded, encoded.Length, reliable: true, background: false);
 
-        LumoraLogger.Log($"[lnl] Sent JoinGrant to {connection.Identifier} - UserID: {userID}, UserName: '{userName}'");
+        LumoraLogger.Debug($"[lnl] Sent JoinGrant to {connection.Identifier} - UserID: {userID}, UserName: '{userName}'");
 
         // Create user instance, populate fields, then add to the user collection for initialization.
         // Wrapped: if initializing the user worker throws (e.g. a RefID collision), tear the half-built user
@@ -643,15 +658,11 @@ public class SessionConnectionManager : IDisposable
         // registered and the next attempt collided ("RefID collision! User[NNN]:... already registered"). -xlinka
         var user = new User();
         user.UserID.Value = userID.ToString();
-        user.UserName.Value = !string.IsNullOrEmpty(userName) ? userName : $"Guest {userRefID.GetUserByte()}";
         user.MachineID.Value = machineId ?? "";
-        user.AccountId.Value = accountId ?? ""; // verified platform account id, empty for guests. -xlinka
-        // No group card from here. The host cannot read somebody else's profile, and stamping its OWN
-        // represented group on every joiner would put the host's tag over every head in the room. The
-        // joining client fills its own fields from its own account once it claims its local user
-        // (World.SetLocalUser), so a joiner starts with nothing and the card arrives with the first delta.
-        // -xlinka
-        user.ApplyRepresentedGroup(null);
+        // The name, colour, supporter and staff marks and the group card all come from the account the
+        // joiner proved, or from its proven machine key for a guest. Nothing the joiner says about itself is
+        // read. -xlinka
+        user.ApplyAccount(account, machineId);
         user.IsSilenced.Value = forceSilenced; // platform mute/spectator ban forces silence on entry. -xlinka
         user.AllocationIDStart.Value = (ulong)allocStart;
         user.AllocationIDEnd.Value = (ulong)allocEnd;
@@ -664,7 +675,7 @@ public class SessionConnectionManager : IDisposable
             _connectionToUser[connection] = user;
             _userToConnection[user] = connection;
         }
-        LumoraLogger.Log($"[lnl] SendJoinGrant: Added connection-user mapping for '{userName}'");
+        LumoraLogger.Debug($"[lnl] SendJoinGrant: Added connection-user mapping for '{userName}'");
 
         try
         {
@@ -689,7 +700,7 @@ public class SessionConnectionManager : IDisposable
 
         if (Session.Sync != null)
         {
-            LumoraLogger.Log($"[lnl] SendJoinGrant: Calling QueueUserForInitialization for '{userName}'");
+            LumoraLogger.Debug($"[lnl] SendJoinGrant: Calling QueueUserForInitialization for '{userName}'");
             Session.Sync.QueueUserForInitialization(user);
         }
         else
@@ -729,7 +740,7 @@ public class SessionConnectionManager : IDisposable
 
         byte[] encoded = controlMessage.Encode();
         connection.Send(encoded, encoded.Length, reliable: true, background: false);
-        LumoraLogger.Log($"[lnl] Sent JoinChallenge to {connection.Identifier}");
+        LumoraLogger.Debug($"[lnl] Sent JoinChallenge to {connection.Identifier}");
     }
 
     public void HandleJoinChallenge(IConnection connection, LegacyJoinChallengeData challenge)
@@ -814,7 +825,7 @@ public class SessionConnectionManager : IDisposable
         var target = connection ?? HostConnection;
         target.Send(encoded, encoded.Length, reliable: true, background: false);
         _hostVerificationToken = null; // one-shot; done with this join's host challenge. -xlinka
-        LumoraLogger.Log("[lnl] Sent JoinAuthenticate to host");
+        LumoraLogger.Debug("[lnl] Sent JoinAuthenticate to host");
     }
 
     // Host side: verify the joiner's signed challenge. Only if the signature proves they hold the
@@ -869,7 +880,7 @@ public class SessionConnectionManager : IDisposable
             if (!string.IsNullOrEmpty(claimedAccount))
             {
                 var verified = await VerifyAccountAsync(
-                    claimedAccount, pending.Request.AccountSessionId, pending.Nonce, auth.AccountSignature);
+                    claimedAccount, pending.Request.AccountSessionId, pending.Nonce, auth.AccountSignature, JoinContextUserAccount);
 
                 if (verified == null)
                 {
@@ -878,7 +889,8 @@ public class SessionConnectionManager : IDisposable
                     return;
                 }
 
-                var (verifiedAccountId, forceSilenced) = verified.Value;
+                var (verifiedCard, forceSilenced) = verified.Value;
+                var verifiedAccountId = verifiedCard.AccountId;
 
                 // We're on a threadpool continuation after the HTTP await, so marshal the grant (which
                 // mutates world state: creates + registers the User) back onto the world's sync thread.
@@ -915,7 +927,7 @@ public class SessionConnectionManager : IDisposable
                 }
 
                 LumoraLogger.Log($"[lnl] HandleJoinAuthenticate: {connection.Identifier} authenticated (account='{verifiedAccountId}', silenced={forceSilenced}) - granting");
-                world.RunSynchronously(() => SendJoinGrant(conn, req.UserName, req.MachineID, verifiedAccountId, forceSilenced));
+                world.RunSynchronously(() => SendJoinGrant(conn, verifiedCard, req.MachineID, forceSilenced));
                 return;
             }
 
@@ -931,7 +943,7 @@ public class SessionConnectionManager : IDisposable
             }
 
             LumoraLogger.Log($"[lnl] HandleJoinAuthenticate: {connection.Identifier} authenticated (guest) - granting");
-            SendJoinGrant(connection, pending.Request.UserName, pending.Request.MachineID, "");
+            SendJoinGrant(connection, null, pending.Request.MachineID);
         }
         catch (Exception ex)
         {
@@ -986,7 +998,7 @@ public class SessionConnectionManager : IDisposable
     // given login session, verify the account signature over the challenge nonce against THAT key (so the
     // joiner can't present a key of their choosing), then check platform moderation ban status. Returns
     // the verified account id, or null if anything fails. World bans are a separate, host-side check. -xlinka
-    private async Task<(string accountId, bool forceSilenced)?> VerifyAccountAsync(string accountUserId, string accountSessionId, byte[] nonce, byte[] accountSignature)
+    private async Task<(AccountCard card, bool forceSilenced)?> VerifyAccountAsync(string accountUserId, string accountSessionId, byte[] nonce, byte[] accountSignature, string context)
     {
         var cdn = Engine.Current?.CDNClient;
         if (cdn == null)
@@ -1006,7 +1018,7 @@ public class SessionConnectionManager : IDisposable
 
         if (!Lumora.Core.Security.MachineIdentity.VerifyRsaSignature(
                 publishedKey,
-                Lumora.Core.Security.MachineIdentity.BuildJoinPayload(nonce, JoinContextUserAccount),
+                Lumora.Core.Security.MachineIdentity.BuildJoinPayload(nonce, context),
                 accountSignature))
         {
             LumoraLogger.Warn($"[lnl] VerifyAccount: account signature did not verify for {accountUserId}.");
@@ -1043,7 +1055,16 @@ public class SessionConnectionManager : IDisposable
             LumoraLogger.Warn($"[lnl] VerifyAccount: {accountUserId} is spectator-banned, but there's no spectator mode yet, so silencing as a partial measure. -xlinka");
         }
 
-        return (accountUserId, forceSilenced);
+        // The card is built from the service's record for the id the key was published under, and that
+        // record has to be the same account: a reply about anybody else names nobody. -xlinka
+        var card = AccountCard.From(info);
+        if (card == null || !string.Equals(card.AccountId, accountUserId, StringComparison.Ordinal))
+        {
+            LumoraLogger.Warn($"[lnl] VerifyAccount: the service's record for {accountUserId} carries no usable name; rejecting.");
+            return null;
+        }
+
+        return (card, forceSilenced);
     }
 
     private void RemoveUser(User user)
@@ -1091,7 +1112,8 @@ public class SessionConnectionManager : IDisposable
             Data = data,
             Offset = 0,
             Length = length,
-            Sender = connection
+            Sender = connection,
+            Arrived = System.Diagnostics.Stopwatch.GetTimestamp(),
         };
 
         Session.Sync.QueueRawIncoming(raw);
@@ -1125,6 +1147,17 @@ public class SessionConnectionManager : IDisposable
         }
     }
 
+    public int ConnectionCount
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _connectionToUser.Count;
+            }
+        }
+    }
+
     public List<IConnection> GetAllConnections()
     {
         lock (_lock)
@@ -1133,11 +1166,22 @@ public class SessionConnectionManager : IDisposable
         }
     }
 
-    public void Broadcast(byte[] data, List<IConnection> targets, bool reliable)
+    public void Broadcast(byte[] data, List<IConnection> targets, bool reliable, bool background = false, bool bulk = false)
     {
+        // One link refusing a send must not cost every target after it the same message. -xlinka
         foreach (var target in targets)
         {
-            target.Send(data, data.Length, reliable, background: false);
+            try
+            {
+                if (bulk)
+                    target.SendBulk(data, data.Length);
+                else
+                    target.Send(data, data.Length, reliable, background);
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Warn($"[lnl] Broadcast: sending {data.Length} bytes to {target?.Identifier} failed: {ex.Message}");
+            }
         }
     }
 

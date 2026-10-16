@@ -33,6 +33,10 @@ public interface IConnection : IDisposable
 
     int QueuedPackets => 0;
 
+    // Bytes handed to this link that have not gone out on the wire yet, every channel: how far behind the
+    // peer is. Zero where the transport cannot tell. Read by the sync loop to pace what it sends.
+    long PendingSendBytes => 0;
+
     // Diagnostics/telemetry only.
     bool IsEncrypted { get; }
 
@@ -52,6 +56,10 @@ public interface IConnection : IDisposable
     void Close();
 
     void Send(byte[] data, int length, bool reliable, bool background);
+
+    // Reliable, but free to arrive out of order with other bulk sends: for data that says where it goes,
+    // such as asset chunks. A transport with several reliable lanes spreads it over them.
+    void SendBulk(byte[] data, int length) => Send(data, length, reliable: true, background: true);
 
     // Drive the transport for this connection. May be a no-op for transports
     // whose manager polls connections centrally (e.g. Steam). Called from the

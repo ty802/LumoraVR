@@ -31,6 +31,11 @@ public sealed class SteamListener : IListener
     private readonly HSteamListenSocket[] _listeners = new HSteamListenSocket[ChannelCount];
     private readonly Dictionary<ulong, SteamConnection> _connectionsBySteamId = new();
     private readonly Dictionary<uint, SteamConnection> _connectionsByHandle = new();
+    // Peers already handed to the session. Both channels report Connecting and then Connected, and each
+    // of those used to raise PeerConnected again: the session hooked its message handler once per raise,
+    // ran every join request three times, rejected the copies as stale, and counted the same peer as
+    // pending over and over until the host refused it outright. -xlinka
+    private readonly HashSet<SteamConnection> _announced = new();
     private HSteamNetPollGroup _pollGroup;
     private ReassemblyState _dummyReassembly;
     private bool _isActive;
@@ -89,6 +94,7 @@ public sealed class SteamListener : IListener
             foreach (var c in snapshot) c.Close(SteamCloseReason.ClosedLocally);
             _connectionsBySteamId.Clear();
             _connectionsByHandle.Clear();
+            _announced.Clear();
             _manager.UnregisterListener(this);
         }
     }
@@ -115,14 +121,30 @@ public sealed class SteamListener : IListener
         if (!_isActive) return;
         try
         {
-            int count = SteamNetworkingSockets.ReceiveMessagesOnPollGroup(_pollGroup, buffer, buffer.Length);
-            SteamNetworkManager.ExtractMessages(count, buffer, OnMessage, OnReceiveError, GetReassembly);
+            // Every peer of this session shares the one poll group, so the same drain applies. -xlinka
+            for (int batch = 0; batch < SteamNetworkManager.MaxReceiveBatchesPerFrame && _isActive; batch++)
+            {
+                int count = SteamNetworkingSockets.ReceiveMessagesOnPollGroup(_pollGroup, buffer, buffer.Length);
+                SteamNetworkManager.ExtractMessages(count, buffer, OnMessage, OnReceiveError, GetReassembly);
+                if (count < buffer.Length) break;
+            }
         }
         catch (Exception ex)
         {
             LumoraLogger.Error($"SteamListener.Update: {ex}");
             Close();
         }
+    }
+
+    private readonly List<SteamConnection> _flushScratch = new();
+
+    internal void FlushWaiting()
+    {
+        if (!_isActive || _connectionsBySteamId.Count == 0) return;
+        _flushScratch.Clear();
+        _flushScratch.AddRange(_connectionsBySteamId.Values);
+        foreach (var c in _flushScratch) c.FlushWaiting();
+        _flushScratch.Clear();
     }
 
     internal void UpdateStats()
@@ -134,6 +156,9 @@ public sealed class SteamListener : IListener
     private ref ReassemblyState GetReassembly(uint connectionHandle)
     {
         if (_connectionsByHandle.TryGetValue(connectionHandle, out var conn)) return ref conn.GetReassembly(connectionHandle);
+        // A handle no connection holds yet: its messages are dropped, so its state starts over each time
+        // rather than carrying a half-built frame from one stray message into the next. -xlinka
+        SteamFraming.Reset(ref _dummyReassembly);
         return ref _dummyReassembly;
     }
 
@@ -180,18 +205,14 @@ public sealed class SteamListener : IListener
                 SteamNetworkingSockets.AcceptConnection(info.m_hConn);
                 SteamNetworkingSockets.SetConnectionPollGroup(info.m_hConn, _pollGroup);
 
-                // PeerConnected fires only once both channels are bound. - xlinka
-                if (conn.IsOpen) PeerConnected?.Invoke(conn);
+                // PeerConnected fires once both channels are bound, and only once. - xlinka
+                Announce(conn);
                 break;
 
             case ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connected:
-                if (_connectionsBySteamId.TryGetValue(remoteSteamId.m_SteamID, out var openedConn) && openedConn.IsOpen)
-                {
-                    // Connection just transitioned to Open as the second channel
-                    // came up - emit PeerConnected here too in case Connecting
-                    // already fired before AllConnected returned true. - xlinka
-                    PeerConnected?.Invoke(openedConn);
-                }
+                // The second channel can come up after Connecting was seen for both. - xlinka
+                if (_connectionsBySteamId.TryGetValue(remoteSteamId.m_SteamID, out var openedConn))
+                    Announce(openedConn);
                 break;
 
             case ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ClosedByPeer:
@@ -206,6 +227,12 @@ public sealed class SteamListener : IListener
         }
     }
 
+    private void Announce(SteamConnection conn)
+    {
+        if (conn.IsOpen && _announced.Add(conn))
+            PeerConnected?.Invoke(conn);
+    }
+
     private void OnConnectionClosed(IConnection connection)
     {
         var sc = connection as SteamConnection;
@@ -214,6 +241,7 @@ public sealed class SteamListener : IListener
         {
             foreach (var handle in sc.Connections) _connectionsByHandle.Remove(handle.m_HSteamNetConnection);
             _connectionsBySteamId.Remove(sc.RemoteId.m_SteamID);
+            _announced.Remove(sc);
         }
         PeerDisconnected?.Invoke(sc);
     }

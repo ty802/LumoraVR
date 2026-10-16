@@ -7,6 +7,7 @@ using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Lumora.Core.Assets;
+using Lumora.Core.Networking.Session;
 using Lumora.Nexus.Assets;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -138,43 +139,172 @@ public static class AssetFetcher
             }
         }
 
-        // 2. Request from session peer
-        var transferer = engine?.ActiveSessionTransferer;
-        if (transferer != null)
+        // 2. Request from session peer. The read goes off the thread that finished the transfer, which is
+        // the session's sync thread holding the data model: reading a large file there held every world's
+        // frame. -xlinka
+        GatherFromSession(uri, cachedPath =>
         {
-            LumoraLogger.Log($"AssetFetcher: requesting remote asset '{uri}' from session");
-            transferer.RequestAsset(new Uri(uri), (assetUri, localPath) =>
+            if (cachedPath == null)
             {
-                if (localPath == null)
-                {
-                    LumoraLogger.Warn($"AssetFetcher: peer could not provide '{uri}'");
-                    callback(null!);
-                    return;
-                }
-
+                callback(null!);
+                return;
+            }
+            _ = Task.Run(async () =>
+            {
+                byte[] data;
                 try
                 {
-                    // Adopt under the hash the URI already carries, before reading a byte. Importing
-                    // instead would re-read and re-hash the whole file to rediscover an address we were
-                    // handed, and it wrote the record asynchronously - so the decoder that runs straight
-                    // after this callback could look the asset up, find no record, and be unable to tell
-                    // what format it just received. Adoption is synchronous and keeps the extension the
-                    // sender declared, which is exactly what that lookup needs. -xlinka
-                    var cachedPath = localDB?.AdoptGatheredAsset(uri, localPath) ?? localPath;
-                    var data = File.ReadAllBytes(cachedPath);
-                    callback(data);
+                    data = await File.ReadAllBytesAsync(cachedPath).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
-                    LumoraLogger.Error($"AssetFetcher: error reading received asset '{localPath}': {ex.Message}");
-                    callback(null!);
+                    LumoraLogger.Error($"AssetFetcher: error reading received asset '{cachedPath}': {ex.Message}");
+                    data = null!;
                 }
+                callback(data);
             });
+        });
+    }
+
+    // Fetch a local:// asset from the session into the store and answer its file, or null. Adopted under
+    // the hash the URI already carries, before reading a byte: importing instead would re-read and re-hash
+    // the whole file to rediscover an address we were handed, and it wrote the record asynchronously - so
+    // the decoder that runs straight after could look the asset up, find no record, and be unable to tell
+    // what format it just received. Adoption is synchronous and keeps the extension the sender declared,
+    // which is exactly what that lookup needs. -xlinka
+    private static void GatherFromSession(string uri, Action<string?> onFile, double deadline = 0)
+    {
+        var engine = Engine.Current;
+        var localDB = engine?.LocalDB;
+        var transferer = SessionAssetTransferer.ForLocalAsset(uri) ?? engine?.ActiveSessionTransferer;
+        if (transferer == null)
+        {
+            LumoraLogger.Warn($"AssetFetcher: '{uri}' not in LocalDB and no active session - cannot fetch");
+            onFile(null);
             return;
         }
 
-        LumoraLogger.Warn($"AssetFetcher: '{uri}' not in LocalDB and no active session - cannot fetch");
-        callback(null!);
+        LumoraLogger.Debug($"AssetFetcher: requesting remote asset '{uri}' from session");
+        transferer.RequestAsset(new Uri(uri), (_, localPath) =>
+        {
+            if (localPath == null)
+            {
+                bool derived = uri.IndexOf('~') >= 0;
+                if (!derived && SessionAssetTransferer.OwnerLeft(uri) && (deadline == 0 || Now < deadline))
+                {
+                    Park(uri, onFile, deadline);
+                    return;
+                }
+                if (derived)
+                    LumoraLogger.Debug($"AssetFetcher: peer has no '{uri}'");
+                else
+                    LumoraLogger.Warn($"AssetFetcher: peer could not provide '{uri}'");
+                onFile(null);
+                return;
+            }
+
+            string? cachedPath;
+            try
+            {
+                cachedPath = localDB?.AdoptGatheredAsset(uri, localPath) ?? localPath;
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Error($"AssetFetcher: error adopting received asset '{localPath}': {ex.Message}");
+                cachedPath = null;
+            }
+            onFile(cachedPath);
+        });
+    }
+
+    // OWNER AWAY
+    //
+    // An asset whose owner was in the session and has gone (a dropped link, a crash, a rejoin) is not an
+    // asset that does not exist. Failing it there left it broken on every machine for the rest of the
+    // session, even after the owner came straight back. It waits instead, as a load still in progress, and
+    // is asked for again the moment a session has its owner in it; only after the window does it fail. An
+    // owner nobody has seen here is answered at once, so an address that names nobody still fails fast. -xlinka
+    internal static double OwnerAwaySeconds = 600;
+
+    private sealed class ParkedFetch
+    {
+        public readonly List<Action<string?>> Waiters = new();
+        public double Deadline;
+    }
+
+    private static readonly Dictionary<string, ParkedFetch> _parked = new();
+    private static System.Threading.Timer? _parkTimer;
+
+    private static double Now => System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
+
+    // A fetch asked again after its owner seemed back, and lost again, keeps the deadline it first had: an
+    // owner whose user lingers here a moment after leaving must not stretch the wait. -xlinka
+    private static void Park(string uri, Action<string?> onFile, double deadline = 0)
+    {
+        lock (_parked)
+        {
+            if (!_parked.TryGetValue(uri, out var parked))
+            {
+                parked = new ParkedFetch { Deadline = deadline > 0 ? deadline : Now + OwnerAwaySeconds };
+                _parked[uri] = parked;
+                if (deadline == 0)
+                    LumoraLogger.Log($"AssetFetcher: the owner of '{uri}' left the session; waiting up to {OwnerAwaySeconds:0}s for them to come back");
+            }
+            parked.Waiters.Add(onFile);
+            _parkTimer ??= new System.Threading.Timer(_ => SweepParked(), null, 2000, 2000);
+        }
+    }
+
+    private static void SweepParked()
+    {
+        List<(string Uri, List<Action<string?>> Waiters, bool Retry, double Deadline)> due = new();
+        lock (_parked)
+        {
+            double now = Now;
+            foreach (var (uri, parked) in _parked)
+            {
+                if (now >= parked.Deadline)
+                    due.Add((uri, parked.Waiters, false, parked.Deadline));
+                else if (SessionAssetTransferer.IsOwnerPresent(uri))
+                    due.Add((uri, parked.Waiters, true, parked.Deadline));
+            }
+            foreach (var d in due)
+                _parked.Remove(d.Uri);
+        }
+
+        foreach (var (uri, waiters, retry, deadline) in due)
+        {
+            if (!retry)
+            {
+                LumoraLogger.Warn($"AssetFetcher: the owner of '{uri}' did not come back; giving up on it");
+                foreach (var w in waiters)
+                    w(null);
+                continue;
+            }
+            LumoraLogger.Debug($"AssetFetcher: the owner of '{uri}' is in the session; asking again");
+            GatherFromSession(uri, file =>
+            {
+                foreach (var w in waiters)
+                    w(file);
+            }, deadline);
+        }
+    }
+
+    // A local:// asset as a FILE on this machine: the store's own copy, or one fetched from the session
+    // into the store. For whatever plays a file from disk rather than decoding bytes, a video above all,
+    // which can be gigabytes and has no business passing through memory whole. Null when nobody could
+    // provide it.
+    public static Task<string?> FetchLocalFileAsync(string uri)
+    {
+        var engine = Engine.Current;
+        var localDB = engine?.LocalDB;
+        var held = localDB?.GetFilePath(uri);
+        if (!string.IsNullOrEmpty(held) && File.Exists(held))
+            return Task.FromResult<string?>(held);
+
+        var done = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        GatherFromSession(uri, file => done.TrySetResult(file));
+        return done.Task;
     }
 
     private static byte[] FetchSync(string uri)

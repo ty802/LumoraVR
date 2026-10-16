@@ -83,7 +83,7 @@ public class LANDiscovery : IDisposable
             Task.Run(() => ListenLoop(_cts.Token));
             Task.Run(() => CleanupLoop(_cts.Token));
 
-            LumoraLogger.Log("[lnl] LAN discovery started");
+            LumoraLogger.Debug("[lnl] LAN discovery started");
         }
         catch (Exception ex)
         {
@@ -163,7 +163,7 @@ public class LANDiscovery : IDisposable
 
             if (isNew)
             {
-                LumoraLogger.Log($"[lnl] Discovered session: {session.Metadata.Name} at {source.Address}");
+                LumoraLogger.Debug($"[lnl] Discovered session: {session.Metadata.Name} at {source.Address}");
                 SessionFound?.Invoke(session);
             }
             else
@@ -233,7 +233,7 @@ public class LANDiscovery : IDisposable
 
             foreach (var key in expired)
             {
-                LumoraLogger.Log($"[lnl] Session lost: {key}");
+                LumoraLogger.Debug($"[lnl] Session lost: {key}");
                 SessionLost?.Invoke(key);
             }
         }
@@ -278,7 +278,7 @@ public class LANDiscovery : IDisposable
         _listener = null!;
         _cts = null!;
 
-        LumoraLogger.Log("[lnl] LAN discovery stopped");
+        LumoraLogger.Debug("[lnl] LAN discovery stopped");
     }
 
     public void Dispose()

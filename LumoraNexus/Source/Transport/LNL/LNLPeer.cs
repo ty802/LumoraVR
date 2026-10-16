@@ -14,6 +14,7 @@ public class LNLPeer : IConnection
     internal readonly NetManager Server;
     internal readonly NetPeer Peer;
     private readonly LNLCryptoSession _crypto = new(isClient: false);
+    private readonly LinkEmulator? _emulator = LinkEmulator.Create();
 
     public bool IsOpen { get; private set; }
     public string FailReason { get; private set; } = null!;
@@ -26,7 +27,8 @@ public class LNLPeer : IConnection
     public int Ping => Peer?.Ping ?? -1;
     public long PacketsSent => Peer?.Statistics.PacketsSent ?? 0;
     public long PacketsLost => Peer?.Statistics.PacketLoss ?? 0;
-    public int QueuedPackets => LNLConnection.QueuedOn(Peer);
+    public int QueuedPackets => LNLLanes.Queued(Peer);
+    public long PendingSendBytes => (long)LNLLanes.Queued(Peer) * LNLLanes.PacketBytes + (_emulator?.QueuedBytes ?? 0);
     public bool IsEncrypted => _crypto.IsEstablished;
     public string TransportName => "LNL";
 
@@ -56,7 +58,7 @@ public class LNLPeer : IConnection
         Address = new Uri($"lnl://{peer.Address}:{peer.Port}");
         Identifier = $"LNL:{peer.Address}:{peer.Port}";
 
-        LumoraLogger.Log($"[lnl] LNL Peer created: {Identifier}");
+        LumoraLogger.Debug($"[lnl] LNL Peer created: {Identifier}");
     }
 
     public void Connect(Action<string> statusCallback)
@@ -104,6 +106,38 @@ public class LNLPeer : IConnection
         SendRaw(encrypted, encrypted.Length, reliable, background);
     }
 
+    private readonly LNLLanes _lanes = new();
+
+    public void SendBulk(byte[] data, int length)
+    {
+        if (Peer == null || Peer.ConnectionState != ConnectionState.Connected)
+            return;
+        byte[] encrypted;
+        try
+        {
+            encrypted = _crypto.Encrypt(data, length);
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Warn($"[lnl] Bulk send to {Identifier} failed before LNL crypto was ready ({ex.Message})");
+            return;
+        }
+        Interlocked.Add(ref _sentBytes, encrypted.Length);
+        if (_emulator != null)
+        {
+            _emulator.Send(encrypted.Length, droppable: false, () =>
+            {
+                if (Peer.ConnectionState != ConnectionState.Connected)
+                    return;
+                _lanes.Send(Peer, encrypted, encrypted.Length);
+                Server.TriggerUpdate();
+            });
+            return;
+        }
+        _lanes.Send(Peer, encrypted, encrypted.Length);
+        Server.TriggerUpdate();
+    }
+
     private void SendRaw(byte[] data, int length, bool reliable, bool background)
     {
         DeliveryMethod method = reliable
@@ -119,7 +153,19 @@ public class LNLPeer : IConnection
         }
 
         Interlocked.Add(ref _sentBytes, length);
+        if (_emulator != null)
+        {
+            _emulator.Send(length, droppable: !reliable, () =>
+            {
+                if (Peer.ConnectionState != ConnectionState.Connected)
+                    return;
+                Peer.Send(data, 0, length, channel, method);
+                Server.TriggerUpdate();
+            });
+            return;
+        }
         Peer.Send(data, 0, length, channel, method);
+        Server.TriggerUpdate();
     }
 
     // No-op. LNLPeer shares the listener's NetManager; the listener polls
@@ -143,7 +189,7 @@ public class LNLPeer : IConnection
 
         if (!wasEstablished && _crypto.IsEstablished)
         {
-            LumoraLogger.Log($"[lnl] Crypto established with {Identifier}");
+            LumoraLogger.Debug($"[lnl] Crypto established with {Identifier}");
             CryptoEstablished?.Invoke(this);
         }
 
@@ -156,13 +202,14 @@ public class LNLPeer : IConnection
         if (IsOpen)
         {
             IsOpen = false;
-            LumoraLogger.Log($"[lnl] LNL Peer closed: {Identifier}");
+            LumoraLogger.Debug($"[lnl] LNL Peer closed: {Identifier}");
             Closed?.Invoke(this);
         }
     }
 
     public void Dispose()
     {
+        _emulator?.Stop();
         Close();
         _crypto.Dispose();
     }

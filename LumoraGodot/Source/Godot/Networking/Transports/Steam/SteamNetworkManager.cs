@@ -25,12 +25,24 @@ namespace Lumora.Godot.Networking.Transports.Steam;
 public sealed class SteamNetworkManager : INetworkManager
 {
     public const string SCHEME = "steam";
-    private const int MessageBufferSize = 24;
+    private const int MessageBufferSize = 256;
+    // Batches read per poll group per frame. One batch a frame was the whole budget once, and a peer
+    // getting more messages a second than that times its frame rate fell behind for good: everything the
+    // host sent it, transfer starts included, queued behind an ever longer backlog while its own traffic
+    // still went out. The cap only bounds one frame's work if a peer is flooded. -xlinka
+    internal const int MaxReceiveBatchesPerFrame = 64;
+    // A buffer this full is not fatal: what does not fit waits in the connection's own queue (SteamSendQueue)
+    // and the sync loop sends a peer that far behind only what it cannot do without. -xlinka
     private const int SendBufferSize = 8 * 1024 * 1024;
     private const int SendRateBytesPerSecond = 16 * 1024 * 1024;
+    // The background connection carries asset transfers. Its rate is a fixed pace, not an estimate, so
+    // 16 MB/s was the ceiling of any one transfer however good the link; what actually goes out is held
+    // by the transferer's window, which backs off as soon as anything queues. Its buffer holds the
+    // largest window with room over. -xlinka
+    private const int BulkSendBufferSize = 32 * 1024 * 1024;
+    private const int BulkSendRateBytesPerSecond = 64 * 1024 * 1024;
     private const int InitialTimeoutMs = 15000;
     private const int ConnectedTimeoutMs = 15000;
-    private const int MaxSendableMessageSize = 524288;
 
     internal object Lock { get; } = new();
 
@@ -82,8 +94,8 @@ public sealed class SteamNetworkManager : INetworkManager
             SteamNetworkingSockets.GetIdentity(out var identity);
             _localUser = identity.GetSteamID();
 
-            DefaultConfigMain = BuildConfig();
-            DefaultConfigBackground = BuildConfig();
+            DefaultConfigMain = BuildConfig(SendBufferSize, SendRateBytesPerSecond);
+            DefaultConfigBackground = BuildConfig(BulkSendBufferSize, BulkSendRateBytesPerSecond);
 
             _initialized = true;
             LumoraLogger.Log($"SteamNetworkManager: ready, local SteamID={_localUser.m_SteamID}");
@@ -152,6 +164,10 @@ public sealed class SteamNetworkManager : INetworkManager
         {
             while (_toTransmit.TryDequeue(out var msg)) TransmitInternal(msg);
             while (_toDispose.Count > 0) _toDispose.Dequeue().Dispose();
+            // What a full send buffer held back goes on first, ahead of anything new. By index from the end: a
+            // flush that finds a connection dead closes it, which takes it out of the list.
+            for (int i = _listeners.Count - 1; i >= 0; i--) _listeners[i].FlushWaiting();
+            for (int i = _connections.Count - 1; i >= 0; i--) _connections[i].FlushWaiting();
             foreach (var listener in _listeners) listener.Update(_messageBuffer);
             foreach (var connection in _connections) connection.Update(_messageBuffer);
 
@@ -206,15 +222,6 @@ public sealed class SteamNetworkManager : INetworkManager
 
     internal int AllocateChannelGroup() => _channelPool++;
 
-    // Reliable messages over the per-frame send cap are split into a 4-byte size prefix + 512KB
-    // chunks; receivers reassemble before surfacing the frame as one message. - xlinka
-    internal static bool NeedReassembly(uint size)
-    {
-        // The 4-byte case is the prefix itself - never reassemble it. - xlinka
-        if (size == 4) return true;
-        return size > MaxSendableMessageSize;
-    }
-
     // Stored in session metadata for clients to dial back through the relay. - xlinka
     public static Uri BuildUri(CSteamID host, int channelGroup, string sessionId)
         => new($"{SCHEME}://{host.m_SteamID}/{channelGroup}/{sessionId}");
@@ -228,11 +235,11 @@ public sealed class SteamNetworkManager : INetworkManager
         sessionId = uri.Segments.Length > 2 ? uri.Segments[2].Trim('/') : string.Empty;
     }
 
-    private static SteamNetworkingConfigValue_t[] BuildConfig() => new[]
+    private static SteamNetworkingConfigValue_t[] BuildConfig(int sendBuffer, int sendRate) => new[]
     {
-        ConfigInt(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendBufferSize, SendBufferSize),
-        ConfigInt(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMin, SendRateBytesPerSecond),
-        ConfigInt(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax, SendRateBytesPerSecond),
+        ConfigInt(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendBufferSize, sendBuffer),
+        ConfigInt(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMin, sendRate),
+        ConfigInt(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax, sendRate),
         ConfigInt(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_TimeoutInitial, InitialTimeoutMs),
         ConfigInt(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_TimeoutConnected, ConnectedTimeoutMs),
     };
@@ -296,6 +303,13 @@ public sealed class SteamNetworkManager : INetworkManager
         ReassemblyStateFetcher reassemblyFetcher)
     {
         HashSet<uint> aborted = null!;
+        void Abort(uint handle)
+        {
+            failureHandler(handle);
+            aborted ??= new HashSet<uint>();
+            aborted.Add(handle);
+        }
+
         for (int i = 0; i < count; i++)
         {
             var msgPtr = messages[i];
@@ -308,48 +322,51 @@ public sealed class SteamNetworkManager : INetworkManager
                 continue;
             }
 
-            ref var state = ref reassemblyFetcher(handle);
-            bool isReliable = (raw.m_nFlags & Constants.k_nSteamNetworkingSend_Reliable) != 0;
-            int payloadSize = raw.m_cbSize;
-
-            if (isReliable && (state.buffer != null || payloadSize == 4))
+            try
             {
-                if (state.buffer == null)
+                ref var state = ref reassemblyFetcher(handle);
+                bool isReliable = (raw.m_nFlags & Constants.k_nSteamNetworkingSend_Reliable) != 0;
+                int payloadSize = raw.m_cbSize;
+
+                switch (SteamFraming.Classify(state, isReliable, payloadSize))
                 {
-                    state.expectingBytes = Marshal.ReadInt32(raw.m_pData);
-                    state.buffer = state.expectingBytes > 0 ? new byte[state.expectingBytes] : Array.Empty<byte>();
-                    state.receivedBytes = 0;
-                }
-                else
-                {
-                    if (state.receivedBytes < 0 || state.expectingBytes < 0
-                        || state.receivedBytes + payloadSize > state.expectingBytes)
-                    {
-                        failureHandler(handle);
-                        aborted ??= new HashSet<uint>();
-                        aborted.Add(handle);
-                        SteamNetworkingMessage_t.Release(msgPtr);
-                        continue;
-                    }
-                    Marshal.Copy(raw.m_pData, state.buffer, state.receivedBytes, payloadSize);
-                    state.receivedBytes += payloadSize;
-                    if (state.receivedBytes == state.expectingBytes)
-                    {
-                        messageHandler(raw.m_identityPeer.GetSteamID().m_SteamID, handle, state.buffer, state.receivedBytes);
-                        state.buffer = null!;
-                        state.expectingBytes = -1;
-                        state.receivedBytes = -1;
-                    }
+                    case SteamFraming.Arrival.Prefix:
+                        if (!SteamFraming.Begin(ref state, Marshal.ReadInt32(raw.m_pData)))
+                        {
+                            Abort(handle);
+                            continue;
+                        }
+                        break;
+
+                    case SteamFraming.Arrival.Piece:
+                        int at = SteamFraming.Place(ref state, payloadSize);
+                        if (at < 0)
+                        {
+                            SteamFraming.Reset(ref state);
+                            Abort(handle);
+                            continue;
+                        }
+                        Marshal.Copy(raw.m_pData, state.buffer, at, payloadSize);
+                        if (SteamFraming.IsComplete(state))
+                        {
+                            var frame = SteamFraming.Take(ref state, out int length);
+                            messageHandler(raw.m_identityPeer.GetSteamID().m_SteamID, handle, frame, length);
+                        }
+                        break;
+
+                    default:
+                        var data = new byte[payloadSize];
+                        Marshal.Copy(raw.m_pData, data, 0, payloadSize);
+                        messageHandler(raw.m_identityPeer.GetSteamID().m_SteamID, handle, data, payloadSize);
+                        break;
                 }
             }
-            else
+            finally
             {
-                var data = new byte[payloadSize];
-                Marshal.Copy(raw.m_pData, data, 0, payloadSize);
-                messageHandler(raw.m_identityPeer.GetSteamID().m_SteamID, handle, data, payloadSize);
+                // Every message taken off the poll group is released, whatever the handler did with it; one
+                // that threw used to leave the rest of the batch held by Steam for good. -xlinka
+                SteamNetworkingMessage_t.Release(msgPtr);
             }
-
-            SteamNetworkingMessage_t.Release(msgPtr);
         }
     }
 }

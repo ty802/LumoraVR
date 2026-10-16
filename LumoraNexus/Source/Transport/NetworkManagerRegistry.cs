@@ -46,7 +46,7 @@ public static class NetworkManagerRegistry
             _managers.Add(manager);
             _managers.Sort((a, b) => b.Priority.CompareTo(a.Priority));
         }
-        LumoraLogger.Log($"[lnl] NetworkManagerRegistry: registered {manager.GetType().Name} (priority {manager.Priority})");
+        LumoraLogger.Debug($"[lnl] NetworkManagerRegistry: registered {manager.GetType().Name} (priority {manager.Priority})");
     }
 
     public static void Unregister(INetworkManager manager)

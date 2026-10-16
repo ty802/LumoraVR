@@ -25,10 +25,9 @@ namespace Lumora.Godot.Networking.Transports.Steam;
 public sealed class SteamConnection : IConnection
 {
     private const int ChannelCount = 2;
-    private const int MaxMessageSize = 524288; // 512 KB SendMessageToConnection cap.
-    private const int SizePrefixLength = 4;
     private const int SendFlagsReliable = Constants.k_nSteamNetworkingSend_Reliable;
-    private const int SendFlagsUnreliable = Constants.k_nSteamNetworkingSend_Unreliable;
+    // Unreliable is streams: voice and tracking. Nagle would hold each one back a few ms for company.
+    private const int SendFlagsUnreliable = Constants.k_nSteamNetworkingSend_UnreliableNoNagle;
 
     private enum State { Connecting, Open, Closed }
 
@@ -40,6 +39,18 @@ public sealed class SteamConnection : IConnection
     private readonly HSteamNetConnection[] _connections = new HSteamNetConnection[ChannelCount];
     private readonly bool[] _connectionsConnected = new bool[ChannelCount];
     private readonly ReassemblyState[] _reassembly = new ReassemblyState[ChannelCount];
+    // Where a message from a handle this connection does not hold is collected: never delivered, and
+    // started over for every such message. -xlinka
+    private ReassemblyState _stray;
+    // A frame's length and its pieces leave as one run. The encode thread and the join handshake both send
+    // on a connection, and a reliable message from one landing between another's pieces would be taken for
+    // a piece. -xlinka
+    private readonly object _sendLock = new();
+    // Reliable data that found a channel's send buffer full, waiting its turn on that channel.
+    private readonly SteamSendQueue[] _waiting = { new(), new() };
+    private readonly SteamSendQueue.Transmit[] _transmit = new SteamSendQueue.Transmit[ChannelCount];
+    private long _droppedUnreliable;
+    private DateTime _lastBehindLog;
     private HSteamNetPollGroup _pollGroup;
 
     private State _state;
@@ -59,6 +70,26 @@ public sealed class SteamConnection : IConnection
     // m_nPing is refreshed every transport Update via UpdateStats. Steam Datagram Relay is always
     // end-to-end encrypted, so IsEncrypted is unconditionally true once open. -xlinka
     public int Ping => IsOpen ? _lastMainStatus.m_nPing : -1;
+
+    // What waits here plus what Steam holds unsent, both channels.
+    public long PendingSendBytes
+    {
+        get
+        {
+            if (!IsOpen) return 0;
+            long pending = _waiting[0].Bytes + _waiting[1].Bytes;
+            SteamNetConnectionRealTimeLaneStatus_t lanes = default;
+            for (int i = 0; i < ChannelCount; i++)
+            {
+                var status = default(SteamNetConnectionRealTimeStatus_t);
+                if (SteamNetworkingSockets.GetConnectionRealTimeStatus(_connections[i], ref status, 0, ref lanes) == EResult.k_EResultOK)
+                    pending += status.m_cbPendingReliable + status.m_cbPendingUnreliable;
+            }
+            return pending;
+        }
+    }
+
+    public long DroppedUnreliable => Interlocked.Read(ref _droppedUnreliable);
     public bool IsEncrypted => IsOpen;
     public string TransportName => "Steam";
 
@@ -88,6 +119,11 @@ public sealed class SteamConnection : IConnection
         _sessionId = sessionId;
         _manager = manager;
         Identifier = "Steam:" + remoteId.m_SteamID.ToString(CultureInfo.InvariantCulture);
+        for (int i = 0; i < ChannelCount; i++)
+        {
+            int channel = i;
+            _transmit[i] = (data, offset, count) => Push(channel, data, offset, count, SendFlagsReliable);
+        }
         _pollGroup = SteamNetworkingSockets.CreatePollGroup();
         for (int i = 0; i < ChannelCount; i++)
         {
@@ -125,16 +161,35 @@ public sealed class SteamConnection : IConnection
         if (length <= 0) return;
         Interlocked.Add(ref _sentBytes, length);
 
-        var handle = GCHandle.Alloc(data, GCHandleType.Pinned);
+        bool alive;
+        lock (_sendLock)
+            alive = TransmitInternal(data, length, reliable, background);
+        // Closed outside the send lock: Close takes the manager's lock, and the main thread holds that one while
+        // it flushes, where it only ever tries this lock.
+        if (!alive)
+            Close(SteamCloseReason.TransmissionError);
+    }
+
+    // Hands on what waits, from the manager's update. A send under way on another thread flushes for itself.
+    internal void FlushWaiting()
+    {
+        if (!IsOpen || (_waiting[0].Count == 0 && _waiting[1].Count == 0)) return;
+        if (!Monitor.TryEnter(_sendLock)) return;
+        bool alive = true;
         try
         {
-            var ptr = Marshal.UnsafeAddrOfPinnedArrayElement(data, 0);
-            TransmitInternal(ptr, (uint)length, reliable, background);
+            for (int i = 0; i < ChannelCount && alive; i++)
+            {
+                if (_waiting[i].Count > 0)
+                    alive = _waiting[i].Flush(_transmit[i]) != SteamSendQueue.Outcome.Dead;
+            }
         }
         finally
         {
-            handle.Free();
+            Monitor.Exit(_sendLock);
         }
+        if (!alive)
+            Close(SteamCloseReason.TransmissionError);
     }
 
     public void Close() => Close(SteamCloseReason.ClosedLocally);
@@ -160,6 +215,11 @@ public sealed class SteamConnection : IConnection
 
     public void Dispose()
     {
+        lock (_sendLock)
+        {
+            _waiting[0].Clear();
+            _waiting[1].Clear();
+        }
         for (int i = 0; i < _connections.Length; i++)
         {
             var handle = _connections[i];
@@ -194,9 +254,12 @@ public sealed class SteamConnection : IConnection
     {
         try
         {
-            if (!IsOpen) return;
-            int count = SteamNetworkingSockets.ReceiveMessagesOnPollGroup(_pollGroup, buffer, buffer.Length);
-            SteamNetworkManager.ExtractMessages(count, buffer, OnMessage, OnReceiveError, GetReassembly);
+            for (int batch = 0; batch < SteamNetworkManager.MaxReceiveBatchesPerFrame && IsOpen; batch++)
+            {
+                int count = SteamNetworkingSockets.ReceiveMessagesOnPollGroup(_pollGroup, buffer, buffer.Length);
+                SteamNetworkManager.ExtractMessages(count, buffer, OnMessage, OnReceiveError, GetReassembly);
+                if (count < buffer.Length) break;
+            }
         }
         catch (Exception ex)
         {
@@ -222,7 +285,10 @@ public sealed class SteamConnection : IConnection
         {
             if (_connections[i].m_HSteamNetConnection == connectionHandle) return ref _reassembly[i];
         }
-        throw new InvalidOperationException("Steam connection handle not owned by this SteamConnection");
+        // Throwing here left the rest of the poll batch unreleased and closed the connection over a message
+        // that is dropped anyway. -xlinka
+        SteamFraming.Reset(ref _stray);
+        return ref _stray;
     }
 
     private void OnReceiveError(uint connectionHandle)
@@ -303,58 +369,81 @@ public sealed class SteamConnection : IConnection
         return -1;
     }
 
-    private void TransmitInternal(IntPtr data, uint count, bool reliable, bool background)
+    // False once the connection is gone. A full buffer is not that: the link is behind, so reliable data waits
+    // in order and unreliable data, the latest of something sent again soon, is let go.
+    private bool TransmitInternal(byte[] data, int count, bool reliable, bool background)
     {
-        if (SteamNetworkManager.NeedReassembly(count) && reliable)
+        int channel = background ? 1 : 0;
+        if (!reliable)
         {
-            // Send the 4-byte total length so the receiver can allocate one
-            // contiguous buffer, then walk the payload in <=512KB chunks. Pin a
-            // small heap buffer for the prefix rather than reach for stackalloc
-            // so this file stays safe-code. - xlinka
-            var sizeBytes = BitConverter.GetBytes(count);
-            var sizeHandle = GCHandle.Alloc(sizeBytes, GCHandleType.Pinned);
-            try
+            if (count > SteamFraming.MaxMessageSize)
             {
-                if (!TransmitRaw(sizeHandle.AddrOfPinnedObject(), SizePrefixLength, true, background)) return;
+                LumoraLogger.Warn($"SteamConnection: unreliable frame of {count}B is over one message, dropped");
+                return true;
             }
-            finally
-            {
-                sizeHandle.Free();
-            }
+            var outcome = Push(channel, data, 0, count, SendFlagsUnreliable);
+            if (outcome == SteamSendQueue.Outcome.Full)
+                Interlocked.Increment(ref _droppedUnreliable);
+            return outcome != SteamSendQueue.Outcome.Dead;
+        }
 
-            uint remaining = count;
-            var cursor = data;
-            while (remaining != 0)
+        var queue = _waiting[channel];
+        var transmit = _transmit[channel];
+        bool wasWaiting = queue.Count > 0;
+        if (SteamFraming.NeedsPrefix(count, true))
+        {
+            // The 4-byte total length first, so the receiver can allocate one contiguous buffer, then the
+            // payload in message-sized pieces. The pieces wait in the same queue, so no other frame splits them.
+            var sizeBytes = BitConverter.GetBytes((uint)count);
+            if (queue.Send(sizeBytes, 0, sizeBytes.Length, transmit) == SteamSendQueue.Outcome.Dead)
+                return false;
+            for (int at = 0; at < count; at += SteamFraming.MaxMessageSize)
             {
-                uint chunk = remaining < MaxMessageSize ? remaining : MaxMessageSize;
-                if (!TransmitRaw(cursor, chunk, true, background)) break;
-                cursor += (int)chunk;
-                remaining -= chunk;
+                int chunk = Math.Min(SteamFraming.MaxMessageSize, count - at);
+                if (queue.Send(data, at, chunk, transmit) == SteamSendQueue.Outcome.Dead)
+                    return false;
             }
         }
-        else
+        else if (queue.Send(data, 0, count, transmit) == SteamSendQueue.Outcome.Dead)
         {
-            TransmitRaw(data, count, reliable, background);
-        }
-    }
-
-    private bool TransmitRaw(IntPtr data, uint count, bool reliable, bool background)
-    {
-        if (count > MaxMessageSize)
-            throw new InvalidOperationException($"Steam frame too large ({count}); reassembly only supports reliable messages.");
-
-        var handle = _connections[background ? 1 : 0];
-        int flags = reliable ? SendFlagsReliable : SendFlagsUnreliable;
-        var result = SteamNetworkingSockets.SendMessageToConnection(handle, data, count, flags, out _);
-        if (result != EResult.k_EResultOK && result != EResult.k_EResultIgnored)
-        {
-            SteamNetworkingSockets.GetConnectionInfo(handle, out var info);
-            LumoraLogger.Warn(
-                $"SteamConnection: send {count}B failed, result={result}, state={info.m_eState}, end={info.m_eEndReason}");
-            Close(SteamCloseReason.TransmissionError);
             return false;
         }
+
+        if (!wasWaiting && queue.Count > 0 && (DateTime.UtcNow - _lastBehindLog).TotalSeconds >= 10)
+        {
+            _lastBehindLog = DateTime.UtcNow;
+            LumoraLogger.Log($"SteamConnection: {Identifier} is behind, holding {queue.Bytes}B on channel {channel} (peak {queue.PeakBytes}B, {DroppedUnreliable} unreliable let go)");
+        }
         return true;
+    }
+
+    private SteamSendQueue.Outcome Push(int channel, byte[] data, int offset, int count, int flags)
+    {
+        var handle = _connections[channel];
+        EResult result;
+        var pinned = GCHandle.Alloc(data, GCHandleType.Pinned);
+        try
+        {
+            result = SteamNetworkingSockets.SendMessageToConnection(handle, pinned.AddrOfPinnedObject() + offset, (uint)count, flags, out _);
+        }
+        finally
+        {
+            pinned.Free();
+        }
+
+        switch (result)
+        {
+            case EResult.k_EResultOK:
+            case EResult.k_EResultIgnored:
+                return SteamSendQueue.Outcome.Sent;
+            case EResult.k_EResultLimitExceeded:
+                return SteamSendQueue.Outcome.Full;
+            default:
+                SteamNetworkingSockets.GetConnectionInfo(handle, out var info);
+                LumoraLogger.Warn(
+                    $"SteamConnection: send {count}B failed, result={result}, state={info.m_eState}, end={info.m_eEndReason}");
+                return SteamSendQueue.Outcome.Dead;
+        }
     }
 
     public override string ToString()

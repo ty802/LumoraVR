@@ -30,7 +30,8 @@ public class LNLConnection : IConnection, INetEventListener
     public int Ping => _peer?.Ping ?? -1;
     public long PacketsSent => _peer?.Statistics.PacketsSent ?? 0;
     public long PacketsLost => _peer?.Statistics.PacketLoss ?? 0;
-    public int QueuedPackets => QueuedOn(_peer);
+    public int QueuedPackets => LNLLanes.Queued(_peer);
+    public long PendingSendBytes => (long)LNLLanes.Queued(_peer) * LNLLanes.PacketBytes;
     public bool IsEncrypted => _crypto.IsEstablished;
     public string TransportName => "LNL";
 
@@ -39,17 +40,6 @@ public class LNLConnection : IConnection, INetEventListener
     public event Action<IConnection> ConnectionFailed = null!;
     public event Action<byte[], int> DataReceived = null!;
 
-    // Reliable packets waiting on both channels, ordered and not.
-    internal static int QueuedOn(NetPeer? peer)
-    {
-        if (peer == null)
-            return 0;
-        int queued = 0;
-        for (byte channel = 0; channel < 2; channel++)
-            queued += peer.GetPacketsCountInReliableQueue(channel, true) + peer.GetPacketsCountInReliableQueue(channel, false);
-        return queued;
-    }
-
     public LNLConnection(string appId, Uri address, bool dontRoute, IPAddress bindIP)
     {
         _appId = appId;
@@ -57,11 +47,11 @@ public class LNLConnection : IConnection, INetEventListener
         Identifier = address.Host;
 
         _client = new NetManager(this);
-        _client.UpdateTime = 15; // 15ms update interval
+        // Channel 0 foreground, 1 background, the rest bulk lanes.
+        LNLLanes.Configure(_client);
         _client.UseNativeSockets = false;
         _client.UnsyncedEvents = true;
-        _client.DisconnectTimeout = 30000;
-        _client.ChannelsCount = 2; // Channel 0 = foreground, Channel 1 = background
+        _client.DisconnectTimeout = LNLLanes.SilenceTimeoutMs;
         _client.AutoRecycle = false;
         _client.UnconnectedMessagesEnabled = true;
         _client.EnableStatistics = true;
@@ -73,14 +63,14 @@ public class LNLConnection : IConnection, INetEventListener
             throw new Exception($"Failed to start LNL Connection for {address}");
         }
 
-        LumoraLogger.Log($"[lnl] LNL Connection created for {address} on local port {_client.LocalPort}");
+        LumoraLogger.Debug($"[lnl] LNL Connection created for {address} on local port {_client.LocalPort}");
     }
 
     public void Connect(Action<string> statusCallback)
     {
         statusCallback?.Invoke($"Connecting to {Address.Host}:{Address.Port}");
 
-        LumoraLogger.Log($"[lnl] Establishing connection to {Address}");
+        LumoraLogger.Debug($"[lnl] Establishing connection to {Address}");
         _peer = _client.Connect(Address.Host, Address.Port, _appId);
 
         if (_peer == null)
@@ -134,6 +124,27 @@ public class LNLConnection : IConnection, INetEventListener
         SendRaw(encrypted, encrypted.Length, reliable, background);
     }
 
+    private readonly LNLLanes _lanes = new();
+
+    public void SendBulk(byte[] data, int length)
+    {
+        if (_peer == null || _peer.ConnectionState != ConnectionState.Connected)
+            return;
+        byte[] encrypted;
+        try
+        {
+            encrypted = _crypto.Encrypt(data, length);
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Warn($"[lnl] Bulk send failed before LNL crypto was ready ({ex.Message})");
+            return;
+        }
+        Interlocked.Add(ref _sentBytes, encrypted.Length);
+        _lanes.Send(_peer, encrypted, encrypted.Length);
+        _client.TriggerUpdate();
+    }
+
     private void SendRaw(byte[] data, int length, bool reliable, bool background)
     {
         Interlocked.Add(ref _sentBytes, length);
@@ -152,6 +163,8 @@ public class LNLConnection : IConnection, INetEventListener
         }
 
         _peer.Send(data, 0, length, channel, method);
+        // Out now rather than at the next tick, up to 15 ms later.
+        _client.TriggerUpdate();
     }
 
     // Must be called every frame.
@@ -182,7 +195,7 @@ public class LNLConnection : IConnection, INetEventListener
 
     public void OnPeerConnected(NetPeer peer)
     {
-        LumoraLogger.Log($"[lnl] Transport connected to {peer.Address}:{peer.Port}; starting crypto handshake");
+        LumoraLogger.Debug($"[lnl] Transport connected to {peer.Address}:{peer.Port}; starting crypto handshake");
         _peer = peer;
         var hello = _crypto.CreateClientHello();
         SendRaw(hello, hello.Length, reliable: true, background: false);
@@ -233,6 +246,10 @@ public class LNLConnection : IConnection, INetEventListener
         byte[] data = new byte[length];
         reader.GetBytes(data, length);
 
+        // The ack for what just arrived goes now, not at the next tick: a reliable window only moves on acks.
+        if (deliveryMethod is DeliveryMethod.ReliableOrdered or DeliveryMethod.ReliableUnordered)
+            _client.TriggerUpdate();
+
         ReceivedBytes += (ulong)length;
         bool wasEstablished = _crypto.IsEstablished;
         if (!_crypto.TryHandleIncoming(data, length, out var plaintext, out var response))
@@ -249,7 +266,7 @@ public class LNLConnection : IConnection, INetEventListener
 
         if (!wasEstablished && _crypto.IsEstablished)
         {
-            LumoraLogger.Log($"[lnl] Crypto established with {peer.Address}:{peer.Port}");
+            LumoraLogger.Debug($"[lnl] Crypto established with {peer.Address}:{peer.Port}");
             IsOpen = true;
             Connected?.Invoke(this);
         }
@@ -269,6 +286,8 @@ public class LNLConnection : IConnection, INetEventListener
     {
         // Can be used to update ping statistics
     }
+
+    public void OnMessageDelivered(NetPeer peer, object userData) => LNLLanes.Delivered(userData);
 
     public void OnConnectionRequest(ConnectionRequest request)
     {

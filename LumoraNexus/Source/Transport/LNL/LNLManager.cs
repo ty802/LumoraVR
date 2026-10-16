@@ -24,7 +24,7 @@ public class LNLManager
         var connection = new LNLConnection(APP_ID, uri, dontRoute, bindIP);
         _connections.Add(connection);
 
-        LumoraLogger.Log($"[lnl] Created LNL connection to {uri}");
+        LumoraLogger.Debug($"[lnl] Created LNL connection to {uri}");
         return connection;
     }
 
@@ -37,7 +37,7 @@ public class LNLManager
         {
             _listeners.Add(globalListener);
             listeners.Add(globalListener);
-            LumoraLogger.Log($"[lnl] Created LNL listener on 0.0.0.0:{port}");
+            LumoraLogger.Debug($"[lnl] Created LNL listener on 0.0.0.0:{port}");
         }
 
         return listeners;

@@ -60,28 +60,9 @@ public static class CatmullRom
     // Position on segment `segment` of a control polyline, t from 0 to 1. Handles the ends by
     // mirroring, so segment 0 and the last segment behave like any other.
     public static float3 Evaluate(ReadOnlySpan<float3> control, int segment, float t)
-    {
-        int last = control.Length - 1;
-        if (control.Length == 0)
-            return float3.Zero;
-        if (control.Length == 1)
-            return control[0];
+        => new CatmullRomSegment(control, segment).Evaluate(t);
 
-        segment = System.Math.Clamp(segment, 0, last - 1);
-        var p1 = control[segment];
-        var p2 = control[segment + 1];
-
-        // Two points is a straight line and nothing else. Running the spline over two mirrored phantoms
-        // gives the same answer but through six divisions that can all go degenerate.
-        if (control.Length == 2)
-            return float3.Lerp(p1, p2, System.Math.Clamp(t, 0f, 1f));
-
-        var p0 = segment > 0 ? control[segment - 1] : p1 + (p1 - p2);
-        var p3 = segment + 2 <= last ? control[segment + 2] : p2 + (p2 - p1);
-        return Evaluate(p0, p1, p2, p3, t);
-    }
-
-    private static float Knot(in float3 a, in float3 b)
+    internal static float Knot(in float3 a, in float3 b)
     {
         float distance = (b - a).Length;
         // A zero-length knot span collapses the whole Barry-Goldman ladder into 0/0. Coincident control
@@ -89,13 +70,92 @@ public static class CatmullRom
         return MathF.Max(MathF.Pow(distance, Alpha), Epsilon);
     }
 
-    private static float3 Blend(in float3 a, in float3 b, float ta, float tb, float x)
+    internal static float3 Blend(in float3 a, in float3 b, float ta, float tb, float x)
     {
         float span = tb - ta;
         if (span < Epsilon)
             return b;
         float u = (x - ta) / span;
         return a * (1f - u) + b * u;
+    }
+}
+
+// One segment of a control polyline with its knots worked out once, evaluated any number of times. The
+// arc table walks every segment in eight steps and an expansion puts several samples on each, and every
+// one of those used to redo the three square roots and three powers that only depend on the segment:
+// half the main thread of a world with particle ribbons in it. Same arithmetic in the same order as
+// evaluating from scratch, so the curve is the same to the last bit. -xlinka
+public readonly struct CatmullRomSegment
+{
+    private readonly float3 _p0, _p1, _p2, _p3;
+    private readonly float _t1, _t2, _t3;
+    private readonly byte _kind;
+
+    private const byte Empty = 0;
+    private const byte Single = 1;
+    private const byte Straight = 2;
+    private const byte Curve = 3;
+
+    public CatmullRomSegment(ReadOnlySpan<float3> control, int segment)
+    {
+        _p0 = _p1 = _p2 = _p3 = float3.Zero;
+        _t1 = _t2 = _t3 = 0f;
+        if (control.Length == 0)
+        {
+            _kind = Empty;
+            return;
+        }
+        if (control.Length == 1)
+        {
+            _p1 = control[0];
+            _kind = Single;
+            return;
+        }
+
+        int last = control.Length - 1;
+        segment = System.Math.Clamp(segment, 0, last - 1);
+        var p1 = control[segment];
+        var p2 = control[segment + 1];
+        _p1 = p1;
+        _p2 = p2;
+
+        // Two points is a straight line and nothing else. Running the spline over two mirrored phantoms
+        // gives the same answer but through six divisions that can all go degenerate.
+        if (control.Length == 2)
+        {
+            _kind = Straight;
+            return;
+        }
+
+        _p0 = segment > 0 ? control[segment - 1] : p1 + (p1 - p2);
+        _p3 = segment + 2 <= last ? control[segment + 2] : p2 + (p2 - p1);
+        float t0 = 0f;
+        _t1 = t0 + CatmullRom.Knot(_p0, _p1);
+        _t2 = _t1 + CatmullRom.Knot(_p1, _p2);
+        _t3 = _t2 + CatmullRom.Knot(_p2, _p3);
+        _kind = Curve;
+    }
+
+    public float3 Evaluate(float t)
+    {
+        switch (_kind)
+        {
+            case Empty:
+                return float3.Zero;
+            case Single:
+                return _p1;
+            case Straight:
+                return float3.Lerp(_p1, _p2, System.Math.Clamp(t, 0f, 1f));
+        }
+
+        float t0 = 0f;
+        float x = _t1 + (_t2 - _t1) * System.Math.Clamp(t, 0f, 1f);
+        var a1 = CatmullRom.Blend(_p0, _p1, t0, _t1, x);
+        var a2 = CatmullRom.Blend(_p1, _p2, _t1, _t2, x);
+        var a3 = CatmullRom.Blend(_p2, _p3, _t2, _t3, x);
+        var b1 = CatmullRom.Blend(a1, a2, t0, _t2, x);
+        var b2 = CatmullRom.Blend(a2, a3, _t1, _t3, x);
+        return CatmullRom.Blend(b1, b2, _t1, _t2, x);
     }
 }
 
@@ -201,6 +261,8 @@ public sealed class StrandSmoother
         positions[0] = control[0];
         samples[0] = new StrandSample(0, 0f);
 
+        int built = -1;
+        var curve = default(CatmullRomSegment);
         for (int i = 1; i < write - 1; i++)
         {
             float target = lengthStep * i;
@@ -217,7 +279,12 @@ public sealed class StrandSmoother
             int segment = System.Math.Min((int)(flat * invSteps), lastControl - 1);
             float t = System.Math.Clamp(flat * invSteps - segment, 0f, 1f);
 
-            positions[i] = CatmullRom.Evaluate(control, segment, t);
+            if (segment != built)
+            {
+                curve = new CatmullRomSegment(control, segment);
+                built = segment;
+            }
+            positions[i] = curve.Evaluate(t);
             samples[i] = new StrandSample(segment, t);
         }
 
@@ -254,12 +321,19 @@ public sealed class StrandSmoother
 
         int lastControl = control.Length - 1;
         float step = lastControl / (float)(write - 1);
+        int built = -1;
+        var curve = default(CatmullRomSegment);
         for (int i = 0; i < write; i++)
         {
             float u = i * step;
             int segment = System.Math.Min((int)u, lastControl - 1);
             float t = System.Math.Clamp(u - segment, 0f, 1f);
-            positions[i] = CatmullRom.Evaluate(control, segment, t);
+            if (segment != built)
+            {
+                curve = new CatmullRomSegment(control, segment);
+                built = segment;
+            }
+            positions[i] = curve.Evaluate(t);
             samples[i] = new StrandSample(segment, t);
         }
         positions[write - 1] = control[lastControl];
@@ -293,11 +367,12 @@ public sealed class StrandSmoother
 
         for (int segment = 0; segment < segments; segment++)
         {
+            var curve = new CatmullRomSegment(control, segment);
             for (int step = 1; step <= steps; step++)
             {
                 var point = step == steps
                     ? control[segment + 1]
-                    : CatmullRom.Evaluate(control, segment, step * invSteps);
+                    : curve.Evaluate(step * invSteps);
                 accumulated += (point - previous).Length;
                 _cumulative[index++] = accumulated;
                 previous = point;

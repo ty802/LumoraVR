@@ -4,7 +4,6 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
-using System.Threading.Tasks;
 using Helio.UI;
 using Lumora.Core.Assets;
 using Lumora.Core.Input;
@@ -160,7 +159,7 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
         private readonly World _world;
         private readonly List<ParticleSystem> _pending = new();
         private readonly Action _flush;
-        private readonly Action<int> _stepOne;
+        private readonly ParticleStepScheduler _scheduler;
         private ParticleSystem[] _running = System.Array.Empty<ParticleSystem>();
         private ulong _frame = ulong.MaxValue;
         private bool _scheduled;
@@ -169,7 +168,7 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
         {
             _world = world;
             _flush = Flush;
-            _stepOne = StepOne;
+            _scheduler = new ParticleStepScheduler(StepOne);
         }
 
         public void Enqueue(ParticleSystem system, ulong frame)
@@ -226,7 +225,7 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
             {
                 if (count >= 2 && ParallelSystemStepping)
                 {
-                    Parallel.For(0, count, _stepOne);
+                    _scheduler.Run(count);
                 }
                 else
                 {
@@ -392,28 +391,12 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
         if (UpdateOrder == -3000)
             UpdateOrder = 3000;
 
-        // Pointing at a mesh has to POKE that mesh, because the mesh is what has to react.
-        //
-        // A ProceduralMesh with no renderer beside it puts up its own lit-grey instance so it is visible
-        // at all, and takes it down again the moment something else draws it - a particle system counts.
-        // But that test lives in the mesh hook's ApplyChanges, and ApplyChanges is queue-driven, not per
-        // frame: a static mesh gets one call, at startup, and that call lands before the wiring does. So
-        // an import or an inspector edit points at a mesh that is never asked the question again, and the
-        // grey copy stands there at full scale forever. Re-drive it here, on the edge where the answer
-        // actually changes. -xlinka
-        ParticleMesh.OnTargetChange += RedriveMeshHook;
-
         var input = Engine.Current?.InputInterface;
         if (input != null)
         {
             input.RegisterInputEventReceiver(this);
             _registered = true;
         }
-    }
-
-    private static void RedriveMeshHook(SyncRef<Component> reference)
-    {
-        (reference.Target as ImplementableComponent)?.RunApplyChanges();
     }
 
     public override void OnDestroy()

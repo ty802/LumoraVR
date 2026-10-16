@@ -14,8 +14,17 @@ namespace Lumora.Godot.Hooks;
 [ImplementableHook(typeof(FontAsset))]
 public sealed class FontAssetHook : AssetHook, IFontAssetHook
 {
-    private const int AtlasSize = 2048;
+    // THE ATLAS GROWS.
+    //
+    // It used to be 2048 square from the first glyph: 16 MB of pixels here, 22 MB of video memory with its
+    // mips, and the whole of it re-uploaded and re-mipped every time a glyph landed. A sign's font that
+    // draws one word filled a corner of it. Now it starts at 512 and doubles when a glyph no longer fits,
+    // copying what it has into the top-left of the larger one and scaling every stored UV to match; text
+    // re-lays out on the generation bump, the same thing every new glyph already causes. -xlinka
+    private const int MinAtlasSize = 512;
+    private const int MaxAtlasSize = 2048;
     private const int Padding = 4;
+    private int _atlasSize = MinAtlasSize;
 
     // One rasterization size for the whole atlas, scaled per Text on read. Coverage fonts raster at 96 so small
     // text has detail to downsample from; MSDF fonts raster at their msdf_size (a distance field is
@@ -286,10 +295,10 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         };
 
         var uv = new MathRect(
-            dstX / (float)AtlasSize,
-            dstY / (float)AtlasSize,
-            width / (float)AtlasSize,
-            height / (float)AtlasSize
+            dstX / (float)_atlasSize,
+            dstY / (float)_atlasSize,
+            width / (float)_atlasSize,
+            height / (float)_atlasSize
         );
 
         _glyphs[codepoint] = new GlyphEntry(metrics, uv, Missing: false);
@@ -398,7 +407,8 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
 
     private void ResetAtlas()
     {
-        _atlasPixels = new byte[AtlasSize * AtlasSize * 4];
+        _atlasSize = MinAtlasSize;
+        _atlasPixels = new byte[_atlasSize * _atlasSize * 4];
         _penX = Padding;
         _penY = Padding;
         _rowHeight = 0;
@@ -408,18 +418,22 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
 
     private bool Reserve(int width, int height, out int x, out int y)
     {
-        if (_penX + width + Padding > AtlasSize)
+        if (_penX + width + Padding > _atlasSize)
         {
             _penX = Padding;
             _penY += _rowHeight + Padding;
             _rowHeight = 0;
         }
 
-        if (_penY + height + Padding > AtlasSize)
+        while (_penY + height + Padding > _atlasSize || width + 2 * Padding > _atlasSize)
         {
-            x = 0;
-            y = 0;
-            return false;
+            if (_atlasSize >= MaxAtlasSize)
+            {
+                x = 0;
+                y = 0;
+                return false;
+            }
+            Grow();
         }
 
         x = _penX;
@@ -427,6 +441,33 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         _penX += width + Padding;
         _rowHeight = Math.Max(_rowHeight, height);
         return true;
+    }
+
+    // Doubles the atlas. The shelf the pen is on simply gets longer; the space to the right of the rows
+    // above stays unused, which costs at most what the old atlas was.
+    private void Grow()
+    {
+        if (_atlasPixels == null)
+            return;
+        int old = _atlasSize;
+        int size = old * 2;
+        var pixels = new byte[size * size * 4];
+        for (int row = 0; row < old; row++)
+            Buffer.BlockCopy(_atlasPixels, row * old * 4, pixels, row * size * 4, old * 4);
+        _atlasPixels = pixels;
+        _atlasSize = size;
+
+        float scale = old / (float)size;
+        var codepoints = new List<int>(_glyphs.Keys);
+        foreach (int codepoint in codepoints)
+        {
+            var entry = _glyphs[codepoint];
+            var uv = entry.UVRect;
+            _glyphs[codepoint] = entry with { UVRect = new MathRect(uv.x * scale, uv.y * scale, uv.width * scale, uv.height * scale) };
+        }
+        _cacheGeneration++;
+        ScheduleUpload();
+        Lumora.Core.Logging.Logger.Debug($"FontAssetHook: atlas for '{_fontPath}' grew to {size} ({_glyphs.Count} glyphs)");
     }
 
     private void CopyGlyph(Image source, Rect2 sourceRect, int dstX, int dstY, int width, int height)
@@ -458,7 +499,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
                 }
 
                 var color = source.GetPixel(sx, sy);
-                int dst = ((dstY + y) * AtlasSize + dstX + x) * 4;
+                int dst = ((dstY + y) * _atlasSize + dstX + x) * 4;
                 if (_isMsdf)
                 {
                     // Keep the 3-channel distance field in RGB; the shader rebuilds the glyph from their median.
@@ -501,7 +542,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
     {
         if (_atlasTexture != null && _atlasPixels != null)
         {
-            _atlasTexture.SetImageData(_atlasPixels, AtlasSize, AtlasSize, true);
+            _atlasTexture.SetImageData(_atlasPixels, _atlasSize, _atlasSize, true);
         }
     }
 

@@ -39,9 +39,60 @@ public static class GodotImageLoader
         if (LooksLikeTga(data))
             return image.LoadTgaFromBuffer(encoded);
         if (IsSvg(encoded))
-            return image.LoadSvgFromBuffer(encoded, 1.0f);
+        {
+            var error = image.LoadSvgFromBuffer(encoded, 1.0f);
+            if (error == Error.Ok)
+                FillClearPixels(image);
+            return error;
+        }
 
         return Error.FileUnrecognized;
+    }
+
+    // The rasteriser leaves clear pixels black, and filtering and mipmaps blend that black into every
+    // edge as a dark rim. Each clear pixel takes the colour of the nearest inked one; alpha is untouched. -xlinka
+    private static void FillClearPixels(Image image)
+    {
+        if (image.GetFormat() != Image.Format.Rgba8 || image.HasMipmaps())
+            return;
+        int width = image.GetWidth();
+        int height = image.GetHeight();
+        int count = width * height;
+        byte[] data = image.GetData();
+        var reached = new bool[count];
+        var queue = new int[count];
+        int head = 0, tail = 0;
+        for (int i = 0; i < count; i++)
+        {
+            if (data[i * 4 + 3] == 0)
+                continue;
+            reached[i] = true;
+            queue[tail++] = i;
+        }
+        if (tail == 0 || tail == count)
+            return;
+
+        void Reach(int from, int to)
+        {
+            if (reached[to])
+                return;
+            reached[to] = true;
+            data[to * 4] = data[from * 4];
+            data[to * 4 + 1] = data[from * 4 + 1];
+            data[to * 4 + 2] = data[from * 4 + 2];
+            queue[tail++] = to;
+        }
+
+        while (head < tail)
+        {
+            int i = queue[head++];
+            int x = i % width;
+            if (x > 0) Reach(i, i - 1);
+            if (x < width - 1) Reach(i, i + 1);
+            if (i >= width) Reach(i, i - width);
+            if (i < count - width) Reach(i, i + width);
+        }
+        image.SetData(width, height, false, Image.Format.Rgba8, data);
     }
 
     private static bool LooksLikeTga(ReadOnlySpan<byte> data)

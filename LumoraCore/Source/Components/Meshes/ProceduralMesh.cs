@@ -81,6 +81,12 @@ public abstract class ProceduralMesh : ImplementableComponent, ICustomInspectorU
         uploadHint.SetAll();
     }
 
+    // Raised after the mesh is built again from this component's own settings, for whatever reads its geometry. Not
+    // raised for a mesh that is only being bent in place (see RegenerateQuietly).
+    public event System.Action<ProceduralMesh>? Regenerated;
+
+    private bool _quiet;
+
     // exposed as an inspector action row via [SyncMethod]
     [SyncMethod]
     public void RegenerateMesh()
@@ -108,10 +114,26 @@ public abstract class ProceduralMesh : ImplementableComponent, ICustomInspectorU
         }
 
         MarkDirty();
+        if (!_quiet)
+            Regenerated?.Invoke(this);
+    }
+
+    // The same rebuild for a mesh whose shape moves every frame, without telling its readers each time.
+    protected void RegenerateQuietly()
+    {
+        _quiet = true;
+        try
+        {
+            RegenerateMesh();
+        }
+        finally
+        {
+            _quiet = false;
+        }
     }
 
     // snapshot of the current geometry at build time; nothing computed beyond what the mesh already holds
-    public void BuildInspectorBody(UIBuilder ui)
+    public virtual void BuildInspectorBody(UIBuilder ui)
     {
         var mesh = phosMesh;
         if (mesh == null)
@@ -205,8 +227,14 @@ public abstract class ProceduralMesh : ImplementableComponent, ICustomInspectorU
 
     // Helper: Subscribe to Property Changes
 
+	// Not before its first build: OnStart builds it from whatever it holds by then, so a copy, a load or a script
+	// filling in a fresh mesh field by field builds it once, not once per field.
 	protected void SubscribeToChanges<T>(SyncField<T> sync)
 	{
-		sync.OnChanged += (newVal) => RegenerateMesh();
+		sync.OnChanged += (newVal) =>
+		{
+			if (phosMesh != null)
+				RegenerateMesh();
+		};
 	}
 }

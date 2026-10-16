@@ -14,6 +14,9 @@ public enum ProbeUpdateMode
 
     // six scene renders per frame per probe - use it deliberately
     Always,
+
+    // never looks at the scene: shows Cubemap as stored, from the capture point
+    FromCubemap,
 }
 
 public enum ProbeAmbientMode
@@ -29,6 +32,8 @@ public enum ProbeAmbientMode
 // Default is ProbeUpdateMode.Once and that default is the whole cost story: a bake is
 // six scene renders, so Always is six renders EVERY FRAME on top of the ordinary one. Anything that
 // changes occasionally wants Once plus a Rebake when it changes; Always captures moving scenery.
+// FromCubemap renders no scene at all: a capture is lit by whatever this machine is lighting at that
+// moment, so a room far from the viewer comes out dark, while a stored cubemap is the same for everyone.
 // Planar mirrors use CameraPortal instead of this cubemap approximation.
 // -xlinka
 [ComponentCategory("Rendering")]
@@ -85,6 +90,10 @@ public class ReflectionProbe : ImplementableComponent, ICustomInspectorUI, IInsp
     // it; this puts that surface where the capture was taken. Local, so it is neither saved nor sent.
     public readonly Sync<bool> DebugVisual;
 
+    // What a FromCubemap probe shows. With none set, or until it has loaded, the probe captures the
+    // scene once instead, so it is never left empty.
+    public readonly Lumora.Core.Assets.AssetRef<Lumora.Core.Assets.CubemapAsset> Cubemap;
+
     public ReflectionProbe()
     {
         Size = new Sync<float3>(this, new float3(10f, 10f, 10f));
@@ -102,6 +111,7 @@ public class ReflectionProbe : ImplementableComponent, ICustomInspectorUI, IInsp
         AmbientEnergy = new Sync<float>(this, 1f);
         BakeGeneration = new Sync<int>(this, 0);
         DebugVisual = new Sync<bool>(this, false);
+        Cubemap = new Lumora.Core.Assets.AssetRef<Lumora.Core.Assets.CubemapAsset>(this);
     }
 
     private const string DebugSphereName = "ProbeDebugSphere";
@@ -212,9 +222,18 @@ public class ReflectionProbe : ImplementableComponent, ICustomInspectorUI, IInsp
             ? "on"
             : "off in settings, this probe is not rendering");
         InspectorStats.AddRow(ui, "Face size", "fixed by the renderer's reflection atlas");
-        InspectorStats.AddRow(ui, "Cost", UpdateMode.Value == ProbeUpdateMode.Always
-            ? "six scene renders per frame"
-            : $"six scene renders per bake, {BakeGeneration.Value} requested");
+        InspectorStats.AddRow(ui, "Cost", UpdateMode.Value switch
+        {
+            ProbeUpdateMode.Always => "six scene renders per frame",
+            ProbeUpdateMode.FromCubemap => $"one small box drawn per bake, {BakeGeneration.Value} requested",
+            _ => $"six scene renders per bake, {BakeGeneration.Value} requested",
+        });
+        if (UpdateMode.Value == ProbeUpdateMode.FromCubemap)
+            InspectorStats.AddRow(ui, "Cubemap", Cubemap.Target == null
+                ? "none set, the scene is captured once"
+                : Cubemap.Asset is { FaceSize: > 0 } asset
+                    ? $"{asset.FaceSize} px faces{(asset.IsHdr ? ", HDR" : "")}"
+                    : "loading, the scene is captured once until then");
         InspectorUI.RelayButton(ui, this, "rebake", "Rebake now", 0f);
         InspectorUI.RelayButton(ui, this, "live", UpdateMode.Value == ProbeUpdateMode.Always
             ? "Live scene capture: on" : "Live scene capture: off", 0f);

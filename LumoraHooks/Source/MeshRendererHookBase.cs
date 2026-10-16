@@ -39,24 +39,6 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
 
     protected virtual void OnAttachRenderer()
     {
-        HideSourceMeshInstance();
-    }
-
-    private void HideSourceMeshInstance()
-    {
-        var meshValue = Owner.Mesh.Target;
-        if (meshValue is LumoraMeshes.ProceduralMesh proceduralMesh)
-        {
-            if (proceduralMesh.Hook is MeshHook meshHook)
-            {
-                var sourceMeshInstance = meshHook.GetMeshInstance();
-                if (sourceMeshInstance != null)
-                {
-                    sourceMeshInstance.Visible = false;
-                    LumoraLogger.Debug($"MeshRendererHookBase: Hid source MeshHook's MeshInstance3D");
-                }
-            }
-        }
     }
 
     protected virtual void OnCleanupRenderer()
@@ -69,15 +51,17 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
     // Inherit the override at creation instead.
     private void ApplyInheritedRenderLayer(VisualInstance3D visual)
     {
+        uint layers = visual.Layers;
         for (var slot = Owner.Slot; slot != null; slot = slot.Parent)
         {
             var layerOverride = slot.GetComponent<RenderLayerOverride>();
             if (layerOverride != null && layerOverride.Enabled && layerOverride.Layer.Value != 0)
             {
-                visual.Layers = (uint)layerOverride.Layer.Value;
-                return;
+                layers = (uint)layerOverride.Layer.Value;
+                break;
             }
         }
+        visual.Layers = Helpers.RenderHelper.ForWorld(Owner.World, layers);
     }
 
     public override void ApplyChanges()
@@ -102,6 +86,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
                     ApplyInheritedRenderLayer(meshInstance);
                     gameObject.AddChild(meshInstance);
                     _rangeApplied = false;
+                    _instanceParamsStale = true;
                 }
 
                 MeshRenderer = (gameObject as U)!;
@@ -116,11 +101,12 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
             // re-reads the now-populated ArrayMesh. Once we hold a real surface-bearing mesh this stops. -xlinka
             bool meshRefChanged = Owner.Mesh.GetWasChangedAndClear();
             bool haveRealMesh = meshInstance?.Mesh is ArrayMesh curMesh && curMesh.GetSurfaceCount() > 0;
-            meshWasChanged = meshRefChanged || !haveRealMesh;
+            meshWasChanged = meshRefChanged || !haveRealMesh || _meshSourceReplaced;
             if (meshWasChanged)
             {
-                HideSourceMeshInstance();
+                _meshSourceReplaced = false;
 
+                _surfaceSource = null;
                 var godotMesh = GetGodotMeshFromAsset();
                 if (UseMeshInstance && meshInstance != null)
                 {
@@ -187,7 +173,9 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
             // purpose - the importer leaves one where a material failed to build so the surfaces after
             // it keep their index - and a list of nothing but holes still draws the grey default this
             // check exists to prevent.
-            bool enabled = Owner.Enabled && HasAnyMaterial();
+            // A soft body on the same slot draws its deformed copy of this mesh itself; see
+            // MeshRenderer.SetLocallyHiddenMesh.
+            bool enabled = Owner.Enabled && HasAnyMaterial() && !Owner.IsLocallyHidden;
             if (meshInstance != null && meshInstance.Visible != enabled)
             {
                 meshInstance.Visible = enabled;
@@ -219,7 +207,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
                 || AnyChanged(Owner.SurfaceRenderPriorities);
             bool surfaceAssignmentsChanged = Owner.SurfaceAssignmentsChanged || meshWasChanged;
             bool overlayChanged = Owner.OverlayOrderChanged;
-            bool materialsChanged = materialRefsChanged || surfacePrioritiesChanged || surfaceAssignmentsChanged
+            bool materialsChanged = _surfaceStillLoading || materialRefsChanged || surfacePrioritiesChanged || surfaceAssignmentsChanged
                 || overlayChanged;
 
             if (materialsChanged)
@@ -232,8 +220,10 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
                 ApplyMaterials();
                 if (!renderQueueApplied)
                     ApplyRenderQueue();
+                _instanceParamsStale = true;
             }
 
+            ApplyInstanceParams();
             SyncPerSurfaceInstances();
             ApplyLodRange();
             ReportOnce();
@@ -246,6 +236,23 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
             ReportMissing();
             CleanupRenderer(destroyingWorld: false);
         }
+
+        BatchedBy?.RendererChanged();
+    }
+
+    // See MeshRenderer.SetInstanceParams. Written again on a fresh instance and after a material swap, since
+    // the platform files an instance value against the material it wears.
+    private static readonly StringName InstanceParamsName = "instance_params";
+    private bool _instanceParamsStale = true;
+
+    private void ApplyInstanceParams()
+    {
+        if (!Owner.HasInstanceParams || meshInstance == null || (!Owner.InstanceParamsChanged && !_instanceParamsStale))
+            return;
+        Owner.InstanceParamsChanged = false;
+        _instanceParamsStale = false;
+        var value = Owner.InstanceParams;
+        meshInstance.SetInstanceShaderParameter(InstanceParamsName, new Vector4(value.x, value.y, value.z, value.w));
     }
 
     private int _missingApplies;
@@ -291,6 +298,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
             return;
         _lodRange = range;
         ApplyLodRange();
+        BatchedBy?.RendererChanged();
     }
 
     public bool TryGetLargestDimension(out float size)
@@ -402,6 +410,45 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
         }
     }
 
+    // The body drawing this renderer in a batch of moving objects, told whenever anything about how it draws may
+    // have changed, so it takes the renderer out and looks again.
+    internal RigidBodyHook? BatchedBy;
+
+    // Whether a batch of moving objects can draw this renderer for it: nothing drawn per instance, no ordering of
+    // its own, and every surface wearing a material that draws the same in a batch.
+    internal bool CanBatch
+    {
+        get
+        {
+            if (meshInstance == null || _surfaceStillLoading || Owner.HasInstanceParams || Owner.HasOverlayOrder
+                || Owner.PerSurfaceOrdering || _perSurfaceInstances.Count > 0)
+                return false;
+            int count = GetSurfaceCount();
+            for (int i = 0; i < count; i++)
+            {
+                int index = _surfaceSource?.SubmeshForSurface(i) ?? i;
+                if (Owner.GetSurfaceRenderPriority(index) != Lumora.Core.Components.MeshRenderer.NoSurfaceRenderPriority)
+                    return false;
+                var block = GetPropertyBlockAsset(index);
+                if (block != null && block.IsValid)
+                    return false;
+                if (GetMaterialAsset(index)?.Hook is not MaterialAssetHook material || !material.Batchable)
+                    return false;
+            }
+            return count > 0;
+        }
+    }
+
+    // The instance this renderer draws through and the node holding it, for a body that places the instance on
+    // the render server itself while it moves (RigidBodyHook). None while it draws one instance per surface.
+    internal bool TryGetDrawn(out Node3D holder, out MeshInstance3D instance)
+    {
+        holder = (MeshRenderer as Node3D)!;
+        instance = meshInstance;
+        return holder != null && instance != null && GodotObject.IsInstanceValid(holder) && GodotObject.IsInstanceValid(instance)
+            && !Owner.PerSurfaceOrdering && _perSurfaceInstances.Count == 0;
+    }
+
     // Set by GetSurfaceMaterial whenever it hands back the placeholder, read once per apply.
     private bool _surfaceStillLoading;
 
@@ -435,7 +482,12 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
                 _overlayClonesUsed[material] = clone;
                 material = clone;
             }
-            meshInstance.SetSurfaceOverrideMaterial(i, material);
+            // A changed material property re-drives this renderer with the very same material objects.
+            // Setting one again is not free: the platform re-files the instance and every point and spot
+            // light it sits in renders its shadow again, so an animated material kept the lamps around
+            // everything wearing it re-rendering every frame. -xlinka
+            if (!ReferenceEquals(meshInstance.GetSurfaceOverrideMaterial(i), material))
+                meshInstance.SetSurfaceOverrideMaterial(i, material);
         }
         // Only the sources this apply touched survive, so a renderer that swaps materials cannot grow
         // the cache without bound.
@@ -452,7 +504,8 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
         if (_surfaceStillLoading && Owner is { IsDestroyed: false })
             Owner.MarkChangeDirty();
 
-        meshInstance.MaterialOverride = null;
+        if (meshInstance.MaterialOverride != null)
+            meshInstance.MaterialOverride = null;
         _lastSurfaceOverrideCount = count;
 
         if (_uiDiagLogged < 3 && Owner.Slot?.Parent?.SlotName?.Value == "HelioTestPanel")
@@ -490,6 +543,18 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
                 standard.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
             standard.DepthDrawMode = BaseMaterial3D.DepthDrawModeEnum.Always;
             standard.NoDepthTest = !depthTest;
+        }
+        else if (duplicate is ShaderMaterial shaderMaterial && shaderMaterial.Shader is { } shader)
+        {
+            // A build still compiling lands in place: until then the clone wears the original shader, already
+            // at the overlay priority.
+            var transparent = OverlayShaders.For(shader, depthTest, built =>
+            {
+                if (GodotObject.IsInstanceValid(shaderMaterial) && ReferenceEquals(shaderMaterial.Shader, shader))
+                    shaderMaterial.Shader = built;
+            });
+            if (transparent != null)
+                shaderMaterial.Shader = transparent;
         }
         duplicate.RenderPriority = 127;
         return duplicate;
@@ -535,8 +600,17 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
 
     private readonly LoadingSkinWatch _loadingSkin = new();
 
-    private Material GetSurfaceMaterial(int index)
+    // The asset hook whose ArrayMesh this renderer is drawing, when it is one. It knows which submesh each
+    // surface came from. A procedural mesh gets no answer: its generators number their materials by surface
+    // already (a canvas chunk counts only the submeshes that draw), and mapping them would shift every one.
+    private MeshAssetHook? _surfaceSource;
+
+    private Material GetSurfaceMaterial(int surface)
     {
+        // Materials are numbered by submesh and an empty submesh makes no surface: read the material of the
+        // submesh this surface came from, or everything after an empty one wears its neighbour's. -xlinka
+        int index = _surfaceSource?.SubmeshForSurface(surface) ?? surface;
+
         // Assigned but still arriving: wear the loading skin rather than whatever half-state the
         // material is in (a white untextured PBS, or nothing at all). The swap back to the real
         // material rides the asset-arrival notification that already re-drives this hook, and the
@@ -551,6 +625,13 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
         _loadingSkin.Clear(index, Owner.Slot?.SlotName.Value);
 
         var materialAsset = GetMaterialAsset(index);
+        var provider = Owner.SurfaceMaterialProvider(index);
+        if (materialAsset?.GodotMaterial == null && provider != null
+            && (provider is not MaterialProvider materialProvider || materialProvider.UseLoadingPlaceholder))
+        {
+            _surfaceStillLoading = true;
+            return LoadingPlaceholderMaterial.Get();
+        }
         if (materialAsset == null)
         {
             return null!;
@@ -562,7 +643,11 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
             return ApplySurfaceRenderPriority(index, (propertyBlock.ApplyToMaterial(materialAsset) as Material)!);
         }
 
-        return ApplySurfaceRenderPriority(index, (materialAsset.GodotMaterial as Material)!);
+        // A surface with a priority of its own writes it onto the material it wears, so it keeps the
+        // component's own; every other surface wears the copy identical materials share.
+        if (Owner.GetSurfaceRenderPriority(index) != Lumora.Core.Components.MeshRenderer.NoSurfaceRenderPriority)
+            return ApplySurfaceRenderPriority(index, (materialAsset.GodotMaterial as Material)!);
+        return (materialAsset.SharedGodotMaterial as Material)!;
     }
 
     private Material ApplySurfaceRenderPriority(int index, Material material)
@@ -653,13 +738,19 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
 
     private void ReportOnce()
     {
-        if (_reported)
+        if (_reported || !LumoraLogger.EnableDebug)
             return;
 
         if (meshInstance == null || !GodotObject.IsInstanceValid(meshInstance) || meshInstance.Mesh == null)
             return;
 
         _reported = true;
+
+        // A canvas chunk is the engine's own and spends its life looking like every case below: empty and
+        // switched off while it fills, a material list with spare entries. Every card of a graph printed
+        // one, a few hundred lines a world. -xlinka
+        if (Owner.Mesh.Target is Helio.UI.LocalMeshSource)
+            return;
 
         var aabb = meshInstance.GetAabb();
         int surfaces = meshInstance.Mesh.GetSurfaceCount();
@@ -683,17 +774,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
                        // the two disagreeing rather than as one suspicious number.
                        + $"slot=({Owner.Slot?.GlobalPosition.x ?? 0f:F2},{Owner.Slot?.GlobalPosition.y ?? 0f:F2},{Owner.Slot?.GlobalPosition.z ?? 0f:F2}) "
                        + $"slotActive={Owner.Slot?.IsActive}");
-        // Only a renderer that looks like it might not draw earns a line at Log level. A healthy one
-        // still gets the same line at Debug, so the dump is there when you turn it on and absent from
-        // the hundreds of lines a dashboard or an import would otherwise print. -xlinka
-        bool suspicious = !meshInstance.Visible || !Owner.Enabled || surfaces == 0
-            || filled < Owner.Materials.Count || aabb.Size == Vector3.Zero
-            || Owner.Slot == null || !Owner.Slot.IsActive
-            || meshInstance.Scale.X == 0f || meshInstance.Scale.Y == 0f || meshInstance.Scale.Z == 0f;
-        if (suspicious)
-            LumoraLogger.Log(report);
-        else
-            LumoraLogger.Debug(report);
+        LumoraLogger.Debug(report);
     }
 
     // At least one slot in the list actually has a material in it.
@@ -701,7 +782,8 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
     {
         for (int i = 0; i < Owner.Materials.Count; i++)
         {
-            if (Owner.Materials.GetElement(i)?.Target != null)
+            if (Owner.Materials.GetElement(i) is { } reference
+                && (reference.Target != null || !reference.Value.IsNull))
                 return true;
         }
         return false;
@@ -761,6 +843,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
         // our stale references so a fresh renderer rebuilds them. -xlinka
         _perSurfaceInstances.Clear();
         _rangeApplied = false;
+        DirectPoses.InstancesFreed++;
         if (!destroyingWorld && MeshRenderer != null && GodotObject.IsInstanceValid(MeshRenderer))
         {
             ((Node)MeshRenderer).QueueFree();
@@ -768,8 +851,35 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
         OnCleanupRenderer();
     }
 
+    // A procedural mesh can hand out a different Godot mesh than the one this renderer holds: identical
+    // meshes share one, and a mesh whose data moves on leaves the shared one for its own. The mesh's hook
+    // says so and the renderer picks the new one up on its next apply. -xlinka
+    private MeshHook? _meshSource;
+    private bool _meshSourceReplaced;
+
+    private void WatchMeshSource(MeshHook? source)
+    {
+        if (ReferenceEquals(_meshSource, source))
+            return;
+        if (_meshSource != null)
+            _meshSource.MeshReplaced -= OnMeshSourceReplaced;
+        _meshSource = source;
+        if (source != null)
+            source.MeshReplaced += OnMeshSourceReplaced;
+    }
+
+    private void OnMeshSourceReplaced()
+    {
+        _meshSourceReplaced = true;
+        if (Owner is { IsDestroyed: false })
+            Owner.MarkChangeDirty();
+    }
+
     public override void Destroy(bool destroyingWorld)
     {
+        BatchedBy?.RendererChanged();
+        BatchedBy = null;
+        WatchMeshSource(null);
         // A world going down is tearing everything out anyway; touching providers on the way past
         // would only be a chance to trip over something already gone.
         if (!destroyingWorld)
@@ -814,11 +924,9 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
         {
             if (proceduralMesh.Hook is MeshHook meshHook)
             {
-                var meshInstance = meshHook.GetMeshInstance();
-                if (meshInstance?.Mesh != null)
-                {
-                    return meshInstance.Mesh;
-                }
+                WatchMeshSource(meshHook);
+                if (meshHook.GodotMesh != null)
+                    return meshHook.GodotMesh;
             }
             LumoraLogger.Debug("MeshRendererHookBase: ProceduralMesh hook not ready");
             return null!;
@@ -865,7 +973,10 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
                 }
 
                 if (meshAssetHook.IsValid)
+                {
+                    _surfaceSource = meshAssetHook;
                     return meshAssetHook.GodotMesh;
+                }
             }
             // Asset still decoding/uploading (the ArrayMesh builds deferred on the main thread) - not an error;
             // the renderer re-applies when the asset finishes.
@@ -895,7 +1006,10 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
             return;
         }
 
-        var materialQueue = Owner.Material.Asset?.RenderQueue ?? -1;
+        // Owner.Material ADDS an entry when the list is empty: read the list instead. Asked of a renderer whose
+        // materials had not been linked yet, it put an empty material first, and every material after it
+        // landed one surface late (the first surface drew Godot's plain white). -xlinka
+        var materialQueue = Owner.Materials.Count > 0 ? Owner.Materials.GetElement(0).Asset?.RenderQueue ?? -1 : -1;
         var effectiveQueue = (materialQueue >= 0 ? materialQueue : 0) + Owner.SortingOrder.Value;
 
         // Godot uses SortingOffset for transparent object ordering, while Material.RenderPriority
@@ -949,4 +1063,3 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
     }
 
 }
-

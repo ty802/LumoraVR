@@ -2,18 +2,21 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
+using Lumora.Core.Persistence;
 using Lumora.Core.Phos;
 
 namespace Lumora.Core.Components.Meshes;
 
-// a cylinder along the local Y axis with a hemisphere on each end; Height is the cylindrical section
-// only, so the total extent is Height + 2 * Radius, matching the capsule collider
+// A cylinder along the local Y axis with a hemisphere on each end. Height runs tip to tip, caps included,
+// the same measure a capsule collider uses, so the two given the same numbers are the same shape. Saves before
+// version 1 measured the straight part alone and are lengthened by two radii on load. -xlinka
 [ComponentCategory("Assets/Procedural Meshes")]
+[SaveTypeVersion(1)]
 public class CapsuleMesh : ProceduralMesh
 {
     public readonly Sync<float> Radius;
 
-    // excludes the caps
+    // tip to tip; never shorter than the two caps
     public readonly Sync<float> Height;
 
     public readonly Sync<int> Segments;
@@ -32,7 +35,7 @@ public class CapsuleMesh : ProceduralMesh
     public CapsuleMesh()
     {
         Radius = new Sync<float>(this, 0.25f);
-        Height = new Sync<float>(this, 0.5f);
+        Height = new Sync<float>(this, 1f);
         Segments = new Sync<int>(this, 24);
         Rings = new Sync<int>(this, 8);
         UVScale = new Sync<float2>(this, float2.One);
@@ -75,7 +78,7 @@ public class CapsuleMesh : ProceduralMesh
         }
 
         _capsule.Radius = _radius;
-        _capsule.Height = _height;
+        _capsule.Height = System.MathF.Max(0f, _height - 2f * System.MathF.Max(0f, _radius));
         _capsule.UVScale = _uvScale;
         _capsule.Update();
     }

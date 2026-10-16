@@ -24,6 +24,8 @@ public static class RenderHelper
     public const int PUBLIC_LAYER = 1 << 0;
     public const int PRIVATE_LAYER = 1 << 1;
     public const int TEMP_LAYER = 1 << 2;
+    // Drawn by no eye: the dash's offscreen interface, and the cubemap boxes that probes showing a stored
+    // cubemap capture (ReflectionProbeHook.SyncSeed), so no eye mask and no scene-capturing probe takes it.
     public const int HIDDEN_LAYER = 1 << 3;
     public const int OVERLAY_LAYER = 1 << 4;
     // Free-cam position marker (sphere + label). Rendered for spectators/others but culled from the
@@ -31,7 +33,9 @@ public static class RenderHelper
     public const int FREECAM_INDICATOR_LAYER = 1 << 19;
     // The local user's own head geometry. Culled from the eye cameras (main + XR) and from nothing else,
     // so a mirror, a camera and every other peer still see a head while you don't see the inside of
-    // yours. Lights carry no cull mask here, so the head keeps casting its shadow. -xlinka
+    // yours. Godot draws a caster into a shadow only for cameras that see its layer, so it casts for
+    // those other cameras and not for the eyes; while none of them films it, ShadowBudget keeps the
+    // shadowed lights off it altogether. -xlinka
     public const int LOCAL_HEAD_LAYER = 1 << 18;
     // The opposite band: drawn by the eye cameras and by NOTHING else. A skinned body whose head bone
     // is hidden from the wearer gets a second instance here with that bone collapsed, while the real
@@ -40,17 +44,34 @@ public static class RenderHelper
     // but the two eyes has to mask this bit off; the two render masks below already do. -xlinka
     public const int EYES_ONLY_LAYER = 1 << 17;
     public const int MIRROR_LAYER = Lumora.Core.Components.RenderLayerOverride.MirrorLayer;
+    // Name plates and laser pointers, on bands of their own so a camera can leave them out by mask.
+    public const int NAMEPLATE_LAYER = Lumora.Core.Components.RenderLayerOverride.NameplateLayer;
+    public const int POINTER_LAYER = Lumora.Core.Components.RenderLayerOverride.PointerLayer;
+    public const int OWN_NAMEPLATE_LAYER = Lumora.Core.Components.RenderLayerOverride.OwnNameplateLayer;
 
     public const int PUBLIC_RENDER_MASK = ~(PRIVATE_LAYER | TEMP_LAYER | HIDDEN_LAYER | OVERLAY_LAYER | EYES_ONLY_LAYER);
     public const int PRIVATE_RENDER_MASK = ~(TEMP_LAYER | HIDDEN_LAYER | OVERLAY_LAYER | EYES_ONLY_LAYER);
 
-    // Bits 5..15 are unclaimed. 16 is reserved for mirrors, 17 for the eyes-only twin, 18 for the local
-    // head and 19 for the free-cam indicator, so a camera doing selective or excluded rendering borrows
-    // one of the eleven in between and gives it back when it stops. Godot only has twenty visual layers,
+    // Bits 5..10 are unclaimed. 11 and 12 are the shadow bands, 13 is your own name plate, 14 laser
+    // pointers, 15 name plates, 16 mirrors, 17 the eyes-only twin, 18 the local head and 19 the free-cam
+    // indicator, so a camera doing selective or excluded rendering borrows one of the six in between and
+    // gives it back when it stops. Godot only has twenty visual layers,
     // so this is a hard ceiling on how many cameras can be doing it at once - past that the camera
     // renders normally rather than wrongly. -xlinka
     private const int SELECTIVE_FIRST_BIT = 5;
-    private const int SELECTIVE_LAST_BIT = 15;
+    private const int SELECTIVE_LAST_BIT = 10;
+
+    // The shadow-only stand-ins of moving objects (MovingShadowCasters) sit on these, one copy per band,
+    // and each shadowed light takes one band (ShadowBudget). Every camera draws both bands; the stand-ins
+    // only ever show up as shadows.
+    public const int SHADOW_BAND_0 = 1 << 11;
+    public const int SHADOW_BAND_1 = 1 << 12;
+    public const int SHADOW_BANDS = SHADOW_BAND_0 | SHADOW_BAND_1;
+
+    // What a left-out subtree gives up for a camera's bit: every band the other cameras draw it on. A person
+    // left out takes their name plate and their beam with them, and those are not on the public band.
+    private const uint SWAPPED_BANDS = (uint)(PUBLIC_LAYER | NAMEPLATE_LAYER | OWN_NAMEPLATE_LAYER | POINTER_LAYER);
+    private static readonly StringName SwappedBandsMeta = "lumora_swapped_bands";
 
     private static readonly object _selectiveLock = new();
     private static int _selectiveBitsInUse;
@@ -114,7 +135,7 @@ public static class RenderHelper
         }
     }
 
-    // Move a subtree off the public band and onto a camera's own bit, so that camera can mask it out.
+    // Move a subtree off the bands everyone draws and onto a camera's own bit, so that camera can mask it out.
     // The private/temp/hidden/overlay bits are left alone - they carry meaning nothing here is entitled
     // to throw away - and every other camera's mask already includes bits 5..16 and 18, so the subtree
     // stays visible everywhere else.
@@ -123,11 +144,19 @@ public static class RenderHelper
         if (root == null || !GodotObject.IsInstanceValid(root) || bit == 0)
             return;
 
-        // Only nodes that were ACTUALLY on the public layer get swapped. Without this guard a node on
-        // the private band alone would come back from RestorePublicLayerFromBit wearing a public bit it
-        // never had, which is a visibility leak dressed up as a restore.
-        if (root is VisualInstance3D visual && (visual.Layers & (uint)PUBLIC_LAYER) != 0)
-            visual.Layers = (visual.Layers & ~(uint)PUBLIC_LAYER) | (uint)bit;
+        // Only nodes that were ACTUALLY on a band everyone draws get swapped, and which bands they wore
+        // stays on the node. Without that a node on the private band alone would come back from
+        // RestorePublicLayerFromBit wearing a public bit it never had, which is a visibility leak dressed up
+        // as a restore, and a name plate would come back public instead of on its own band.
+        if (root is VisualInstance3D visual)
+        {
+            uint bands = visual.Layers & SWAPPED_BANDS;
+            if (bands != 0)
+            {
+                visual.SetMeta(SwappedBandsMeta, (int)bands);
+                visual.Layers = (visual.Layers & ~bands) | (uint)bit;
+            }
+        }
 
         foreach (Node child in root.GetChildren())
         {
@@ -142,7 +171,15 @@ public static class RenderHelper
             return;
 
         if (root is VisualInstance3D visual && (visual.Layers & (uint)bit) != 0)
-            visual.Layers = (visual.Layers & ~(uint)bit) | (uint)PUBLIC_LAYER;
+        {
+            uint bands = (uint)PUBLIC_LAYER;
+            if (visual.HasMeta(SwappedBandsMeta))
+            {
+                bands = (uint)visual.GetMeta(SwappedBandsMeta).AsInt32();
+                visual.RemoveMeta(SwappedBandsMeta);
+            }
+            visual.Layers = (visual.Layers & ~(uint)bit) | bands;
+        }
 
         foreach (Node child in root.GetChildren())
         {
@@ -183,6 +220,41 @@ public static class RenderHelper
             {
                 RestoreHierarchyLayer(node, previous);
             }
+        }
+    }
+
+    // A world that is this machine's alone (userspace: the dash, its pointer, the keyboard, every panel
+    // that follows you) draws for this machine's eyes and nothing else. Whatever band its things ask for,
+    // they wear the private band, which only the eyes and a camera told to film the private interface draw.
+    // Bands drawn by nobody but special cameras (hidden, temp, overlay, eyes only) stay as they are. This is
+    // asked every time a layer is written, so a thing made in userspace long after it was set up can never
+    // sit on a band everyone films. -xlinka
+    public static uint ForWorld(Lumora.Core.World? world, uint layers)
+    {
+        if (world == null || world.Focus != Lumora.Core.World.WorldFocus.PrivateOverlay)
+            return layers;
+        return (layers & unchecked((uint)PRIVATE_RENDER_MASK)) == 0 ? layers : (uint)PRIVATE_LAYER;
+    }
+
+    // Every node under a world that just became private, through ForWorld; what each wore is kept so the
+    // world can give it back if it ever stops being private.
+    public static void MakePrivate(Node3D root, Lumora.Core.World world, Dictionary<Node3D, int> previous)
+    {
+        if (root is VisualInstance3D visual)
+        {
+            uint layers = ForWorld(world, visual.Layers);
+            if (layers != visual.Layers)
+            {
+                if (!previous.ContainsKey(root))
+                    previous.Add(root, (int)visual.Layers);
+                visual.Layers = layers;
+            }
+        }
+
+        foreach (Node child in root.GetChildren())
+        {
+            if (child is Node3D child3D)
+                MakePrivate(child3D, world, previous);
         }
     }
 

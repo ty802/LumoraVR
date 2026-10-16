@@ -4,8 +4,8 @@
 using System;
 using Lumora.Core;
 using Lumora.Core.Assets;
+using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
-using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -142,6 +142,40 @@ public class MeshRenderer : ImplementableComponent
         RunApplyChanges();
     }
 
+    // A mesh this renderer does not draw while its Mesh points at it, on this machine only. A SquishyBody
+    // sets it on renderers that draw the mesh it deforms, since it draws the deformed copy itself. Kept as
+    // the mesh rather than a bool so retargeting the renderer brings it back without anyone clearing it.
+    // Never replicated: every peer runs its own soft body. -xlinka
+    private Component? _locallyHiddenMesh;
+
+    public bool IsLocallyHidden => _locallyHiddenMesh != null && ReferenceEquals(Mesh.Target, _locallyHiddenMesh);
+
+    public void SetLocallyHiddenMesh(Component? mesh)
+    {
+        if (ReferenceEquals(_locallyHiddenMesh, mesh))
+            return;
+        _locallyHiddenMesh = mesh;
+        RunApplyChanges();
+    }
+
+    // Four numbers this instance hands its shader, on this machine only, so a crowd of renderers sharing one
+    // material still draw each their own way without a copy of the material each. The shader reads them as
+    // `instance uniform vec4 instance_params`; one that declares no such uniform never sees them. Never
+    // replicated: these carry a viewer's own state. -xlinka
+    public float4 InstanceParams { get; private set; }
+    public bool HasInstanceParams { get; private set; }
+    public bool InstanceParamsChanged { get; set; }
+
+    public void SetInstanceParams(in float4 value)
+    {
+        if (HasInstanceParams && InstanceParams == value)
+            return;
+        InstanceParams = value;
+        HasInstanceParams = true;
+        InstanceParamsChanged = true;
+        RunApplyChanges();
+    }
+
     public bool MaterialsChanged { get; set; }
     public bool MaterialPropertyBlocksChanged { get; set; }
     public bool SurfaceRenderPrioritiesChanged { get; set; }
@@ -205,7 +239,9 @@ public class MeshRenderer : ImplementableComponent
         int index = SurfaceMaterialIndex(surfaceIndex);
         if (index < 0)
             return false;
-        return _loadingSurfaces.IsLoading(index, Materials.GetElement(index).Target);
+        var reference = Materials.GetElement(index);
+        return (!reference.Value.IsNull && reference.Target == null)
+            || _loadingSurfaces.IsLoading(index, reference.Target);
     }
 
     // The material that governs a given surface. Same clamp IsSurfaceLoading applies, so a diagnostic
@@ -247,7 +283,6 @@ public class MeshRenderer : ImplementableComponent
         // invisible. (The provider also pokes us via FlagSurfacesDirty once it uploads geometry.) -xlinka
         Mesh.OnObjectAvailable += OnMeshRefResolved;
         Mesh.OnTargetChange += OnMeshRefResolved;
-        LumoraLogger.Debug($"MeshRenderer: Awake on slot '{Slot.SlotName.Value}'");
     }
 
     private void OnMeshRefResolved(SyncRef<Component> reference)
@@ -283,7 +318,24 @@ public class MeshRenderer : ImplementableComponent
         MaterialPropertyBlocks.OnChanged -= OnMaterialPropertyBlocksChanged;
         SurfaceRenderPriorities.OnChanged -= OnSurfaceRenderPrioritiesChanged;
         base.OnDestroy();
-        LumoraLogger.Debug($"MeshRenderer: Destroyed on slot '{Slot?.SlotName.Value}'");
+    }
+
+    // A solid collider shaped as the convex hull of what this draws, on its slot, so the object can be stood
+    // on, thrown or carried by a rigid body. One already there for the same mesh is left as it is.
+    [SyncMethod]
+    public void AddConvexHullCollider()
+    {
+        if (Lumora.Core.Components.Meshes.ConvexHullPointSource.Resolve(this) is { } mesh)
+            ConvexHullCollider.Ensure(Slot, mesh);
+    }
+
+    // Solid colliders for what this draws, as several convex hulls worked out in a dialog, for a shape one hull
+    // would fill in.
+    [SyncMethod]
+    public void SplitIntoConvexHulls()
+    {
+        if (Lumora.Core.Components.Meshes.ConvexHullPointSource.Resolve(this) != null)
+            ConvexSplitDialog.Open(this);
     }
 }
 
@@ -301,4 +353,3 @@ public enum MotionVectorMode
     Object = 1,
     NoMotion = 2
 }
-

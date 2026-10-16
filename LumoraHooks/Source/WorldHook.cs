@@ -12,9 +12,18 @@ namespace Lumora.Godot.Hooks;
 
 // Creates and manages the world root node, and answers the world's physics collision queries
 // against the Godot/Jolt physics space.
-public class WorldHook : IWorldHook, IPhysicsQueryHook
+public class WorldHook : IWorldHook, IPhysicsQueryHook, IPhysicsStepHook
 {
     public World Owner { get; private set; } = null!;
+
+    private BodyPump? _bodies;
+
+    // This world's simulated bodies, stepped once a frame (see BodyPump).
+    internal BodyPump Bodies => _bodies ??= new BodyPump(this);
+
+    public void StepBodies() => _bodies?.Step();
+
+    private void OnContactWatchingChanged() => _bodies?.ContactWatchingChanged();
 
     public Node3D WorldRoot { get; private set; } = null!;
 
@@ -100,6 +109,54 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
             _bodiesBySlot.Remove(slot);
     }
 
+    // Colliders that will stop a walking body but have no shape in the space yet: one waiting on its
+    // first apply, a mesh still decoding. A character with nothing under it waits on these before it
+    // falls. -xlinka
+    private readonly HashSet<object> _pendingSolids = new();
+
+    public int PendingSolidCount => _pendingSolids.Count;
+
+    public void NoteSolidPending(object collider, bool pending)
+    {
+        if (pending)
+            _pendingSolids.Add(collider);
+        else
+            _pendingSolids.Remove(collider);
+    }
+
+    // How a cast treats a body beyond its layer. A NoCollision collider is a shape nothing bumps into that
+    // every cast still meets, as it would any surface; a trigger is met only by a cast that asks for
+    // triggers; a collider marked IgnoreRaycasts is met by no cast at all. Kept by RID, so the check on a
+    // hit is a lookup. -xlinka
+    private readonly HashSet<Rid> _queryAreas = new();
+    private readonly HashSet<Rid> _rayIgnored = new();
+
+    public void SetQueryRules(Rid rid, bool queryArea, bool ignoreRays)
+    {
+        if (!rid.IsValid)
+            return;
+        if (queryArea)
+            _queryAreas.Add(rid);
+        else
+            _queryAreas.Remove(rid);
+        if (ignoreRays)
+            _rayIgnored.Add(rid);
+        else
+            _rayIgnored.Remove(rid);
+    }
+
+    public void ClearQueryRules(Rid rid)
+    {
+        _queryAreas.Remove(rid);
+        _rayIgnored.Remove(rid);
+    }
+
+    // Areas are only asked for when the cast wants triggers or the world holds a query-only shape.
+    private bool CastAreas(bool hitTriggers) => hitTriggers || _queryAreas.Count > 0;
+
+    private bool PassThrough(Rid rid, bool isArea, bool hitTriggers, bool ray)
+        => (ray && _rayIgnored.Contains(rid)) || (isArea && !hitTriggers && !_queryAreas.Contains(rid));
+
     private void AddRegisteredExcludes(IReadOnlyList<Lumora.Core.Slot>? exclude, global::Godot.Collections.Array<Rid> excludeRids)
     {
         if (exclude == null || _bodiesBySlot.Count == 0)
@@ -138,7 +195,7 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         }
         else
         {
-            GD.Print($"WorldHook.Initialize: WARNING - Could not parent WorldRoot (WorldManagerHook or Root is null)");
+            Lumora.Core.Logging.Logger.Warn($"WorldHook.Initialize: WARNING - Could not parent WorldRoot (WorldManagerHook or Root is null)");
         }
 
         WorldRoot.Position = Vector3.Zero;
@@ -150,6 +207,7 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         }
 
         Owner.GodotSceneRoot = WorldRoot;
+        Owner.Physics.ContactWatchingChanged += OnContactWatchingChanged;
 
         if (Owner.IsAuthority || Owner.State == World.WorldState.Running)
         {
@@ -176,12 +234,12 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
                 if (node3D.GetParent() == null)
                 {
                     WorldRoot.AddChild(node3D);
-                    GD.Print($"WorldHook: Added orphaned root slot '{slot.SlotName.Value}' to WorldRoot");
+                    Lumora.Core.Logging.Logger.Debug($"WorldHook: Added orphaned root slot '{slot.SlotName.Value}' to WorldRoot");
                 }
                 else
                 {
                     node3D.Reparent(WorldRoot, false);
-                    GD.Print($"WorldHook: Reparented root slot '{slot.SlotName.Value}' to WorldRoot");
+                    Lumora.Core.Logging.Logger.Debug($"WorldHook: Reparented root slot '{slot.SlotName.Value}' to WorldRoot");
                 }
             }
             else
@@ -198,7 +256,7 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
                         if (node3D.GetParent() == null)
                     {
                         parentNode3D.AddChild(node3D);
-                        GD.Print($"WorldHook: Added orphaned slot '{slot.SlotName.Value}' to parent '{slot.Parent.SlotName.Value}'");
+                        Lumora.Core.Logging.Logger.Debug($"WorldHook: Added orphaned slot '{slot.SlotName.Value}' to parent '{slot.Parent.SlotName.Value}'");
                     }
                     else
                     {
@@ -230,7 +288,7 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
             case World.WorldFocus.PrivateOverlay:
                 WorldRoot.Visible = true;
                 WorldRoot.ProcessMode = Node.ProcessModeEnum.Inherit;
-                RenderHelper.SetHierarchyLayer(WorldRoot, RenderHelper.PRIVATE_LAYER, _layerSnapshot);
+                RenderHelper.MakePrivate(WorldRoot, Owner, _layerSnapshot);
                 break;
 
             case World.WorldFocus.Background:
@@ -254,13 +312,16 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         if (dir == Vector3.Zero)
             return false;
 
-        var query = PhysicsRayQueryParameters3D.Create(from, from + dir * maxDistance);
+        var query = _rayQuery ??= new PhysicsRayQueryParameters3D();
+        query.From = from;
+        query.To = from + dir * maxDistance;
         query.CollideWithBodies = true;
-        query.CollideWithAreas = hitTriggers; // grabbable / image colliders are Area3D sensors
+        query.CollideWithAreas = CastAreas(hitTriggers);
         // This world's bit and nothing else: a body of another world is not a candidate, whatever
         // the retry loop would have made of it.
         query.CollisionMask = CollisionBit;
-        var excludeRids = new global::Godot.Collections.Array<Rid>();
+        var excludeRids = _rayExclude ??= new global::Godot.Collections.Array<Rid>();
+        excludeRids.Clear();
         // Excluded slots whose bodies are registered go on the list before the first query, so the
         // ray never sees them and never has to be cast again behind them.
         AddRegisteredExcludes(exclude, excludeRids);
@@ -273,24 +334,46 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         // whose slot cannot be resolved. Skip it and cast again behind it, bounded.
         for (int i = 0; i < MaxQueryIterations; i++)
         {
-            var result = space.IntersectRay(query);
+            using var result = space.IntersectRay(query);
             if (result.Count == 0)
                 return false;
 
-            var collider = result["collider"].As<Node>();
+            var collider = result[ColliderKey].As<Node>();
+            var rid = result[RidKey].As<Rid>();
+            if (PassThrough(rid, collider is Area3D, hitTriggers, ray: true))
+            {
+                excludeRids.Add(rid);
+                query.Exclude = excludeRids;
+                continue;
+            }
             var slot = ResolveSlot(collider);
             bool accepted = InThisWorld(slot) && !IsExcluded(slot, exclude);
             if (report)
                 ReportUserspaceHit(collider, slot, accepted);
             if (accepted)
             {
-                FillHit(ref hit, (Vector3)result["position"], (Vector3)result["normal"], from, slot);
+                FillHit(ref hit, (Vector3)result[PositionKey], (Vector3)result[NormalKey], from, slot);
                 return true;
             }
-            excludeRids.Add(result["rid"].As<Rid>());
+            excludeRids.Add(rid);
+            // The query holds a copy of the list, not the list. Without handing it over again every retry
+            // hit the same skipped body, so a ray into a user's capsule never reached what was behind it.
+            query.Exclude = excludeRids;
         }
         return false;
     }
+
+    // The laser, the fingertip probes and every tool cast rays several times a frame. A query object, an
+    // exclude list and a result dictionary each cast, plus a fresh string for every key read, were all
+    // left for the finalizer, which then spent seconds a minute freeing Godot handles while the frame
+    // queued behind it on the same locks. The query and list are kept, the result goes back as soon as it
+    // is read, and the keys are made once. -xlinka
+    private PhysicsRayQueryParameters3D? _rayQuery;
+    private global::Godot.Collections.Array<Rid>? _rayExclude;
+    private static readonly Variant ColliderKey = "collider";
+    private static readonly Variant PositionKey = "position";
+    private static readonly Variant NormalKey = "normal";
+    private static readonly Variant RidKey = "rid";
 
     private bool IsUserspaceWorld => Owner != null && ReferenceEquals(Owner.WorldManager?.UserspaceWorld, Owner);
 
@@ -349,19 +432,55 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
     }
 
     public bool SphereCast(in float3 origin, in float3 direction, float radius, float maxDistance, bool hitTriggers, out PhysicsRaycastHit hit)
-        => ShapeCast(new SphereShape3D { Radius = radius }, Basis.Identity, in origin, in direction, maxDistance, hitTriggers, out hit);
+        => ShapeCast(Sphere(radius), Basis.Identity, in origin, in direction, maxDistance, hitTriggers, out hit);
 
     public bool BoxCast(in float3 origin, in float3 size, in floatQ orientation, in float3 direction, float maxDistance, bool hitTriggers, out PhysicsRaycastHit hit)
-        => ShapeCast(new BoxShape3D { Size = new Vector3(size.x, size.y, size.z) }, ToBasis(orientation), in origin, in direction, maxDistance, hitTriggers, out hit);
+        => ShapeCast(Box(size), ToBasis(orientation), in origin, in direction, maxDistance, hitTriggers, out hit);
 
     public bool CapsuleCast(in float3 origin, float radius, float height, in floatQ orientation, in float3 direction, float maxDistance, bool hitTriggers, out PhysicsRaycastHit hit)
-        => ShapeCast(new CapsuleShape3D { Radius = radius, Height = height }, ToBasis(orientation), in origin, in direction, maxDistance, hitTriggers, out hit);
+        => ShapeCast(Capsule(radius, height), ToBasis(orientation), in origin, in direction, maxDistance, hitTriggers, out hit);
 
     public int OverlapSphere(in float3 origin, float radius, bool hitTriggers, List<Lumora.Core.Slot> results)
-        => ShapeOverlap(new SphereShape3D { Radius = radius }, new Transform3D(Basis.Identity, new Vector3(origin.x, origin.y, origin.z)), hitTriggers, results);
+        => ShapeOverlap(Sphere(radius), new Transform3D(Basis.Identity, new Vector3(origin.x, origin.y, origin.z)), hitTriggers, results);
 
     public int OverlapBox(in float3 origin, in float3 size, in floatQ orientation, bool hitTriggers, List<Lumora.Core.Slot> results)
-        => ShapeOverlap(new BoxShape3D { Size = new Vector3(size.x, size.y, size.z) }, new Transform3D(ToBasis(orientation), new Vector3(origin.x, origin.y, origin.z)), hitTriggers, results);
+        => ShapeOverlap(Box(size), new Transform3D(ToBasis(orientation), new Vector3(origin.x, origin.y, origin.z)), hitTriggers, results);
+
+    // One shape of each kind and one query each for sweeps and overlaps, set up again per call. A new shape
+    // resource, query and exclude list a call all went to the finalizer, and every soft body overlaps a box
+    // each frame. A shape is only read during the query that uses it. -xlinka
+    private SphereShape3D? _sphereShape;
+    private BoxShape3D? _boxShape;
+    private CapsuleShape3D? _capsuleShape;
+    private PhysicsShapeQueryParameters3D? _castQuery;
+    private PhysicsShapeQueryParameters3D? _overlapQuery;
+    private global::Godot.Collections.Array<Rid>? _castExclude;
+    private static readonly Variant ColliderIdKey = "collider_id";
+    private static readonly Variant PointKey = "point";
+
+    private SphereShape3D Sphere(float radius)
+    {
+        var shape = _sphereShape ??= new SphereShape3D();
+        shape.Radius = radius;
+        return shape;
+    }
+
+    private BoxShape3D Box(in float3 size)
+    {
+        var shape = _boxShape ??= new BoxShape3D();
+        shape.Size = new Vector3(size.x, size.y, size.z);
+        return shape;
+    }
+
+    // Radius then height, the order a fresh shape was set in: Godot clamps each against the other, and the
+    // last one set decides, so a reused capsule ends where a new one would.
+    private CapsuleShape3D Capsule(float radius, float height)
+    {
+        var shape = _capsuleShape ??= new CapsuleShape3D();
+        shape.Radius = radius;
+        shape.Height = height;
+        return shape;
+    }
 
     // Shape sweep (sphere/box/capsule) with world scoping. CastMotion gives [safe, unsafe] motion
     // fractions; GetRestInfo at the contact recovers point/normal/collider.
@@ -377,14 +496,13 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         if (dir == Vector3.Zero)
             return false;
 
-        var query = new PhysicsShapeQueryParameters3D
-        {
-            Shape = shape,
-            CollideWithBodies = true,
-            CollideWithAreas = hitTriggers,
-            CollisionMask = CollisionBit,
-        };
-        var exclude = new global::Godot.Collections.Array<Rid>();
+        var query = _castQuery ??= new PhysicsShapeQueryParameters3D();
+        query.Shape = shape;
+        query.CollideWithBodies = true;
+        query.CollideWithAreas = CastAreas(hitTriggers);
+        query.CollisionMask = CollisionBit;
+        var exclude = _castExclude ??= new global::Godot.Collections.Array<Rid>();
+        exclude.Clear();
         query.Exclude = exclude;
 
         for (int i = 0; i < MaxQueryIterations; i++)
@@ -400,18 +518,21 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
             query.Transform = new Transform3D(basis, contact);
             query.Motion = Vector3.Zero;
 
-            var info = space.GetRestInfo(query);
+            using var info = space.GetRestInfo(query);
             if (info.Count == 0)
                 return false; // contact but no rest info to identify/scope the collider
 
-            var slot = ResolveSlotById(info["collider_id"].AsUInt64());
+            ulong id = info[ColliderIdKey].AsUInt64();
+            var node = id == 0 ? null : GodotObject.InstanceFromId(id) as Node;
+            var slot = PassThrough(info[RidKey].As<Rid>(), node is Area3D, hitTriggers, ray: true) ? null : ResolveSlot(node);
             if (InThisWorld(slot))
             {
-                FillHit(ref hit, (Vector3)info["point"], (Vector3)info["normal"], from, slot);
+                FillHit(ref hit, (Vector3)info[PointKey], (Vector3)info[NormalKey], from, slot);
                 hit.Distance = distance; // sweep travel to contact, not point distance
                 return true;
             }
-            exclude.Add(info["rid"].As<Rid>());
+            exclude.Add(info[RidKey].As<Rid>());
+            query.Exclude = exclude;
         }
         return false;
     }
@@ -422,18 +543,24 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         if (space == null)
             return 0;
 
-        var query = new PhysicsShapeQueryParameters3D
-        {
-            Shape = shape,
-            Transform = transform,
-            CollideWithBodies = true,
-            CollideWithAreas = hitTriggers,
-            CollisionMask = CollisionBit,
-        };
+        var query = _overlapQuery ??= new PhysicsShapeQueryParameters3D();
+        query.Shape = shape;
+        query.Transform = transform;
+        query.CollideWithBodies = true;
+        query.CollideWithAreas = CastAreas(hitTriggers);
+        query.CollisionMask = CollisionBit;
 
-        foreach (var dict in space.IntersectShape(query, 32))
+        var hits = space.IntersectShape(query, 32);
+        // The typed wrapper is not IDisposable; its underlying Godot Array owns the native result.
+        using var hitStorage = (global::Godot.Collections.Array)hits;
+        for (int i = 0; i < hits.Count; i++)
         {
-            var slot = ResolveSlot(dict["collider"].As<Node>());
+            using var found = hits[i];
+            ulong id = found[ColliderIdKey].AsUInt64();
+            var node = id == 0 ? null : GodotObject.InstanceFromId(id) as Node;
+            if (PassThrough(found[RidKey].As<Rid>(), node is Area3D, hitTriggers, ray: false))
+                continue;
+            var slot = ResolveSlot(node);
             if (InThisWorld(slot) && !results.Contains(slot!))
                 results.Add(slot!);
         }
@@ -461,7 +588,7 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         var query = _resolveQuery ??= new PhysicsShapeQueryParameters3D();
         query.Shape = _resolveShape;
         query.CollideWithBodies = true;
-        query.CollideWithAreas = false;           // solids only - not grab/image sensors
+        query.CollideWithAreas = false;           // solids only, never a query shape
         query.CollisionMask = CollisionBit;
         AddRegisteredExcludes(exclude, _resolveExclude);
         query.Exclude = _resolveExclude;
@@ -473,29 +600,40 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         for (int i = 0; i < MaxQueryIterations; i++)
         {
             query.Transform = new Transform3D(basis, c);
-            var info = space.GetRestInfo(query);
+            using var info = space.GetRestInfo(query);
             if (info.Count == 0)
                 return false;
 
-            var slot = ResolveSlotById(info["collider_id"].AsUInt64());
+            var slot = ResolveSlotById(info[ColliderIdKey].AsUInt64());
             if (InThisWorld(slot) && !IsExcluded(slot, exclude))
             {
-                var point = (Vector3)info["point"];
-                var n = (Vector3)info["normal"];
+                var point = (Vector3)info[PointKey];
+                var n = (Vector3)info[NormalKey];
                 correctedCenter = new float3(point.X + n.X * radius, point.Y + n.Y * radius, point.Z + n.Z * radius);
                 normal = new float3(n.X, n.Y, n.Z);
                 return true;
             }
-            _resolveExclude.Add(info["rid"].As<Rid>());
+            _resolveExclude.Add(info[RidKey].As<Rid>());
+            query.Exclude = _resolveExclude;
         }
         return false;
     }
 
+    // Looked up once a frame: the root's World3D and its space state each came back through a binding
+    // lookup on every cast, half of what a ray cost. -xlinka
+    private PhysicsDirectSpaceState3D? _space;
+    private ulong _spaceFrame = ulong.MaxValue;
+
     private PhysicsDirectSpaceState3D? GetSpace()
     {
-        if (WorldRoot == null || !GodotObject.IsInstanceValid(WorldRoot) || !WorldRoot.IsInsideTree())
-            return null;
-        return WorldRoot.GetWorld3D()?.DirectSpaceState;
+        ulong frame = global::Godot.Engine.GetProcessFrames();
+        if (frame == _spaceFrame && (_space == null || GodotObject.IsInstanceValid(_space)))
+            return _space;
+        _spaceFrame = frame;
+        _space = WorldRoot == null || !GodotObject.IsInstanceValid(WorldRoot) || !WorldRoot.IsInsideTree()
+            ? null
+            : WorldRoot.GetWorld3D()?.DirectSpaceState;
+        return _space;
     }
 
     private void FillHit(ref PhysicsRaycastHit hit, Vector3 point, Vector3 normal, Vector3 from, Lumora.Core.Slot? slot)
@@ -547,10 +685,9 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         var node = collider;
         while (node != null && GodotObject.IsInstanceValid(node))
         {
-            if (node.HasMeta("LumoraSlotRef") &&
-                ulong.TryParse(node.GetMeta("LumoraSlotRef").AsString(), out var raw))
+            if (SlotRefMeta.TryRead(node, out var id))
             {
-                return Owner?.ReferenceController?.GetObjectOrNull(new RefID(raw)) as Lumora.Core.Slot;
+                return Owner?.ReferenceController?.GetObjectOrNull(id) as Lumora.Core.Slot;
             }
             node = node.GetParent();
         }
@@ -577,6 +714,10 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
 
     public void Destroy()
     {
+        if (Owner != null)
+            Owner.Physics.ContactWatchingChanged -= OnContactWatchingChanged;
+        _bodies?.Dispose();
+        _bodies = null;
         if (_bitPair >= 0)
         {
             lock (_bitPairsHeld)
@@ -592,6 +733,20 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         }
         _bodiesBySlot.Clear();
         _reportedUserspaceHits.Clear();
+        _rayQuery?.Dispose(); _rayQuery = null;
+        _castQuery?.Dispose(); _castQuery = null;
+        _overlapQuery?.Dispose(); _overlapQuery = null;
+        _resolveQuery?.Dispose(); _resolveQuery = null;
+        if (_rayExclude != null) ((global::Godot.Collections.Array)_rayExclude).Dispose();
+        if (_castExclude != null) ((global::Godot.Collections.Array)_castExclude).Dispose();
+        if (_resolveExclude != null) ((global::Godot.Collections.Array)_resolveExclude).Dispose();
+        _rayExclude = _castExclude = _resolveExclude = null;
+        _sphereShape?.Dispose(); _sphereShape = null;
+        _boxShape?.Dispose(); _boxShape = null;
+        _capsuleShape?.Dispose(); _capsuleShape = null;
+        _resolveShape?.Dispose(); _resolveShape = null;
+        _space = null;
+        _spaceFrame = ulong.MaxValue;
         if (WorldRoot != null && GodotObject.IsInstanceValid(WorldRoot))
         {
             WorldRoot.QueueFree();
@@ -601,4 +756,3 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         Owner = null!;
     }
 }
-

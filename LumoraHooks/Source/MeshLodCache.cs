@@ -97,14 +97,16 @@ public static class MeshLodCache
     public const float NormalSplitAngle = 25f;
 
     private const uint Magic = 0x4C4D564C; // "LVML" little-endian
-    private const ushort ContainerVersion = 1;
+    // 2: surfaces carry only the vertices they use, so every level is numbered against that subset and a
+    // level stored by version 1 indexes the whole mesh. -xlinka
+    private const ushort ContainerVersion = 2;
 
     // A surface can hold a LOD chain roughly log2(indices) deep; anything past this is a corrupt blob.
     private const int MaxLevelsPerSurface = 64;
 
     // ELIGIBILITY
 
-    // Skinned and blend-shaped meshes are out for now. Both rewrite vertex positions after upload -
+    // Skinned and blend-shaped meshes are left out. Both rewrite vertex positions after upload -
     // skinning on the GPU against a pose the LOD chain was not built from, blend shapes by rebuilding
     // the whole ArrayMesh on our side - and a level whose indices were chosen against the rest pose is
     // not obviously safe under either. generate_lods takes a skin pose array for exactly this reason;

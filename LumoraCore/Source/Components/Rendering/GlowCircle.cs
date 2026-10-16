@@ -14,6 +14,9 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Rendering")]
 public class GlowCircle : Component, IPrimaryColorSource
 {
+    // Keep both visuals clear of the floor instead of competing with its depth.
+    private const float SurfaceClearance = 0.01f;
+
     public readonly Sync<float> Radius;
     public readonly Sync<float> Height;
     // tint of the ground disc
@@ -111,6 +114,13 @@ public class GlowCircle : Component, IPrimaryColorSource
         Apply();
     }
 
+    public override void OnStart()
+    {
+        base.OnStart();
+        // Loaded and duplicated markers already have children; update those too.
+        Apply();
+    }
+
     private void Apply()
     {
         float radius = Radius.Value;
@@ -118,14 +128,17 @@ public class GlowCircle : Component, IPrimaryColorSource
         var tint = Color.Value;
 
         if (_discMesh.Target is { } disc)
+        {
+            disc.Slot.LocalPosition.Value = new float3(0f, SurfaceClearance, 0f);
             disc.Size.Value = new float2(radius * 2.5f, radius * 2.5f); // soft edge extends past the ring
+        }
         if (_ringMesh.Target is { } ring)
         {
             ring.Radius.Value = radius;
             ring.Height.Value = height;
         }
         if (_ringSlot.Target is { } ringSlot)
-            ringSlot.LocalPosition.Value = new float3(0f, height * 0.5f, 0f);
+            ringSlot.LocalPosition.Value = new float3(0f, height * 0.5f + SurfaceClearance, 0f);
         if (_discMaterial.Target is { } discMat)
             discMat.TintColor.Value = tint;
         if (_ringMaterial.Target is { } ringMat)

@@ -7,13 +7,14 @@ using Lumora.Core.Components.Meshes;
 using Lumora.Core.Phos;
 using Lumora.Core.Logging;
 using System;
-using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace Lumora.Godot.Hooks;
 
-// Godot hook for ProceduralMesh components.
-// Converts PhosMesh to Godot ArrayMesh and uploads to GPU.
-// Platform mesh hook for Godot.
+// Godot hook for ProceduralMesh components: converts the PhosMesh to an ArrayMesh and uploads it.
+// A procedural mesh is an asset and draws nothing itself. A MeshRenderer, a soft body or a particle
+// system pointing at it is what puts it on screen. -xlinka
 #nullable enable
 [ImplementableHook(
     typeof(ProceduralMesh),
@@ -25,9 +26,6 @@ namespace Lumora.Godot.Hooks;
 public class MeshHook : ComponentHook<ProceduralMesh>
 {
     private ArrayMesh? godotMesh;
-    private MeshInstance3D? meshInstance;
-    private SlotHook? _meshSlotHook;
-    private Node3D? parentNode;
     private bool _loggedNoIndexWarning;
     private bool _loggedNoVertexWarning;
     private bool _loggedBadIndexError;
@@ -48,7 +46,20 @@ public class MeshHook : ComponentHook<ProceduralMesh>
     private Color[]? _colBuf;
     private Vector2[]? _uvBuf;
     private Vector2[]? _uv1Buf;
+    private float[]? _extraUV;
     private int[]? _idxBuf;
+
+    // One surface's share of each channel, gathered from the buffers above. Grow-only too.
+    private Vector3[]? _partPos;
+    private Vector3[]? _partNorm;
+    private float[]? _partTan;
+    private Color[]? _partCol;
+    private Vector2[]? _partUV0;
+    private Vector2[]? _partUV1;
+    private readonly SurfaceSubset _subset = new();
+
+    // Which channels the upload in progress carries; set by ConvertChannels.
+    private bool _hasNormals, _hasTangents, _hasColors, _hasUV0, _hasUV1;
 
     // The surface-array container handed to AddSurfaceFromArrays, reused across uploads. It is a native
     // container behind a finalizable wrapper, and a fresh one per submesh per upload was one more
@@ -68,45 +79,13 @@ public class MeshHook : ComponentHook<ProceduralMesh>
 
         godotMesh = new ArrayMesh();
 
-        // Create Godot mesh instance (will hide if MeshRenderer is present)
-        meshInstance = new MeshInstance3D();
-        meshInstance.Name = "PhosMesh";
-        meshInstance.Mesh = godotMesh;
-
-        // Create default material so mesh is visible
-        var material = new StandardMaterial3D();
-        material.AlbedoColor = new Color(0.8f, 0.8f, 0.8f); // Light gray
-        material.Roughness = 0.7f;
-        material.ShadingMode = BaseMaterial3D.ShadingModeEnum.PerPixel;
-
-        var slotName = Owner?.Slot?.SlotName?.Value;
-        if (!string.IsNullOrEmpty(slotName) && slotName.StartsWith("Default", System.StringComparison.Ordinal))
-        {
-            material.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
-            material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
-        }
-        meshInstance.MaterialOverride = material;
-
-        // Get slot hook and request Node3D
-        if (Owner!.Slot?.Hook is SlotHook hook)
-        {
-            _meshSlotHook = hook;
-            parentNode = _meshSlotHook.RequestNode3D();
-            parentNode.AddChild(meshInstance);
-            Lumora.Core.Logging.Logger.Debug($"MeshHook: Successfully added mesh to slot '{Owner.Slot.SlotName.Value}'");
-        }
-        else
-        {
-            Lumora.Core.Logging.Logger.Warn($"MeshHook: Slot hook not found for '{Owner.Slot?.SlotName.Value}'");
-        }
-
         // Initial upload if mesh data is ready
-        if (Owner.PhosMesh != null)
-        {
-            UploadMesh(Owner.PhosMesh, Owner.UploadHint);
+        if (Owner!.PhosMesh != null && UploadMesh(Owner.PhosMesh, Owner.UploadHint))
             NotifyRenderer();
-        }
     }
+
+    // The mesh as Godot holds it, for whatever draws it.
+    public ArrayMesh? GodotMesh => godotMesh;
 
     // Tell the MeshRenderer on our slot to re-apply now that our ArrayMesh actually has surfaces - the
     // surface count going 0->N is invisible to its SyncRef change path, so it needs an explicit poke. -xlinka
@@ -120,148 +99,16 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         // Upload changes if mesh is dirty
         if (Owner.IsDirty && Owner.PhosMesh != null)
         {
-            UploadMesh(Owner.PhosMesh, Owner.UploadHint);
+            bool uploaded = UploadMesh(Owner.PhosMesh, Owner.UploadHint);
             Owner.ClearDirty();
 
             // Our ArrayMesh just went from empty -> populated. SurfaceCount changing 0->N is invisible to
             // the renderer's SyncRef change path, so on a joiner (where the MeshRenderer hook may have
             // drained before us) it would otherwise hold our empty mesh forever. Re-drive the co-located
             // renderer so it re-reads the now-populated ArrayMesh and re-applies materials. -xlinka
-            NotifyRenderer();
+            if (uploaded)
+                NotifyRenderer();
         }
-
-        // Hide our MeshInstance3D if something ELSE renders this mesh: a MeshRenderer (its own instance
-        // + material), or a SquishyBody (renders the deformed mesh on a child). Both coincide with our
-        // instance otherwise and z-fight. -xlinka
-        if (meshInstance != null)
-        {
-            bool otherRenderer = Owner.Slot?.GetComponent<Lumora.Core.Components.MeshRenderer>() != null
-                || Owner.Slot?.GetComponent<Lumora.Core.Components.SquishyBody>() != null
-                || ChildRendersThisMesh(Owner.Slot)
-                || ParticleSystemDrawsThisMesh()
-                // An imported package parks every mesh it ships on one tagged library slot. Nothing there
-                // is meant to be looked at, and the tests above all fail for a bare mesh component with
-                // no renderer beside it, so the preview stayed up as a full-scale grey solid at the
-                // import root. -xlinka
-                || Owner.Slot?.Tag.Value == Lumora.Core.Assets.Interop.PackageObjectImporter.AssetLibraryTag;
-            if (meshInstance.Visible != !otherRenderer)
-            {
-                meshInstance.Visible = !otherRenderer;
-            }
-        }
-    }
-
-    // A mesh drawn per-particle has no MeshRenderer anywhere, and its component does not have to live on
-    // a slot with anything else on it at all.
-    //
-    // An imported package keeps meshes and materials in a flat top-level asset list rather than in the
-    // object tree, and the importer lands that whole list on ONE holder slot. A procedural mesh in there
-    // has no renderer beside it and no child below it, so every test above fails and this hook's default
-    // instance stays up: a lit grey copy of the mesh sitting at the import root, at the object's full
-    // scale. On a real avatar that was a two-and-a-half metre grey disc standing next to it - a circle
-    // whose only real job was to be drawn a few centimetres wide, once per water particle. -xlinka
-    private bool _drawnByParticles;
-
-    private const double ParticleScanInterval = 0.5;
-
-    private sealed class ParticleMeshScan
-    {
-        public double NextScan;
-        public readonly System.Collections.Generic.HashSet<Lumora.Core.Component> Drawn = new();
-    }
-
-    // One scan per WORLD per window. The window used to live on each hook, which bounded each hook to one
-    // walk per half second but bounded nothing about the frame: a hundred renderer-less meshes re-applying
-    // together still walked the whole tree a hundred times, because none of them could see that a sibling
-    // had just done it. The result is now shared through the world, so the first hook to ask pays for the
-    // walk and the rest read the answer. Weak-keyed so a destroyed world takes its entry with it. -xlinka
-    private static readonly ConditionalWeakTable<World, ParticleMeshScan> _particleScans = new();
-
-    private bool ParticleSystemDrawsThisMesh()
-    {
-        // Once true it stays true; a system does not normally stop drawing the mesh it was built around.
-        if (_drawnByParticles)
-            return true;
-
-        // This walks the WHOLE WORLD, so it has to be bounded - but bounded by TIME, not by a count of
-        // calls. It was a count of 120 ApplyChanges originally, which never elapsed because ApplyChanges
-        // is drained from a deduped queue rather than called per frame, so the scan ran once, missed,
-        // and never ran again. Removing the bound entirely fixed that and created a worse problem: a
-        // world full of renderer-less procedural meshes then walked the whole tree once per mesh per
-        // re-apply, which measured 211 ms in a single hook phase.
-        //
-        // A short time window gets both: the scan re-runs soon enough to catch a system wired a frame
-        // later, and a hundred meshes re-applying in the same breath share one walk. The importer and
-        // ParticleSystem also poke the mesh directly when they point at it, so this is the fallback
-        // rather than the main path. -xlinka
-        var world = Owner?.World;
-        if (world == null || Owner == null)
-            return false;
-
-        var scan = _particleScans.GetValue(world, static _ => new ParticleMeshScan());
-        double now = world.Time?.TotalTime ?? 0.0;
-        if (now >= scan.NextScan)
-        {
-            scan.NextScan = now + ParticleScanInterval;
-            scan.Drawn.Clear();
-            var root = world.RootSlot;
-            if (root != null)
-            {
-                foreach (var system in root.GetComponentsInChildren<Lumora.Core.Components.ParticleSystem>())
-                {
-                    if (system.IsDestroyed)
-                        continue;
-                    var target = system.ParticleMesh.Target;
-                    if (target != null)
-                        scan.Drawn.Add(target);
-                }
-            }
-        }
-
-        if (!scan.Drawn.Contains(Owner))
-            return false;
-        _drawnByParticles = true;
-        return true;
-    }
-
-    // A renderer for this mesh does not have to sit on the mesh's own slot. TextRenderer keeps its
-    // MeshRenderer on a LOCAL CHILD so the label's material pool and shadow settings are its own, and
-    // the slot-level check above cannot see it. Missing it left this hook's default instance up, which
-    // is a LIT GREY StandardMaterial3D over the same glyph quads: back-face culled, so it is invisible
-    // from the readable side and a solid box behind every glyph from the other one, tinted by whatever
-    // light the world has. That is the "back of the text is boxes" bug. Direct children only, and only
-    // when the cheap same-slot test has already failed. -xlinka
-    private bool ChildRendersThisMesh(Lumora.Core.Slot? slot)
-    {
-        if (slot == null || slot.IsDestroyed)
-            return false;
-        foreach (var child in slot.Children)
-        {
-            if (RendersOwner(child))
-                return true;
-        }
-        foreach (var child in slot.LocalChildren)
-        {
-            if (RendersOwner(child))
-                return true;
-        }
-        return false;
-    }
-
-    private bool RendersOwner(Lumora.Core.Slot child)
-    {
-        if (child == null || child.IsDestroyed)
-            return false;
-        // Indexed rather than GetComponents<T>(): that is a LINQ OfType and allocates its iterator on
-        // every apply of every mesh that has no renderer on its own slot.
-        var components = child.Components;
-        for (int i = 0; i < components.Count; i++)
-        {
-            if (components[i] is Lumora.Core.Components.MeshRenderer renderer
-                && ReferenceEquals(renderer.Mesh.Target, Owner))
-                return true;
-        }
-        return false;
     }
 
     public override void Destroy(bool destroyingWorld)
@@ -269,26 +116,20 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         // Clean up Godot resources
         if (!destroyingWorld)
         {
-            // Free the Node3D request from slot hook
-            _meshSlotHook?.FreeNode3D();
-
-            if (meshInstance != null && GodotObject.IsInstanceValid(meshInstance))
-            {
-                meshInstance.QueueFree();
-            }
-
-            if (godotMesh != null)
+            if (ReleaseEntry() && godotMesh != null)
             {
                 godotMesh.Dispose();
             }
         }
+        else
+        {
+            ReleaseEntry();
+        }
+        MeshReplaced = null;
 
         _surfaceArrays?.Dispose();
         _surfaceArrays = null;
-        meshInstance = null;
         godotMesh = null;
-        _meshSlotHook = null;
-        parentNode = null;
         _loggedNoIndexWarning = false;
         _loggedNoVertexWarning = false;
         _loggedBadIndexError = false;
@@ -296,21 +137,51 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         _loggedSurfaceOverflow = false;
     }
 
-    // Godot's surface arrays must be EXACTLY the vertex/index count, so reuse only when the size matches
-    // (constant for a deforming mesh) and reallocate when it changes. -xlinka
-    private static void EnsureExact<T>(ref T[]? buf, int n)
-    {
-        if (buf == null || buf.Length != n)
-            buf = new T[n];
-    }
-
     // Upload PhosMesh to Godot ArrayMesh.
     // Only uploads channels marked dirty in the upload hint.
-    private void UploadMesh(PhosMesh phosMesh, MeshUploadHint uploadHint)
+    //
+    // Surfaces stay one per drawing triangle submesh, numbered in submesh order with the empty ones left out:
+    // that is how every generator numbers the materials it hands the renderer (a canvas chunk counts only
+    // the submeshes that draw), so the surface list must never change shape here. -xlinka
+    // False when the data is what the mesh already holds and nothing was sent.
+    private bool UploadMesh(PhosMesh phosMesh, MeshUploadHint uploadHint)
     {
-        if (godotMesh == null) return;
+        if (godotMesh == null) return false;
 
-        godotMesh.ClearSurfaces();
+        Span<byte> digest = stackalloc byte[DigestBytes];
+        bool hashed = !uploadHint[MeshUploadHint.Flag.Deforming] && TryDigest(phosMesh, uploadHint, digest);
+        var key = hashed ? new DigestKey(digest) : default;
+        if (hashed && _entry != null && _entry.Key.Equals(key))
+            return false;
+
+        if (hashed && _sharedMeshes.TryGetValue(key, out var existing))
+        {
+            bool alone = ReleaseEntry();
+            existing.Users++;
+            _entry = existing;
+            ReplaceMesh(existing.Mesh, alone);
+            return true;
+        }
+
+        if (_entry != null)
+        {
+            if (_entry.Users > 1)
+            {
+                // Others draw this one; the new data goes into a mesh of our own.
+                ReleaseEntry();
+                ReplaceMesh(new ArrayMesh(), false);
+            }
+            else
+            {
+                // Ours alone: it changes in place, so its old digest stops describing it.
+                _sharedMeshes.Remove(_entry.Key);
+                _entry = null;
+            }
+        }
+
+        godotMesh!.ClearSurfaces();
+        _subset.Reset(phosMesh.VertexCount);
+        bool converted = false;
 
         int dropped = 0;
         foreach (var submesh in phosMesh.Submeshes)
@@ -326,7 +197,7 @@ public class MeshHook : ComponentHook<ProceduralMesh>
                 continue;
             }
 
-            UploadTriangleSubmesh(phosMesh, triangleSubmesh, uploadHint);
+            UploadTriangleSubmesh(phosMesh, triangleSubmesh, uploadHint, ref converted);
         }
 
         if (dropped > 0)
@@ -342,66 +213,190 @@ public class MeshHook : ComponentHook<ProceduralMesh>
             // Fits again, so let the next overflow speak up.
             _loggedSurfaceOverflow = false;
         }
+
+        if (hashed)
+        {
+            _entry = new SharedMesh { Mesh = godotMesh, Key = key, Users = 1 };
+            _sharedMeshes[key] = _entry;
+        }
+        return true;
     }
 
-    // Upload a triangle submesh to Godot.
-    private void UploadTriangleSubmesh(PhosMesh phosMesh, PhosTriangleSubmesh submesh, MeshUploadHint uploadHint)
+    // Procedural meshes with the same data share one Godot mesh. A world of graph cards builds
+    // hundreds that are byte-identical to another (every card's preview quad, its rounded panels, the
+    // gallery's matching spheres), and each was its own upload and its own GPU buffers. A shared mesh
+    // is never changed in place: a hook whose data moves on takes another, and whatever draws it hears
+    // through MeshReplaced. Main thread only, like every hook. -xlinka
+    private sealed class SharedMesh
     {
-        if (godotMesh == null) return;
-        if (submesh.IndexCount <= 0) return;
+        public ArrayMesh Mesh = null!;
+        public DigestKey Key;
+        public int Users;
+    }
 
-        var arrays = _surfaceArrays ??= new global::Godot.Collections.Array();
-        arrays.Clear();
-        arrays.Resize((int)Mesh.ArrayType.Max);
+    private readonly struct DigestKey : IEquatable<DigestKey>
+    {
+        private readonly ulong _a, _b, _c, _d;
 
-        // Upload positions (ALWAYS required, regardless of hint)
-        bool hasVertices = false;
-        if (phosMesh.VertexCount > 0 && phosMesh.RawPositions != null)
+        public DigestKey(ReadOnlySpan<byte> digest)
         {
-            hasVertices = true;
-            EnsureExact(ref _posBuf, phosMesh.VertexCount);
-            var positions = _posBuf!;
-            bool hadBadPosition = false;
-            for (int i = 0; i < phosMesh.VertexCount; i++)
-            {
-                var pos = phosMesh.RawPositions[i];
-                // Non-finite positions poison the surface AABB and can fault the GPU
-                // (device lost). Zero them and log instead of submitting garbage. - xlinka
-                if (!float.IsFinite(pos.x) || !float.IsFinite(pos.y) || !float.IsFinite(pos.z))
-                {
-                    hadBadPosition = true;
-                    positions[i] = Vector3.Zero;
-                    continue;
-                }
-                positions[i] = new Vector3(pos.x, pos.y, pos.z);
-            }
-            if (hadBadPosition && !_loggedNaNVertexError)
-            {
-                _loggedNaNVertexError = true;
-                Lumora.Core.Logging.Logger.Error($"MeshHook.UploadTriangleSubmesh: Non-finite vertex positions in mesh on slot '{Owner.Slot?.SlotName?.Value}' - zeroed before upload");
-            }
-            arrays[(int)Mesh.ArrayType.Vertex] = positions;
+            var words = MemoryMarshal.Cast<byte, ulong>(digest);
+            _a = words[0];
+            _b = words[1];
+            _c = words[2];
+            _d = words[3];
         }
 
-        // Upload normals
-        if (phosMesh.HasNormals && uploadHint[MeshUploadHint.Flag.Normals])
+        public bool Equals(DigestKey other) => _a == other._a && _b == other._b && _c == other._c && _d == other._d;
+        public override bool Equals(object? obj) => obj is DigestKey other && Equals(other);
+        public override int GetHashCode() => (int)_a;
+    }
+
+    private static readonly System.Collections.Generic.Dictionary<DigestKey, SharedMesh> _sharedMeshes = new();
+    private SharedMesh? _entry;
+
+    // Raised when the Godot mesh this hook hands out becomes a different object.
+    public event Action? MeshReplaced;
+
+    // Lets go of the shared entry. True when nobody else draws the mesh this hook held.
+    private bool ReleaseEntry()
+    {
+        var entry = _entry;
+        if (entry == null)
+            return true;
+        _entry = null;
+        if (--entry.Users > 0)
+            return false;
+        _sharedMeshes.Remove(entry.Key);
+        return true;
+    }
+
+    // Hands out another mesh. The one before goes when nobody else draws it; whatever still shows it
+    // keeps it alive on the Godot side until it picks up the replacement.
+    private void ReplaceMesh(ArrayMesh mesh, bool disposeOld)
+    {
+        var old = godotMesh;
+        godotMesh = mesh;
+        MeshReplaced?.Invoke();
+        if (disposeOld && old != null && !ReferenceEquals(old, mesh))
+            old.Dispose();
+    }
+
+    // What the last upload carried, so the same data is not sent again. Every procedural mesh built
+    // its data twice on the way in, once when it started and once when its fields landed, and both
+    // went up whole: a world of cards uploaded each quad, band and preview twice over. A canvas chunk
+    // rebuilt for a neighbour went up again unchanged. A mesh that really did change pays one hash of
+    // its data on top of the upload it was making anyway; a big one skips the hash, since those
+    // are the ones that change every time they upload. -xlinka
+    private const int DigestBytes = 32;
+    private const int DigestVertexLimit = 65536;
+
+    [ThreadStatic] private static IncrementalHash? _digest;
+
+    private static bool TryDigest(PhosMesh mesh, MeshUploadHint hint, Span<byte> digest)
+    {
+        int n = mesh.VertexCount;
+        if (n > DigestVertexLimit)
+            return false;
+
+        bool normals = mesh.HasNormals && hint[MeshUploadHint.Flag.Normals];
+        bool tangents = mesh.HasTangents && hint[MeshUploadHint.Flag.Tangents];
+        bool colors = mesh.HasColors && hint[MeshUploadHint.Flag.Colors];
+        bool uv0 = mesh.HasUV0s && hint[MeshUploadHint.Flag.UV0];
+        bool uv1 = mesh.HasUV1s && hint[MeshUploadHint.Flag.UV1];
+        bool uv2 = mesh.RawUV2s.Length > 0 && hint[MeshUploadHint.Flag.UV2];
+        bool uv3 = mesh.RawUV3s.Length > 0 && hint[MeshUploadHint.Flag.UV3];
+
+        var h = _digest ??= IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Span<int> header = stackalloc int[3];
+        header[0] = n;
+        header[1] = (normals ? 1 : 0) | (tangents ? 2 : 0) | (colors ? 4 : 0) | (uv0 ? 8 : 0) | (uv1 ? 16 : 0)
+            | (uv2 ? 32 : 0) | (uv3 ? 64 : 0);
+        header[2] = mesh.Submeshes.Count;
+        h.AppendData(MemoryMarshal.AsBytes(header));
+        h.AppendData(MemoryMarshal.AsBytes(mesh.RawPositions.AsSpan(0, n)));
+        if (normals)
+            h.AppendData(MemoryMarshal.AsBytes(Prefix(mesh.RawNormals, n)));
+        if (tangents)
+            h.AppendData(MemoryMarshal.AsBytes(Prefix(mesh.RawTangents, n)));
+        if (colors)
+            h.AppendData(MemoryMarshal.AsBytes(Prefix(mesh.RawColors, n)));
+        if (uv0)
+            h.AppendData(MemoryMarshal.AsBytes(Prefix(mesh.RawUV0s, n)));
+        if (uv1)
+            h.AppendData(MemoryMarshal.AsBytes(Prefix(mesh.RawUV1s, n)));
+        if (uv2)
+            h.AppendData(MemoryMarshal.AsBytes(Prefix(mesh.RawUV2s, n)));
+        if (uv3)
+            h.AppendData(MemoryMarshal.AsBytes(Prefix(mesh.RawUV3s, n)));
+
+        Span<int> count = stackalloc int[1];
+        foreach (var submesh in mesh.Submeshes)
         {
-            EnsureExact(ref _normBuf, phosMesh.VertexCount);
-            var normals = _normBuf!;
-            for (int i = 0; i < phosMesh.VertexCount; i++)
+            // Only triangle submeshes become surfaces; anything else still counts, so a list that
+            // changes kind changes the digest too.
+            if (submesh is not PhosTriangleSubmesh triangles)
+            {
+                count[0] = -1;
+                h.AppendData(MemoryMarshal.AsBytes(count));
+                continue;
+            }
+            count[0] = triangles.IndexCount;
+            h.AppendData(MemoryMarshal.AsBytes(count));
+            h.AppendData(MemoryMarshal.AsBytes(Prefix(triangles.RawIndices, triangles.IndexCount)));
+        }
+        return h.TryGetHashAndReset(digest, out _);
+    }
+
+    // The first n entries, or as many as there are: a short channel is written padded at upload.
+    private static ReadOnlySpan<T> Prefix<T>(T[]? array, int n) where T : struct
+        => array == null ? ReadOnlySpan<T>.Empty : array.AsSpan(0, System.Math.Min(n, array.Length));
+
+    // Every channel the upload carries, converted ONCE per upload into the grow-only buffers above. It
+    // used to be converted in full for every surface, so a canvas chunk with forty material batches
+    // converted, marshalled and uploaded its whole vertex buffer forty times per rebuild. -xlinka
+    private void ConvertChannels(PhosMesh phosMesh, MeshUploadHint uploadHint)
+    {
+        int vertexCount = phosMesh.VertexCount;
+
+        var positions = SurfaceSubset.Scratch(ref _posBuf, vertexCount);
+        var rawPositions = phosMesh.RawPositions;
+        bool hadBadPosition = false;
+        for (int i = 0; i < vertexCount; i++)
+        {
+            var pos = rawPositions[i];
+            // Non-finite positions poison the surface AABB and can fault the GPU
+            // (device lost). Zero them and log instead of submitting garbage. - xlinka
+            if (!float.IsFinite(pos.x) || !float.IsFinite(pos.y) || !float.IsFinite(pos.z))
+            {
+                hadBadPosition = true;
+                positions[i] = Vector3.Zero;
+                continue;
+            }
+            positions[i] = new Vector3(pos.x, pos.y, pos.z);
+        }
+        if (hadBadPosition && !_loggedNaNVertexError)
+        {
+            _loggedNaNVertexError = true;
+            Lumora.Core.Logging.Logger.Error($"MeshHook.UploadTriangleSubmesh: Non-finite vertex positions in mesh on slot '{Owner.Slot?.SlotName?.Value}' - zeroed before upload");
+        }
+
+        _hasNormals = phosMesh.HasNormals && uploadHint[MeshUploadHint.Flag.Normals];
+        if (_hasNormals)
+        {
+            var normals = SurfaceSubset.Scratch(ref _normBuf, vertexCount);
+            for (int i = 0; i < vertexCount; i++)
             {
                 var n = phosMesh.RawNormals[i];
                 normals[i] = new Vector3(n.x, n.y, n.z);
             }
-            arrays[(int)Mesh.ArrayType.Normal] = normals;
         }
 
-        // Upload tangents
-        if (phosMesh.HasTangents && uploadHint[MeshUploadHint.Flag.Tangents])
+        _hasTangents = phosMesh.HasTangents && uploadHint[MeshUploadHint.Flag.Tangents];
+        if (_hasTangents)
         {
-            EnsureExact(ref _tanBuf, phosMesh.VertexCount * 4);
-            var tangents = _tanBuf!;
-            for (int i = 0; i < phosMesh.VertexCount; i++)
+            var tangents = SurfaceSubset.Scratch(ref _tanBuf, vertexCount * 4);
+            for (int i = 0; i < vertexCount; i++)
             {
                 var t = phosMesh.RawTangents[i];
                 tangents[i * 4 + 0] = t.x;
@@ -409,16 +404,14 @@ public class MeshHook : ComponentHook<ProceduralMesh>
                 tangents[i * 4 + 2] = t.z;
                 tangents[i * 4 + 3] = t.w;
             }
-            arrays[(int)Mesh.ArrayType.Tangent] = tangents;
         }
 
-        // Upload colors
-        if (phosMesh.HasColors && uploadHint[MeshUploadHint.Flag.Colors])
+        _hasColors = phosMesh.HasColors && uploadHint[MeshUploadHint.Flag.Colors];
+        if (_hasColors)
         {
-            EnsureExact(ref _colBuf, phosMesh.VertexCount);
-            var colors = _colBuf!;
+            var colors = SurfaceSubset.Scratch(ref _colBuf, vertexCount);
             var rawColors = phosMesh.RawColors;
-            for (int i = 0; i < phosMesh.VertexCount; i++)
+            for (int i = 0; i < vertexCount; i++)
             {
                 // Safety: use white if color array is undersized
                 if (i < rawColors.Length)
@@ -431,50 +424,62 @@ public class MeshHook : ComponentHook<ProceduralMesh>
                     colors[i] = Colors.White;
                 }
             }
-            arrays[(int)Mesh.ArrayType.Color] = colors;
         }
 
-        // Upload UV0
-        if (phosMesh.HasUV0s && uploadHint[MeshUploadHint.Flag.UV0])
+        _hasUV0 = phosMesh.HasUV0s && uploadHint[MeshUploadHint.Flag.UV0];
+        if (_hasUV0)
         {
-            EnsureExact(ref _uvBuf, phosMesh.VertexCount);
-            var uvs = _uvBuf!;
-            for (int i = 0; i < phosMesh.VertexCount; i++)
+            var uvs = SurfaceSubset.Scratch(ref _uvBuf, vertexCount);
+            for (int i = 0; i < vertexCount; i++)
             {
                 var uv = phosMesh.RawUV0s[i];
                 uvs[i] = new Vector2(uv.x, uv.y);
             }
-            arrays[(int)Mesh.ArrayType.TexUV] = uvs;
         }
 
         // UV1 rides to the GPU as TexUV2. Vertex-animated meshes (BubbleFieldMesh) keep their shape
         // parameters here and their instance index in UV0, so a shader can rebuild the surface from
         // two floats without a per-instance draw. Asset meshes already did this; procedural ones
         // dropped the channel on the floor. -xlinka
-        if (phosMesh.HasUV1s && uploadHint[MeshUploadHint.Flag.UV1])
+        _hasUV1 = phosMesh.HasUV1s && uploadHint[MeshUploadHint.Flag.UV1];
+        if (_hasUV1)
         {
-            EnsureExact(ref _uv1Buf, phosMesh.VertexCount);
-            var uvs = _uv1Buf!;
+            var uvs = SurfaceSubset.Scratch(ref _uv1Buf, vertexCount);
             var raw = phosMesh.RawUV1s;
-            for (int i = 0; i < phosMesh.VertexCount; i++)
+            for (int i = 0; i < vertexCount; i++)
             {
                 var uv = raw[i];
                 uvs[i] = new Vector2(uv.x, uv.y);
             }
-            arrays[(int)Mesh.ArrayType.TexUV2] = uvs;
+        }
+    }
+
+    // Upload a triangle submesh to Godot, carrying only the vertices its triangles use (SurfaceSubset).
+    private void UploadTriangleSubmesh(PhosMesh phosMesh, PhosTriangleSubmesh submesh, MeshUploadHint uploadHint, ref bool converted)
+    {
+        if (godotMesh == null) return;
+        if (submesh.IndexCount <= 0) return;
+
+        int vertexCount = phosMesh.VertexCount;
+        if (vertexCount <= 0 || phosMesh.RawPositions == null)
+        {
+            if (!_loggedNoVertexWarning)
+            {
+                _loggedNoVertexWarning = true;
+                Lumora.Core.Logging.Logger.Warn($"MeshHook.UploadTriangleSubmesh: Skipping surface - no vertex data");
+            }
+            return;
         }
 
-        // Upload indices (ALWAYS required for triangle meshes)
-        bool hasIndices = submesh.IndexCount > 0 && submesh.RawIndices != null;
+        var rawIndices = submesh.RawIndices;
+        bool hasIndices = rawIndices != null;
         if (hasIndices)
         {
-            EnsureExact(ref _idxBuf, submesh.IndexCount);
-            var indices = _idxBuf!;
             int maxIndex = -1;
             int minIndex = int.MaxValue;
             for (int i = 0; i < submesh.IndexCount; i++)
             {
-                int index = submesh.RawIndices![i];
+                int index = rawIndices![i];
                 if (index > maxIndex)
                 {
                     maxIndex = index;
@@ -483,55 +488,123 @@ public class MeshHook : ComponentHook<ProceduralMesh>
                 {
                     minIndex = index;
                 }
-                indices[i] = index;
             }
 
             // An index past the vertex buffer is an out-of-bounds read at draw time -
             // that's a Vulkan device-lost, not a visual glitch. Negative indices wrap
             // to ~4 billion as unsigned on the GPU, same failure. Drop the surface and
             // log so the broken generator is findable. - xlinka
-            if (maxIndex >= phosMesh.VertexCount || minIndex < 0)
+            if (maxIndex >= vertexCount || minIndex < 0)
             {
                 if (!_loggedBadIndexError)
                 {
                     _loggedBadIndexError = true;
-                    Lumora.Core.Logging.Logger.Error($"MeshHook.UploadTriangleSubmesh: Index range [{minIndex}, {maxIndex}] invalid for vertex count {phosMesh.VertexCount} on slot '{Owner.Slot?.SlotName?.Value}' - surface skipped");
+                    Lumora.Core.Logging.Logger.Error($"MeshHook.UploadTriangleSubmesh: Index range [{minIndex}, {maxIndex}] invalid for vertex count {vertexCount} on slot '{Owner.Slot?.SlotName?.Value}' - surface skipped");
                 }
                 return;
             }
-
-            arrays[(int)Mesh.ArrayType.Index] = indices;
+        }
+        else if ((vertexCount % 3) != 0)
+        {
+            if (!_loggedNoIndexWarning)
+            {
+                _loggedNoIndexWarning = true;
+                Lumora.Core.Logging.Logger.Warn($"MeshHook.UploadTriangleSubmesh: Skipping surface - no indices and vertex count {vertexCount} is not a multiple of 3");
+            }
+            return;
         }
 
-        // Only add surface if we have valid vertex data. Tracked on the managed side: reading the
-        // entry back out of the container converts the whole packed vertex array into a fresh managed
-        // copy just to compare it with null, which for a deforming mesh was a full vertex buffer of
-        // garbage per submesh per frame. -xlinka
-        if (hasVertices)
+        if (!converted)
         {
-            if (!hasIndices && (phosMesh.VertexCount % 3) != 0)
+            ConvertChannels(phosMesh, uploadHint);
+            converted = true;
+        }
+
+        var arrays = _surfaceArrays ??= new global::Godot.Collections.Array();
+        arrays.Clear();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+
+        bool part = hasIndices && _subset.Take(rawIndices, submesh.IndexCount);
+        if (part)
+        {
+            var used = _subset.Vertices;
+            int n = used.Length;
+
+            var positions = SurfaceSubset.Scratch(ref _partPos, n);
+            SurfaceSubset.Gather<Vector3>(_posBuf, used, positions);
+            Put(arrays, Mesh.ArrayType.Vertex, Variant.CreateFrom(positions));
+            if (_hasNormals)
             {
-                if (!_loggedNoIndexWarning)
-                {
-                    _loggedNoIndexWarning = true;
-                    Lumora.Core.Logging.Logger.Warn($"MeshHook.UploadTriangleSubmesh: Skipping surface - no indices and vertex count {phosMesh.VertexCount} is not a multiple of 3");
-                }
-                return;
+                var normals = SurfaceSubset.Scratch(ref _partNorm, n);
+                SurfaceSubset.Gather<Vector3>(_normBuf, used, normals);
+                Put(arrays, Mesh.ArrayType.Normal, Variant.CreateFrom(normals));
             }
-            godotMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-            // Lumora.Core.Logging.Logger.Debug($"MeshHook.UploadTriangleSubmesh: Uploaded {submesh.IndexCount / 3} triangles");
+            if (_hasTangents)
+            {
+                var tangents = SurfaceSubset.Scratch(ref _partTan, n * 4);
+                SurfaceSubset.Gather4<float>(_tanBuf, used, tangents);
+                Put(arrays, Mesh.ArrayType.Tangent, Variant.CreateFrom(tangents));
+            }
+            if (_hasColors)
+            {
+                var colors = SurfaceSubset.Scratch(ref _partCol, n);
+                SurfaceSubset.Gather<Color>(_colBuf, used, colors);
+                Put(arrays, Mesh.ArrayType.Color, Variant.CreateFrom(colors));
+            }
+            if (_hasUV0)
+            {
+                var uvs = SurfaceSubset.Scratch(ref _partUV0, n);
+                SurfaceSubset.Gather<Vector2>(_uvBuf, used, uvs);
+                Put(arrays, Mesh.ArrayType.TexUV, Variant.CreateFrom(uvs));
+            }
+            if (_hasUV1)
+            {
+                var uvs = SurfaceSubset.Scratch(ref _partUV1, n);
+                SurfaceSubset.Gather<Vector2>(_uv1Buf, used, uvs);
+                Put(arrays, Mesh.ArrayType.TexUV2, Variant.CreateFrom(uvs));
+            }
+            Put(arrays, Mesh.ArrayType.Index, Variant.CreateFrom(_subset.Indices));
         }
         else
         {
-            if (!_loggedNoVertexWarning)
+            Put(arrays, Mesh.ArrayType.Vertex, Variant.CreateFrom(_posBuf.AsSpan(0, vertexCount)));
+            if (_hasNormals)
+                Put(arrays, Mesh.ArrayType.Normal, Variant.CreateFrom(_normBuf.AsSpan(0, vertexCount)));
+            if (_hasTangents)
+                Put(arrays, Mesh.ArrayType.Tangent, Variant.CreateFrom(_tanBuf.AsSpan(0, vertexCount * 4)));
+            if (_hasColors)
+                Put(arrays, Mesh.ArrayType.Color, Variant.CreateFrom(_colBuf.AsSpan(0, vertexCount)));
+            if (_hasUV0)
+                Put(arrays, Mesh.ArrayType.TexUV, Variant.CreateFrom(_uvBuf.AsSpan(0, vertexCount)));
+            if (_hasUV1)
+                Put(arrays, Mesh.ArrayType.TexUV2, Variant.CreateFrom(_uv1Buf.AsSpan(0, vertexCount)));
+            if (hasIndices)
             {
-                _loggedNoVertexWarning = true;
-                Lumora.Core.Logging.Logger.Warn($"MeshHook.UploadTriangleSubmesh: Skipping surface - no vertex data");
+                var indices = SurfaceSubset.Scratch(ref _idxBuf, submesh.IndexCount);
+                rawIndices!.AsSpan(0, submesh.IndexCount).CopyTo(indices);
+                Put(arrays, Mesh.ArrayType.Index, Variant.CreateFrom(indices));
             }
         }
+
+        var uvFormat = MeshUVChannels.Set(arrays, phosMesh, ref _extraUV, part ? _subset.Vertices : default,
+            uploadHint[MeshUploadHint.Flag.UV2], uploadHint[MeshUploadHint.Flag.UV3]);
+        godotMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, NoBlendShapes, NoLods, uvFormat);
+        // Godot copied the data into the surface; the container lets go of its copy now rather than
+        // holding every procedural mesh's vertices twice until the next upload.
+        arrays.Clear();
     }
 
-    // Get the Godot MeshInstance3D node.
-    public MeshInstance3D? GetMeshInstance() => meshInstance;
+    // A channel goes in and the temporary that carried it goes back at once. Left to the finalizer, six
+    // or seven of these a surface kept one thread busy freeing them under a lock the frame also takes.
+    // The binding also made a fresh empty blend-shape array and LOD dictionary for every call that left
+    // them out. -xlinka
+    private static void Put(global::Godot.Collections.Array arrays, Mesh.ArrayType channel, Variant value)
+    {
+        arrays[(int)channel] = value;
+        value.Dispose();
+    }
+
+    private static readonly global::Godot.Collections.Array<global::Godot.Collections.Array> NoBlendShapes = new();
+    private static readonly global::Godot.Collections.Dictionary NoLods = new();
 }
 

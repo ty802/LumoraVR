@@ -42,14 +42,14 @@ public class CubemapAssetHook : AssetHook, ICubemapAssetHook
             global::Godot.Collections.Array<Image> images = null!;
             try
             {
-                images = BuildImages(faces, request.FaceSize, request.GenerateMipmaps);
+                images = BuildImages(faces, request.FaceSize, request.GenerateMipmaps, request.Hdr);
             }
             catch (Exception ex)
             {
                 LumoraLogger.Error($"CubemapAssetHook: failed to prepare {request.FaceSize} px faces: {ex.Message}");
             }
 
-            Callable.From(() =>
+            MainThreadWork.Post("cubemap build", () =>
             {
                 try
                 {
@@ -57,6 +57,10 @@ public class CubemapAssetHook : AssetHook, ICubemapAssetHook
                     {
                         Adopt(images);
                         request.Report?.Invoke(MeasureBytes(images));
+                        // The cube holds its own copy now. Left to the finalizer, six faces and their
+                        // mips stayed in native memory until the next collection.
+                        foreach (var image in images)
+                            image.Dispose();
                     }
                 }
                 catch (Exception ex)
@@ -64,7 +68,7 @@ public class CubemapAssetHook : AssetHook, ICubemapAssetHook
                     LumoraLogger.Error($"CubemapAssetHook: failed to build cubemap: {ex.Message}");
                 }
                 finally { tcs.TrySetResult(true); }
-            }).CallDeferred();
+            });
         });
     }
 
@@ -77,12 +81,15 @@ public class CubemapAssetHook : AssetHook, ICubemapAssetHook
         return tcs;
     }
 
-    private static global::Godot.Collections.Array<Image> BuildImages(byte[][] faces, int size, bool mipmaps)
+    // Half-float faces stay half-float: an HDR cube sampled through source_color has no sRGB view to
+    // decode through, so it reads as the linear light it holds.
+    private static global::Godot.Collections.Array<Image> BuildImages(byte[][] faces, int size, bool mipmaps, bool hdr)
     {
+        var format = hdr ? Image.Format.Rgbah : Image.Format.Rgba8;
         var images = new global::Godot.Collections.Array<Image>();
         for (int i = 0; i < 6; i++)
         {
-            var image = Image.CreateFromData(size, size, false, Image.Format.Rgba8, faces[i]);
+            var image = Image.CreateFromData(size, size, false, format, faces[i]);
             if (mipmaps)
                 image.GenerateMipmaps();
             images.Add(image);
@@ -105,7 +112,7 @@ public class CubemapAssetHook : AssetHook, ICubemapAssetHook
     {
         long total = 0;
         foreach (var image in images)
-            total += image.GetData()?.Length ?? 0;
+            total += image.GetDataSize();
         return total;
     }
 

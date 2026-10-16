@@ -34,6 +34,7 @@ public class LightHook : NodeBackedComponentHook<Light, Light3D>
     public override void Destroy(bool destroyingWorld)
     {
         EngineSettings.Changed -= OnSettingsChanged;
+        ShadowBudget.Remove(_budget);
         base.Destroy(destroyingWorld);
     }
 
@@ -68,6 +69,54 @@ public class LightHook : NodeBackedComponentHook<Light, Light3D>
     // all being read through a curve nothing authored against. -xlinka
     private const float NormalizedFalloff = 0f;
 
+    // WHAT THIS HOOK LAST WROTE.
+    //
+    // The change pass lands here whenever ANY field of the light moves, and several of the platform's
+    // setters are not free when the value is the same: a shadow toggle, or a range, angle or bias write,
+    // bumps the light's version and re-renders its whole shadow map, and a projector write re-pairs it
+    // with everything in range. A world that animates a lamp's colour was re-rendering that lamp's
+    // shadow every frame for nothing. Everything goes through a compare against the last write, and
+    // the record starts over whenever the node is rebuilt. -xlinka
+    private Light3D? _appliedNode;
+    private Color _appliedColor;
+    private float _appliedEnergy, _appliedRange, _appliedAttenuation, _appliedSpotAngle, _appliedMaxDistance;
+    private float _appliedBias, _appliedNormalBias, _appliedBlur, _appliedOpacity;
+    private float _appliedFadeBegin, _appliedFadeLength, _appliedFadeShadow;
+    private int _appliedFadeEnabled, _appliedVisible, _appliedShadow, _appliedSplits, _appliedOmniMode;
+    private bool _appliedPunctual, _appliedSunBand;
+    private Texture2D? _appliedProjector;
+
+    // This light's place in the point and spot shadow budget.
+    private readonly ShadowBudget.Entry _budget = new();
+
+    private void ForgetApplied(Light3D light)
+    {
+        _appliedNode = light;
+        _appliedColor = new Color(float.NaN, float.NaN, float.NaN, float.NaN);
+        _appliedEnergy = _appliedRange = _appliedAttenuation = _appliedSpotAngle = _appliedMaxDistance = float.NaN;
+        _appliedBias = _appliedNormalBias = _appliedBlur = _appliedOpacity = float.NaN;
+        _appliedFadeBegin = _appliedFadeLength = _appliedFadeShadow = float.NaN;
+        _appliedFadeEnabled = _appliedVisible = _appliedShadow = _appliedSplits = _appliedOmniMode = -1;
+        _appliedPunctual = _appliedSunBand = false;
+        _appliedProjector = null;
+    }
+
+    private static bool Changed(ref float last, float value)
+    {
+        if (last.Equals(value))
+            return false;
+        last = value;
+        return true;
+    }
+
+    private static bool Changed(ref int last, int value)
+    {
+        if (last == value)
+            return false;
+        last = value;
+        return true;
+    }
+
     protected override void SyncProperties()
     {
         if (Owner.Type.GetWasChangedAndClear())
@@ -75,19 +124,34 @@ public class LightHook : NodeBackedComponentHook<Light, Light3D>
 
         var light = PlatformNode;
         if (light == null) return;
+        if (!ReferenceEquals(_appliedNode, light))
+            ForgetApplied(light);
 
         var c = Owner.LightColor.Value;
-        light.LightColor = new Color(c.r, c.g, c.b, c.a);
-        light.LightEnergy = Owner.Intensity.Value;
+        var color = new Color(c.r, c.g, c.b, c.a);
+        if (_appliedColor != color)
+        {
+            _appliedColor = color;
+            light.LightColor = color;
+        }
+        // Godot fades as window(d / range) * d^-decay. With decay 1 and the energy scaled by 0.08 * range the
+        // result stays within a few percent of 1 / (1 + 25 x^2) from a tenth of the range out (x = d / range);
+        // only right beside the lamp does it run brighter. -xlinka
+        bool inverse = Owner.Falloff.Value == LightFalloff.Inverse && light is not DirectionalLight3D;
+        float energy = inverse
+            ? Owner.Intensity.Value * 0.08f * System.Math.Max(Owner.Range.Value, 0f)
+            : Owner.Intensity.Value;
+        if (Changed(ref _appliedEnergy, energy))
+            light.LightEnergy = energy;
+        float falloff = inverse ? 1f : NormalizedFalloff;
 
         if (light is DirectionalLight3D directional)
         {
             // The user's global scale rides on top of the light's authored distance: shrinking the
             // cascade range is the cheapest real cut on the shadow pass, and it has to work on worlds
             // whose lights were authored by someone else. -xlinka
-            directional.DirectionalShadowMaxDistance =
-                System.Math.Max(1f, Owner.ShadowMaxDistance.Value * EngineSettings.ShadowDistanceScale);
-            directional.DirectionalShadowMode = Owner.ShadowSplits.Value switch
+            float maxDistance = System.Math.Max(1f, Owner.ShadowMaxDistance.Value * EngineSettings.ShadowDistanceScale);
+            var splits = Owner.ShadowSplits.Value switch
             {
                 ShadowSplitMode.Orthogonal => DirectionalLight3D.ShadowMode.Orthogonal,
                 ShadowSplitMode.Two => DirectionalLight3D.ShadowMode.Parallel2Splits,
@@ -99,21 +163,37 @@ public class LightHook : NodeBackedComponentHook<Light, Light3D>
             // 100 shadow draws there for six visible ones. -xlinka
             if (Standalone)
             {
-                directional.DirectionalShadowMode = DirectionalLight3D.ShadowMode.Orthogonal;
-                directional.DirectionalShadowMaxDistance =
-                    System.Math.Min(directional.DirectionalShadowMaxDistance, StandaloneShadowDistance);
+                splits = DirectionalLight3D.ShadowMode.Orthogonal;
+                maxDistance = System.Math.Min(maxDistance, StandaloneShadowDistance);
             }
+
+            if (Changed(ref _appliedMaxDistance, maxDistance))
+                directional.DirectionalShadowMaxDistance = maxDistance;
+            if (Changed(ref _appliedSplits, (int)splits))
+                directional.DirectionalShadowMode = splits;
         }
         else if (light is OmniLight3D omni)
         {
-            omni.OmniRange = Owner.Range.Value;
-            omni.OmniAttenuation = NormalizedFalloff;
-            ApplyDistanceFade(omni);
+            if (Changed(ref _appliedRange, Owner.Range.Value))
+                omni.OmniRange = Owner.Range.Value;
+            if (Changed(ref _appliedAttenuation, falloff))
+                omni.OmniAttenuation = falloff;
+
+            // The cheapest shadow preset draws a point light's shadow as two hemispheres instead of six
+            // cube faces: a third of the passes and of the caster culling, for some bending on big flat
+            // casters right beside the lamp. Every other preset keeps the cube. -xlinka
+            var omniMode = EngineSettings.ShadowQuality == 0
+                ? OmniLight3D.ShadowMode.DualParaboloid
+                : OmniLight3D.ShadowMode.Cube;
+            if (Changed(ref _appliedOmniMode, (int)omniMode))
+                omni.OmniShadowMode = omniMode;
         }
         else if (light is SpotLight3D spot)
         {
-            spot.SpotRange = Owner.Range.Value;
-            spot.SpotAttenuation = NormalizedFalloff;
+            if (Changed(ref _appliedRange, Owner.Range.Value))
+                spot.SpotRange = Owner.Range.Value;
+            if (Changed(ref _appliedAttenuation, falloff))
+                spot.SpotAttenuation = falloff;
 
             // HALF OF IT. Godot's spot_angle is measured from the cone's axis and tops out at 90;
             // SpotAngle is the FULL cone and goes to 179. Handing the full angle straight over
@@ -123,11 +203,12 @@ public class LightHook : NodeBackedComponentHook<Light, Light3D>
             // The default is a 60 degree full cone. A default of 30 papered over the conversion in the
             // one place it happened to be visible, while every imported and every hand-built spot
             // stayed twice as wide. -xlinka
-            spot.SpotAngle = System.Math.Clamp(Owner.SpotAngle.Value * 0.5f, 0.01f, 90f);
-            ApplyDistanceFade(spot);
+            float angle = System.Math.Clamp(Owner.SpotAngle.Value * 0.5f, 0.01f, 90f);
+            if (Changed(ref _appliedSpotAngle, angle))
+                spot.SpotAngle = angle;
         }
 
-        ApplyShadowFade(light);
+        ApplyFades(light);
         ApplyCookie(light);
 
         // ShadowStrength was INVERTED, and the result was the worst of both worlds.
@@ -148,57 +229,78 @@ public class LightHook : NodeBackedComponentHook<Light, Light3D>
         if (Standalone && light is not DirectionalLight3D)
             wantsShadow = false;
 
-        light.ShadowEnabled = wantsShadow;
-        light.ShadowOpacity = shadowOpacity;
+        if (light is DirectionalLight3D)
+        {
+            ShadowBudget.Remove(_budget);
+            if (Changed(ref _appliedShadow, wantsShadow ? 1 : 0))
+                light.ShadowEnabled = wantsShadow;
+            if (Changed(ref _appliedOpacity, shadowOpacity))
+                light.ShadowOpacity = shadowOpacity;
+            // A moving object's shadow stand-in comes in two bands (MovingShadowCasters); the sun takes
+            // one, or it would draw that shadow twice.
+            if (!_appliedSunBand)
+            {
+                _appliedSunBand = true;
+                light.ShadowCasterMask = ~(uint)Helpers.RenderHelper.SHADOW_BAND_1;
+            }
+        }
+        else
+        {
+            // Point and spot shadows go through the budget, which writes them.
+            float brightness = Owner.Intensity.Value * System.Math.Max(c.r, System.Math.Max(c.g, c.b));
+            ShadowBudget.Update(_budget, light, wantsShadow, Owner.Enabled.Value, shadowOpacity,
+                Owner.Range.Value, brightness);
+        }
 
         // ShadowType.Soft means PCF-filtered edges. Giving every light an invented physical size
         // enabled PCSS instead, spreading its sparse samples across a wide penumbra. With MSAA and
         // no temporal accumulation that pattern stays visible as dots on close-up avatars.
         // Keep the source punctual and use the shadow filter for softness; a hard light collapses
-        // the filter radius. Write these even with shadows off so mode switches clear old values.
-        light.LightAngularDistance = 0f;
-        light.LightSize = 0f;
-        light.ShadowBlur = Owner.Shadows.Value == ShadowType.Soft ? 1f : 0f;
-        light.ShadowBias = Owner.ShadowBias.Value;
-        light.ShadowNormalBias = Owner.ShadowNormalBias.Value;
-        light.Visible = Owner.Enabled.Value;
+        // the filter radius. Written even with shadows off so mode switches clear old values.
+        if (!_appliedPunctual)
+        {
+            _appliedPunctual = true;
+            light.LightAngularDistance = 0f;
+            light.LightSize = 0f;
+        }
+        if (Changed(ref _appliedBlur, Owner.Shadows.Value == ShadowType.Soft ? 1f : 0f))
+            light.ShadowBlur = _appliedBlur;
+        if (Changed(ref _appliedBias, Owner.ShadowBias.Value))
+            light.ShadowBias = Owner.ShadowBias.Value;
+        if (Changed(ref _appliedNormalBias, Owner.ShadowNormalBias.Value))
+            light.ShadowNormalBias = Owner.ShadowNormalBias.Value;
+        if (Changed(ref _appliedVisible, Owner.Enabled.Value ? 1 : 0))
+            light.Visible = Owner.Enabled.Value;
     }
 
-    // Zero length is the off switch, not a zero-metre dissolve: Godot reads Begin and Length independently
-    // and a length of 0 with fade enabled would pop the light out at Begin with no transition at all. -xlinka
-    private void ApplyDistanceFade(Light3D light)
+    // Two fades share Godot's one set of fields: the light's own (point and spot), where zero length is
+    // the off switch rather than a zero-metre dissolve, and the shadow's, which drops the shadow nearer
+    // than the light. A shadow fade on a light with no fade of its own pushes the light's fade out to
+    // four times the shadow distance so only the shadow is affected. That push used to test the node's
+    // CURRENT length, which still held the platform default of ten, so such a lamp vanished at forty
+    // metres instead. -xlinka
+    private void ApplyFades(Light3D light)
     {
-        float length = System.Math.Max(0f, Owner.DistanceFadeLength.Value);
-        if (length <= 0f)
+        float length = light is DirectionalLight3D ? 0f : System.Math.Max(0f, Owner.DistanceFadeLength.Value);
+        float begin = System.Math.Max(0f, Owner.DistanceFadeBegin.Value);
+        float shadow = System.Math.Max(0f, Owner.ShadowFadeDistance.Value);
+        bool enabled = length > 0f || shadow > 0f;
+        if (shadow > 0f && length <= 0f)
         {
-            light.DistanceFadeEnabled = false;
-            return;
+            begin = shadow * 4f;
+            length = shadow;
         }
 
-        light.DistanceFadeEnabled = true;
-        light.DistanceFadeBegin = System.Math.Max(0f, Owner.DistanceFadeBegin.Value);
-        light.DistanceFadeLength = length;
-    }
-
-    // The shadow's own fade distance, which Godot keeps separate from the light's. Written whenever a
-    // value is set, independently of whether the LIGHT fades - a lamp can perfectly well shine at any
-    // range while only casting nearby, and that is the point of the field.
-    private void ApplyShadowFade(Light3D light)
-    {
-        float fade = System.Math.Max(0f, Owner.ShadowFadeDistance.Value);
-        if (fade <= 0f)
+        if (Changed(ref _appliedFadeEnabled, enabled ? 1 : 0))
+            light.DistanceFadeEnabled = enabled;
+        if (!enabled)
             return;
-
-        light.DistanceFadeEnabled = true;
-        light.DistanceFadeShadow = fade;
-        if (light.DistanceFadeLength <= 0f)
-        {
-            // Godot needs a non-zero fade length for the shadow cutoff to mean anything, and a light
-            // with no fade of its own would otherwise vanish at DistanceFadeBegin. Push the light's own
-            // fade far enough out that only the shadow is affected.
-            light.DistanceFadeBegin = fade * 4f;
-            light.DistanceFadeLength = fade;
-        }
+        if (Changed(ref _appliedFadeBegin, begin))
+            light.DistanceFadeBegin = begin;
+        if (Changed(ref _appliedFadeLength, length))
+            light.DistanceFadeLength = length;
+        if (shadow > 0f && Changed(ref _appliedFadeShadow, shadow))
+            light.DistanceFadeShadow = shadow;
     }
 
     // The cookie is Godot's light projector: multiplied into the light before it reaches anything, so a
@@ -225,13 +327,19 @@ public class LightHook : NodeBackedComponentHook<Light, Light3D>
                     $"Light '{Owner.Slot.SlotName.Value}': cookies are point/spot only, the renderer has no " +
                     "directional projector. Ignoring it.");
             }
-            if (light.LightProjector != null)
+            if (_appliedProjector != null)
+            {
+                _appliedProjector = null;
                 light.LightProjector = null;
+            }
             return;
         }
 
-        if (light.LightProjector != projector)
+        if (!ReferenceEquals(_appliedProjector, projector))
+        {
+            _appliedProjector = projector;
             light.LightProjector = projector;
+        }
     }
 
     private static Light3D BuildLight(LightType type)

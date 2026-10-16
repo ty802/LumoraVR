@@ -42,7 +42,7 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
         // before reporting the asset loaded (else a material binds a null albedo in the gap = white body). -xlinka
         var tcs = NewUploadTcs();
         System.Threading.Interlocked.Increment(ref _uploadsQueued);
-        global::Godot.Callable.From(() =>
+        MainThreadWork.Post($"texture build {width}x{height}", () =>
         {
             try { BuildTexture(pixels, width, height, hasMipmaps); }
             finally
@@ -50,7 +50,7 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
                 System.Threading.Interlocked.Increment(ref _uploadsBuilt);
                 tcs.TrySetResult(true);
             }
-        }).CallDeferred();
+        }, pixels.LongLength);
 
         // QUEUED VERSUS BUILT, because the whole texture pipeline hangs off this one deferred call.
         // LoadSelf waits on that TCS before it reports the asset loaded, so if the deferred build is
@@ -60,7 +60,7 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
         int queued = System.Threading.Volatile.Read(ref _uploadsQueued);
         if (queued <= 3 || queued % 25 == 0)
         {
-            LumoraLogger.Log($"TextureAssetHook: GPU uploads queued={queued} built={System.Threading.Volatile.Read(ref _uploadsBuilt)}");
+            LumoraLogger.Debug($"TextureAssetHook: GPU uploads queued={queued} built={System.Threading.Volatile.Read(ref _uploadsBuilt)}");
         }
     }
 
@@ -97,7 +97,10 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
                 LumoraLogger.Error($"TextureAssetHook: failed to prepare {request.Width}x{request.Height} texture: {ex.Message}");
             }
 
-            global::Godot.Callable.From(() =>
+            long uploadBytes = image?.GetDataSize() ?? 0;
+            string uploadLabel = image == null ? $"texture upload {request.Width}x{request.Height}"
+                : $"texture upload {image.GetWidth()}x{image.GetHeight()} {image.GetFormat()} {uploadBytes >> 10} KB";
+            MainThreadWork.Post(uploadLabel, () =>
             {
                 try
                 {
@@ -105,6 +108,10 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
                     {
                         Adopt(image);
                         ReportUpload(request, image);
+                        // The GPU texture has its own copy now. Waiting for the finalizer kept every
+                        // decoded picture's native buffer alive until the next collection, tens of
+                        // megabytes each for a 4k map.
+                        image.Dispose();
 
                         // THE GPU TEXTURE EXISTS ONLY AS OF THIS LINE. Every material that asked for it
                         // before now was handed a null and wrote that null into its Godot material, and
@@ -124,10 +131,10 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
                     int built = System.Threading.Interlocked.Increment(ref _uploadsBuilt);
                     int queued = System.Threading.Volatile.Read(ref _uploadsQueued);
                     if (built <= 3 || built % 25 == 0 || queued - built > 20)
-                        LumoraLogger.Log($"TextureAssetHook: GPU uploads queued={queued} built={built} valid={IsValid}");
+                        LumoraLogger.Debug($"TextureAssetHook: GPU uploads queued={queued} built={built} valid={IsValid}");
                     tcs.TrySetResult(true);
                 }
-            }).CallDeferred();
+            }, uploadBytes);
         });
     }
 
@@ -172,21 +179,182 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
         int height = request.Height;
 
         // A cached compressed blob short-circuits everything: same key means the same pixels and the
-        // same compression intent, so there is nothing to recompute.
-        string cachePath = GetCachePath(request);
+        // same compression intent, so there is nothing to recompute. A run forced onto the CPU encoder
+        // neither reads nor writes the cache, so it measures the encoder and leaves no blobs behind.
+        string cachePath = ForceCpuEncoder ? null! : GetCachePath(request);
         if (cachePath != null && TryReadCache(cachePath, out var cached))
             return cached;
 
         Image image = BuildSourceImage(levels, width, height, request.GenerateMipmaps,
             request.IsHdr ? Image.Format.Rgbah : Image.Format.Rgba8);
 
-        if (request.AllowBlockCompression && TryCompress(image, request))
+        if (request.AllowBlockCompression)
         {
-            if (cachePath != null)
+            bool compressed = UsePlatformEncoder && TryCompress(image, request);
+            if (!compressed && CpuEncoderFits(request))
+            {
+                var encoded = TryCpuEncode(image, request);
+                if (encoded != null)
+                {
+                    image.Dispose();
+                    image = encoded;
+                    compressed = true;
+                }
+            }
+            if (compressed && cachePath != null)
                 TryWriteCache(cachePath, image);
         }
 
         return image;
+    }
+
+    // ENCODERS THIS BUILD DOES NOT HAVE, AND THE ONE THAT IS ALWAYS HERE.
+    //
+    // The platform's block encoders are editor-only: in an exported game every compress call answers
+    // "unavailable" and leaves the picture alone, so every texture a player ever loaded went to the GPU
+    // as RGBA8 with mips, 5.3 bytes a pixel. A world of three hundred textures asked for six gigabytes
+    // that way. The first "unavailable" per mode is remembered, so the engine stops printing its error
+    // for every texture, and BlockCompressor does BC1 (opaque colour and normal maps) or BC3 (colour with
+    // alpha) on the worker instead. A headset or phone gets Etc2Compressor the same way: ETC2 RGB for opaque
+    // colour and normal maps, ETC2 RGBA8 for alpha. HDR keeps its half floats and a device with neither
+    // family keeps RGBA8.
+    //
+    // The editor build does have the platform encoders, and they froze the frame: a guest receiving one
+    // avatar saw frames of 0.5 to 10.6 s while its BC7 maps went through them, against nothing over 40 ms
+    // on BlockCompressor. So every build encodes on the CPU, and editor runs behave like the exported game.
+    // LUMORA_TEXTURE_ENCODER=platform asks for the platform encoders again; =cpu also skips the disk
+    // cache, for timing the encoder. -xlinka
+    private static int _missingEncoders;
+    private static int _cpuEncodeCount;
+    private static long _cpuEncodeTicks;
+    private static bool _cpuEncoderAnnounced;
+
+    private static readonly bool ForceCpuEncoder =
+        string.Equals(System.Environment.GetEnvironmentVariable("LUMORA_TEXTURE_ENCODER"), "cpu", StringComparison.OrdinalIgnoreCase);
+
+    private static readonly bool UsePlatformEncoder =
+        string.Equals(System.Environment.GetEnvironmentVariable("LUMORA_TEXTURE_ENCODER"), "platform", StringComparison.OrdinalIgnoreCase);
+
+    // Godot's own mip layout for a block format, asked of the platform once per size: offsets of each
+    // level, then the total.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(int, int, bool, Image.Format), long[]> _blockLayouts = new();
+
+    private static bool CpuBcFamily => Device.S3tc && !Device.PreferMobileFamily;
+
+    private static bool CpuEncoderFits(TextureUploadRequest request)
+        => !request.IsHdr && (CpuBcFamily || Device.Etc2);
+
+    private static Image? TryCpuEncode(Image image, TextureUploadRequest request)
+    {
+        try
+        {
+            int width = image.GetWidth();
+            int height = image.GetHeight();
+            if (width < 4 || height < 4)
+                return null;
+            if (image.IsCompressed())
+                return null;
+            if (image.GetFormat() != Image.Format.Rgba8)
+                image.Convert(Image.Format.Rgba8);
+
+            // Block formats want the top level a whole number of blocks; the platform's own encoder
+            // stretches to the next multiple of four the same way.
+            bool mipmaps = image.HasMipmaps();
+            if ((width & 3) != 0 || (height & 3) != 0)
+            {
+                width = (width + 3) & ~3;
+                height = (height + 3) & ~3;
+                image.Resize(width, height, Image.Interpolation.Bilinear);
+                if (mipmaps && !image.HasMipmaps())
+                    image.GenerateMipmaps();
+            }
+
+            bool etc = !CpuBcFamily;
+            bool alpha = request.HasAlpha && !request.IsNormalMap;
+            var format = alpha ? BlockCompressor.Format.Bc3 : BlockCompressor.Format.Bc1;
+            var etcFormat = alpha ? Etc2Compressor.Format.Etc2Rgba : Etc2Compressor.Format.Etc2Rgb;
+            var target = etc
+                ? alpha ? Image.Format.Etc2Rgba8 : Image.Format.Etc2Rgb8
+                : alpha ? Image.Format.Dxt5 : Image.Format.Dxt1;
+            var layout = BlockLayout(width, height, mipmaps, target, alpha ? 16 : 8);
+            if (layout == null)
+                return null;
+            int levels = layout.Length - 1;
+            int sourceLevels = mipmaps ? image.GetMipmapCount() + 1 : 1;
+            if (levels > sourceLevels)
+                return null;
+
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+            byte[] source = image.GetData();
+            var destination = new byte[layout[levels]];
+            for (int level = 0; level < levels; level++)
+            {
+                int levelWidth = System.Math.Max(1, width >> level);
+                int levelHeight = System.Math.Max(1, height >> level);
+                int sourceOffset = level == 0 ? 0 : (int)image.GetMipmapOffset(level);
+                if (etc)
+                    Etc2Compressor.EncodeLevel(source, sourceOffset, levelWidth, levelHeight, etcFormat, destination, (int)layout[level]);
+                else
+                    BlockCompressor.EncodeLevel(source, sourceOffset, levelWidth, levelHeight, format,
+                        perceptual: !request.IsNormalMap, destination, (int)layout[level]);
+            }
+
+            var encoded = Image.CreateFromData(width, height, mipmaps, target, destination);
+            if (encoded == null || encoded.IsEmpty() || encoded.GetFormat() != target)
+            {
+                encoded?.Dispose();
+                return null;
+            }
+
+            long elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - started;
+            int count = System.Threading.Interlocked.Increment(ref _cpuEncodeCount);
+            long ticks = System.Threading.Interlocked.Add(ref _cpuEncodeTicks, elapsed);
+            if (!_cpuEncoderAnnounced)
+            {
+                _cpuEncoderAnnounced = true;
+                LumoraLogger.Log($"TextureAssetHook: {(UsePlatformEncoder ? "no platform block encoder in this build" : "block encoder")}{(ForceCpuEncoder ? " (forced, no disk cache)" : string.Empty)}; "
+                               + (etc ? "compressing on the CPU, ETC2 RGB for opaque colour and normal maps, ETC2 RGBA8 for alpha"
+                                      : "compressing on the CPU, BC1 for opaque colour and normal maps, BC3 for alpha"));
+            }
+            if (count <= 3 || count % 25 == 0)
+            {
+                LumoraLogger.Debug($"TextureAssetHook: CPU block encode #{count} {width}x{height} {target} in "
+                                 + $"{elapsed * 1000.0 / System.Diagnostics.Stopwatch.Frequency:0} ms "
+                                 + $"(all so far {ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency:0} ms)");
+            }
+            return encoded;
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Warn($"TextureAssetHook: CPU block encode failed, keeping {image.GetFormat()}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static long[]? BlockLayout(int width, int height, bool mipmaps, Image.Format target, int blockBytes)
+    {
+        var key = (width, height, mipmaps, target);
+        if (_blockLayouts.TryGetValue(key, out var known))
+            return known;
+
+        using var probe = Image.CreateEmpty(width, height, mipmaps, target);
+        if (probe == null || probe.IsEmpty() || probe.GetFormat() != target)
+            return null;
+        int levels = mipmaps ? probe.GetMipmapCount() + 1 : 1;
+        var layout = new long[levels + 1];
+        for (int level = 1; level < levels; level++)
+            layout[level] = probe.GetMipmapOffset(level);
+        layout[levels] = probe.GetDataSize();
+        for (int level = 0; level < levels; level++)
+        {
+            long expected = (long)BlockCompressor.BlocksAcross(System.Math.Max(1, width >> level))
+                * BlockCompressor.BlocksAcross(System.Math.Max(1, height >> level)) * blockBytes;
+            if (layout[level + 1] - layout[level] != expected)
+                return null;
+        }
+
+        _blockLayouts[key] = layout;
+        return layout;
     }
 
     private static Image BuildSourceImage(byte[][] levels, int width, int height, bool generateMipmaps, Image.Format format)
@@ -391,20 +559,29 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
         try
         {
             var before = image.GetFormat();
+            bool tried = false;
             foreach (var attempt in plan)
             {
+                int bit = 1 << (int)attempt.Mode;
+                if ((System.Threading.Volatile.Read(ref _missingEncoders) & bit) != 0)
+                    continue;
+                tried = true;
                 // The channel set comes from the sidecar's pixel scan rather than Godot's own
                 // DetectUsedChannels, which would walk every texel of the full-resolution image
                 // again to learn a fact the engine already measured once. -xlinka
                 // The format check is the real verdict: an encoder that is not in this build returns
                 // an error and leaves the image alone, and either sign on its own is enough to move
                 // to the next attempt.
-                image.CompressFromChannels(attempt.Mode, attempt.Channels, Image.AstcFormat.Format4X4);
+                var error = image.CompressFromChannels(attempt.Mode, attempt.Channels, Image.AstcFormat.Format4X4);
                 if (image.GetFormat() != before)
                     return true;
+                if (error == Error.Unavailable
+                    && (System.Threading.Interlocked.Or(ref _missingEncoders, bit) & bit) == 0)
+                    LumoraLogger.Log($"TextureAssetHook: this build has no {attempt.Mode} encoder; not asking again");
             }
 
-            LumoraLogger.Log($"TextureAssetHook: no encoder in this build for {plan[0].Mode} on {image.GetWidth()}x{image.GetHeight()}; keeping {before}");
+            if (tried)
+                LumoraLogger.Debug($"TextureAssetHook: no encoder in this build for {plan[0].Mode} on {image.GetWidth()}x{image.GetHeight()}; keeping {before}");
             return false;
         }
         catch (Exception ex)
@@ -522,14 +699,41 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
             _godotTexture.SetImage(image);
     }
 
+    // What has gone to the GPU, by format, since start. A picture of a megabyte or more that went up
+    // uncompressed says why, so a VRAM bill can be read off the log rather than guessed. -xlinka
+    private static readonly System.Collections.Generic.Dictionary<Image.Format, (int Count, long Bytes)> _uploadedByFormat = new();
+    private static int _uploadsTallied;
+
+    private static void Tally(TextureUploadRequest request, Image image, long bytes)
+    {
+        var format = image.GetFormat();
+        int tallied;
+        string totals = string.Empty;
+        lock (_uploadedByFormat)
+        {
+            _uploadedByFormat.TryGetValue(format, out var had);
+            _uploadedByFormat[format] = (had.Count + 1, had.Bytes + bytes);
+            tallied = ++_uploadsTallied;
+            if (tallied % 25 == 0)
+                totals = string.Join(", ", System.Linq.Enumerable.Select(_uploadedByFormat, kv => $"{kv.Key} {kv.Value.Count} = {kv.Value.Bytes >> 20} MB"));
+        }
+        if (!image.IsCompressed() && bytes >= 1L << 20)
+            LumoraLogger.Debug($"TextureAssetHook: {image.GetWidth()}x{image.GetHeight()} went to the GPU as {format}, {bytes >> 20} MB: "
+                            + $"compression allowed {request.AllowBlockCompression}, hdr {request.IsHdr}, alpha {request.HasAlpha}, "
+                            + $"normal map {request.IsNormalMap}, CPU encoder fits {CpuEncoderFits(request)}, forced CPU {ForceCpuEncoder}");
+        if (totals.Length > 0)
+            LumoraLogger.Log($"TextureAssetHook: {tallied} uploads so far: {totals}");
+    }
+
     private void ReportUpload(TextureUploadRequest request, Image image)
     {
+        // The size, not a copy of the data to measure: GetData marshalled the whole chain into a managed
+        // array on the main thread just to read its length.
+        long bytes = image.GetDataSize();
+        Tally(request, image, bytes);
         if (request.Report == null)
             return;
-
-        var data = image.GetData();
-        long bytes = data?.Length ?? 0;
-        int mipCount = image.HasMipmaps() ? FullMipCount(image.GetWidth(), image.GetHeight()) : 1;
+        int mipCount = image.HasMipmaps() ? image.GetMipmapCount() + 1 : 1;
         request.Report(MapFormat(image.GetFormat()), mipCount, bytes);
     }
 
@@ -592,6 +796,7 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
         }
 
         Adopt(image);
+        image.Dispose();
     }
 
     // In Godot 4, wrap mode is set on the material/sampler, not the texture itself; we just store

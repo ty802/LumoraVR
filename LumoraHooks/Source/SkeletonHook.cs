@@ -34,11 +34,24 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
     // frame the bone actually ended up in. -xlinka
     private readonly Dictionary<int, Lumora.Core.Slot> _boneParentSlot = new Dictionary<int, Lumora.Core.Slot>();
 
+    // THE POSE EACH BONE WAS LAST GIVEN.
+    //
+    // The builder runs this hook every frame and the hook used to write every bone every frame. A bone
+    // write is never free on the platform side: the skeleton goes dirty, recomputes every global pose,
+    // re-uploads the skin and moves the skinned instance's bounds, and moved bounds tell every shadowed
+    // light in range to render its map again. So one avatar standing still, or a skinned prop that never
+    // moves, kept every nearby lamp re-rendering six cube faces a frame. Only bones whose pose actually
+    // changed are written now; a still rig costs a compare per bone. Index by skeleton bone, reset on
+    // rebuild. -xlinka
+    private Vector3[] _pushedPosition = System.Array.Empty<Vector3>();
+    private Quaternion[] _pushedRotation = System.Array.Empty<Quaternion>();
+    private Vector3[] _pushedScale = System.Array.Empty<Vector3>();
+    private bool[] _pushedValid = System.Array.Empty<bool>();
+
     public override void Initialize()
     {
         base.Initialize();
 
-        // Create Skeleton3D node
         _skeleton = new Skeleton3D();
         _skeleton.Name = "Skeleton";
         attachedNode.AddChild(_skeleton);
@@ -49,7 +62,7 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             RebuildSkeleton();
         }
 
-        LumoraLogger.Log($"SkeletonHook: Initialized for slot '{Owner.Slot.SlotName.Value}'");
+        LumoraLogger.Debug($"SkeletonHook: Initialized for slot '{Owner.Slot.SlotName.Value}'");
     }
 
     public override void ApplyChanges()
@@ -65,14 +78,12 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
 
         if (needsRebuild && Owner.IsBuilt.Value)
         {
-            LumoraLogger.Log($"SkeletonHook: Triggering rebuild - hierarchyChanged={Owner.BoneHierarchyChanged}, lumoraBones={Owner.BoneCount}, godotBones={_skeleton.GetBoneCount()}");
+            LumoraLogger.Debug($"SkeletonHook: Triggering rebuild - hierarchyChanged={Owner.BoneHierarchyChanged}, lumoraBones={Owner.BoneCount}, godotBones={_skeleton.GetBoneCount()}");
             RebuildSkeleton();
         }
 
-        // Update bone transforms from slots
         UpdateBoneTransforms();
 
-        // Update enabled state
         bool enabled = Owner.Enabled;
         if (_skeleton.Visible != enabled)
         {
@@ -82,27 +93,27 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
 
     private void RebuildSkeleton()
     {
-        if (_skeleton == null)
+        if (_skeleton == null || !BoneDataReady())
             return;
 
-        LumoraLogger.Log($"SkeletonHook: Rebuilding skeleton with {Owner.BoneCount} bones");
+        LumoraLogger.Debug($"SkeletonHook: Rebuilding skeleton with {Owner.BoneCount} bones");
 
-        // Clear existing bones (Godot doesn't have RemoveBone, so recreate skeleton)
-        if (_skeleton.GetBoneCount() > 0)
-        {
-            // Remove and recreate skeleton node
-            _skeleton.QueueFree();
-            _skeleton = new Skeleton3D();
-            _skeleton.Name = "Skeleton";
-            attachedNode.AddChild(_skeleton);
-        }
+        // Mesh instances are children of this node. Replacing it queues all those meshes for
+        // deletion too, so rebuild the bones in place and let renderers refresh their bindings.
+        _skeleton.ClearBones();
+        foreach (var twin in _twins)
+            twin.Free();
 
         _boneNameToIndex.Clear();
         _boneRestPoses.Clear();
         _boneParentSlot.Clear();
         _boneSlotToIndex.Clear();
-        // Any twin was a child of the skeleton just freed.
+        // Twins need the new bone order and are recreated by their renderer after SkeletonReady.
         _twins.Clear();
+        _pushedPosition = new Vector3[Owner.BoneCount];
+        _pushedRotation = new Quaternion[Owner.BoneCount];
+        _pushedScale = new Vector3[Owner.BoneCount];
+        _pushedValid = new bool[Owner.BoneCount];
 
         // Build parent hierarchy map
         var parentMap = BuildParentMap();
@@ -200,7 +211,6 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             if (!parentedToBone)
                 rootBoneSlot ??= boneSlot;
 
-            // Set rest pose
             Transform3D restPose;
             if (i < Owner.RestPoseTransforms.Count)
             {
@@ -224,10 +234,28 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         // (skinning math unchanged). -xlinka
         _rootBoneSlot = rootBoneSlot;
         RefreshOrientationOffset();
-        LumoraLogger.Log($"SkeletonHook: rebuilt with {_skeleton.GetBoneCount()} bones, orientation offset origin={_skeleton.Transform.Origin} det={_skeleton.Transform.Basis.Determinant():F2}");
+        LumoraLogger.Debug($"SkeletonHook: rebuilt with {_skeleton.GetBoneCount()} bones, orientation offset origin={_skeleton.Transform.Origin} det={_skeleton.Transform.Basis.Determinant():F2}");
 
         // Tell anything skinned to this rig that it can build now.
+        Owner.BoneHierarchyChanged = false;
         Owner.NotifySkeletonReady();
+    }
+
+    private bool BoneDataReady()
+    {
+        // Names, references and their targets arrive separately. Preserve the current rig until
+        // every assigned bone resolves instead of rebuilding a partial skeleton on each packet.
+        if (Owner.BoneSlots.Count < Owner.BoneCount)
+            return false;
+        for (int i = 0; i < Owner.BoneCount; i++)
+        {
+            var reference = Owner.BoneSlots.GetReference(i);
+            if (!reference.Value.IsNull && reference.Target == null)
+                return false;
+            if (reference.Target is { } bone && (bone.IsParentUnknown || bone.HasPendingParent))
+                return false;
+        }
+        return true;
     }
 
     // The prefix nodes are LIVE transforms, not import-time constants: the forward normalization yaws the
@@ -289,15 +317,15 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             _twins.RemoveAll(t => t == null || !t.Alive);
             twins = _twins.Count;
         }
+        bool moved = false;
 
-        for (int i = 0; i < Owner.BoneCount; i++)
+        for (int i = 0; i < System.Math.Min(Owner.BoneCount, Owner.BoneSlots.Count); i++)
         {
             var boneSlot = Owner.BoneSlots[i];
             if (boneSlot == null)
                 continue;
 
-            string boneName = Owner.BoneNames[i];
-            if (!_boneNameToIndex.TryGetValue(boneName, out int boneIndex))
+            if (!_boneSlotToIndex.TryGetValue(boneSlot, out int boneIndex))
                 continue;
 
             // A pose is relative to the bone's SKELETON parent. That is the same thing as its slot-local
@@ -309,29 +337,43 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             // from the global transforms, which is exact in every arrangement and reduces to the local one
             // when nothing is in between. -xlinka
             var parentSlot = _boneParentSlot.GetValueOrDefault(boneIndex);
-            Transform3D pose;
-            if (parentSlot != null && !parentSlot.IsDestroyed)
-            {
-                pose = ReferenceEquals(parentSlot, boneSlot.Parent)
-                    ? ConvertSlotLocalTransform(boneSlot)
-                    : ConvertToGodotTransform(parentSlot.WorldToLocal * boneSlot.LocalToWorld);
-            }
-            else if (space != null && !space.IsDestroyed && !ReferenceEquals(space, boneSlot.Parent))
-            {
-                pose = ConvertToGodotTransform(space.WorldToLocal * boneSlot.LocalToWorld);
-            }
+            Vector3 position, scale;
+            Quaternion rotation;
+            if (parentSlot != null && !parentSlot.IsDestroyed && !ReferenceEquals(parentSlot, boneSlot.Parent))
+                RelativePose(parentSlot, boneSlot, out position, out rotation, out scale);
+            else if ((parentSlot == null || parentSlot.IsDestroyed) && space != null && !space.IsDestroyed && !ReferenceEquals(space, boneSlot.Parent))
+                RelativePose(space, boneSlot, out position, out rotation, out scale);
             else
+                LocalPose(boneSlot, out position, out rotation, out scale);
+
+            if (boneIndex < _pushedValid.Length)
             {
-                pose = ConvertSlotLocalTransform(boneSlot);
+                if (_pushedValid[boneIndex] && _pushedPosition[boneIndex] == position
+                    && _pushedRotation[boneIndex] == rotation && _pushedScale[boneIndex] == scale)
+                    continue;
+                _pushedPosition[boneIndex] = position;
+                _pushedRotation[boneIndex] = rotation;
+                _pushedScale[boneIndex] = scale;
+                _pushedValid[boneIndex] = true;
             }
 
-            _skeleton.SetBonePose(boneIndex, pose);
+            // A zero scale is legal (a menu switch hiding a bone). SetBonePose turns the basis into a
+            // quaternion and a zero basis has none, so the pose goes over as position, rotation and
+            // scale. -xlinka
+            _skeleton.SetBonePosePosition(boneIndex, position);
+            _skeleton.SetBonePoseRotation(boneIndex, rotation);
+            _skeleton.SetBonePoseScale(boneIndex, scale);
+            moved = true;
             for (int t = 0; t < twins; t++)
-                _twins[t].FollowPose(boneIndex, in pose);
+                _twins[t].FollowPose(boneIndex, in position, in rotation, in scale);
         }
 
-        for (int t = 0; t < twins; t++)
-            _twins[t].FinishPoses();
+        // A twin's collapsed bones only need zeroing again after something overwrote them.
+        if (moved)
+        {
+            for (int t = 0; t < twins; t++)
+                _twins[t].FinishPoses();
+        }
     }
 
     // A second Skeleton3D with the same bones, parents and rests, parented under the real one at
@@ -361,7 +403,9 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             if (parent >= 0)
                 twin.SetBoneParent(i, parent);
             twin.SetBoneRest(i, _skeleton.GetBoneRest(i));
-            twin.SetBonePose(i, _skeleton.GetBonePose(i));
+            twin.SetBonePosePosition(i, _skeleton.GetBonePosePosition(i));
+            twin.SetBonePoseRotation(i, _skeleton.GetBonePoseRotation(i));
+            twin.SetBonePoseScale(i, _skeleton.GetBonePoseScale(i));
         }
         _skeleton.AddChild(twin);
         twin.Transform = Transform3D.Identity;
@@ -437,7 +481,6 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         if (slot == null)
             return Transform3D.Identity;
 
-        // Get local transform components
         var position = slot.LocalPosition.Value;
         var rotation = slot.LocalRotation.Value;
         var scale = slot.LocalScale.Value;
@@ -449,10 +492,54 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
 
         // Build transform
         Transform3D transform = Transform3D.Identity;
-        transform.Basis = new Basis(godotRotation).Scaled(godotScale);
+        transform.Basis = new Basis(godotRotation) * Basis.FromScale(godotScale);
         transform.Origin = godotPosition;
 
         return transform;
+    }
+
+    private static void LocalPose(Lumora.Core.Slot bone, out Vector3 position, out Quaternion rotation, out Vector3 scale)
+    {
+        var p = bone.LocalPosition.Value;
+        var s = bone.LocalScale.Value;
+        position = new Vector3(p.x, p.y, p.z);
+        rotation = ToGodotRotation(bone.LocalRotation.Value);
+        scale = new Vector3(s.x, s.y, s.z);
+    }
+
+    // The bone in the frame of a slot that is not its direct parent. A collapsed axis anywhere on the
+    // way leaves the matrix with no rotation to recover, so the slots' own quaternion chain stands in
+    // and the column lengths keep the collapse. -xlinka
+    private static void RelativePose(Lumora.Core.Slot frame, Lumora.Core.Slot bone, out Vector3 position, out Quaternion rotation, out Vector3 scale)
+    {
+        var m = frame.WorldToLocal * bone.LocalToWorld;
+        position = new Vector3(m.c3.x, m.c3.y, m.c3.z);
+        var basis = new Basis(
+            new Vector3(m.c0.x, m.c0.y, m.c0.z),
+            new Vector3(m.c1.x, m.c1.y, m.c1.z),
+            new Vector3(m.c2.x, m.c2.y, m.c2.z));
+
+        float l0 = basis.Column0.Length(), l1 = basis.Column1.Length(), l2 = basis.Column2.Length();
+        float det = basis.Determinant();
+        if (l0 > 1e-6f && l1 > 1e-6f && l2 > 1e-6f && float.IsFinite(det) && Mathf.Abs(det) > 1e-6f * l0 * l1 * l2)
+        {
+            rotation = basis.GetRotationQuaternion().Normalized();
+            scale = basis.Scale;
+        }
+        else
+        {
+            rotation = ToGodotRotation(frame.GlobalRotation.Inverse * bone.GlobalRotation);
+            scale = new Vector3(l0, l1, l2);
+        }
+    }
+
+    private static Quaternion ToGodotRotation(floatQ q)
+    {
+        float lengthSquared = q.LengthSquared;
+        if (!(lengthSquared > 1e-12f))
+            return Quaternion.Identity;
+        float inv = 1f / Mathf.Sqrt(lengthSquared);
+        return new Quaternion(q.x * inv, q.y * inv, q.z * inv, q.w * inv);
     }
 
     // A slot's global transform as a Godot Transform3D (position + rotation + scale), for the skeleton's
@@ -462,7 +549,7 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         var p = slot.GlobalPosition;
         var r = slot.GlobalRotation;
         var s = slot.GlobalScale;
-        var basis = new Basis(new Quaternion(r.x, r.y, r.z, r.w)).Scaled(new Vector3(s.x, s.y, s.z));
+        var basis = new Basis(new Quaternion(r.x, r.y, r.z, r.w)) * Basis.FromScale(new Vector3(s.x, s.y, s.z));
         return new Transform3D(basis, new Vector3(p.x, p.y, p.z));
     }
 

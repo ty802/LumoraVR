@@ -69,6 +69,9 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IStereoGodo
 
     public Texture2D? RightEyeTexture2D => _portalRight;
 
+    // The viewport it films into, for showing on the desktop window.
+    public SubViewport? FilmViewport => _viewport != null && GodotObject.IsInstanceValid(_viewport) ? _viewport : null;
+
     public bool IsValid => _portalLeft != null
         || (_viewport != null && GodotObject.IsInstanceValid(_viewport) && _viewport.IsInsideTree());
 
@@ -146,6 +149,9 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IStereoGodo
 
             lock (_liveViewportLock)
                 _liveViewports.Add(_viewport);
+
+            // IsValid turns true here; a material that applied before now bound a null.
+            asset?.NotifyBackingReady();
         }
 
         _viewport.Size = new Vector2I(_width, _height);
@@ -187,7 +193,12 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IStereoGodo
         _camera.Far = System.Math.Max(_camera.Near + 0.001f, p.FarClip);
         _camera.Position = new Vector3(p.Position.x, p.Position.y, p.Position.z);
         _camera.Quaternion = new Quaternion(p.Rotation.x, p.Rotation.y, p.Rotation.z, p.Rotation.w);
-        _camera.CullMask = unchecked((uint)p.CullMask) & ~(uint)Helpers.RenderHelper.EYES_ONLY_LAYER;
+        // Not an eye, so never the eyes-only twin; unless it films as the wearer, which sees what the eyes do:
+        // the twin instead of the real head, and not the wearer's own name plate.
+        _camera.CullMask = p.WearerView
+            ? (unchecked((uint)p.CullMask) & ~(uint)(Helpers.RenderHelper.LOCAL_HEAD_LAYER | Helpers.RenderHelper.OWN_NAMEPLATE_LAYER))
+                | (uint)Helpers.RenderHelper.EYES_ONLY_LAYER
+            : unchecked((uint)p.CullMask) & ~(uint)Helpers.RenderHelper.EYES_ONLY_LAYER;
 
         _viewport.Msaa3D = p.Msaa ? Viewport.Msaa.Msaa2X : Viewport.Msaa.Disabled;
         _viewport.UseOcclusionCulling = p.OcclusionCulling;
@@ -290,6 +301,115 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IStereoGodo
         // UpdateMode.Once renders a single frame then reverts to no-updates on its own, keeping that frame on
         // the texture until the next request. -xlinka
         _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Once;
+    }
+
+    // A photo: the next frame the viewport draws, read back and encoded. An idle viewport is asked for one frame;
+    // the read waits until that frame has been drawn. -xlinka
+    public System.Threading.Tasks.Task<byte[]?> CaptureAsync(ImageEncoding encoding, float quality)
+    {
+        var done = new System.Threading.Tasks.TaskCompletionSource<byte[]?>(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+        Callable.From(() => BeginCapture(done, encoding, quality)).CallDeferred();
+        return done.Task;
+    }
+
+    public System.Threading.Tasks.Task<PixelFrame?> CaptureRawAsync()
+    {
+        var done = new System.Threading.Tasks.TaskCompletionSource<PixelFrame?>(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+        Callable.From(() => AfterNextFrame(done, ReadRaw)).CallDeferred();
+        return done.Task;
+    }
+
+    private void BeginCapture(System.Threading.Tasks.TaskCompletionSource<byte[]?> done, ImageEncoding encoding, float quality)
+        => AfterNextFrame(done, () => ReadImage(encoding, quality));
+
+    private void AfterNextFrame<T>(System.Threading.Tasks.TaskCompletionSource<T?> done, System.Func<T?> read) where T : class
+    {
+        if (_viewport == null || !GodotObject.IsInstanceValid(_viewport))
+        {
+            done.TrySetResult(null);
+            return;
+        }
+        if (_viewport.RenderTargetUpdateMode != SubViewport.UpdateMode.Always)
+            _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Once;
+        // A still of the wearer's own body needs it in the lights (ShadowBudget keeps it out while nothing
+        // films it).
+        if (_camera != null && GodotObject.IsInstanceValid(_camera)
+            && (_camera.CullMask & (uint)Helpers.RenderHelper.LOCAL_HEAD_LAYER) != 0)
+            ShadowBudget.FilmLocalHead();
+        int drawn = 0;
+        void Drawn()
+        {
+            if (++drawn < 2)
+                return;
+            RenderingServer.FramePostDraw -= Drawn;
+            done.TrySetResult(read());
+        }
+        RenderingServer.FramePostDraw += Drawn;
+    }
+
+    private PixelFrame? ReadRaw()
+    {
+        try
+        {
+            if (_viewport == null || !GodotObject.IsInstanceValid(_viewport))
+                return null;
+            var image = _viewport.GetTexture()?.GetImage();
+            if (image == null || image.IsEmpty())
+                return null;
+            if (image.GetFormat() != Image.Format.Rgba8)
+                image.Convert(Image.Format.Rgba8);
+            return new PixelFrame(image.GetWidth(), image.GetHeight(), image.GetData());
+        }
+        catch (System.Exception ex)
+        {
+            LumoraLogger.Warn($"RenderTextureHook: photo read failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    // Pixels from anywhere written as a picture file, for photos put together from several frames.
+    public static byte[]? Encode(byte[] rgba, int width, int height, ImageEncoding encoding, float quality)
+    {
+        var image = Image.CreateFromData(width, height, false, Image.Format.Rgba8, rgba);
+        if (encoding != ImageEncoding.Png)
+            image.Convert(Image.Format.Rgb8);
+        float q = System.Math.Clamp(quality, 0.05f, 1f);
+        byte[] data = encoding switch
+        {
+            ImageEncoding.Png => image.SavePngToBuffer(),
+            ImageEncoding.Jpg => image.SaveJpgToBuffer(q),
+            _ => image.SaveWebpToBuffer(true, q),
+        };
+        return data is { Length: > 0 } ? data : null;
+    }
+
+    // The frame comes back in the renderer's own format, half floats on Forward+; the encoders take 8 bits.
+    private byte[]? ReadImage(ImageEncoding encoding, float quality)
+    {
+        try
+        {
+            if (_viewport == null || !GodotObject.IsInstanceValid(_viewport))
+                return null;
+            var image = _viewport.GetTexture()?.GetImage();
+            if (image == null || image.IsEmpty())
+                return null;
+            var format = encoding == ImageEncoding.Png ? Image.Format.Rgba8 : Image.Format.Rgb8;
+            if (image.GetFormat() != format)
+                image.Convert(format);
+            float q = System.Math.Clamp(quality, 0.05f, 1f);
+            byte[] data = encoding switch
+            {
+                ImageEncoding.Png => image.SavePngToBuffer(),
+                ImageEncoding.Jpg => image.SaveJpgToBuffer(q),
+                _ => image.SaveWebpToBuffer(true, q),
+            };
+            return data is { Length: > 0 } ? data : null;
+        }
+        catch (System.Exception ex)
+        {
+            LumoraLogger.Warn($"RenderTextureHook: photo read failed: {ex.Message}");
+            return null;
+        }
     }
 
     public void UploadData(byte[] pixels, int width, int height, bool hasMipmaps) { }

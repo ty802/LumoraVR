@@ -20,6 +20,7 @@ public class RenderLayerOverrideHook : ComponentHook<RenderLayerOverride>
         uint layer = (uint)Owner.Layer.Value;
         if (layer == 0)
             return;
+        layer = Helpers.RenderHelper.ForWorld(Owner.World, layer);
 
         var slotNode = (Owner.Slot.Hook as SlotHook)?.GeneratedNode3D;
         if (slotNode == null || !GodotObject.IsInstanceValid(slotNode))

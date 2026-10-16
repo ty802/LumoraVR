@@ -80,7 +80,7 @@ public class HeadOutputHook : ComponentHook<HeadOutput>
             if (headHook != null)
             {
                 targetNode = headHook.RequestNode3D();
-                LumoraLogger.Log($"HeadOutputHook: Attaching camera to head slot");
+                LumoraLogger.Debug($"HeadOutputHook: Attaching camera to head slot");
             }
         }
 
@@ -88,7 +88,7 @@ public class HeadOutputHook : ComponentHook<HeadOutput>
         {
             targetNode.AddChild(_camera);
             _isInitialized = true;
-            LumoraLogger.Log($"HeadOutputHook: Created camera for local user '{userRoot.ActiveUser.UserName.Value}'");
+            LumoraLogger.Debug($"HeadOutputHook: Created camera for local user '{userRoot.ActiveUser.UserName.Value}'");
         }
         else
         {

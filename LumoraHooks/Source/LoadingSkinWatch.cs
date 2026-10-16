@@ -27,7 +27,7 @@ internal sealed class LoadingSkinWatch
     public void Clear(int surface, string? owner = null)
     {
         if (_since != null && _since.Remove(surface, out ulong since))
-            LumoraLogger.Log($"Loading skin off: '{owner}' surface {surface} after {(Time.GetTicksMsec() - since)}ms");
+            LumoraLogger.Debug($"Loading skin off: '{owner}' surface {surface} after {(Time.GetTicksMsec() - since)}ms");
     }
 
     public void Note(int surface, IAssetProvider? provider, string? owner)

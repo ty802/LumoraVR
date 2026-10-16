@@ -55,6 +55,14 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         }
     }
 
+    // Which submesh each surface was built from; see SubmeshForSurface. Main thread only.
+    private int[]? _surfaceSubmeshes;
+
+    // An empty submesh makes no surface, so surface and submesh numbers part ways at the first one, and a
+    // renderer's materials are numbered by submesh. Asked per surface when materials are put on. -xlinka
+    public int SubmeshForSurface(int surface) =>
+        _surfaceSubmeshes != null && surface < _surfaceSubmeshes.Length ? _surfaceSubmeshes[surface] : surface;
+
     // Whether the mesh is valid and usable. A deferred mesh counts: the reader that asks is the one that
     // makes it real, and every caller checks this before touching GodotMesh.
     public bool IsValid => _godotMesh != null || _deferredMesh != null;
@@ -66,6 +74,9 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         public List<global::Godot.Collections.Array> Surfaces = new();
         public int Dropped;
         public int SubmeshCount;
+        public List<int> SurfaceSubmeshes = new();
+        // Surfaces built from a points submesh (PointQuadSurface), which carry a custom channel.
+        public HashSet<int> PointSurfaces = new();
         public MeshLodSet? Lods;
     }
 
@@ -171,7 +182,7 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
     }
 
     private void Commit(MeshUpload upload) =>
-        global::Godot.Callable.From(() => ApplyUpload(upload)).CallDeferred();
+        MainThreadWork.Post("mesh upload " + DescribeSource(), () => ApplyUpload(upload));
 
     // LOD levels are attached when a surface is created and there is no API to add them afterwards, so a
     // "render now, swap in the levels later" split would have to clear and re-add every surface. Clearing
@@ -213,9 +224,15 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
             SubmeshCount = mesh.Submeshes.Count,
         };
 
-        foreach (var submesh in mesh.Submeshes)
+        var subset = new SurfaceSubset(mesh.VertexCount);
+        for (int index = 0; index < mesh.Submeshes.Count; index++)
         {
-            if (submesh.IndexCount == 0) continue;
+            var submesh = mesh.Submeshes[index];
+            // Surfaces are drawn as triangles; a points submesh fed in as triangles drew noise or was refused,
+            // so points go as one quad of corners each, for billboard materials to open up.
+            if (submesh == null || submesh.IndexCount == 0) continue;
+            bool points = submesh.Topology == PhosTopology.Points;
+            if (!points && submesh.Topology != PhosTopology.Triangles) continue;
 
             if (upload.Surfaces.Count >= MaxGodotMeshSurfaces)
             {
@@ -223,9 +240,14 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
                 continue;
             }
 
-            var arrays = BuildSurfaceArrays(mesh, submesh);
+            var arrays = points ? PointQuadSurface.Build(mesh, submesh) : BuildSurfaceArrays(mesh, submesh, subset);
             if (arrays != null)
+            {
+                if (points)
+                    upload.PointSurfaces.Add(upload.Surfaces.Count);
                 upload.Surfaces.Add(arrays);
+                upload.SurfaceSubmeshes.Add(index);
+            }
         }
 
         // If no submeshes but we have vertex data, create a single surface
@@ -270,8 +292,10 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         for (int i = 0; i < upload.Surfaces.Count; i++)
         {
             var lods = upload.Lods?.For(i)?.ToGodot();
-            _godotMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, upload.Surfaces[i], null, lods);
+            _godotMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, upload.Surfaces[i], null, lods,
+                (upload.PointSurfaces.Contains(i) ? PointQuadSurface.Format : 0) | MeshUVChannels.FormatFor(upload.Surfaces[i]));
         }
+        _surfaceSubmeshes = upload.SurfaceSubmeshes.Count > 0 ? upload.SurfaceSubmeshes.ToArray() : null;
 
         // The surface owns its copy of the vertex data now; the staging arrays hold native storage that
         // otherwise waits for a finalizer. -xlinka
@@ -298,22 +322,27 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         upload.Surfaces.Clear();
     }
 
-    private global::Godot.Collections.Array BuildSurfaceArrays(PhosMesh mesh, PhosSubmesh submesh)
+    // One submesh's surface, carrying only the vertices its own triangles use (SurfaceSubset). Every surface
+    // used to convert and carry the whole mesh, so an object with six materials paid for its geometry six
+    // times over, on the load thread and on the GPU. -xlinka
+    private global::Godot.Collections.Array BuildSurfaceArrays(PhosMesh mesh, PhosSubmesh submesh, SurfaceSubset subset)
     {
         var arrays = new global::Godot.Collections.Array();
         arrays.Resize((int)Mesh.ArrayType.Max);
 
-        int vertexCount = mesh.VertexCount;
+        bool part = subset.Take(submesh.RawIndices, submesh.IndexCount);
+        System.Span<int> used = part ? subset.Vertices : System.Span<int>.Empty;
+        int vertexCount = part ? used.Length : mesh.VertexCount;
 
         // Positions (required)
         var rawPositions = mesh.RawPositions;
         if (rawPositions != null && rawPositions.Length > 0)
         {
             var positions = new Vector3[vertexCount];
-            for (int i = 0; i < vertexCount; i++)
+            for (int k = 0; k < vertexCount; k++)
             {
-                var pos = rawPositions[i];
-                positions[i] = new Vector3(pos.x, pos.y, pos.z);
+                var pos = rawPositions[part ? used[k] : k];
+                positions[k] = new Vector3(pos.x, pos.y, pos.z);
             }
             arrays[(int)Mesh.ArrayType.Vertex] = positions;
         }
@@ -323,10 +352,10 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         if (rawNormals != null && rawNormals.Length > 0)
         {
             var normals = new Vector3[vertexCount];
-            for (int i = 0; i < vertexCount; i++)
+            for (int k = 0; k < vertexCount; k++)
             {
-                var normal = rawNormals[i];
-                normals[i] = new Vector3(normal.x, normal.y, normal.z);
+                var normal = rawNormals[part ? used[k] : k];
+                normals[k] = new Vector3(normal.x, normal.y, normal.z);
             }
             arrays[(int)Mesh.ArrayType.Normal] = normals;
         }
@@ -336,13 +365,13 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         if (rawTangents != null && rawTangents.Length > 0)
         {
             var tangents = new float[vertexCount * 4];
-            for (int i = 0; i < vertexCount; i++)
+            for (int k = 0; k < vertexCount; k++)
             {
-                var t = rawTangents[i];
-                tangents[i * 4] = t.x;
-                tangents[i * 4 + 1] = t.y;
-                tangents[i * 4 + 2] = t.z;
-                tangents[i * 4 + 3] = t.w;
+                var t = rawTangents[part ? used[k] : k];
+                tangents[k * 4] = t.x;
+                tangents[k * 4 + 1] = t.y;
+                tangents[k * 4 + 2] = t.z;
+                tangents[k * 4 + 3] = t.w;
             }
             arrays[(int)Mesh.ArrayType.Tangent] = tangents;
         }
@@ -352,10 +381,10 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         if (rawUV0 != null && rawUV0.Length > 0)
         {
             var uvs = new Vector2[vertexCount];
-            for (int i = 0; i < vertexCount; i++)
+            for (int k = 0; k < vertexCount; k++)
             {
-                var uv = rawUV0[i];
-                uvs[i] = new Vector2(uv.x, uv.y);
+                var uv = rawUV0[part ? used[k] : k];
+                uvs[k] = new Vector2(uv.x, uv.y);
             }
             arrays[(int)Mesh.ArrayType.TexUV] = uvs;
         }
@@ -365,23 +394,26 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         if (rawUV1 != null && rawUV1.Length > 0)
         {
             var uvs = new Vector2[vertexCount];
-            for (int i = 0; i < vertexCount; i++)
+            for (int k = 0; k < vertexCount; k++)
             {
-                var uv = rawUV1[i];
-                uvs[i] = new Vector2(uv.x, uv.y);
+                var uv = rawUV1[part ? used[k] : k];
+                uvs[k] = new Vector2(uv.x, uv.y);
             }
             arrays[(int)Mesh.ArrayType.TexUV2] = uvs;
         }
+
+        float[]? extraUV = null;
+        MeshUVChannels.Set(arrays, mesh, ref extraUV, used);
 
         // Vertex colors
         var rawColors = mesh.RawColors;
         if (rawColors != null && rawColors.Length > 0)
         {
             var colors = new Color[vertexCount];
-            for (int i = 0; i < vertexCount; i++)
+            for (int k = 0; k < vertexCount; k++)
             {
-                var c = rawColors[i];
-                colors[i] = new Color(c.r, c.g, c.b, c.a);
+                var c = rawColors[part ? used[k] : k];
+                colors[k] = new Color(c.r, c.g, c.b, c.a);
             }
             arrays[(int)Mesh.ArrayType.Color] = colors;
         }
@@ -392,21 +424,21 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         if (mesh.HasBoneBindings)
         {
             var bindings = mesh.RawBoneBindings;
-            if (bindings != null && bindings.Length >= vertexCount)
+            if (bindings != null && bindings.Length >= mesh.VertexCount)
             {
                 var bones = new int[vertexCount * 4];
                 var weights = new float[vertexCount * 4];
-                for (int i = 0; i < vertexCount; i++)
+                for (int k = 0; k < vertexCount; k++)
                 {
-                    var b = bindings[i];
-                    bones[i * 4 + 0] = (int)b.boneIndices.x;
-                    bones[i * 4 + 1] = (int)b.boneIndices.y;
-                    bones[i * 4 + 2] = (int)b.boneIndices.z;
-                    bones[i * 4 + 3] = (int)b.boneIndices.w;
-                    weights[i * 4 + 0] = b.boneWeights.x;
-                    weights[i * 4 + 1] = b.boneWeights.y;
-                    weights[i * 4 + 2] = b.boneWeights.z;
-                    weights[i * 4 + 3] = b.boneWeights.w;
+                    var b = bindings[part ? used[k] : k];
+                    bones[k * 4 + 0] = (int)b.boneIndices.x;
+                    bones[k * 4 + 1] = (int)b.boneIndices.y;
+                    bones[k * 4 + 2] = (int)b.boneIndices.z;
+                    bones[k * 4 + 3] = (int)b.boneIndices.w;
+                    weights[k * 4 + 0] = b.boneWeights.x;
+                    weights[k * 4 + 1] = b.boneWeights.y;
+                    weights[k * 4 + 2] = b.boneWeights.z;
+                    weights[k * 4 + 3] = b.boneWeights.w;
                 }
                 arrays[(int)Mesh.ArrayType.Bones] = bones;
                 arrays[(int)Mesh.ArrayType.Weights] = weights;
@@ -415,7 +447,11 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
 
         // Indices from submesh
         var rawIndices = submesh.RawIndices;
-        if (rawIndices != null && rawIndices.Length > 0)
+        if (part)
+        {
+            arrays[(int)Mesh.ArrayType.Index] = Variant.CreateFrom(subset.Indices);
+        }
+        else if (rawIndices != null && rawIndices.Length > 0)
         {
             var indices = new int[submesh.IndexCount];
             System.Array.Copy(rawIndices, indices, submesh.IndexCount);
@@ -470,6 +506,16 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
             arrays[(int)Mesh.ArrayType.TexUV] = uvs;
         }
 
+        var rawUV1 = mesh.RawUV1s;
+        if (rawUV1.Length >= vertexCount)
+        {
+            var uvs = new Vector2[vertexCount];
+            for (int i = 0; i < vertexCount; i++)
+                uvs[i] = new Vector2(rawUV1[i].x, rawUV1[i].y);
+            arrays[(int)Mesh.ArrayType.TexUV2] = uvs;
+        }
+        float[]? extraUV = null;
+        MeshUVChannels.Set(arrays, mesh, ref extraUV);
         return arrays;
     }
 

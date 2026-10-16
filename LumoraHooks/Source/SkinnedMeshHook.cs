@@ -37,8 +37,15 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
     // teardown, or by SkeletonHook rebuilding its skeleton - and a null check does NOT catch a freed
     // one. Every entry point revalidates instead of trusting the cached pointer. -xlinka
     private bool MeshInstanceAlive => _meshInstance != null && GodotObject.IsInstanceValid(_meshInstance);
-    private bool SkeletonAlive => _skeleton != null && GodotObject.IsInstanceValid(_skeleton);
+    private bool SkeletonAlive => _skeleton != null && GodotObject.IsInstanceValid(_skeleton) && !_skeleton.IsQueuedForDeletion();
     private ArrayMesh _arrayMesh = null!;
+
+    // Which submesh each surface of _arrayMesh was built from. An empty submesh makes no surface, so the two
+    // numberings part ways at the first one, and materials belong to submeshes. Null reads as one to one.
+    private int[]? _surfaceSubmeshes;
+
+    // RenderingServer refuses surface 257 and up (MAX_MESH_SURFACES), one engine error per rejected surface.
+    private const int MaxGodotMeshSurfaces = 256;
     private SkeletonHook _skeletonHook = null!;
     private Skeleton3D _skeleton = null!;
     private bool _meshApplied;
@@ -53,6 +60,18 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
     private bool _meshBuildInFlight;
     private MeshDataAsset _appliedAsset = null!;
     private int _appliedMeshVcount = -1;
+    private int _appliedHideVersion;
+    private bool[]? _appliedHidden;
+
+    // The same triangles left out as the last build, whether or not the set was handed in again since.
+    private static bool SameHidden(bool[]? a, bool[]? b)
+    {
+        if (ReferenceEquals(a, b))
+            return true;
+        if (a == null || b == null || a.Length != b.Length)
+            return false;
+        return System.MemoryExtensions.SequenceEqual<bool>(a, b);
+    }
 
     // Maps mesh bone index -> Godot skeleton bone index
     private Dictionary<int, int> _boneIndexMap = new Dictionary<int, int>();
@@ -102,19 +121,19 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         bool zeroMapRetry = _skeletonBound && _boneIndexMap.Count == 0 && Owner.BoneNames.Count > 0
             && Owner.BoneNames.Count != _lastBindAttemptBoneCount;
 
-        // A bound skeleton can go STALE: SkeletonHook disposes and recreates its Skeleton3D whenever the
-        // bone list changes, and our cached pointer then refers to a freed object. Touching it throws
-        // ObjectDisposedException out of the hook update. Anything that builds a skeleton after the
-        // renderers already exist - importing an avatar, for one - hits this every time. -xlinka
+        // A skeleton reference can change during streamed arrival. Refresh bindings on its ready
+        // signal too: rebuilding the bone table preserves the node but can change every bone index.
         bool skeletonStale = _skeletonBound && !SkeletonAlive;
-        if (skeletonStale)
+        bool skeletonChanged = Owner.SkeletonChanged;
+        Owner.SkeletonChanged = false;
+        if (skeletonStale || skeletonChanged)
         {
+            DestroyEyeViewTwin(logIt: false);
             _skeletonBound = false;
             _skeleton = null!;
+            _skeletonHook = null!;
             _boneIndexMap.Clear();
-            _meshApplied = false;
-            // The twin skeleton was a child of the one that just went; the rebind below regrows it.
-            DestroyEyeViewTwin(logIt: false);
+            Owner.HookBindingComplete = false;
         }
 
         if (!_skeletonBound || zeroMapRetry)
@@ -132,13 +151,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
             ApplyMesh();
         }
 
-        if (Owner.SkeletonChanged)
-        {
-            _skeletonBound = false;
-            _boneIndexMap.Clear();
-            TryBindToSkeleton();
-        }
-
         if (GodotObject.IsInstanceValid(_meshInstance))
         {
             // SLOT ACTIVE HAS TO BE ASKED FOR HERE, unlike every unskinned renderer.
@@ -149,7 +161,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
             // renderer's slot. From then on the slot hides an empty node while the mesh carries on
             // drawing from under the skeleton - which is why switching a part off in the inspector
             // did nothing on an avatar and worked fine on everything else. -xlinka
-            bool visible = Owner.Enabled && (Owner.Slot?.IsActive ?? false);
+            bool visible = Owner.Enabled && (Owner.Slot?.IsActive ?? false) && !Owner.LocallyHiddenWhole;
             _meshInstance.Visible = visible;
             if (_twin != null && _twin.Alive)
                 _twin.Instance.Visible = visible;
@@ -193,12 +205,20 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         // Cheap path: blendshape weights changed (blink/viseme/expression) - reapply, no rebuild.
         if (Owner.BlendWeightsChanged)
         {
-            ApplyBlendShapeWeights();
+            ApplyBlendShapeWeights(incremental: true);
             Owner.BlendWeightsChanged = false;
         }
     }
 
-    private void ApplyBlendShapeWeights()
+    // What each weight was last set to, for the per-frame path. A blink moves two weights of three
+    // hundred and every one of them used to go across to the platform on every change. Anything that
+    // swaps the mesh, the instance or the twin writes the whole set again. -xlinka
+    private float[] _appliedWeights = System.Array.Empty<float>();
+    private ArrayMesh? _weightsMesh;
+    private MeshInstance3D? _weightsInstance;
+    private MeshInstance3D? _weightsTwin;
+
+    private void ApplyBlendShapeWeights(bool incremental = false)
     {
         if (_meshInstance == null || !GodotObject.IsInstanceValid(_meshInstance) || _arrayMesh == null)
             return;
@@ -215,9 +235,22 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
 
         int weights = Owner.BlendShapeNames.Count;
         var twin = _twin != null && _twin.Alive && ReferenceEquals(_twinMesh, _arrayMesh) ? _twin.Instance : null;
+        bool full = !incremental || _appliedWeights.Length != n || !ReferenceEquals(_weightsMesh, _arrayMesh)
+            || !ReferenceEquals(_weightsInstance, _meshInstance) || !ReferenceEquals(_weightsTwin, twin);
+        if (full)
+        {
+            if (_appliedWeights.Length != n)
+                _appliedWeights = new float[n];
+            _weightsMesh = _arrayMesh;
+            _weightsInstance = _meshInstance;
+            _weightsTwin = twin;
+        }
         for (int i = 0; i < n; i++)
         {
             float weight = i < weights ? Owner.GetEffectiveBlendShapeWeight(i) : 0f;
+            if (!full && _appliedWeights[i] == weight)
+                continue;
+            _appliedWeights[i] = weight;
             _meshInstance.SetBlendShapeValue(i, weight);
             twin?.SetBlendShapeValue(i, weight);
         }
@@ -242,27 +275,28 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
     // True once this surface is wearing its final material and needs no further retry.
     private bool ApplySurfaceMaterial(int surface)
     {
-        var provider = Owner.MaterialFor(surface);
+        int index = SubmeshOf(surface);
+        var provider = Owner.MaterialFor(index);
+        bool loading = Owner.IsSurfaceLoading(index);
 
         // Nothing assigned is AUTHORED, not loading: no override, no loading skin, and latched so the
         // retry loop stops asking. It used to paint a flat tan guess here, which is a claim about a
         // material that does not exist. -xlinka
-        if (provider == null)
+        if (provider == null && !loading)
         {
             SetSurfaceMaterial(surface, null);
             return true;
         }
 
-        var materialAsset = provider.Asset;
-        bool loading = Owner.IsSurfaceLoading(surface);
+        var materialAsset = provider?.Asset;
         if (!loading && materialAsset != null && materialAsset.GodotMaterial is Material godotMaterial)
         {
             SetSurfaceMaterial(surface, godotMaterial);
-            _loadingSkin.Clear(surface);
+            _loadingSkin.Clear(index);
             return true;
         }
 
-        _loadingSkin.Note(surface, provider, Owner.Slot?.SlotName.Value);
+        _loadingSkin.Note(index, provider, Owner.Slot?.SlotName.Value);
 
         // Assigned but still arriving (the material asset, or its textures). Wear the shared loading
         // skin and DON'T latch it - leave the flag false so the arrival notification's re-drive swaps
@@ -271,10 +305,17 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         return false;
     }
 
+    private int SubmeshOf(int surface) =>
+        _surfaceSubmeshes != null && surface < _surfaceSubmeshes.Length ? _surfaceSubmeshes[surface] : surface;
+
+    // Same material again is a no-op here: setting it re-files the instance and re-renders the shadow of
+    // every light around the body (see MeshRendererHookBase.ApplyMaterials).
     private void SetSurfaceMaterial(int surface, Material? material)
     {
-        _meshInstance!.SetSurfaceOverrideMaterial(surface, material);
-        if (_twin != null && _twin.Alive && ReferenceEquals(_twinMesh, _arrayMesh))
+        if (!ReferenceEquals(_meshInstance!.GetSurfaceOverrideMaterial(surface), material))
+            _meshInstance.SetSurfaceOverrideMaterial(surface, material);
+        if (_twin != null && _twin.Alive && ReferenceEquals(_twinMesh, _arrayMesh)
+            && !ReferenceEquals(_twin.Instance.GetSurfaceOverrideMaterial(surface), material))
             _twin.Instance.SetSurfaceOverrideMaterial(surface, material);
     }
 
@@ -348,7 +389,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
 
         if (!SkeletonAlive)
         {
-            if (!_meshInstance.IsInsideTree())
+            if (_meshInstance.GetParent() == null)
             {
                 attachedNode.AddChild(_meshInstance);
                 LumoraLogger.Debug("SkinnedMeshHook: No skeleton found - added mesh as static");
@@ -359,7 +400,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         // SkeletonAlive already proved this non-null; the analyser cannot see through the property.
         if (_skeleton!.GetBoneCount() == 0)
         {
-            if (!_meshInstance.IsInsideTree())
+            if (_meshInstance.GetParent() == null)
             {
                 attachedNode.AddChild(_meshInstance);
                 LumoraLogger.Debug("SkinnedMeshHook: Skeleton has no bones - added mesh as static");
@@ -369,7 +410,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
 
         BuildBoneIndexMap();
 
-        if (_meshInstance.IsInsideTree())
+        if (_meshInstance.GetParent() != null)
         {
             if (_meshInstance.GetParent() != _skeleton)
             {
@@ -406,8 +447,18 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         if ((_boneIndexMap.Count > 0 || Owner.BoneNames.Count == 0)
             && (Owner.Vertices.Count > 0 || Owner.MeshAsset.Target != null))
         {
-            _meshApplied = false;
-            ApplyMesh();
+            var asset = Owner.MeshAsset.Asset;
+            if (_meshApplied && asset != null && ReferenceEquals(asset, _appliedAsset))
+            {
+                // Asset vertices use mesh-bone indices. A new skeleton only needs a new Skin;
+                // keep the existing geometry visible instead of decoding/uploading it again.
+                BuildAndAssignSkinFromAsset(asset);
+            }
+            else
+            {
+                _meshApplied = false;
+                ApplyMesh();
+            }
         }
 
         // Stops the component's update-loop re-drive polling.
@@ -541,6 +592,15 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
             return;
         }
 
+        if (!Owner.MeshAsset.Value.IsNull)
+        {
+            // A replacement asset is still arriving. Keep the previous geometry on screen and
+            // let the asset-arrival callback replace it, rather than flashing an empty instance.
+            _meshApplied = false;
+            Owner.HookBindingComplete = false;
+            return;
+        }
+
         if (Owner.Vertices.Count == 0 || Owner.Indices.Count == 0)
         {
             LumoraLogger.Debug("SkinnedMeshHook: No mesh data");
@@ -551,6 +611,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
 
         _arrayMesh?.Dispose();
         _arrayMesh = new ArrayMesh();
+        _surfaceSubmeshes = null;
 
         var arrays = new global::Godot.Collections.Array();
         arrays.Resize((int)Mesh.ArrayType.Max);
@@ -853,8 +914,13 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         }
         if (_meshBuildInFlight)
             return; // a worker build is already running for this hook
-        if (_meshApplied && ReferenceEquals(_appliedAsset, asset) && _appliedMeshVcount == mesh.VertexCount)
+        if (_meshApplied && ReferenceEquals(_appliedAsset, asset) && _appliedMeshVcount == mesh.VertexCount
+            && (_appliedHideVersion == Owner.LocalHideVersion || SameHidden(_appliedHidden, Owner.LocallyHiddenTriangles)))
             return; // already built this exact mesh - don't rebuild on a lingering dirty flag
+
+        // Triangles something else draws on this machine stay out of the build; read here, on the world side.
+        var hidden = Owner.LocallyHiddenTriangles;
+        int hideVersion = Owner.LocalHideVersion;
 
         // Build the heavy Godot ArrayMesh (geometry + per-blendshape arrays + AddSurfaceFromArrays) on a WORKER
         // thread so a dense blendshape mesh doesn't freeze the render thread. Godot 4's RenderingServer is
@@ -866,9 +932,10 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         {
             ArrayMesh built = null!;
             int sc = 0;
+            int[] map = System.Array.Empty<int>();
             try
             {
-                built = BuildArrayMeshCore(mesh, out sc);
+                built = BuildArrayMeshCore(mesh, hidden, out sc, out map);
             }
             catch (System.Exception ex)
             {
@@ -876,33 +943,24 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
                 built = null!;
             }
             int shapes = sc;
-            global::Godot.Callable.From(() => FinalizeMeshFromAsset(built, shapes, mesh, asset)).CallDeferred();
+            var surfaces = map;
+            MainThreadWork.Post("skinned mesh", () => FinalizeMeshFromAsset(built, shapes, surfaces, mesh, asset, hidden, hideVersion));
         });
     }
 
     // PURE mesh-resource build - no scene tree, no Owner/data-model writes - so it is safe on a worker thread.
     // Produces the Godot ArrayMesh from the Phos asset. shapeCount returns the blendshape count actually applied
-    // (0 if Godot rejected the morph surface). -xlinka
-    private ArrayMesh BuildArrayMeshCore(PhosMesh mesh, out int shapeCount)
+    // (0 if Godot rejected the morph surface), surfaceSubmeshes the submesh each surface was built from. -xlinka
+    private ArrayMesh BuildArrayMeshCore(PhosMesh mesh, bool[]? hidden, out int shapeCount, out int[] surfaceSubmeshes)
     {
         int vcount = mesh.VertexCount;
 
         var arrayMesh = new ArrayMesh();
 
-        // Every Godot.Collections.Array below owns NATIVE storage, and AddSurfaceFromArrays copies out of
-        // it rather than taking ownership. Left undisposed the native buffers only come back at
-        // finalization, so an avatar with hundreds of morph targets sits on a second full copy of its
-        // geometry for as long as the GC feels like it - on top of the peak that already put the machine
-        // into swap. Collected here and released at the single exit below. -xlinka
-        var arrays = new global::Godot.Collections.Array();
-        arrays.Resize((int)Mesh.ArrayType.Max);
-        var shapeArrayPool = new List<global::Godot.Collections.Array>();
-
         var rp = mesh.RawPositions;
         var positions = new Vector3[vcount];
         for (int i = 0; i < vcount; i++)
             positions[i] = new Vector3(rp[i].x, rp[i].y, rp[i].z);
-        arrays[(int)Mesh.ArrayType.Vertex] = positions;
 
         var rn = mesh.RawNormals;
         Vector3[]? nrmArr = null;
@@ -911,7 +969,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
             nrmArr = new Vector3[vcount];
             for (int i = 0; i < vcount; i++)
                 nrmArr[i] = new Vector3(rn[i].x, rn[i].y, rn[i].z);
-            arrays[(int)Mesh.ArrayType.Normal] = nrmArr;
         }
 
         var ruv = mesh.RawUV0s;
@@ -921,68 +978,65 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
             uvArr = new Vector2[vcount];
             for (int i = 0; i < vcount; i++)
                 uvArr[i] = new Vector2(ruv[i].x, ruv[i].y);
-            arrays[(int)Mesh.ArrayType.TexUV] = uvArr;
         }
 
         // UV1 (lightmap/detail second channel) so it survives the skinned path, not just the static one. -xlinka
         var ruv1 = mesh.RawUV1s;
+        Vector2[]? uv2Arr = null;
         if (ruv1 != null && ruv1.Length >= vcount)
         {
-            var uvs2 = new Vector2[vcount];
+            uv2Arr = new Vector2[vcount];
             for (int i = 0; i < vcount; i++)
-                uvs2[i] = new Vector2(ruv1[i].x, ruv1[i].y);
-            arrays[(int)Mesh.ArrayType.TexUV2] = uvs2;
+                uv2Arr[i] = new Vector2(ruv1[i].x, ruv1[i].y);
         }
 
         // Tangents (4 floats/vertex: xyz + handedness w) for normal maps, and vertex colors. -xlinka
-        bool baseHasTangents = false;
+        float[]? tanArr = null;
         var rtan = mesh.RawTangents;
         if (mesh.HasTangents && rtan != null && rtan.Length >= vcount)
         {
-            var tangents = new float[vcount * 4];
+            tanArr = new float[vcount * 4];
             for (int i = 0; i < vcount; i++)
             {
                 var t = rtan[i];
-                tangents[i * 4 + 0] = t.x;
-                tangents[i * 4 + 1] = t.y;
-                tangents[i * 4 + 2] = t.z;
-                tangents[i * 4 + 3] = t.w;
+                tanArr[i * 4 + 0] = t.x;
+                tanArr[i * 4 + 1] = t.y;
+                tanArr[i * 4 + 2] = t.z;
+                tanArr[i * 4 + 3] = t.w;
             }
-            arrays[(int)Mesh.ArrayType.Tangent] = tangents;
-            baseHasTangents = true;
         }
 
+        Color[]? colArr = null;
         var rcol = mesh.RawColors;
         if (mesh.HasColors && rcol != null && rcol.Length >= vcount)
         {
-            var colors = new Color[vcount];
+            colArr = new Color[vcount];
             for (int i = 0; i < vcount; i++)
             {
                 var c = rcol[i];
-                colors[i] = new Color(c.r, c.g, c.b, c.a);
+                colArr[i] = new Color(c.r, c.g, c.b, c.a);
             }
-            arrays[(int)Mesh.ArrayType.Color] = colors;
         }
 
+        int[]? boneArr = null;
+        float[]? weightArr = null;
         if (mesh.HasBoneBindings)
         {
             var bind = mesh.RawBoneBindings;
-            var bones = new int[vcount * 4];
-            var weights = new float[vcount * 4];
+            boneArr = new int[vcount * 4];
+            weightArr = new float[vcount * 4];
             for (int i = 0; i < vcount; i++)
             {
                 var b = bind[i];
-                bones[i * 4 + 0] = (int)b.boneIndices.x;
-                bones[i * 4 + 1] = (int)b.boneIndices.y;
-                bones[i * 4 + 2] = (int)b.boneIndices.z;
-                bones[i * 4 + 3] = (int)b.boneIndices.w;
-                weights[i * 4 + 0] = b.boneWeights.x;
-                weights[i * 4 + 1] = b.boneWeights.y;
-                weights[i * 4 + 2] = b.boneWeights.z;
-                weights[i * 4 + 3] = b.boneWeights.w;
+                boneArr[i * 4 + 0] = (int)b.boneIndices.x;
+                boneArr[i * 4 + 1] = (int)b.boneIndices.y;
+                boneArr[i * 4 + 2] = (int)b.boneIndices.z;
+                boneArr[i * 4 + 3] = (int)b.boneIndices.w;
+                weightArr[i * 4 + 0] = b.boneWeights.x;
+                weightArr[i * 4 + 1] = b.boneWeights.y;
+                weightArr[i * 4 + 2] = b.boneWeights.z;
+                weightArr[i * 4 + 3] = b.boneWeights.w;
             }
-            arrays[(int)Mesh.ArrayType.Bones] = bones;
-            arrays[(int)Mesh.ArrayType.Weights] = weights;
         }
 
         // Every submesh's indices together, for the tangent pass - tangents are a per-VERTEX property and
@@ -990,13 +1044,16 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         // garbage basis.
         int totalIndices = 0;
         foreach (var sm in mesh.Submeshes)
-            totalIndices += sm.IndexCount;
+        {
+            if (sm != null && sm.Topology == PhosTopology.Triangles)
+                totalIndices += sm.IndexCount;
+        }
 
         var allIndices = new int[totalIndices];
         int writeAt = 0;
         foreach (var sm in mesh.Submeshes)
         {
-            if (sm.IndexCount <= 0)
+            if (sm == null || sm.IndexCount <= 0 || sm.Topology != PhosTopology.Triangles)
                 continue;
             System.Array.Copy(sm.RawIndices, 0, allIndices, writeAt, sm.IndexCount);
             writeAt += sm.IndexCount;
@@ -1005,129 +1062,254 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         // No source tangents but we have normals + UVs: GENERATE them. Without tangents a normal-mapped
         // material renders with a garbage tangent basis - the speckled "white cracks" on detailed areas like a
         // muzzle, and unstable/dark lighting when a blendshape (e.g. a blink) perturbs the mesh. -xlinka
-        if (!baseHasTangents && nrmArr != null && uvArr != null && allIndices.Length >= 3)
-        {
-            arrays[(int)Mesh.ArrayType.Tangent] = ComputeTangents(positions, nrmArr, uvArr, allIndices);
-            baseHasTangents = true;
-        }
+        if (tanArr == null && nrmArr != null && uvArr != null && allIndices.Length >= 3)
+            tanArr = ComputeTangents(positions, nrmArr, uvArr, allIndices);
 
-        // Blendshapes (morph targets) from the asset: declare them, then hand per-shape delta arrays to the
+        // Blendshapes (morph targets) from the asset: declare them, then hand per-shape delta arrays to each
         // surface. glTF morphs are deltas -> Relative mode; Godot rejects the surface unless each shape carries
-        // the SAME morphable attrs as the base (which has NORMAL), so feed zero normal deltas when absent. -xlinka
+        // the SAME morphable attrs as the base (which has NORMAL), so feed the base normals when absent. -xlinka
         shapeCount = mesh.BlendShapeCount;
-        global::Godot.Collections.Array<global::Godot.Collections.Array> blendShapes = null!;
         if (shapeCount > 0)
         {
             arrayMesh.ClearBlendShapes();
             arrayMesh.BlendShapeMode = Mesh.BlendShapeMode.Relative;
             for (int s = 0; s < shapeCount; s++)
                 arrayMesh.AddBlendShape(mesh.BlendShapes[s].Name);
-
-            blendShapes = new global::Godot.Collections.Array<global::Godot.Collections.Array>();
-
-            // ONE staging buffer for every shape. Assigning it into shapeArrays marshals it into a packed
-            // Godot array, which is a copy, so the managed buffer is dead the moment the assignment returns
-            // and a fresh Vector3[vcount] per shape was 756 * 58,030 * 12 bytes of pure garbage on the
-            // avatar that started this. Every element is overwritten below, so no clear is needed. -xlinka
-            var sv = new Vector3[vcount];
-
-            for (int s = 0; s < shapeCount; s++)
-            {
-                var frame = mesh.BlendShapes[s].Frames.Length > 0 ? mesh.BlendShapes[s].Frames[0] : null;
-                var shapeArrays = new global::Godot.Collections.Array();
-                shapeArrays.Resize((int)Mesh.ArrayType.Max);
-                shapeArrayPool.Add(shapeArrays);
-
-                var sp = frame?.positions;
-                for (int i = 0; i < vcount; i++)
-                    sv[i] = (sp != null && i < sp.Length) ? new Vector3(sp[i].x, sp[i].y, sp[i].z) : Vector3.Zero;
-                shapeArrays[(int)Mesh.ArrayType.Vertex] = sv;
-
-                // "No normal/tangent morph" = feed the BASE normals/tangents. NOT zeros. NEVER FUCKING ZEROS.
-                // This innocent-looking array cost DAYS: Godot packs mesh normals/tangents octahedral-encoded,
-                // and octahedral can only represent UNIT vectors - a zero vector encodes as 0/0 = NaN garbage,
-                // and the blend path then happily mixes that garbage in PROPORTIONALLY TO THE WEIGHT. Result:
-                // the whole goddamn avatar's shading went dark every single blink, no rebuild in the log,
-                // nothing wrong in the data model, just Godot quietly shitting NaNs into the normal buffer
-                // where no debugger looks. Third attempt at this line: Assimp's real morph normals were noise
-                // (whole mesh dark always), zeros "fixed" it into a weight-proportional skew (dark only WHILE
-                // blinking, the absolute worst kind of subtle), base arrays are the correct end state - safe
-                // under every blend convention: as a target the base IS "unchanged", as an added delta
-                // base + w*base renormalizes to the same direction in the fragment shader. If you are reading
-                // this because an avatar's lighting pulses with its face: it's this. It's always this. - xlinka
-                shapeArrays[(int)Mesh.ArrayType.Normal] = arrays[(int)Mesh.ArrayType.Normal];
-                if (baseHasTangents)
-                    shapeArrays[(int)Mesh.ArrayType.Tangent] = arrays[(int)Mesh.ArrayType.Tangent];
-
-                blendShapes.Add(shapeArrays);
-            }
         }
 
         // ONE SURFACE PER SUBMESH. Only the first was ever built before, which on a character that
         // splits its body across several material groups means most of it simply is not there - the test
-        // avatar draws 960 of its 82,540 triangles and reads as a shapeless blob. The vertex arrays are
-        // shared; only the index array changes per surface, which is also exactly what the per-surface
-        // materials on the renderer are for. -xlinka
-        foreach (var sm in mesh.Submeshes)
+        // avatar draws 960 of its 82,540 triangles and reads as a shapeless blob. Each surface carries only
+        // the vertices its own triangles use (SurfaceSubset), and the per-surface materials on the renderer
+        // are what the split is for. -xlinka
+        var subset = new SurfaceSubset(vcount);
+        var built = new List<int>();
+        int dropped = 0;
+
+        // Where each submesh's triangles start in the count over every triangle submesh, for the hidden set.
+        var firstTriangle = new int[mesh.Submeshes.Count];
+        int triangleCount = 0;
+        for (int index = 0; index < mesh.Submeshes.Count; index++)
         {
-            if (sm == null || sm.IndexCount <= 0)
-                continue;
-
-            var indices = new int[sm.IndexCount];
-            System.Array.Copy(sm.RawIndices, indices, sm.IndexCount);
-            arrays[(int)Mesh.ArrayType.Index] = indices;
-
-            if (shapeCount > 0)
-            {
-                int before = arrayMesh.GetSurfaceCount();
-                arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, blendShapes);
-                if (arrayMesh.GetSurfaceCount() == before)
-                {
-                    // Godot rejected the morph surface. Drop morphs for the WHOLE mesh and restart -
-                    // blend shapes are declared per mesh, so a half-morphed mesh is not a valid state.
-                    LumoraLogger.Warn($"SkinnedMeshHook: Phos blend-shape surface rejected ({shapeCount} shapes) - rendering without morphs so the mesh still shows.");
-                    arrayMesh.ClearSurfaces();
-                    arrayMesh.ClearBlendShapes();
-                    shapeCount = 0;
-                    // blendShapes stays referenced, unread, so the release below still frees it.
-                    foreach (var retry in mesh.Submeshes)
-                    {
-                        if (retry == null || retry.IndexCount <= 0)
-                            continue;
-                        var retryIndices = new int[retry.IndexCount];
-                        System.Array.Copy(retry.RawIndices, retryIndices, retry.IndexCount);
-                        arrays[(int)Mesh.ArrayType.Index] = retryIndices;
-                        arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-                    }
-                    break;
-                }
-            }
-            else
-            {
-                arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-            }
+            firstTriangle[index] = triangleCount;
+            var sm = mesh.Submeshes[index];
+            if (sm != null && sm.Topology == PhosTopology.Triangles)
+                triangleCount += sm.IndexCount / 3;
         }
 
-        // Surfaces own their copies now. This is the only exit; a throw on the way here is caught by the
-        // caller, which rebuilds from scratch, so the rare leak on that path costs nothing that survives.
-        for (int i = 0; i < shapeArrayPool.Count; i++)
-            shapeArrayPool[i].Dispose();
-        // Array<T> is a typed view over an untyped Array; the untyped one is what owns the storage.
-        if (blendShapes != null)
-            ((global::Godot.Collections.Array)blendShapes).Dispose();
-        arrays.Dispose();
+        for (int index = 0; index < mesh.Submeshes.Count; index++)
+        {
+            var sm = mesh.Submeshes[index];
+            // Surfaces are drawn as triangles; a points submesh fed in as triangles drew noise or was refused.
+            if (sm == null || sm.IndexCount <= 0 || sm.Topology != PhosTopology.Triangles)
+                continue;
 
+            int[]? kept = Visible(sm, firstTriangle[index]);
+            if (kept != null && kept.Length == 0)
+                continue;
+
+            if (built.Count >= MaxGodotMeshSurfaces)
+            {
+                dropped++;
+                continue;
+            }
+
+            if (AddSurface(sm, shapeCount, kept))
+            {
+                built.Add(index);
+                continue;
+            }
+
+            if (shapeCount == 0)
+            {
+                LumoraLogger.Warn($"SkinnedMeshHook: submesh {index} ({sm.IndexCount} indices) was refused by the renderer and will not draw.");
+                continue;
+            }
+
+            // Godot rejected the morph surface. Drop morphs for the WHOLE mesh and restart -
+            // blend shapes are declared per mesh, so a half-morphed mesh is not a valid state.
+            LumoraLogger.Warn($"SkinnedMeshHook: Phos blend-shape surface rejected ({shapeCount} shapes) - rendering without morphs so the mesh still shows.");
+            arrayMesh.ClearSurfaces();
+            arrayMesh.ClearBlendShapes();
+            shapeCount = 0;
+            built.Clear();
+            dropped = 0;
+            index = -1;
+        }
+
+        if (dropped > 0)
+            LumoraLogger.Warn($"SkinnedMeshHook: mesh has {mesh.Submeshes.Count} submeshes but Godot caps a mesh at {MaxGodotMeshSurfaces} surfaces - {dropped} surface(s) past the cap will not render.");
+
+        surfaceSubmeshes = built.ToArray();
         return arrayMesh;
+
+        // The submesh's indices without the hidden triangles, or null when none of them is hidden.
+        int[]? Visible(PhosSubmesh sm, int first)
+        {
+            if (hidden == null)
+                return null;
+            int triangles = sm.IndexCount / 3;
+            int keep = 0;
+            for (int t = 0; t < triangles; t++)
+                if (first + t >= hidden.Length || !hidden[first + t])
+                    keep++;
+            if (keep == triangles)
+                return null;
+            var result = new int[keep * 3];
+            int at = 0;
+            var raw = sm.RawIndices;
+            for (int t = 0; t < triangles; t++)
+            {
+                if (first + t < hidden.Length && hidden[first + t])
+                    continue;
+                result[at++] = raw[t * 3];
+                result[at++] = raw[t * 3 + 1];
+                result[at++] = raw[t * 3 + 2];
+            }
+            return result;
+        }
+
+        bool AddSurface(PhosSubmesh sm, int shapes, int[]? kept)
+        {
+            var source = kept ?? sm.RawIndices;
+            int sourceCount = kept?.Length ?? sm.IndexCount;
+            bool part = subset.Take(source, sourceCount);
+            System.Span<int> used = part ? subset.Vertices : System.Span<int>.Empty;
+            int count = part ? used.Length : vcount;
+
+            // Every Godot.Collections.Array here owns NATIVE storage, and AddSurfaceFromArrays copies out of
+            // it rather than taking ownership. Left undisposed the native buffers only come back at
+            // finalization, so an avatar with hundreds of morph targets sat on a second full copy of its
+            // geometry for as long as the GC felt like it. Released the moment the surface is on. -xlinka
+            var arrays = new global::Godot.Collections.Array();
+            var shapeArrays = new List<global::Godot.Collections.Array>();
+            global::Godot.Collections.Array<global::Godot.Collections.Array>? blendShapes = null;
+            try
+            {
+                arrays.Resize((int)Mesh.ArrayType.Max);
+                arrays[(int)Mesh.ArrayType.Vertex] = part ? SurfaceSubset.Gather(positions, used) : positions;
+                if (nrmArr != null)
+                    arrays[(int)Mesh.ArrayType.Normal] = part ? SurfaceSubset.Gather(nrmArr, used) : nrmArr;
+                if (uvArr != null)
+                    arrays[(int)Mesh.ArrayType.TexUV] = part ? SurfaceSubset.Gather(uvArr, used) : uvArr;
+                if (uv2Arr != null)
+                    arrays[(int)Mesh.ArrayType.TexUV2] = part ? SurfaceSubset.Gather(uv2Arr, used) : uv2Arr;
+                float[]? extraUV = null;
+                var uvFormat = MeshUVChannels.Set(arrays, mesh, ref extraUV, part ? used : default);
+                if (tanArr != null)
+                    arrays[(int)Mesh.ArrayType.Tangent] = part ? SurfaceSubset.Gather4(tanArr, used) : tanArr;
+                if (colArr != null)
+                    arrays[(int)Mesh.ArrayType.Color] = part ? SurfaceSubset.Gather(colArr, used) : colArr;
+                if (boneArr != null && weightArr != null)
+                {
+                    arrays[(int)Mesh.ArrayType.Bones] = part ? SurfaceSubset.Gather4(boneArr, used) : boneArr;
+                    arrays[(int)Mesh.ArrayType.Weights] = part ? SurfaceSubset.Gather4(weightArr, used) : weightArr;
+                }
+
+                if (part)
+                {
+                    arrays[(int)Mesh.ArrayType.Index] = Variant.CreateFrom(subset.Indices);
+                }
+                else
+                {
+                    var indices = new int[sourceCount];
+                    System.Array.Copy(source, indices, sourceCount);
+                    arrays[(int)Mesh.ArrayType.Index] = indices;
+                }
+
+                int before = arrayMesh.GetSurfaceCount();
+                if (shapes <= 0)
+                {
+                    arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, flags: uvFormat);
+                    return arrayMesh.GetSurfaceCount() > before;
+                }
+
+                blendShapes = new global::Godot.Collections.Array<global::Godot.Collections.Array>();
+
+                // ONE staging buffer for every shape. Assigning it into a shape's array marshals it into a
+                // packed Godot array, which is a copy, so the managed buffer is dead the moment the assignment
+                // returns and a fresh Vector3[] per shape was 756 * 58,030 * 12 bytes of pure garbage on the
+                // avatar that started this. Every element is overwritten below, so no clear is needed. -xlinka
+                var sv = new Vector3[count];
+
+                for (int s = 0; s < shapes; s++)
+                {
+                    var frame = mesh.BlendShapes[s].Frames.Length > 0 ? mesh.BlendShapes[s].Frames[0] : null;
+                    var shapeArray = new global::Godot.Collections.Array();
+                    shapeArray.Resize((int)Mesh.ArrayType.Max);
+                    shapeArrays.Add(shapeArray);
+
+                    var sp = frame?.positions;
+                    for (int k = 0; k < count; k++)
+                    {
+                        int i = part ? used[k] : k;
+                        sv[k] = (sp != null && i < sp.Length) ? new Vector3(sp[i].x, sp[i].y, sp[i].z) : Vector3.Zero;
+                    }
+                    shapeArray[(int)Mesh.ArrayType.Vertex] = sv;
+
+                    // "No normal/tangent morph" = feed the BASE normals/tangents. NOT zeros. NEVER FUCKING ZEROS.
+                    // This innocent-looking array cost DAYS: Godot packs mesh normals/tangents octahedral-encoded,
+                    // and octahedral can only represent UNIT vectors - a zero vector encodes as 0/0 = NaN garbage,
+                    // and the blend path then happily mixes that garbage in PROPORTIONALLY TO THE WEIGHT. Result:
+                    // the whole goddamn avatar's shading went dark every single blink, no rebuild in the log,
+                    // nothing wrong in the data model, just Godot quietly shitting NaNs into the normal buffer
+                    // where no debugger looks. Third attempt at this line: Assimp's real morph normals were noise
+                    // (whole mesh dark always), zeros "fixed" it into a weight-proportional skew (dark only WHILE
+                    // blinking, the absolute worst kind of subtle), base arrays are the correct end state - safe
+                    // under every blend convention: as a target the base IS "unchanged", as an added delta
+                    // base + w*base renormalizes to the same direction in the fragment shader. If you are reading
+                    // this because an avatar's lighting pulses with its face: it's this. It's always this. - xlinka
+                    // The base here is this SURFACE's base: a shape has to line up with the surface it rides on.
+                    shapeArray[(int)Mesh.ArrayType.Normal] = arrays[(int)Mesh.ArrayType.Normal];
+                    if (tanArr != null)
+                        shapeArray[(int)Mesh.ArrayType.Tangent] = arrays[(int)Mesh.ArrayType.Tangent];
+
+                    blendShapes.Add(shapeArray);
+                }
+
+                arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, blendShapes, flags: uvFormat);
+                return arrayMesh.GetSurfaceCount() > before;
+            }
+            finally
+            {
+                for (int i = 0; i < shapeArrays.Count; i++)
+                    shapeArrays[i].Dispose();
+                // Array<T> is a typed view over an untyped Array; the untyped one is what owns the storage.
+                if (blendShapes != null)
+                    ((global::Godot.Collections.Array)blendShapes).Dispose();
+                arrays.Dispose();
+            }
+        }
     }
 
     // Main-thread finalize: assign the built mesh to the scene node, build the Skin (needs the Skeleton3D), mirror
     // blendshape names, apply material. Falls back to a synchronous on-main build if the worker build threw. -xlinka
-    private void FinalizeMeshFromAsset(ArrayMesh built, int shapeCount, PhosMesh mesh, MeshDataAsset asset)
+    private void FinalizeMeshFromAsset(ArrayMesh built, int shapeCount, int[] surfaceSubmeshes, PhosMesh mesh, MeshDataAsset asset,
+        bool[]? hidden, int hideVersion)
     {
         _meshBuildInFlight = false;
 
-        if (_meshInstance == null || !GodotObject.IsInstanceValid(_meshInstance))
+        if (!MeshInstanceAlive || Owner.IsDestroyed)
+        {
+            built?.Dispose();
             return; // hook/instance was torn down while the worker built
+        }
+        if (!ReferenceEquals(Owner.MeshAsset.Asset, asset) || !ReferenceEquals(asset.MeshData, mesh))
+        {
+            // The renderer changed assets while this worker ran. Never let a late completion put
+            // the previous mesh back onto it; schedule the current request without a user edit.
+            built?.Dispose();
+            Owner.World.RunSynchronously(() =>
+            {
+                if (!Owner.IsDestroyed)
+                {
+                    Owner.MeshDataChanged = true;
+                    Owner.HookBindingComplete = false;
+                    Owner.MarkChangeDirty();
+                }
+            });
+            return;
+        }
 
         // Diagnostic: did the WORKER build succeed, or are we rebuilding on the main thread (= the freeze)? -xlinka
         bool offThreadOk = built != null;
@@ -1137,7 +1319,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         {
             try
             {
-                built = BuildArrayMeshCore(mesh, out shapeCount);
+                built = BuildArrayMeshCore(mesh, hidden, out shapeCount, out surfaceSubmeshes);
             }
             catch (System.Exception ex)
             {
@@ -1148,6 +1330,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
 
         var old = _arrayMesh;
         _arrayMesh = built;
+        _surfaceSubmeshes = surfaceSubmeshes;
         _meshInstance.Mesh = _arrayMesh;
         old?.Dispose();
 
@@ -1206,24 +1389,42 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
 
         _appliedAsset = asset;
         _appliedMeshVcount = mesh.VertexCount;
+        _appliedHideVersion = hideVersion;
+        _appliedHidden = hidden;
         _meshApplied = true;
         Owner.HookBindingComplete = true;
         RefreshEyeViewTwin();
+
+        // The triangles to leave out changed while this one was building: build again with the new set.
+        if (hideVersion != Owner.LocalHideVersion && !SameHidden(hidden, Owner.LocallyHiddenTriangles))
+        {
+            var owner = Owner;
+            owner.World?.RunSynchronously(() =>
+            {
+                if (!owner.IsDestroyed)
+                {
+                    owner.MeshDataChanged = true;
+                    owner.MarkChangeDirty();
+                }
+            });
+        }
 
         // HookBindingComplete above switches off the component's per-update re-drive, so from here on
         // nothing asks this hook to run again unless something else touches the renderer. If the
         // ApplyMaterial just above left a surface on the loading skin, this is the only thing that
         // brings the real material in when its textures land. -xlinka
         RequeueWhilePlaceholderShown();
+        if (!LumoraLogger.EnableDebug)
+            return;
         double _finalizeMs = (System.Diagnostics.Stopwatch.GetTimestamp() - _finalizeStart) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 
-        // One line per skinned mesh, at Log. A mesh can build, skin and pass every check and still not
+        // One line per skinned mesh, at Debug. A mesh can build, skin and pass every check and still not
         // appear - wrong visibility, an empty surface, or bounds the renderer culls against - and none
         // of that is visible from the outside. This is the line that says which. -xlinka
         var aabb = _meshInstance.GetAabb();
         int surfaces = _arrayMesh?.GetSurfaceCount() ?? 0;
         int skeletonBones = (_skeleton != null && GodotObject.IsInstanceValid(_skeleton)) ? _skeleton.GetBoneCount() : -1;
-        LumoraLogger.Log($"SkinnedMeshHook '{Owner.Slot?.SlotName.Value}': {mesh.VertexCount} verts, {surfaces} surface(s), "
+        LumoraLogger.Debug($"SkinnedMeshHook '{Owner.Slot?.SlotName.Value}': {mesh.VertexCount} verts, {surfaces} surface(s), "
                        + $"{mesh.BlendShapeCount} shapes, {asset.BoneCount} bind bones vs {skeletonBones} skeleton bones | "
                        + $"visible={_meshInstance.Visible} enabled={Owner.Enabled} materials={Owner.Materials.Count} "
                        + $"aabb=({aabb.Size.X:F2},{aabb.Size.Y:F2},{aabb.Size.Z:F2}) at ({aabb.Position.X:F2},{aabb.Position.Y:F2},{aabb.Position.Z:F2}) "
@@ -1295,13 +1496,13 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
             {
                 fuzzy++;
                 if (fuzzy <= 8)
-                    LumoraLogger.Log($"SkinnedMeshHook: bind bone '{boneName}' matched '{_skeleton.GetBoneName(skelBone)}' by {kind} - names differ, joint is the same.");
+                    LumoraLogger.Debug($"SkinnedMeshHook: bind bone '{boneName}' matched '{_skeleton.GetBoneName(skelBone)}' by {kind} - names differ, joint is the same.");
             }
             skin.SetBindBone(i, skelBone);
             skin.SetBindPose(i, asset.GetBoneBindPose(i).ToGodot());
         }
         if (fuzzy > 8)
-            LumoraLogger.Log($"SkinnedMeshHook: {fuzzy} bind bones matched by name normalization.");
+            LumoraLogger.Debug($"SkinnedMeshHook: {fuzzy} bind bones matched by name normalization.");
         if (unresolved > 0)
             LumoraLogger.Warn($"SkinnedMeshHook: {unresolved}/{asset.BoneCount} bind bones unresolved against skeleton '{_skeleton.Name}' ({_skeleton.GetBoneCount()} bones).");
 
@@ -1432,7 +1633,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
             if (bones.Length > 0) bones.Append(", ");
             bones.Append(view.Slot?.SlotName.Value);
         }
-        LumoraLogger.Log($"LocalViewOverride: eye-view twin for '{Owner.Slot?.SlotName.Value}' collapsing '{bones}'");
+        LumoraLogger.Debug($"LocalViewOverride: eye-view twin for '{Owner.Slot?.SlotName.Value}' collapsing '{bones}'");
         return true;
     }
 
@@ -1443,7 +1644,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
             _skeletonHook?.UnregisterTwin(_twin);
             _twin.Free();
             if (logIt)
-                LumoraLogger.Log($"LocalViewOverride: eye-view twin for '{Owner?.Slot?.SlotName.Value}' released");
+                LumoraLogger.Debug($"LocalViewOverride: eye-view twin for '{Owner?.Slot?.SlotName.Value}' released");
             _twin = null;
             _twinMesh = null;
         }

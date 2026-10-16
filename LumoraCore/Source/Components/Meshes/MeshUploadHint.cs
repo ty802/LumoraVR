@@ -46,7 +46,11 @@ public struct MeshUploadHint
         Dynamic = 1 << 9,
 
         /// <summary>Keep CPU-side copy readable</summary>
-        Readable = 1 << 10
+        Readable = 1 << 10,
+
+        // Positions move every frame (a soft body bending it): nothing to gain from hashing it for a shared copy.
+        // Outside what SetAll sets, so only a mesh that says so carries it.
+        Deforming = 1 << 16
     }
 
     private Flag flags;

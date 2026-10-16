@@ -127,10 +127,33 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
             && !procedural.IsDestroyed
             && procedural.Hook is MeshHook meshHook)
         {
-            return meshHook.GetMeshInstance()?.Mesh;
+            WatchMeshSource(meshHook);
+            return meshHook.GodotMesh;
         }
 
+        WatchMeshSource(null);
         return null;
+    }
+
+    // Identical procedural meshes share one Godot mesh and a mesh that changes can move to another; the
+    // particle mesh follows it on the next apply.
+    private MeshHook? _meshSource;
+
+    private void WatchMeshSource(MeshHook? source)
+    {
+        if (ReferenceEquals(_meshSource, source))
+            return;
+        if (_meshSource != null)
+            _meshSource.MeshReplaced -= OnMeshSourceReplaced;
+        _meshSource = source;
+        if (source != null)
+            source.MeshReplaced += OnMeshSourceReplaced;
+    }
+
+    private void OnMeshSourceReplaced()
+    {
+        if (Owner is { IsDestroyed: false })
+            Owner.MarkChangeDirty();
     }
 
     // The authored material, when the system names one. Kept separate from the built-in shader so a system
@@ -264,6 +287,7 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
 
     public override void Destroy(bool destroyingWorld)
     {
+        WatchMeshSource(null);
         if (!destroyingWorld)
         {
             _trails?.Dispose();
@@ -478,7 +502,7 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
                         var flag = shaderMat.GetShaderParameter("use_vertex_color");
                         readsColor = flag.VariantType == Variant.Type.Nil ? "no such uniform" : flag.ToString();
                     }
-                    LumoraLogger.Log($"ParticleSystemHook '{Owner.Slot?.SlotName.Value}': drawing authored mesh "
+                    LumoraLogger.Debug($"ParticleSystemHook '{Owner.Slot?.SlotName.Value}': drawing authored mesh "
                                    + $"({authoredMesh.GetSurfaceCount()} surface(s)) "
                                    + $"aabb={aabb.Size.X:F3}x{aabb.Size.Y:F3}x{aabb.Size.Z:F3} "
                                    + $"particleSize=({firstSize}) slotScale={Owner.Slot?.GlobalScale.x:F3} "

@@ -153,9 +153,15 @@ public class SkinnedMeshRenderer : ImplementableComponent, ICustomMemberNameSour
     // their shapes over the catch-all expression driver. Drivers re-check ownership at drive time, so a shape
     // that gets stolen stops being written by the loser - this is what stops drivers from fighting (flicker).
     // Local/runtime only (the drivers run on every peer from replicated inputs), not synced.
+    // A hand gesture's face sits over speech but under the eyes and lids; an avatar's own switches (a
+    // hidden shirt, a tail size) sit over the automatic face drivers, and the pose an avatar rests in sits
+    // under its switches. -xlinka
     public const int BlendShapePriorityBlink = 30;
     public const int BlendShapePriorityEye = 25;
+    public const int BlendShapePriorityGesture = 22;
     public const int BlendShapePriorityViseme = 20;
+    public const int BlendShapePriorityToggle = 15;
+    public const int BlendShapePriorityRest = 12;
     public const int BlendShapePriorityExpression = 10;
 
     private object?[]? _blendShapeOwners;
@@ -176,6 +182,19 @@ public class SkinnedMeshRenderer : ImplementableComponent, ICustomMemberNameSour
             return true;
         }
         return false;
+    }
+
+    // Gives a shape back, so its synced weight shows again. A driver that stops driving releases what it
+    // claimed, or the shape stays frozen at whatever it last wrote and its slider does nothing. -xlinka
+    public void ReleaseBlendShape(int index, object owner)
+    {
+        if (_blendShapeOwners == null || index < 0 || index >= _blendShapeOwners.Length
+            || !ReferenceEquals(_blendShapeOwners[index], owner))
+            return;
+        _blendShapeOwners[index] = null;
+        _blendShapeOwnerPriority![index] = 0;
+        BlendWeightsChanged = true;
+        RunApplyChanges();
     }
 
     // check at drive time so a stolen shape isn't written by the previous owner
@@ -260,7 +279,7 @@ public class SkinnedMeshRenderer : ImplementableComponent, ICustomMemberNameSour
         }
 
         MeshDataChanged = true;
-        LumoraLogger.Log($"SkinnedMeshRenderer: Set {names.Length} blendshapes (normals: {(BlendShapeNormals.Count > 0 ? "yes" : "no")})");
+        LumoraLogger.Debug($"SkinnedMeshRenderer: Set {names.Length} blendshapes (normals: {(BlendShapeNormals.Count > 0 ? "yes" : "no")})");
     }
 
     // SETTINGS
@@ -303,11 +322,63 @@ public class SkinnedMeshRenderer : ImplementableComponent, ICustomMemberNameSour
     // material arrives after its body material does not report the whole thing as ready. An avatar
     // arrives mesh-first and textures-later, which is exactly the case this covers. -xlinka
     public bool IsSurfaceLoading(int surfaceIndex = 0)
-        => _loadingSurfaces.IsLoading(surfaceIndex, MaterialFor(surfaceIndex));
+    {
+        var reference = surfaceIndex >= 0 && surfaceIndex < Materials.Count
+            ? Materials.GetElement(surfaceIndex) : Material;
+        if (!reference.Value.IsNull && reference.Target == null)
+            return true;
+        return _loadingSurfaces.IsLoading(surfaceIndex, MaterialFor(surfaceIndex));
+    }
 
     public readonly Sync<bool> UpdateWhenOffscreen = new();
 
     public readonly Sync<SkinQuality> Quality = new();
+
+    // DRAWN ELSEWHERE
+    //
+    // Part or all of this mesh that something else draws on this machine, a soft body drawing it moving, so this
+    // renderer leaves it out: the whole mesh, or single triangles counted over every triangle submesh in order.
+    // Leaving the whole out is a visibility switch; leaving triangles out rebuilds the mesh without them. Never
+    // replicated: every peer runs its own soft body. -xlinka
+    private object? _localHideOwner;
+
+    public bool LocallyHiddenWhole { get; private set; }
+
+    public bool[]? LocallyHiddenTriangles { get; private set; }
+
+    public int LocalHideVersion { get; private set; }
+
+    public void SetLocalHide(object owner, bool whole, bool[]? triangles)
+    {
+        bool trianglesChanged = !ReferenceEquals(LocallyHiddenTriangles, triangles);
+        if (ReferenceEquals(_localHideOwner, owner) && LocallyHiddenWhole == whole && !trianglesChanged)
+            return;
+        _localHideOwner = owner;
+        LocallyHiddenWhole = whole;
+        if (trianglesChanged)
+        {
+            LocallyHiddenTriangles = triangles;
+            LocalHideVersion++;
+            MeshDataChanged = true;
+        }
+        RunApplyChanges();
+    }
+
+    public void ClearLocalHide(object owner)
+    {
+        if (!ReferenceEquals(_localHideOwner, owner))
+            return;
+        _localHideOwner = null;
+        bool hadTriangles = LocallyHiddenTriangles != null;
+        LocallyHiddenWhole = false;
+        LocallyHiddenTriangles = null;
+        if (hadTriangles)
+        {
+            LocalHideVersion++;
+            MeshDataChanged = true;
+        }
+        RunApplyChanges();
+    }
 
     // CHANGE FLAGS
 
@@ -356,11 +427,16 @@ public class SkinnedMeshRenderer : ImplementableComponent, ICustomMemberNameSour
     {
         base.OnAwake();
         Materials.OnChanged += OnMaterialsChanged;
+        // The mesh draws from under its skeleton, not its own slot, so switching the slot (or anything above
+        // it) off hides nothing by itself: the hook has to look again. -xlinka
+        Slot.ActiveChanged += OnSlotActiveChanged;
 
         // Subscribe to changes
         Skeleton.OnChanged += (field) => { SkeletonChanged = true; SubscribeToSkeleton(); RunApplyChanges(); };
+        Skeleton.OnTargetChange += OnSkeletonTargetChanged;
         MeshAsset.OnChanged += (field) => { MeshDataChanged = true; RunApplyChanges(); };
         Bones.OnChanged += (list) => { SkeletonChanged = true; RunApplyChanges(); };
+        BoneNames.OnChanged += (list) => { SkeletonChanged = true; RunApplyChanges(); };
         Vertices.OnChanged += (list) => { MeshDataChanged = true; RunApplyChanges(); };
         Normals.OnChanged += (list) => { MeshDataChanged = true; RunApplyChanges(); };
         UVs.OnChanged += (list) => { MeshDataChanged = true; RunApplyChanges(); };
@@ -396,13 +472,24 @@ public class SkinnedMeshRenderer : ImplementableComponent, ICustomMemberNameSour
             RunApplyChanges();
         }
 
-        MeshDataChanged = false;
-        SkeletonChanged = false;
+        // These flags belong to the hook. A queued apply can be delayed by the frame budget.
     }
+
+    private void OnSkeletonTargetChanged(SyncRef<SkeletonBuilder> reference)
+    {
+        SubscribeToSkeleton();
+        SkeletonChanged = true;
+        RunApplyChanges();
+    }
+
+    private void OnSlotActiveChanged(Slot _) => RunApplyChanges();
 
     public override void OnDestroy()
     {
         Materials.OnChanged -= OnMaterialsChanged;
+        Skeleton.OnTargetChange -= OnSkeletonTargetChanged;
+        if (Slot != null)
+            Slot.ActiveChanged -= OnSlotActiveChanged;
         if (_watchedSkeleton != null)
         {
             _watchedSkeleton.SkeletonReady -= OnSkeletonReady;
@@ -450,7 +537,7 @@ public class SkinnedMeshRenderer : ImplementableComponent, ICustomMemberNameSour
 
         SkeletonChanged = true;
         RunApplyChanges();
-        LumoraLogger.Log($"SkinnedMeshRenderer: Setup {Bones.Count} bones from root '{rootSlot.SlotName.Value}'");
+        LumoraLogger.Debug($"SkinnedMeshRenderer: Setup {Bones.Count} bones from root '{rootSlot.SlotName.Value}'");
     }
 
     public void SetupBonesFromSkeleton(SkeletonBuilder skeleton)
@@ -482,7 +569,7 @@ public class SkinnedMeshRenderer : ImplementableComponent, ICustomMemberNameSour
 
         SkeletonChanged = true;
         RunApplyChanges();
-        LumoraLogger.Log($"SkinnedMeshRenderer: Setup {Bones.Count} bones from skeleton");
+        LumoraLogger.Debug($"SkinnedMeshRenderer: Setup {Bones.Count} bones from skeleton");
     }
 
     private static Slot FindBoneInHierarchy(Slot root, string boneName)
@@ -625,7 +712,7 @@ public class SkinnedMeshRenderer : ImplementableComponent, ICustomMemberNameSour
         }
 
         MeshDataChanged = true;
-        LumoraLogger.Log($"SkinnedMeshRenderer: Set mesh data with {vertices.Length} vertices, {indices.Length / 3} triangles, {boneNames?.Length ?? 0} bones");
+        LumoraLogger.Debug($"SkinnedMeshRenderer: Set mesh data with {vertices.Length} vertices, {indices.Length / 3} triangles, {boneNames?.Length ?? 0} bones");
     }
 
     public void ClearMesh()
@@ -639,7 +726,7 @@ public class SkinnedMeshRenderer : ImplementableComponent, ICustomMemberNameSour
         Bones.Clear();
         BoneNames.Clear();
         MeshDataChanged = true;
-        LumoraLogger.Log("SkinnedMeshRenderer: Cleared mesh data");
+        LumoraLogger.Debug("SkinnedMeshRenderer: Cleared mesh data");
     }
 }
 
@@ -650,4 +737,3 @@ public enum SkinQuality
     TwoBones = 2,
     FourBones = 4
 }
-

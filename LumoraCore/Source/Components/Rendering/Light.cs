@@ -79,6 +79,12 @@ public class Light : ImplementableComponent, IPrimaryColorSource
     // same reason. -xlinka
     public readonly AssetRef<TextureAsset> Cookie = new();
 
+    // How a point or spot light fades over its range. Window keeps nearly full strength across the range
+    // and fades at the edge, which is what content made here is lit with. Inverse falls off like
+    // 1 / (1 + 25 (d / range)^2), the curve lights from imported packages were authored against; with
+    // Window those rooms flood to white. Directional lights ignore it. -xlinka
+    public readonly Sync<LightFalloff> Falloff = new();
+
     public override void OnInit()
     {
         base.OnInit();
@@ -137,6 +143,12 @@ public enum ShadowType
 }
 
 // Cascade count for a directional light's shadow, cheapest first.
+public enum LightFalloff
+{
+    Window,
+    Inverse,
+}
+
 public enum ShadowSplitMode
 {
     Orthogonal,  // one cascade

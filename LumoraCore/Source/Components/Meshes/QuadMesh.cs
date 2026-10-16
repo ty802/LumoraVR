@@ -7,52 +7,33 @@ using Lumora.Core.Phos;
 
 namespace Lumora.Core.Components.Meshes;
 
-/// <summary>
-/// Procedural quad mesh component.
-/// Generates quad geometry with support for dual-sided rendering and per-vertex colors.
-/// </summary>
 [ComponentCategory("Assets/Procedural Meshes")]
 public class QuadMesh : ProceduralMesh
 {
-    // Sync Fields
-
-    /// <summary>Rotation of the quad</summary>
     public readonly Sync<floatQ> Rotation;
 
-    /// <summary>Size of the quad (width, height)</summary>
     public readonly Sync<float2> Size;
 
-    /// <summary>UV scale for texture mapping</summary>
     public readonly Sync<float2> UVScale;
 
-    /// <summary>Scale UVs proportionally with size</summary>
     public readonly Sync<bool> ScaleUVWithSize;
 
-    /// <summary>UV offset for texture mapping</summary>
     public readonly Sync<float2> UVOffset;
 
-    /// <summary>Render both sides of the quad</summary>
     public readonly Sync<bool> DualSided;
 
-    /// <summary>Use per-vertex colors</summary>
     public readonly Sync<bool> UseVertexColors;
 
-    /// <summary>Color for upper-left corner</summary>
     public readonly Sync<color> UpperLeftColor;
 
-    /// <summary>Color for upper-right corner</summary>
     public readonly Sync<color> UpperRightColor;
 
-    /// <summary>Color for lower-left corner</summary>
     public readonly Sync<color> LowerLeftColor;
 
-    /// <summary>Color for lower-right corner</summary>
     public readonly Sync<color> LowerRightColor;
 
-    // Private State
-
     private PhosQuad? quad;
-    private PhosQuad? otherSide;  // For dual-sided rendering
+    private PhosQuad? otherSide;
 
     private floatQ _rotation;
     private float2 _size;
@@ -62,8 +43,6 @@ public class QuadMesh : ProceduralMesh
     private bool _dualSided;
     private bool _useColors;
     private color _ulColor, _urColor, _llColor, _lrColor;
-
-    // Constructor
 
     public QuadMesh()
     {
@@ -80,13 +59,10 @@ public class QuadMesh : ProceduralMesh
         LowerRightColor = new Sync<color>(this, color.White);
     }
 
-    // Lifecycle
-
     public override void OnAwake()
     {
         base.OnAwake();
 
-        // Subscribe to property changes
         SubscribeToChanges(Rotation);
         SubscribeToChanges(Size);
         SubscribeToChanges(UVScale);
@@ -99,8 +75,6 @@ public class QuadMesh : ProceduralMesh
         SubscribeToChanges(LowerLeftColor);
         SubscribeToChanges(LowerRightColor);
     }
-
-    // Mesh Generation
 
     protected override void PrepareAssetUpdateData()
     {
@@ -122,8 +96,6 @@ public class QuadMesh : ProceduralMesh
     {
         bool geometryChanged = false;
 
-        // Front Side
-
         if (quad == null)
         {
             var submesh = new PhosTriangleSubmesh(mesh);
@@ -132,18 +104,16 @@ public class QuadMesh : ProceduralMesh
             geometryChanged = true;
         }
 
-        // Check if color mode changed (affects vertex data)
+        // Color mode changes the vertex data.
         if (quad.UseColors != _useColors)
         {
             quad.UseColors = _useColors;
             geometryChanged = true;
         }
 
-        // Update quad properties
         quad.Size = _size;
         quad.Rotation = _rotation;
 
-        // Scale UVs with size if requested
         if (_scaleUVWithSize)
         {
             quad.UVScale = _uvScale * _size;
@@ -155,16 +125,12 @@ public class QuadMesh : ProceduralMesh
 
         quad.UVOffset = _uvOffset;
 
-        // Set colors
         quad.UpperLeftColor = _ulColor;
         quad.UpperRightColor = _urColor;
         quad.LowerLeftColor = _llColor;
         quad.LowerRightColor = _lrColor;
 
-        // Regenerate front side vertex data
         quad.Update();
-
-        // Back Side (if dual-sided)
 
         if (_dualSided)
         {
@@ -176,17 +142,14 @@ public class QuadMesh : ProceduralMesh
                 geometryChanged = true;
             }
 
-            // Check if color mode changed
             if (otherSide.UseColors != _useColors)
             {
                 otherSide.UseColors = _useColors;
                 geometryChanged = true;
             }
 
-            // Update back side properties
             otherSide.Size = _size;
 
-            // Rotate back side 180 degrees around Y axis
             otherSide.Rotation = _rotation * floatQ.AxisAngleRad(float3.Up, MathF.PI);
 
             if (_scaleUVWithSize)
@@ -200,21 +163,23 @@ public class QuadMesh : ProceduralMesh
 
             otherSide.UVOffset = _uvOffset;
 
-            // Copy colors
             otherSide.UpperLeftColor = _ulColor;
             otherSide.UpperRightColor = _urColor;
             otherSide.LowerLeftColor = _llColor;
             otherSide.LowerRightColor = _lrColor;
 
-            // Regenerate back side vertex data
             otherSide.Update();
         }
         else if (otherSide != null)
         {
-            // Remove back side if dual-sided was disabled
-            otherSide.Remove();
+            // Dual sided switched off. Removing the back side's vertices moves the mesh's vertex version on,
+            // which invalidates the front quad's handles as well, and its next update threw. The front is
+            // built again on its own instead. -xlinka
+            mesh.Clear();
+            quad = null;
             otherSide = null;
-            geometryChanged = true;
+            UpdateMeshData(mesh);
+            return;
         }
 
         uploadHint[MeshUploadHint.Flag.Geometry] = geometryChanged;
@@ -226,11 +191,6 @@ public class QuadMesh : ProceduralMesh
         otherSide = null;
     }
 
-    // Utility Properties
-
-    /// <summary>
-    /// Set/get solid color (all corners same color).
-    /// </summary>
     public color Color
     {
         get => UpperLeftColor.Value;
@@ -243,9 +203,6 @@ public class QuadMesh : ProceduralMesh
         }
     }
 
-    /// <summary>
-    /// Get/set the facing direction of the quad.
-    /// </summary>
     public float3 Facing
     {
         get

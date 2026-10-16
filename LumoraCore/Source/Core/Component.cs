@@ -41,7 +41,7 @@ public abstract class Component : ComponentBase<Component>
 
     public void InternalRunLateUpdate(float delta)
     {
-        if (IsDestroyed || !Enabled.Value || !CanRunUpdates)
+        if (IsDestroyed || !IsExecutionAllowed || !Enabled.Value || !CanRunUpdates)
         {
             return;
         }

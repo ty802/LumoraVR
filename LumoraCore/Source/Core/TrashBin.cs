@@ -60,7 +60,7 @@ public class TrashBin
             _world.RegisterComponent(component);
         }
 
-        LumoraLogger.Log($"Restored element {refID} from trash");
+        LumoraLogger.Debug($"Restored element {refID} from trash");
         return true;
     }
 
@@ -130,7 +130,7 @@ public class TrashBin
         }
 
         _trashedElements.Clear();
-        LumoraLogger.Log("Cleared trash bin");
+        LumoraLogger.Debug("Cleared trash bin");
     }
 
     public (int count, int slots, int components) GetStatistics()

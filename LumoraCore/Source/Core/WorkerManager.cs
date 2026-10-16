@@ -11,10 +11,6 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Manages worker type registration and object creation during sync decode.
-/// Uses a synchronized type index table.
-/// </summary>
 public class WorkerManager
 {
     public readonly World World;
@@ -31,7 +27,6 @@ public class WorkerManager
         types = new List<Type>();
         typesToRegister = new HashSet<string>();
         
-        // Synchronized type index table
         indexTable = new SyncArray<string>();
         indexTable.Initialize(world, world.RootSlot);
         indexTable.EndInitPhase();
@@ -44,16 +39,21 @@ public class WorkerManager
         }
     }
 
+    // The type table is the authority's own bookkeeping, not an edit of the world, so a Social or Event world's
+    // freeze has nothing to say about it; under the freeze every new type threw here every frame. -xlinka
     public void RegisterTypes()
     {
-        if (!World.IsAuthority)
+        if (!World.IsAuthority || typesToRegister.Count == 0)
         {
             return;
         }
-        
-        foreach (string typeName in typesToRegister)
+
+        using (World.DataModelPermissions?.EnterSystemBypass())
         {
-            RegisterType(typeName);
+            foreach (string typeName in typesToRegister)
+            {
+                RegisterType(typeName);
+            }
         }
         typesToRegister.Clear();
     }
@@ -107,9 +107,6 @@ public class WorkerManager
         return count;
     }
 
-    /// <summary>
-    /// Encode type information into sync stream
-    /// </summary>
     public void EncodeType(BinaryWriter writer, Type type)
     {
         int index = GetIndex(type);
@@ -121,9 +118,6 @@ public class WorkerManager
         }
     }
 
-    /// <summary>
-    /// Decode type information from sync stream
-    /// </summary>
     public Type DecodeType(BinaryReader reader)
     {
         int index = (int)reader.Read7BitEncoded();

@@ -137,7 +137,7 @@ public class SyncTimeAnchor : ConflictingSyncElement, ISyncMemberCopy
             return;
         bool set = dictionary.ExtractOrDefault("Set", false);
         double elapsed = dictionary.ExtractOrDefault("Elapsed", 0.0);
-        InternalSetState(NowSeconds - elapsed, set, sync: false, change: false);
+        InternalSetState(NowSeconds - elapsed, set, sync: LoadReplicates, change: false);
     }
 
     // Two plain values with no sync member of their own; the generic duplication walk cannot reach

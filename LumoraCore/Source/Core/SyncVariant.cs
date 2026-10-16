@@ -323,7 +323,7 @@ public class SyncVariant : ConflictingSyncElement, ISyncMemberCopy
 
         if (string.IsNullOrEmpty(typeName))
         {
-            InternalSetElement(null, sync: false);
+            InternalSetElement(null, sync: LoadReplicates);
             return;
         }
 
@@ -332,11 +332,11 @@ public class SyncVariant : ConflictingSyncElement, ISyncMemberCopy
         if (!IsSupportedElementType(elementType))
         {
             LumoraLogger.Error($"SyncVariant {ReferenceID}: saved element type '{typeName}' is not a usable sync element, loading empty.");
-            InternalSetElement(null, sync: false);
+            InternalSetElement(null, sync: LoadReplicates);
             return;
         }
 
-        var element = InternalCreateElement(RefID.Null, elementType, sync: false);
+        var element = InternalCreateElement(RefID.Null, elementType, sync: LoadReplicates);
         if (dictionary.TryGetNode("Data") is { } data)
             element.Load(data, control);
     }

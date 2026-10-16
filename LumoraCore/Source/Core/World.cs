@@ -127,8 +127,17 @@ public class World : IPermissionWorldFacts
 	private readonly Dictionary<string, List<Slot>> _slotsByTag = new();
 	private readonly List<Slot> _rootSlots = new();
 	private readonly List<User> _users = new();
+	// Written under the users lock wherever the list changes. UI asks for the count every frame, and
+	// taking that lock for one int read showed up spinning in a frame trace. -xlinka
+	private int _userCount;
 	private readonly List<User> _joinedUsers = new();
 	private readonly List<User> _leftUsers = new();
+	// Who is here, as this machine sees it, on every machine: the join and leave events above run on the
+	// authority only. Raised on the world thread in the update after the user list changed, which may be on
+	// a network thread. -xlinka
+	public event Action<User>? UserAdded;
+	public event Action<User>? UserRemoved;
+	private readonly System.Collections.Concurrent.ConcurrentQueue<(User User, bool Added)> _rosterChanges = new();
 	// Users whose body hasn't finished appearing yet. A joined user only counts as SPAWNED once its
 	// UserRoot is bound AND that root has a head node - on the authority that lands right after the
 	// scaffold build, on a peer whenever the replicated subtree finishes arriving, and this is the only
@@ -215,10 +224,16 @@ public class World : IPermissionWorldFacts
 	// First valid local-user assignment wins for the session. Guards a stray second SetLocalUser from
 	// silently re-pointing the actor mid-session. -xlinka
 	private bool _localUserSet;
+	// The host user's item byte, reserved with the host user and never handed to a joiner. 0 on a client.
+	private byte _hostItemByte;
 	// When the client entered data-model init (join window opened). Diagnostics + bounded-wait logging. 0 = not joining. -xlinka
 	private double _dataModelInitStartTime;
 	// Bounded deferral of Running on a client while we wait for the local user to resolve. -xlinka
 	private int _awaitingLocalUserFrames;
+	// Set only once the full state is in and Running waits on the user alone. The pump used to promote
+	// whenever the user resolved, and the user's own record lands early in a world handed over in slices,
+	// so a join went Running on a half-built world. -xlinka
+	private bool _awaitingLocalUser;
 	private const int MaxAwaitLocalUserFrames = 120; // ~2s @60, generous for a slow initial decode
 	// Missing-root respawn watchdog state - re-fires spawn if a set LocalUser never gets a body. -xlinka
 	private int _missingRootFrames;
@@ -420,6 +435,11 @@ public class World : IPermissionWorldFacts
 
 	public Session Session => _session;
 
+	// A local preview also exists for private/offline worlds and worlds joined as a guest.
+	// It belongs to this world only and is not part of its saved or replicated content.
+	public string? LocalThumbnailBase64 { get; set; }
+	public string? PreviewThumbnailBase64 => LocalThumbnailBase64 ?? _session?.Metadata?.ThumbnailBase64;
+
 	public IReadOnlyList<Uri> SessionURLs => (_session?.Metadata?.SessionURLs as IReadOnlyList<Uri>) ?? Array.Empty<Uri>();
 
 	public SyncController SyncController { get; private set; } = null!;
@@ -496,6 +516,11 @@ public class World : IPermissionWorldFacts
 
 	public bool IsOnWorldThread => WorldThreadId == Environment.CurrentManagedThreadId;
 
+	// On the world thread AND inside its hold on the world: an update, a late update, or before the world runs.
+	// The world thread between updates is not enough. The main loop's own context hands awaits back there
+	// outside any hold, while the sync thread may be holding the world. -xlinka
+	public bool IsInsideWorldHold => IsOnWorldThread && (_state != WorldState.Running || (_hookManager?.HeldByCurrentThread ?? false));
+
 	// Seconds.
 	public float LastDelta => Time.RawDelta;
 
@@ -503,16 +528,7 @@ public class World : IPermissionWorldFacts
 
 	public bool IsFocused => _focus == WorldFocus.Focused;
 
-	public int UserCount
-	{
-		get
-		{
-			lock (_users)
-			{
-				return _users.Count;
-			}
-		}
-	}
+	public int UserCount => System.Threading.Volatile.Read(ref _userCount);
 
 	public WorldFocus Focus
 	{
@@ -592,7 +608,8 @@ public class World : IPermissionWorldFacts
 
 	// The host's replicated permission config: role assignments, per-role capability toggles, escalation
 	// thresholds. Created on demand on the authority, null on a client until state-synced - same shape as
-	// Configuration, and null-check it the same way.
+	// Configuration, and null-check it the same way. Made inside the world's own config edit, or a world
+	// hosted Social or Event refuses it at the start and never runs.
 	public WorldPermissionConfig PermissionConfig
 	{
 		get
@@ -603,7 +620,7 @@ public class World : IPermissionWorldFacts
 			var config = root.GetComponent<WorldPermissionConfig>();
 			if (config == null && IsAuthority)
 			{
-				using var configEdit = WorldConfigEdit.Enter();
+				using var configEdit = EnterConfigEdit();
 				config = root.AttachComponent<WorldPermissionConfig>();
 			}
 			return config!;
@@ -641,7 +658,7 @@ public class World : IPermissionWorldFacts
 		// bone chain, anything implementing the holder seam - so ask the surface instead of assuming
 		// the prop case. -xlinka
 		var holderCarrier = surface as Components.IGrabHolderSurface
-			?? (surface as Slot)?.GetComponent<Component>(c => c is Components.IGrabHolderSurface) as Components.IGrabHolderSurface;
+			?? (surface as Slot)?.GrabSurface as Components.IGrabHolderSurface;
 		if (holderCarrier == null || (holderCarrier is Component holderComponent && holderComponent.IsDestroyed))
 			return false;
 
@@ -749,6 +766,109 @@ public class World : IPermissionWorldFacts
 		}
 	}
 
+	// Work put into a world held before it runs, a few milliseconds a frame, pumped by whoever holds the world
+	// until a bite says it is done: a saved world's tree going back a slot at a time, or a template building a
+	// step at a time. A big world never stops one frame for the whole of it; the platform nodes are made
+	// after the last bite, as for any load. -xlinka
+	public const double StagedLoadBudgetMs = 6.0;
+
+	public static long StagedBudgetTicks => (long)(StagedLoadBudgetMs * System.Diagnostics.Stopwatch.Frequency / 1000.0);
+
+	private Func<bool>? _stagedLoad;
+	private Func<int>? _stagedLeft;
+	private int _stagedLoadCount;
+
+	// A bite returns true once nothing is left; until then it is called again every frame. left, when the work
+	// can tell, is how much is still queued.
+	public void BeginStagedWork(Func<bool> bite, Func<int>? left = null)
+	{
+		_stagedLoadCount = 0;
+		_stagedLeft = left;
+		_stagedLoad = bite;
+	}
+
+	// How much staged work is done so far, for the loading line.
+	public void CountStagedWork(int done) => _stagedLoadCount += done;
+
+	public bool IsStagedLoading => _stagedLoad != null;
+	public int StagedLoadCount => _stagedLoadCount;
+
+	// Staged work still queued, or -1 when the work cannot say.
+	public int StagedLoadLeft => _stagedLoad != null && _stagedLeft != null ? _stagedLeft() : -1;
+
+	// One bite of staged work; true when none is left. A bite that throws ends the work.
+	public bool StepStagedLoad()
+	{
+		var bite = _stagedLoad;
+		if (bite == null)
+			return true;
+		bool done = true;
+		try
+		{
+			done = bite();
+		}
+		finally
+		{
+			if (done)
+			{
+				_stagedLoad = null;
+				_stagedLeft = null;
+			}
+		}
+		return done;
+	}
+
+	// A saved tree put back a slot at a time: what LoadWorld does in one call. whenDone hears whether the tree
+	// went back whole.
+	public void BeginStagedLoad(DataTreeDictionary dictionary, Action<bool>? whenDone = null)
+	{
+		var control = new LoadControl(this, new ReferenceTranslator());
+		var later = new Queue<(Slot Slot, DataTreeNode Node)>();
+		bool started = false;
+		BeginStagedWork(() =>
+		{
+			bool whole = false;
+			try
+			{
+				using var configEdit = WorldConfigEdit.Enter();
+				long until = System.Diagnostics.Stopwatch.GetTimestamp() + StagedBudgetTicks;
+				if (!started)
+				{
+					started = true;
+					if (dictionary.TryGetDictionary("TypeVersions") is { } typeVersions)
+						control.LoadTypeVersions(typeVersions);
+					if (dictionary.ContainsKey("Name"))
+						WorldName.Value = dictionary.ExtractOrDefault("Name", WorldName.Value);
+					if (dictionary.TryGetNode("Root") is { } rootNode)
+						RootSlot.LoadShallow(rootNode, control, later);
+				}
+				while (later.Count > 0 && System.Diagnostics.Stopwatch.GetTimestamp() < until)
+				{
+					var (slot, node) = later.Dequeue();
+					if (!slot.IsDestroyed)
+						slot.LoadShallow(node, control, later);
+					CountStagedWork(1);
+				}
+				if (later.Count > 0)
+					return false;
+				if (_state == WorldState.Running && IsAuthority)
+				{
+					WorldModePermissions.Apply(this, Mode);
+					RootSlot?.GetComponent<WorldPermissionConfig>()?.Republish();
+				}
+				whole = true;
+			}
+			catch (Exception ex)
+			{
+				LumoraLogger.Error($"World: loading '{Name}' failed: {ex}");
+			}
+			// Done, whole or not: references resolve and leftovers are reported either way, as LoadWorld does.
+			control.FinishLoad();
+			whenDone?.Invoke(whole);
+			return true;
+		}, () => later.Count);
+	}
+
 	public string GetDiagnostics()
 	{
 		var sb = new System.Text.StringBuilder();
@@ -801,9 +921,19 @@ public class World : IPermissionWorldFacts
 		}
 	}
 
+	// This capability is minted only by the userspace bootstrap. Names, focus, local slot IDs,
+	// saves and network data cannot grant it, and assigning WorldManager.UserspaceWorld cannot either.
+	public bool IsUserspace { get; private init; }
+
+	internal static World CreateUserspace(Engine engine, Action<World> init)
+		=> CreateLocalWorld(engine, "Userspace", init, userspace: true);
+
 	public static World LocalWorld(Engine engine, string name, Action<World> init = null!)
+		=> CreateLocalWorld(engine, name, init, userspace: false);
+
+	private static World CreateLocalWorld(Engine engine, string name, Action<World> init, bool userspace)
 	{
-		var world = new World();
+		var world = new World { IsUserspace = userspace };
 		world.WorldName.Value = name;
 		world.AuthorityID = -1; // Local-only (no authority)
 		world.LocalID = -1;
@@ -929,6 +1059,7 @@ public class World : IPermissionWorldFacts
 		var world = BeginSession(name, port, hostUserName, visibility, maxUsers);
 		var payload = Task.Run(prepare);
 		bool integrated = false;
+		bool loaded = false;
 
 		world._pendingSessionStart = () =>
 		{
@@ -949,7 +1080,7 @@ public class World : IPermissionWorldFacts
 
 				// Platform node creation is collected rather than run, so integrating the tree costs the
 				// data model only. The nodes get built below, a bite per frame, and the world stays
-				// pre-Running for all of it.
+				// pre-Running for all of it. A staged load keeps the collection open until its last bite.
 				world.BeginDeferredHookCreation();
 				try
 				{
@@ -961,12 +1092,26 @@ public class World : IPermissionWorldFacts
 					// world is already registered, so an empty-but-live world beats a zombie one. -xlinka
 					LumoraLogger.Error($"World: integrating '{name}' failed: {ex}");
 				}
-				finally
-				{
-					world.EndDeferredHookCreation();
-				}
 
 				integrated = true;
+			}
+
+			if (!loaded)
+			{
+				bool done;
+				try
+				{
+					done = world.StepStagedLoad();
+				}
+				catch (Exception ex)
+				{
+					LumoraLogger.Error($"World: loading '{name}' failed: {ex}");
+					done = true;
+				}
+				if (!done)
+					return false;
+				loaded = true;
+				world.EndDeferredHookCreation();
 			}
 
 			if (!world.DrainDeferredHookCreations())
@@ -1063,19 +1208,19 @@ public class World : IPermissionWorldFacts
 
 		_initState = InitializationState.Created;
 		InitializationFailureReason = "";
-		LumoraLogger.Log($"World initializing data model (isAuthority={isAuthority})");
+		LumoraLogger.Debug($"World initializing data model (isAuthority={isAuthority})");
 
 		// Create reference controller BEFORE anything else
 		ReferenceController = new ReferenceController(this);
 
 		// Create sync controller first (doesn't need RefID)
 		SyncController = new SyncController(this);
-		LumoraLogger.Log("SyncController initialized");
+		LumoraLogger.Debug("SyncController initialized");
 
 		// Link arbitration + released-drive tracker. Rides alongside the sync controller: every drive link
 		// asks it for its target, and it feeds released drives back into the sync loop. -xlinka
 		LinkManager = new LinkManager(this);
-		LumoraLogger.Log("LinkManager initialized");
+		LumoraLogger.Debug("LinkManager initialized");
 
 		// Create worker manager for type encoding/decoding during sync
 		// Needs SyncController available so the type index table registers for replication.
@@ -1087,14 +1232,14 @@ public class World : IPermissionWorldFacts
 		_slotCollection.Initialize(this, null);
 		_userCollection = new Networking.Sync.ReplicatedUserCollection();
 		_userCollection.Initialize(this, null);
-		LumoraLogger.Log($"Network Collection initialized: SlotCollection={_slotCollection.ReferenceID}, UserCollection={_userCollection.ReferenceID}");
+		LumoraLogger.Debug($"Network Collection initialized: SlotCollection={_slotCollection.ReferenceID}, UserCollection={_userCollection.ReferenceID}");
 
 		// Clients must create shared world structures (RootSlot) in authority RefID space
 		// so incoming ParentSlotRef and other references resolve correctly.
 		// Local-only structures should explicitly use LocalAllocationBlockBegin where created.
 		if (!isAuthority)
 		{
-			LumoraLogger.Log("Client: Using authority RefID space for shared world structures");
+			LumoraLogger.Debug("Client: Using authority RefID space for shared world structures");
 		}
 
 		// Create root Slot (uses Authority RefID space on both host and client)
@@ -1106,7 +1251,7 @@ public class World : IPermissionWorldFacts
 		RootSlot.MarkAsWorldRoot();
 		RegisterSlot(RootSlot);
 
-		// Note: Godot scene attachment handled by WorldDriver wrapper
+		// Godot scene attachment is the WorldDriver wrapper's job.
 		// World itself is pure C# and doesn't use AddChild
 
 		// Network session is started via StartSession() or JoinSession()
@@ -1136,7 +1281,7 @@ public class World : IPermissionWorldFacts
 		{
 			usersSlot = RootSlot.AddSlot("Users");
 			usersSlot.Tag.Value = "UserRoot";
-			LumoraLogger.Log("Created Users container slot in world");
+			LumoraLogger.Debug("Created Users container slot in world");
 		}
 
 		// NO UserRootComponent here! Users container is just a parent slot.
@@ -1292,12 +1437,13 @@ public class World : IPermissionWorldFacts
 		_slotsByTag.Clear();
 		_rootSlots.Clear();
 		_users.Clear();
+		System.Threading.Volatile.Write(ref _userCount, 0);
 
 		_hookManager?.Dispose();
 
 		ReferenceController?.Reset();
 
-		// Note: Godot scene cleanup handled by WorldDriver wrapper
+		// Godot scene cleanup is the WorldDriver wrapper's job.
 	}
 
 	public void AddUser(User user)
@@ -1317,6 +1463,8 @@ public class World : IPermissionWorldFacts
 			if (!_users.Contains(user))
 			{
 				_users.Add(user);
+				System.Threading.Volatile.Write(ref _userCount, _users.Count);
+				_rosterChanges.Enqueue((user, true));
 				// Only register if not already registered (User constructor may have already registered)
 				if (!ReferenceController.ContainsObject(user.ReferenceID))
 				{
@@ -1326,10 +1474,13 @@ public class World : IPermissionWorldFacts
 				// Add to user replicator for network sync (only if not already present)
 				if (_userCollection != null && !_userCollection.ContainsKey(user.ReferenceID))
 				{
-					_userCollection.Add(user.ReferenceID, user, isNewlyCreated: true, skipSync: false);
+					using (EnterUserListScope())
+						_userCollection.Add(user.ReferenceID, user, isNewlyCreated: true, skipSync: false);
 				}
 
-				LumoraLogger.Log($"User added to world: {user.UserName.Value}");
+				// A peer's copy of a user is made before its fields decode, so its name is not there yet.
+				var shownName = string.IsNullOrEmpty(user.UserName.Value) ? "(name still decoding)" : user.UserName.Value;
+				LumoraLogger.Log($"User added to world: {shownName} {user.ReferenceID}");
 
 				// Trigger user joined event - ONLY on authority!
 				// Only host fires OnUserJoined events. Host's SimpleUserSpawn creates
@@ -1354,9 +1505,35 @@ public class World : IPermissionWorldFacts
 
 		if (!_userCollection.ContainsKey(id))
 		{
-			_userCollection.Add(id, user, isNewlyCreated, skipSync: false);
+			using (EnterUserListScope())
+				_userCollection.Add(id, user, isNewlyCreated, skipSync: false);
 		}
 	}
+
+	// The user list is the authority's record of who is in the session, kept by the engine as people arrive
+	// and leave. No script or edit writes it, and a Social or Event world's freeze is about the authored
+	// world, not about who may be in it: under the freeze every joiner was turned away at the door and
+	// nobody who left was ever taken off. Only the list operation itself runs in the scope; the joined and
+	// left events it leads to are queued and run outside it. -xlinka
+	private IDisposable? EnterUserListScope() => IsAuthority ? _dataModelPermissions?.EnterSystemBypass() : null;
+
+	// Rig parts the host's machine adds to its own body after the body is built (a hand's grabber and holder,
+	// its beam, a tracker's slot) are minted in the host's item byte like the rest of its equipment, so they
+	// read as the host's own under a frozen world's freeze with no pass through the gate. Opens only on the
+	// authority, only while the world is frozen and only where the nearest body is the host's own; anywhere
+	// else, a guest's rig included, it opens nothing. -xlinka
+	internal IDisposable? EnterHostRigScope(Slot? under)
+	{
+		if (HostItemByte == 0 || under == null || under.IsDestroyed || LocalUser is not { } host || !ReferenceEquals(under.ActiveUser, host))
+			return null;
+		return EnterLocalUserAllocation();
+	}
+
+	// The byte the host mints its own things in right now: its item byte while the world is frozen, else 0.
+	// In a world being built what the host makes is the world, so there it mints in the authority byte as it
+	// always has. A frozen world keeps the host's belongings apart from the world it serves, so the freeze
+	// that holds the world still leaves the host what it brought. 0 on every client. -xlinka
+	internal byte HostItemByte => _hostItemByte != 0 && IsAuthority && _dataModelPermissions.SocialLock ? _hostItemByte : (byte)0;
 
 	public void RemoveUser(User user)
 	{
@@ -1364,10 +1541,13 @@ public class World : IPermissionWorldFacts
 
 		lock (_users)
 		{
-			_users.Remove(user);
+			if (_users.Remove(user))
+				_rosterChanges.Enqueue((user, false));
+			System.Threading.Volatile.Write(ref _userCount, _users.Count);
 			ReferenceController?.UnregisterObject(user.ReferenceID);
 
-			_userCollection?.Remove(user.ReferenceID);
+			using (EnterUserListScope())
+				_userCollection?.Remove(user.ReferenceID);
 
 			LumoraLogger.Log($"User removed from world: {user.UserName.Value}");
 
@@ -1378,6 +1558,16 @@ public class World : IPermissionWorldFacts
 				var userByte = user.AllocationID.Value;
 				if (!RefIDConstants.IsValidUserByte(userByte))
 					userByte = user.ReferenceID.GetUserByte();
+
+				// An item byte goes with its user, the same as the byte it joined on.
+				var itemByte = user.ItemAllocationID.Value;
+				if (RefIDConstants.IsValidUserByte(itemByte) && itemByte != userByte)
+				{
+					ReferenceController?.PurgeUserByte(itemByte);
+					_refIDAllocator?.ReleaseUserAllocation(itemByte);
+					if (itemByte == _hostItemByte)
+						_hostItemByte = 0;
+				}
 
 				// Purge ALL of this user's objects (streams, body slots, etc.) from the RefID registry, not
 				// just the User object above. Otherwise the leftovers stay registered and the next joiner who
@@ -1427,15 +1617,11 @@ public class World : IPermissionWorldFacts
 		LocalUser = user;
 
 		// Only this machine knows what it is running on, so it stamps its own platform here rather than
-		// letting the host guess. Same reasoning as the group card below: the host authors what it can
-		// see, the peer authors what only it can know. -xlinka
+		// letting the host guess: the host authors what it can see, the peer authors what only it can
+		// know. -xlinka
 		if (user.UserPlatform.Value != Engine.CurrentPlatform)
 			user.UserPlatform.Value = Engine.CurrentPlatform;
 
-		// The host authors a joiner's identity fields, but not the group card: only the peer holding the
-		// account can read its own profile, so the joining client writes its own the moment it knows which
-		// user is its. -xlinka
-		user.ApplyRepresentedGroup(Engine.Current?.CDNClient?.RepresentedGroup);
 
 		// Only configure streams if world is already Running. For clients, streams are decoded AFTER
 		// SetLocalUser during FullBatch processing, so StartRunning() configures them instead.
@@ -1443,7 +1629,7 @@ public class World : IPermissionWorldFacts
 			user.ConfigureLocalTrackingStreams();
 
 		AddUser(user);
-		LumoraLogger.Log($"Local user set: {user.UserName.Value}");
+		LumoraLogger.Debug($"Local user set: {user.UserName.Value}");
 
 		// Arm owned-namespace building now we have the local user. No-op until the allocation byte is
 		// resolvable, the spawn driver retries if AllocationID hasn't synced yet. -xlinka
@@ -1456,14 +1642,19 @@ public class World : IPermissionWorldFacts
 			TriggerUserJoinedEvent(user);
 	}
 
-	// Resolve which RefID byte the local user's own content should mint into. On the host the local user IS
-	// the authority, so this returns the authority byte (host owns everything anyway). On a client it's the
-	// local user's allocation byte once known, else the byte carried in the user's own RefID (set even
-	// before AllocationID syncs), else authority as a last resort. -xlinka
+	// Resolve which RefID byte the local user's own content should mint into. On the host it is the host's
+	// item byte while the world is frozen, else the authority byte (in a world being built the host's things
+	// are the world). On a client it's the local user's allocation byte once known, else the byte carried in
+	// the user's own RefID (set even before AllocationID syncs), else authority as a last resort. -xlinka
 	private byte ResolveOwnedAllocationByte()
 	{
 		var u = LocalUser;
-		if (u == null || IsAuthority)
+		if (IsAuthority)
+		{
+			byte own = HostItemByte;
+			return own != 0 ? own : RefIDConstants.AUTHORITY_BYTE;
+		}
+		if (u == null)
 			return RefIDConstants.AUTHORITY_BYTE;
 
 		var b = u.AllocationID.Value;
@@ -1505,18 +1696,37 @@ public class World : IPermissionWorldFacts
 
 	// Run an action with the allocation context scoped to the local user's own namespace, so everything
 	// built inside - slots, components, sub-slots - is minted into and OWNED by the local user. The entry
-	// point a per-peer spawn uses to build its own equipment. On the host this is the authority byte (a
-	// no-op scope). -xlinka
+	// point a per-peer spawn uses to build its own equipment. On the host this is its item byte while the
+	// world is frozen, else the authority byte (a no-op scope). -xlinka
 	public IDisposable EnterLocalUserAllocation() => new OwnedAllocationScope(this, ResolveOwnedAllocationByte());
 
 	// Create a slot in the local user's own RefID namespace under the given parent. Networked (others see
 	// it) but OWNED by the local user, so the permission gate lets them keep mutating it with no system
 	// bypass. For a joining user's own equipment - NOT shared world content (that stays host-authoritative
 	// via AddSlot). -xlinka
-	public Slot AddLocalUserSlot(Slot parent, string name = "Slot")
+	public Slot AddLocalUserSlot(Slot parent, string name = "Slot") => AddSlotIn(parent, name, ResolveOwnedAllocationByte());
+
+	// What the local user brings into the world, a spawn, an import, a copy, a photo, is minted like its
+	// own equipment, with one difference on the host: its item byte takes only what the host may bring in
+	// at all. Where its role or the world's mode refuses spawning (an event) it stays in the world's byte,
+	// where the freeze refuses it as it always has. A guest's right to spawn is judged by the host when its
+	// things arrive. -xlinka
+	public IDisposable EnterSpawnAllocation() => new OwnedAllocationScope(this, ResolveSpawnAllocationByte());
+
+	public Slot AddSpawnSlot(Slot parent, string name = "Slot") => AddSlotIn(parent, name, ResolveSpawnAllocationByte());
+
+	private byte ResolveSpawnAllocationByte()
+	{
+		byte own = ResolveOwnedAllocationByte();
+		if (IsAuthority && own != RefIDConstants.AUTHORITY_BYTE
+			&& !_dataModelPermissions.AllowsDomain(LocalUser, DataModelPermissionDomain.Spawn))
+			return RefIDConstants.AUTHORITY_BYTE;
+		return own;
+	}
+
+	private Slot AddSlotIn(Slot parent, string name, byte b)
 	{
 		if (parent == null) throw new ArgumentNullException(nameof(parent));
-		var b = ResolveOwnedAllocationByte();
 		if (b == RefIDConstants.AUTHORITY_BYTE)
 			return parent.AddSlot(name);
 
@@ -1585,6 +1795,8 @@ public class World : IPermissionWorldFacts
 	// Lets the init callback run before user creation.
 	private void StartSessionNetwork(ushort port, SessionMetadata metadata = null!)
 	{
+		if (IsUserspace)
+			throw new InvalidOperationException("Private userspace cannot be networked.");
 		if (_session != null)
 		{
 			LumoraLogger.Warn("Session already started");
@@ -1607,7 +1819,7 @@ public class World : IPermissionWorldFacts
 
 			_refIDAllocator.Reset();
 
-			// NOTE: State remains InitializingNetwork here!
+			// State stays InitializingNetwork here.
 			// The caller (StartSession factory) will set Running AFTER init callback completes.
 			// This allows the init callback to modify the world before the DataModel lock check kicks in.
 
@@ -1628,9 +1840,14 @@ public class World : IPermissionWorldFacts
 		// User.InitializeWorker will advance the cursor for the user and its sync members.
 		var userRefId = ReferenceController.PeekID();
 		var hostUser = new User();
-		var resolvedName = string.IsNullOrWhiteSpace(userName) ? System.Environment.MachineName : userName;
-
-		hostUser.UserName.Value = resolvedName;
+		// The host names itself the way it names a joiner: the account it is signed into, or a guest name
+		// from its machine key. Only a world with no engine behind it (a bare harness) keeps the label it
+		// was handed. -xlinka
+		var engine = Engine.Current;
+		if (engine != null)
+			hostUser.ApplyAccount(engine.LocalAccount, Lumora.Core.Security.MachineIdentity.Local.MachineId);
+		else
+			hostUser.UserName.Value = string.IsNullOrWhiteSpace(userName) ? System.Environment.MachineName : userName;
 		hostUser.UserID.Value = userRefId.ToString();
 		hostUser.MachineID.Value = System.Environment.MachineName;
 		// Declared since the User class was written and never once assigned, so every user in every
@@ -1639,6 +1856,14 @@ public class World : IPermissionWorldFacts
 		hostUser.AllocationIDStart.Value = rangeStart;
 		hostUser.AllocationIDEnd.Value = rangeEnd;
 		hostUser.AllocationID.Value = userRefId.GetUserByte();
+
+		// The host's item byte comes out of the same pool joiners are given theirs from, so no joiner can
+		// ever be handed it. It gets the same start and script range a joiner's byte would. -xlinka
+		var items = _refIDAllocator.AllocateUserIDRange(hostUser);
+		_hostItemByte = items.UserByte;
+		ReferenceController.SetOwnedStartPosition(items.UserByte, items.Start.GetPosition());
+		ReferenceController.SetScriptFence(items.UserByte, RefIDConstants.ScriptRangeStart(items.Start.GetPosition()));
+		hostUser.ItemAllocationID.Value = items.UserByte;
 		hostUser.IsPresent.Value = true;
 		hostUser.PresentInWorld.Value = true;
 		hostUser.IsSilenced.Value = false;
@@ -1648,14 +1873,12 @@ public class World : IPermissionWorldFacts
 		hostUser.VRActive.Value = inputInterface?.IsVRActive ?? false;
 
 		hostUser.UserPlatform.Value = GetCurrentPlatform();
-		// The group this machine's account wears. Empty when signed out, which is the guest case. -xlinka
-		hostUser.ApplyRepresentedGroup(Engine.Current?.CDNClient?.RepresentedGroup);
 
 		LocalUser = hostUser;
 		_localUserSet = true; // host's local user is final - keep SetLocalUser's one-shot guard consistent. -xlinka
 		AddUserToCollection(hostUser, userRefId, isNewlyCreated: true);
 		hostUser.ConfigureLocalTrackingStreams();
-		LumoraLogger.Log($"Created host user '{resolvedName}' with RefID {userRefId}");
+		LumoraLogger.Debug($"Created host user '{hostUser.UserName.Value}' with RefID {userRefId}");
 		return hostUser;
 	}
 
@@ -1672,6 +1895,8 @@ public class World : IPermissionWorldFacts
 
 	public void JoinSession(Uri address)
 	{
+		if (IsUserspace)
+			throw new InvalidOperationException("Private userspace cannot join a network session.");
 		if (_session != null)
 		{
 			LumoraLogger.Warn("Session already active");
@@ -1695,8 +1920,12 @@ public class World : IPermissionWorldFacts
 		}
 	}
 
-	public async Task<bool> JoinSessionAsync(Uri address)
+	public Task<bool> JoinSessionAsync(Uri address) => JoinSessionAsync(new[] { address });
+
+	public async Task<bool> JoinSessionAsync(IReadOnlyList<Uri> addresses)
 	{
+		if (IsUserspace)
+			throw new InvalidOperationException("Private userspace cannot join a network session.");
 		if (_session != null)
 		{
 			LumoraLogger.Warn("Session already active");
@@ -1707,7 +1936,7 @@ public class World : IPermissionWorldFacts
 		{
 			NetworkInitStart();
 
-			_session = (await Session.JoinSessionAsync(this, new[] { address }))!;
+			_session = (await Session.JoinSessionAsync(this, addresses))!;
 			if (_session == null)
 			{
 				InitializationFailed();
@@ -1758,7 +1987,7 @@ public class World : IPermissionWorldFacts
 			if (user != null && user.ReferenceID == target)
 			{
 				SetLocalUser(user);
-				LumoraLogger.Log($"OnJoinGrantReceived: claimed already-synced local user '{user.UserName.Value}' (RefID: {target})");
+				LumoraLogger.Debug($"OnJoinGrantReceived: claimed already-synced local user '{user.UserName.Value}' (RefID: {target})");
 				return;
 			}
 		}
@@ -1780,6 +2009,7 @@ public class World : IPermissionWorldFacts
 		}
 
 		_awaitingLocalUserFrames = 0;
+		_awaitingLocalUser = true;
 		LumoraLogger.Warn($"OnFullStateReceived: full state in but LocalUser not resolved yet " +
 			$"(target {_session?.Sync?.LocalUserRefIDToInit}). Deferring Running, retrying up to {MaxAwaitLocalUserFrames} pumps " +
 			$"(t+{TimeSinceDataModelInit:F1}s).");
@@ -1803,7 +2033,7 @@ public class World : IPermissionWorldFacts
 
 		if (TryReadyLocalUserForRunning())
 		{
-			LumoraLogger.Log($"Local user resolved after {_awaitingLocalUserFrames} deferred pump(s), going Running.");
+			LumoraLogger.Debug($"Local user resolved after {_awaitingLocalUserFrames} deferred pump(s), going Running.");
 			StartRunning();
 			return;
 		}
@@ -1820,7 +2050,7 @@ public class World : IPermissionWorldFacts
 	// Pumped each session control-drain so join progress advances while the world is still pre-Running. -xlinka
 	public void PumpJoinProgress()
 	{
-		if (_state == WorldState.InitializingDataModel)
+		if (_state == WorldState.InitializingDataModel && _awaitingLocalUser)
 			TickAwaitingLocalUser();
 	}
 
@@ -1858,7 +2088,7 @@ public class World : IPermissionWorldFacts
 		var oldState = _state;
 		_initState = InitializationState.InitializingNetwork;
 		_state = WorldState.InitializingNetwork;
-		LumoraLogger.Log("World entering network initialization");
+		LumoraLogger.Debug("World entering network initialization");
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 
@@ -1873,7 +2103,7 @@ public class World : IPermissionWorldFacts
 		var oldState = _state;
 		_initState = InitializationState.WaitingForJoinGrant;
 		_state = WorldState.WaitingForJoinGrant;
-		LumoraLogger.Log("Waiting for join grant");
+		LumoraLogger.Debug("Waiting for join grant");
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 
@@ -1889,7 +2119,7 @@ public class World : IPermissionWorldFacts
 		_initState = InitializationState.InitializingDataModel;
 		_state = WorldState.InitializingDataModel;
 		_dataModelInitStartTime = TotalTime; // join window opened - clock for bounded local-user wait. -xlinka
-		LumoraLogger.Log("Starting data model initialization");
+		LumoraLogger.Debug("Starting data model initialization");
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 
@@ -1953,7 +2183,7 @@ public class World : IPermissionWorldFacts
 		if (!IsAuthority && LocalUser != null)
 		{
 			LocalUser.ConfigureLocalTrackingStreams();
-			LumoraLogger.Log($"Configured tracking streams for local user '{LocalUser.UserName.Value}' on world Running");
+			LumoraLogger.Debug($"Configured tracking streams for local user '{LocalUser.UserName.Value}' on world Running");
 		}
 
 		OnStateChanged?.Invoke(oldState, _state);
@@ -2173,10 +2403,15 @@ public class World : IPermissionWorldFacts
 					continue;
 
 				double elapsedMs = (System.Diagnostics.Stopwatch.GetTimestamp() - started) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-				if (elapsedMs >= StartupDrainBudgetMs)
+				if (elapsedMs >= StartupDrainBudgetMs || Engine.LoadAllowanceSpent(started, Engine.LoadShareActions))
+				{
+					Engine.ChargeLoad(started);
 					return; // rest of the backlog next update
+				}
 			}
 
+			if (budgeted)
+				Engine.ChargeLoad(started);
 			_startupActionBacklog = false;
 			_burstDraining = false;
 		}
@@ -2221,8 +2456,14 @@ public class World : IPermissionWorldFacts
 			if (pending > 0)
 				return "WorldLoad.Building".AsLocale("Building {0} remaining", pending);
 
+			if (_stagedLoad != null)
+				return "WorldLoad.Loading".AsLocale("Loading ({0} so far)", _stagedLoadCount);
+
 			if (IsSessionStartPending)
 				return "WorldLoad.Integrating".AsLocale("Integrating");
+
+			if (IsSettling)
+				return "WorldLoad.Settling".AsLocale("Finishing up");
 
 			if (_state == WorldState.Running)
 				return "WorldLoad.Ready".AsLocale("Ready");
@@ -2241,6 +2482,72 @@ public class World : IPermissionWorldFacts
 	// True while this world is still assembling itself - pre-Running, mid-integrate, or with platform
 	// nodes still queued behind a load scope.
 	public bool IsLoading => IsSessionStartPending || _state != WorldState.Running || PendingHookCreations > 0;
+
+	// True while this world is still working through the backlog its arrival (or a big spawn) queued:
+	// a burst of synchronous actions, platform nodes behind a load scope, or a startup, change or hook
+	// backlog. Decides whether its hook updates share the frame's load allowance.
+	public bool IsDrainingArrival
+	{
+		get
+		{
+			lock (_syncLock)
+			{
+				if (_startupActionBacklog || _burstDraining || _synchronousActions.Count >= BurstDrainThreshold
+					|| _deferredHookCreations.Count > 0)
+					return true;
+			}
+			return _updateManager?.IsDrainingBacklog ?? false;
+		}
+	}
+
+	// True while a RUNNING world has not settled yet: its own arrival backlog, provider refreshes still
+	// waiting, or main-thread builds and shader compiles the platform still has queued. The world manager
+	// holds a new world's first focus on this, so the fill runs behind the world the user is standing in.
+	// Deliberately not IsLoading: that one means "still decoding" to everything that already reads it.
+	// The platform counts are global, so another world's uploads hold it too; the hold has a timeout. -xlinka
+	public bool IsSettling
+	{
+		get
+		{
+			if (_state != WorldState.Running || IsDestroyed)
+				return false;
+			return IsDrainingArrival
+				|| Assets.AssetRefreshQueue.PendingFor(this) > 0
+				|| Engine.PlatformWorkPending > 0
+				|| Assets.ShaderBuildStatus.Pending > 0;
+		}
+	}
+
+	// What settling is still waiting on: objects still to set up (queued actions, component startups and
+	// changes, hook updates, asset refreshes), platform uploads and shader compiles. Uploads and shaders are
+	// counted for the whole platform, so another world's work shows here too.
+	public WorldSettleCounts CountSettle()
+	{
+		int actions;
+		lock (_syncLock)
+		{
+			actions = _synchronousActions.Count + _deferredHookCreations.Count;
+		}
+		int startups = _updateManager?.StartupQueueCount ?? 0;
+		int changes = _updateManager?.QueuedChangeCount ?? 0;
+		int hooks = _updateManager?.PendingHookUpdateCount ?? 0;
+		int objects = actions + startups + changes + hooks + Assets.AssetRefreshQueue.PendingFor(this);
+		return new WorldSettleCounts(objects, Engine.PlatformWorkPending, Assets.ShaderBuildStatus.Pending);
+	}
+
+	// The same, as one line for the join indicator and the load readouts. Empty when nothing is left to count.
+	public string DescribeSettle()
+	{
+		var counts = CountSettle();
+		var parts = new List<string>(3);
+		if (counts.Objects > 0)
+			parts.Add("WorldLoad.SettleObjects".AsLocale("{0} objects to set up", counts.Objects.ToString("N0")).Resolve());
+		if (counts.Uploads > 0)
+			parts.Add("WorldLoad.SettleUploads".AsLocale("{0} uploads", counts.Uploads.ToString("N0")).Resolve());
+		if (counts.Shaders > 0)
+			parts.Add("WorldLoad.SettleShaders".AsLocale("{0} shaders compiling", counts.Shaders.ToString("N0")).Resolve());
+		return string.Join(" · ", parts);
+	}
 
 	internal void QueueHookCreation(Action create)
 	{
@@ -2278,7 +2585,11 @@ public class World : IPermissionWorldFacts
 			lock (_syncLock)
 			{
 				if (_deferredHookCreations.Count == 0)
+				{
+					if (ran > 0)
+						Engine.ChargeLoad(started);
 					return true;
+				}
 				create = _deferredHookCreations.Dequeue();
 			}
 
@@ -2294,10 +2605,12 @@ public class World : IPermissionWorldFacts
 			ran++;
 			if (ran < StartupDrainMinActions)
 				continue;
-			if ((System.Diagnostics.Stopwatch.GetTimestamp() - started) * ticksToMs >= StartupDrainBudgetMs)
+			if ((System.Diagnostics.Stopwatch.GetTimestamp() - started) * ticksToMs >= StartupDrainBudgetMs
+				|| Engine.LoadAllowanceSpent(started, Engine.LoadShareHookCreations))
 				break;
 		}
 
+		Engine.ChargeLoad(started);
 		lock (_syncLock)
 		{
 			return _deferredHookCreations.Count == 0;
@@ -2351,11 +2664,13 @@ public class World : IPermissionWorldFacts
 
 	// Slow-frame accounting. One summary line per window instead of a warning per frame: a warning is a
 	// stack-traced push on the platform side, and an import or a spawn burst produces dozens of legitimately
-	// slow frames in a row. The first slow frame after a quiet spell logs at once so the timing is visible,
-	// the rest of the window is folded into a count with the worst breakdown and the hook types behind it.
-	// Startup gets a grace period: the first seconds of a world are all hitches by nature. -xlinka
+	// slow frames in a row. A stall logs at once so a lockup always leaves its timing behind; every other
+	// slow frame is folded into the window's count with the worst breakdown and the hook types behind it,
+	// and the window reports even when it saw only one. Startup gets a grace period: the first seconds of a
+	// world are all hitches by nature. -xlinka
 	private const double SlowFrameMs = 25.0;
-	private const double SlowReportWindowSeconds = 5.0;
+	private const double StallFrameMs = 250.0;
+	private const double SlowReportWindowSeconds = 30.0;
 	private const double SlowStartupGraceSeconds = 8.0;
 	private int _slowFrameCount;
 	private double _slowWindowStart;
@@ -2379,13 +2694,11 @@ public class World : IPermissionWorldFacts
 			_slowWorstDetail = $"sync={sync:F0} pre={pre:F0} scripts={scripts:F0} comp={comp:F0} change={change:F0} hooks={hooks:F0} end={end:F0}"
 				+ (who.Length > 0 ? $" [{who}]" : "");
 		}
-		if (_slowFrameCount == 1)
-			// Back at Log level. Demoting this left a SIXTY SECOND stall reporting "0 slow frames": the
-			// window summary below only fires on a SECOND slow frame, so one catastrophic frame logged
-			// nothing at all. This line fires once per quiet spell, which is rare and is exactly the
-			// evidence you want when something locks up. -xlinka
-			LumoraLogger.Log($"World.Update slow frame {total:F0}ms: {_slowWorstDetail}");
-		else if (Time.TotalTime - _slowWindowStart >= SlowReportWindowSeconds)
+		// A sixty second stall once reported "0 slow frames" when the only line for it waited on a second
+		// slow frame that never came. A stall is never folded away. -xlinka
+		if (total >= StallFrameMs)
+			LumoraLogger.Log($"World.Update stalled {total:F0}ms: sync={sync:F0} pre={pre:F0} scripts={scripts:F0} comp={comp:F0} change={change:F0} hooks={hooks:F0} end={end:F0}");
+		if (Time.TotalTime - _slowWindowStart >= SlowReportWindowSeconds)
 			FlushSlowFrameReport();
 	}
 
@@ -2410,8 +2723,8 @@ public class World : IPermissionWorldFacts
 	}
 	private void FlushSlowFrameReport()
 	{
-		if (_slowFrameCount > 1)
-			LumoraLogger.Log($"World.Update: {_slowFrameCount} slow frames in {Time.TotalTime - _slowWindowStart:F1}s, worst {_slowWorstMs:F0}ms ({_slowWorstDetail})");
+		if (_slowFrameCount > 0)
+			LumoraLogger.Log($"World.Update: {_slowFrameCount} slow frame{(_slowFrameCount == 1 ? "" : "s")} in {Time.TotalTime - _slowWindowStart:F1}s, worst {_slowWorstMs:F0}ms ({_slowWorstDetail})");
 		_slowFrameCount = 0;
 		_slowWorstMs = 0;
 		_slowWorstDetail = "";
@@ -2549,6 +2862,10 @@ public class World : IPermissionWorldFacts
 			}
 
 			UpdateCoroutines((float)scaledDelta);
+
+			// The bodies still moving bring their last physics step into the data model before anything reads
+			// a pose this frame.
+			Physics.Step();
 
 			// Hand out link grants before anything reads a drive. A link whose target resolved since the
 			// last frame (arrived over the wire, finished loading, or was freed by another driver letting
@@ -2886,6 +3203,18 @@ public class World : IPermissionWorldFacts
 
 	private void RunWorldEvents()
 	{
+		while (_rosterChanges.TryDequeue(out var change))
+		{
+			try
+			{
+				(change.Added ? UserAdded : UserRemoved)?.Invoke(change.User);
+			}
+			catch (Exception ex)
+			{
+				LumoraLogger.Error($"Error in user roster handler: {ex.Message}");
+			}
+		}
+
 		if (_joinedUsers.Count > 0)
 		{
 			foreach (var user in _joinedUsers)
@@ -3052,7 +3381,7 @@ public class World : IPermissionWorldFacts
 				{
 					if (indicator != null)
 					{
-						LumoraLogger.Log($"Created session join indicator in world '{currentWorld.Name}' for joining '{Name}'");
+						LumoraLogger.Debug($"Created session join indicator in world '{currentWorld.Name}' for joining '{Name}'");
 					}
 					else
 					{
@@ -3185,6 +3514,7 @@ public class World : IPermissionWorldFacts
 		}
 
 		_users?.Clear();
+		System.Threading.Volatile.Write(ref _userCount, 0);
 		_slotsByTag?.Clear();
 		_rootSlots?.Clear();
 		_joinedUsers?.Clear();

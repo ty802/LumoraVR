@@ -50,7 +50,7 @@ public static class EngineVersion
     public const int Patch = 0;
     public const string Suffix = "alpha";
     public static readonly string VersionString = $"{Major}.{Minor}.{Patch}-{Suffix}";
-    public static readonly DateTime BuildDate = new DateTime(2024, 1, 1); // Update with actual build
+    public static readonly DateTime BuildDate = new DateTime(2024, 1, 1);
 }
 
 public class EngineMetrics
@@ -144,6 +144,17 @@ public class Engine : IDisposable
     public ContentCache? ContentCache { get; private set; }
 
     private Action<Lumora.Nexus.Cloud.Cdn.RepresentedGroupInfo?>? _representedGroupChanged;
+    private Action? _accountIdentityChanged;
+    private int _accountRefresh;
+
+    // The account this machine is signed into, as the accounts service shows it to everyone else. Null
+    // while signed out, and until the first answer lands after a sign in.
+    public AccountCard? LocalAccount { get; private set; }
+
+    // The name this machine goes by: the account's when signed in, a guest name from the machine key when
+    // not. Hosts work it out for themselves from what a joiner proves; this is what we show for our own.
+    public string LocalUserName => LocalAccount?.Username
+        ?? AccountCard.GuestName(Lumora.Core.Security.MachineIdentity.Local.MachineId);
 
     public LocalDB? LocalDB { get; set; }
 
@@ -219,6 +230,17 @@ public class Engine : IDisposable
 
     public static bool IsMobilePlatform => CurrentPlatform == Lumora.Core.Platform.Android;
 
+    // A mobile build that draws to its own screen (a phone) rather than handing every frame to a headset
+    // compositor. Set by the platform layer with CurrentPlatform.
+    public static bool IsHandheld { get; set; }
+
+    // Linux on the headset is still Linux (Steam, file access and native libraries stay available).
+    public static bool IsSteamFrameStandalone { get; set; }
+
+    public static bool IsStandaloneHeadset => IsMobilePlatform && !IsHandheld || IsSteamFrameStandalone;
+
+    public static bool UseConstrainedResources => IsMobilePlatform || IsStandaloneHeadset;
+
     // Running on Wine or Proton, which reports itself as Windows in every other way. CurrentPlatform
     // stays Windows on purpose, because the Win32 API this process is built against really is what it
     // is talking to; this is the separate question of whether the MACHINE underneath is one. See
@@ -230,6 +252,75 @@ public class Engine : IDisposable
     public static string? WineVersion => WinePlatform.Version;
 
     public static bool IsEditor { get; set; } = false;
+
+    // Builds the platform layer still has queued for the main thread (textures, meshes, skins handed back
+    // from worker threads). Read by the settle gate; the platform sets the provider.
+    public static Func<int>? PlatformWorkPendingProvider { get; set; }
+
+    public static int PlatformWorkPending => PlatformWorkPendingProvider?.Invoke() ?? 0;
+
+    // ONE allowance a frame for load work, shared by every queue that is draining a backlog: sync-action
+    // bursts, platform nodes behind a load scope, startup and change bursts, hook updates of a world still
+    // draining its arrival, queued provider refreshes and the platform's main-thread builds.
+    // Each queue's own constant budget, summed, let a join that filled them all at once take ~39 ms a
+    // frame against an 11 ms VR frame. Those constants stay as ceilings; between them the queues now get
+    // a quarter of the display's frame.
+    //
+    // Priority is how much of the allowance a queue may see spent before it stops. The decode backlog
+    // stops early, so startups, changes and the hooks that put things on screen still get a share after
+    // it in the same frame. Every queue keeps its own floor (its first item or its minimum count), so
+    // nothing stalls once the allowance is gone. Apart from the platform's build drain, a queue that is
+    // not in a burst never looks at it, which keeps the same-frame contract small queues have. The window
+    // opens at the top of Update; the platform's drain runs before that in the frame, so it takes
+    // whatever the worlds left. -xlinka
+    public const double LoadShareActions = 0.4;
+    public const double LoadShareHookCreations = 0.5;
+    public const double LoadShareStartups = 0.6;
+    public const double LoadShareChanges = 0.8;
+    public const double LoadShareAll = 1.0;
+    private const double LoadAllowanceFraction = 0.25;
+    private const double MinLoadAllowanceMs = 2.0;
+    private const double MaxLoadAllowanceMs = 6.0;
+    private static long _loadAllowanceTicks = LoadTicksFor(60.0);
+    private static long _loadSpentTicks;
+
+    // A frame already far longer than the display's, under a heavy simulation say, gives load work the same
+    // share of the frame it really is, up to six display frames' worth. Ten thousand spawned props starting at
+    // their few milliseconds a frame, at ten frames a second, took half a minute to appear; each of those frames
+    // grows by about a quarter instead. Every queue's own ceiling scales with it.
+    private const double MaxLoadScale = 6.0;
+    private static double _displayFrameMs = 1000.0 / 60.0;
+    private static double _loadScale = 1.0;
+
+    public static double LoadScale => _loadScale;
+
+    public static double LoadAllowanceMs => _loadAllowanceTicks * 1000.0 / Stopwatch.Frequency;
+
+    // The headset's rate in VR, the monitor's otherwise. Anything not a real rate is ignored.
+    public static void SetDisplayRefreshRate(double hz)
+    {
+        if (hz > 1.0 && !double.IsNaN(hz) && !double.IsInfinity(hz))
+        {
+            Interlocked.Exchange(ref _loadAllowanceTicks, LoadTicksFor(hz));
+            _displayFrameMs = 1000.0 / hz;
+        }
+    }
+
+    private static long LoadTicksFor(double hz)
+    {
+        double ms = System.Math.Clamp(1000.0 / hz * LoadAllowanceFraction, MinLoadAllowanceMs, MaxLoadAllowanceMs);
+        return (long)(ms * Stopwatch.Frequency / 1000.0);
+    }
+
+    // True once this frame's shared spend plus what the caller ran since startedTicks reaches its share.
+    public static bool LoadAllowanceSpent(long startedTicks, double share)
+        => Interlocked.Read(ref _loadSpentTicks) + (Stopwatch.GetTimestamp() - startedTicks)
+           >= (long)(Interlocked.Read(ref _loadAllowanceTicks) * share * _loadScale);
+
+    public static void ChargeLoad(long startedTicks)
+        => Interlocked.Add(ref _loadSpentTicks, Stopwatch.GetTimestamp() - startedTicks);
+
+    private static void OpenLoadWindow() => Interlocked.Exchange(ref _loadSpentTicks, 0L);
 
     #endregion
 
@@ -318,6 +409,7 @@ public class Engine : IDisposable
 
         State = EngineState.Initializing;
         _engineTimer.Start();
+        EngineWarmUp.Start();
 
         WireNexus();
 
@@ -362,20 +454,21 @@ public class Engine : IDisposable
             {
                 var deviceId = Environment.MachineName;
                 CDNClient = new LumoraClient(deviceId, "LumoraVR", EngineVersion.VersionString);
+                AccountSettings.Attach(CDNClient);
+                InventorySync.Attach(CDNClient);
+                OnlinePresence.Attach(CDNClient);
                 var cachePath = Lumora.Core.Persistence.PathResolver.Resolve("Cache");
                 ContentCache = new ContentCache(CDNClient, cachePath);
+                AssetCacheBudget.Start();
                 await Task.CompletedTask;
             }, cancellationToken);
 
             AudioSystem = new Lumora.Core.Audio.AudioSystem();
             AudioManager = new();
-            foreach (string name in new string[] { "Music", "Effects", "Voice" })
+            foreach (string name in new string[] { "Music", "Effects" })
             {
                 if (AudioManager.Mixer.TryCreateAudioBus(name, out var bus) && AudioManager.Mixer.TryGetAudioBusByName("Master", out var master))
                     bus.Target = master;
-            }
-            if(AudioManager.Mixer.TryGetAudioBusByName("Voice",out var voicebus)){
-                voicebus.Mute = true;
             }
 
 
@@ -398,6 +491,8 @@ public class Engine : IDisposable
             {
                 _representedGroupChanged = OnRepresentedGroupChanged;
                 CDNClient.RepresentedGroupChanged += _representedGroupChanged;
+                _accountIdentityChanged = OnAccountIdentityChanged;
+                CDNClient.AccountIdentityChanged += _accountIdentityChanged;
             }
 
             LumoraLogger.Log("Post-initialization setup...");
@@ -501,14 +596,16 @@ public class Engine : IDisposable
                 "LocalHome", (ushort)_localHomePort.Value, GetHostUserName(), "",
                 SessionVisibility.Private, 16,
                 () => WorldStorage.ReadTree(savePath),
-                (w, tree) =>
+                (w, tree) => WorldStorage.IntegrateTreeStaged(w, tree, savePath, loaded =>
                 {
-                    if (!WorldStorage.IntegrateTree(w, tree, savePath))
+                    if (loaded)
                     {
-                        LumoraLogger.Warn("Engine: LocalHome save failed to load; falling back to template.");
-                        WorldTemplates.ApplyTemplate(w, "LocalHome");
+                        Templates.LocalHomeWorldTemplate.RemoveRetired(w);
+                        return;
                     }
-                })
+                    LumoraLogger.Warn("Engine: LocalHome save failed to load; falling back to template.");
+                    WorldTemplates.ApplyTemplate(w, "LocalHome");
+                }))
             : WorldManager?.StartSession("LocalHome", (ushort)_localHomePort.Value, GetHostUserName(), "LocalHome", null!);
         if (world == null)
         {
@@ -536,20 +633,61 @@ public class Engine : IDisposable
         }
     }
 
-    private string GetHostUserName()
+    private string GetHostUserName() => LocalUserName;
+
+    // Fires off the cloud client's thread after a sign in has its key published, or after a sign out.
+    // The card is read back from the public record, the same answer any host gets about us, and then every
+    // world hears it: where we host, our own user changes in place; where we joined, the host is asked to
+    // check the new account. A newer change supersedes an older one still waiting on the service. -xlinka
+    private void OnAccountIdentityChanged()
     {
-        return Environment.MachineName;
+        var client = CDNClient;
+        if (client == null)
+            return;
+        int ticket = System.Threading.Interlocked.Increment(ref _accountRefresh);
+
+        _ = Task.Run(async () =>
+        {
+            AccountCard? card = null;
+            try
+            {
+                // Our own name needs no published key, only the account id, so a sign in whose key could
+                // not be published still names us in the worlds we host.
+                string? id = null;
+                if (client.IsAuthenticated)
+                {
+                    var resolved = await client.ResolveAccountUserId();
+                    id = resolved.Success ? resolved.Data : null;
+                }
+                if (!string.IsNullOrEmpty(id))
+                {
+                    var answer = await client.GetPlatformUserAsync(id);
+                    if (answer.Success)
+                        card = AccountCard.From(answer.Data);
+                }
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Warn($"Engine: could not read our own account card ({ex.Message})");
+            }
+            if (ticket != System.Threading.Volatile.Read(ref _accountRefresh))
+                return;
+
+            LocalAccount = card;
+            LumoraLogger.Log($"Engine: local identity is now '{LocalUserName}'{(card != null ? " (account)" : " (guest)")}");
+            ApplyLocalAccountToWorlds();
+        });
     }
 
-    // Fires off the cloud client's thread, so every write goes through the owning world's own queue. Only
-    // the LOCAL user of each world gets touched: everyone else's card arrives as a delta from the peer that
-    // owns that account. -xlinka
-    private void OnRepresentedGroupChanged(Lumora.Nexus.Cloud.Cdn.RepresentedGroupInfo? group)
+    private void ApplyLocalAccountToWorlds()
     {
         var manager = WorldManager;
         if (manager == null)
             return;
 
+        var card = LocalAccount;
+        var name = LocalUserName;
+        var machineKey = Lumora.Core.Security.MachineIdentity.Local.MachineId;
         var worlds = manager.Worlds;
         for (int i = 0; i < worlds.Count; i++)
         {
@@ -559,11 +697,27 @@ public class Engine : IDisposable
             world.RunSynchronously(() =>
             {
                 var user = world.LocalUser;
-                if (user != null && !user.IsDestroyed)
-                    user.ApplyRepresentedGroup(group);
+                if (user == null || user.IsDestroyed)
+                    return;
+                if (world.IsAuthority)
+                {
+                    user.ApplyAccount(card, machineKey);
+                    if (world.Session?.Metadata is { } metadata)
+                        metadata.HostUsername = name;
+                }
+                else
+                {
+                    world.Session?.Connections?.SendAccountChange();
+                }
             });
         }
     }
+
+    // The card is the host's to write from the account's public record, so wearing a different group is
+    // the same as signing in again: our own card is read back, worlds we host change in place, and every
+    // host we joined is asked to check the account and read the record anew. -xlinka
+    private void OnRepresentedGroupChanged(Lumora.Nexus.Cloud.Cdn.RepresentedGroupInfo? group)
+        => OnAccountIdentityChanged();
 
     public World GetPendingUserSpaceSetup() => _pendingUserSpaceSetup;
 
@@ -573,7 +727,21 @@ public class Engine : IDisposable
 
     public void JoinServer(string address, int port, string worldName = "RemoteWorld")
     {
-        WorldManager?.JoinSession(worldName, address, (ushort)port);
+        JoinThroughLoader(worldName, new UriBuilder("lnl", address, port).Uri);
+    }
+
+    // Joins that do not start in the world browser come through here, so they get the same join
+    // indicator and the same focus hold as one that does. Main thread.
+    public void JoinThroughLoader(string worldName, Uri uri)
+    {
+        var loader = WorldLoadingService;
+        if (loader == null)
+        {
+            WorldManager?.JoinSession(worldName, uri);
+            return;
+        }
+        if (loader.JoinSessionAsync(worldName, uri, focusWhenReady: true) == null)
+            LumoraLogger.Warn($"Engine: join of {uri} not started, another join is still in progress");
     }
 
     // Join via NAT punch-through: punch a hole to the session host through the relay
@@ -603,10 +771,12 @@ public class Engine : IDisposable
 
             // The punch callback runs on the client's poll task; hop to the main
             // update thread to create/join the world.
-            if (wm?.FocusedWorld != null)
-                wm.FocusedWorld.RunSynchronously(() => wm.JoinSession("RemoteWorld", ep.Address.ToString(), (ushort)ep.Port));
+            var punched = new UriBuilder("lnl", ep.Address.ToString(), ep.Port).Uri;
+            var hop = wm?.FocusedWorld ?? wm?.UserspaceWorld;
+            if (hop != null && !hop.IsDestroyed)
+                hop.RunSynchronously(() => JoinThroughLoader("RemoteWorld", punched));
             else
-                wm?.JoinSession("RemoteWorld", ep.Address.ToString(), (ushort)ep.Port);
+                JoinThroughLoader("RemoteWorld", punched);
 
             // Hold the punch socket open briefly so the NAT mapping stays warm while
             // the direct connection establishes, then release it. (Hard NATs that
@@ -639,7 +809,7 @@ public class Engine : IDisposable
         LumoraLogger.Log($"Engine: relay join for session '{identifier}' via {addr}:{port}");
 
         var relayUri = new Uri($"{Networking.RelayNetworkManager.SCHEME}://relay/{Uri.EscapeDataString(identifier)}");
-        WorldManager?.JoinSession("RemoteWorld", relayUri);
+        JoinThroughLoader("RemoteWorld", relayUri);
     }
 
     #endregion
@@ -652,6 +822,8 @@ public class Engine : IDisposable
             return;
 
         _metrics.BeginFrame();
+        _loadScale = System.Math.Clamp(delta * 1000.0 / _displayFrameMs, 1.0, MaxLoadScale);
+        OpenLoadWindow();
         OnPreUpdate?.Invoke(delta);
 
         try
@@ -693,6 +865,7 @@ public class Engine : IDisposable
         }
 
         OnPostUpdate?.Invoke(delta);
+        GcPacer.EndFrame();
         _metrics.EndFrame(delta);
     }
 
@@ -801,12 +974,20 @@ public class Engine : IDisposable
             CDNClient.RepresentedGroupChanged -= _representedGroupChanged;
             _representedGroupChanged = null;
         }
+        if (CDNClient != null && _accountIdentityChanged != null)
+        {
+            CDNClient.AccountIdentityChanged -= _accountIdentityChanged;
+            _accountIdentityChanged = null;
+        }
 
         // Dispose in reverse initialization order
         DisposeSubsystem("WorldManager", () => { WorldManager?.Dispose(); WorldManager = null!; });
         DisposeSubsystem("AudioSystem", () => { AudioSystem?.Dispose(); AudioSystem = null!; });
         DisposeSubsystem("AudioManager", () => { AudioManager.Dispose(); });
-        DisposeSubsystem("ContentCache", () => { ContentCache?.Dispose(); ContentCache = null; CDNClient?.Dispose(); CDNClient = null; });
+        // The queue stops before the client it sends through goes; what it had not sent waits for next run.
+        DisposeSubsystem("InventorySync", () => InventorySync.Use(null));
+        DisposeSubsystem("OnlinePresence", OnlinePresence.Stop);
+        DisposeSubsystem("ContentCache", () => { AssetCacheBudget.Stop(); ContentCache?.Dispose(); ContentCache = null; CDNClient?.Dispose(); CDNClient = null; });
         DisposeSubsystem("AssetManager", () => { AssetManager?.Dispose(); AssetManager = null!; });
         DisposeSubsystem("CoroutineManager", () => { CoroutineManager?.Dispose(); CoroutineManager = null!; });
         DisposeSubsystem("InputInterface", () => { InputInterface?.Dispose(); InputInterface = null!; });
@@ -870,4 +1051,3 @@ public class Engine : IDisposable
 
     #endregion
 }
-

@@ -415,7 +415,7 @@ public class SyncPlayback : ConflictingSyncElement, ISyncMemberCopy
             NowSeconds,
             float.IsFinite(position) ? position : 0f,
             float.IsFinite(speed) ? speed : 1f,
-            sync: false,
+            sync: LoadReplicates,
             change: false);
     }
 

@@ -36,7 +36,7 @@ public class GlobalCoroutineManager : IDisposable
         }
 
         TotalCoroutinesStarted++;
-        Logger.Log($"GlobalCoroutineManager: Started coroutine '{coroutine.Name}'");
+        Logger.Debug($"GlobalCoroutineManager: Started coroutine '{coroutine.Name}'");
 
         return coroutine;
     }
@@ -70,7 +70,7 @@ public class GlobalCoroutineManager : IDisposable
         _coroutinesToAdd.Clear();
         _coroutinesToRemove.Clear();
 
-        Logger.Log("GlobalCoroutineManager: Stopped all coroutines");
+        Logger.Debug("GlobalCoroutineManager: Stopped all coroutines");
     }
 
     public void Update(float deltaTime)
@@ -90,7 +90,7 @@ public class GlobalCoroutineManager : IDisposable
             {
                 _activeCoroutines.RemoveAt(i);
                 TotalCoroutinesCompleted++;
-                Logger.Log($"GlobalCoroutineManager: Coroutine '{coroutine.Name}' completed");
+                Logger.Debug($"GlobalCoroutineManager: Coroutine '{coroutine.Name}' completed");
             }
         }
 

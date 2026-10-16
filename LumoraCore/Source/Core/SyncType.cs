@@ -60,7 +60,7 @@ public class SyncType : SyncField<Type>
     {
         string? name = node is DataTreeValue { IsNull: false } value ? value.Extract<string>() : null;
         Type resolved = string.IsNullOrEmpty(name) ? null! : WorkerManager.GetType(name!);
-        InternalSetValue(in resolved, sync: false, change: false);
+        InternalSetValue(in resolved, sync: LoadReplicates, change: false);
     }
 
     public override string ToString() => Value?.FullName ?? "<null>";

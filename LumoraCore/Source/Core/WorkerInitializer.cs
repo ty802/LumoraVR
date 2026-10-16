@@ -5,8 +5,8 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Linq.Expressions;
 using System.Reflection;
+using System.Reflection.Emit;
 using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core;
@@ -20,13 +20,42 @@ internal static class WorkerInitializer
         if (workerType == null)
             throw new ArgumentNullException(nameof(workerType));
 
+        // Two threads building the same type both finish, and both get the one that went in first.
         if (!Cache.TryGetValue(workerType, out var info))
-        {
-            info = Initialize(workerType);
-            Cache.TryAdd(workerType, info);
-        }
+            info = Cache.GetOrAdd(workerType, Initialize(workerType));
 
         return info;
+    }
+
+    // Every concrete worker type in the assembly, ahead of its first use. Returns how many.
+    internal static int WarmUp(Assembly assembly)
+    {
+        Type?[] types;
+        try
+        {
+            types = assembly.GetTypes();
+        }
+        catch (ReflectionTypeLoadException ex)
+        {
+            types = ex.Types;
+        }
+
+        int count = 0;
+        foreach (var type in types)
+        {
+            if (type == null || type.IsAbstract || type.ContainsGenericParameters || !typeof(Worker).IsAssignableFrom(type))
+                continue;
+            try
+            {
+                GetInitInfo(type);
+                count++;
+            }
+            catch (Exception)
+            {
+                // A type that cannot be read here is read, and reported, when something first makes one.
+            }
+        }
+        return count;
     }
 
     internal static WorkerInitInfo GetInitInfo(IWorker worker)
@@ -44,7 +73,7 @@ internal static class WorkerInitializer
         GatherWorkerFields(workerType, fields);
 
         info.SyncMemberFields = fields.ToArray();
-        info.SyncMemberGetters = BuildSyncMemberGetters(info.SyncMemberFields);
+        info.FillSyncMembers = BuildMemberFill(workerType, info.SyncMemberFields);
         info.SyncMemberNames = new string[info.SyncMemberFields.Length];
         info.SyncMemberNonpersistent = new bool[info.SyncMemberFields.Length];
         info.SyncMemberNondrivable = new bool[info.SyncMemberFields.Length];
@@ -185,30 +214,38 @@ internal static class WorkerInitializer
     // several passes at init and again on every save, duplicate and join. One compiled delegate per field
     // per type turns those into a plain field load. Discovery is untouched: same fields, same order, this
     // only changes how they are READ. -xlinka
-    private static Func<Worker, ISyncMember>[] BuildSyncMemberGetters(FieldInfo[] fields)
+    // One small method per worker type that reads every member field into a table in one call. It was a
+    // compiled expression per FIELD, about 125 us each, so a world full of types it had not met yet paid
+    // for thousands of compiles on its first open. -xlinka
+    private static Action<Worker, ISyncMember?[]> BuildMemberFill(Type workerType, FieldInfo[] fields)
     {
-        var getters = new Func<Worker, ISyncMember>[fields.Length];
-
-        for (int i = 0; i < fields.Length; i++)
+        try
         {
-            var field = fields[i];
-            try
+            var method = new DynamicMethod("FillSyncMembers_" + workerType.Name, null,
+                new[] { typeof(Worker), typeof(ISyncMember?[]) }, typeof(Worker).Module, skipVisibility: true);
+            var il = method.GetILGenerator();
+            for (int i = 0; i < fields.Length; i++)
             {
-                var worker = Expression.Parameter(typeof(Worker), "worker");
-                var access = Expression.Field(Expression.Convert(worker, field.DeclaringType!), field);
-                getters[i] = Expression.Lambda<Func<Worker, ISyncMember>>(
-                    Expression.Convert(access, typeof(ISyncMember)), worker).Compile();
+                il.Emit(OpCodes.Ldarg_1);
+                il.Emit(OpCodes.Ldc_I4, i);
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Castclass, fields[i].DeclaringType!);
+                il.Emit(OpCodes.Ldfld, fields[i]);
+                il.Emit(OpCodes.Stelem_Ref);
             }
-            catch (Exception)
-            {
-                // No runtime IL generation (a fully AOT'd target would be the case): fall back to the
-                // reflected read. Slower, identical result.
-                var reflected = field;
-                getters[i] = w => (reflected.GetValue(w) as ISyncMember)!;
-            }
+            il.Emit(OpCodes.Ret);
+            return method.CreateDelegate<Action<Worker, ISyncMember?[]>>();
         }
-
-        return getters;
+        catch (Exception)
+        {
+            // No runtime IL generation (a fully AOT'd target would be the case): the reflected read.
+            // Slower, identical result.
+            return (worker, table) =>
+            {
+                for (int i = 0; i < fields.Length; i++)
+                    table[i] = fields[i].GetValue(worker) as ISyncMember;
+            };
+        }
     }
 
     private static void GatherWorkerFields(Type workerType, List<FieldInfo> fields)

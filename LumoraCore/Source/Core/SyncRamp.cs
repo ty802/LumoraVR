@@ -213,7 +213,7 @@ public class SyncRamp<T> : ConflictingSyncElement, ISyncMemberCopy
             ? DataTreeCoder.Decode<T>(rateNode)
             : default!;
 
-        SetAll(baseValue, rate, NowSeconds, running, sync: false, change: false);
+        SetAll(baseValue, rate, NowSeconds, running, sync: LoadReplicates, change: false);
     }
 
     // Four plain values with no sync member of their own; without this a duplicated ramp comes out at

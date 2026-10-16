@@ -111,4 +111,26 @@ public interface IWorldElement : IPermissionTarget
 
 		return ReferenceEquals(slot, rootSlot) || slot.IsDescendantOf(rootSlot);
 	}
+
+	// Up from this element's slot to the actor's root, looking for a grab the actor is holding: whatever is
+	// under a held object came along with it. Only asked of something that already reads as under the
+	// actor's root, so the walk ends there. -xlinka
+	bool IPermissionTarget.IsCarriedBy(IPermissionActor actor)
+	{
+		if (actor?.RootElement is not Slot rootSlot)
+			return false;
+
+		IWorldElement? node = this;
+		for (int depth = 0; node != null && node is not Slot && depth < 8; depth++)
+			node = (node as Component)?.Slot ?? (node as SyncElement)?.Parent ?? (node as Worker)?.Parent;
+
+		var slot = node as Slot;
+		for (int depth = 0; slot != null && !ReferenceEquals(slot, rootSlot) && depth < 512; depth++)
+		{
+			if (slot.GrabSurface is { } surface && ReferenceEquals(surface.CurrentHolder, actor))
+				return true;
+			slot = slot.Parent;
+		}
+		return false;
+	}
 }

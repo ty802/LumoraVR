@@ -20,6 +20,7 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
     private bool _runningOnDestroying;
     private bool _isChangeDirty;
     private bool _wasEnabled;
+    private bool? _userspaceOnly;
 
     internal ContainerWorker<C> Container { get; private set; } = null!;
 
@@ -28,7 +29,9 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
     public bool IsChangeDirty => _isChangeDirty;
     public int LastChangeUpdateIndex { get; private set; }
 
-    public virtual bool UserspaceOnly => false;
+    public virtual bool UserspaceOnly => _userspaceOnly ??= ComponentExecutionPolicy.IsUserspaceOnly(GetType());
+
+    public bool IsExecutionAllowed => !UserspaceOnly || ComponentExecutionPolicy.IsUserspace(World);
 
     protected virtual bool CanRunUpdates => true;
 
@@ -63,6 +66,9 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
         if (container == null)
             throw new ArgumentNullException(nameof(container));
 
+        // Covers collection/direct initialization as well as the public attach helpers. Refuse
+        // before worker registration, OnAwake, OnInit, hooks or callbacks can touch local services.
+        ComponentExecutionPolicy.Demand(GetType(), container.World);
         IsInInitPhase = true;
         Container = container;
         InitializeWorker(container);
@@ -136,6 +142,8 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
 
     private void RunEnabledChanged()
     {
+        if (!IsExecutionAllowed)
+            return;
         if (!IsStarted)
         {
             _wasEnabled = Enabled.Value;
@@ -187,6 +195,8 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
 
     protected override void SyncMemberChanged(IChangeable member)
     {
+        if (!IsExecutionAllowed)
+            return;
         OnSyncMemberChanged(member);
     }
 
@@ -223,6 +233,8 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
 
     protected void TriggerChangedEvent()
     {
+        if (!IsExecutionAllowed)
+            return;
         OnImmediateChanged();
         Changed?.Invoke(this);
     }
@@ -263,6 +275,8 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
 
     internal void RunOnAttach()
     {
+        if (!IsExecutionAllowed)
+            return;
         OnAttach();
     }
 
@@ -273,6 +287,8 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
 
     internal void RunOnPaste()
     {
+        if (!IsExecutionAllowed)
+            return;
         OnPaste();
     }
 
@@ -311,6 +327,8 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
 
     public virtual void InternalRunStartup()
     {
+        if (!IsExecutionAllowed)
+            return;
         if (IsInInitPhase)
         {
             EndInitPhase();
@@ -345,7 +363,7 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
 
     public virtual void InternalRunUpdate()
     {
-        if (IsDestroyed || !Enabled.Value || !CanRunUpdates)
+        if (IsDestroyed || !IsExecutionAllowed || !Enabled.Value || !CanRunUpdates)
         {
             return;
         }
@@ -358,6 +376,8 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
     {
         _isChangeDirty = false;
         LastChangeUpdateIndex = changeUpdateIndex;
+        if (!IsExecutionAllowed)
+            return;
         OnChanges();
     }
 
@@ -446,11 +466,14 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
 
                 if (member is IChangeable changeable)
                 {
-                    changeable.Changed += OnSyncMemberChangedInternal;
+                    changeable.Changed += _memberChanged ??= OnSyncMemberChangedInternal;
                 }
             }
         }
     }
+
+    // One handler shared by every member, made once rather than once per member.
+    private Action<IChangeable>? _memberChanged;
 
     private void OnSyncMemberChangedInternal(IChangeable member)
     {
@@ -490,7 +513,7 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
 
     public bool HasEventHandler(World.WorldEvent eventType)
     {
-        return InitInfo.ReceivesWorldEvent[(int)eventType];
+        return IsExecutionAllowed && InitInfo.ReceivesWorldEvent[(int)eventType];
     }
 
     public virtual void OnFocusChanged(World.WorldFocus focus)

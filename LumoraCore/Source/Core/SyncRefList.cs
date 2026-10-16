@@ -14,9 +14,23 @@ public class SyncRefList<T> : SyncElementList<SyncRef<T>>, IEnumerable<T?> where
 
     public SyncRefList()
     {
-        ElementsAdded += (list, idx, count) => OnChanged?.Invoke(this);
+        ElementsAdded += (list, idx, count) =>
+        {
+            for (int i = idx; i < idx + count; i++)
+                GetElement(i).OnTargetChange += OnElementTargetChanged;
+            OnChanged?.Invoke(this);
+        };
+        ElementsRemoving += (list, idx, count) =>
+        {
+            for (int i = idx; i < idx + count; i++)
+                GetElement(i).OnTargetChange -= OnElementTargetChanged;
+        };
         ElementsRemoved += (list, idx, count) => OnChanged?.Invoke(this);
     }
+
+    // A reference can resolve long after the list entry arrives over the network. Consumers such
+    // as skeleton builders must hear that arrival even though the list's length did not change.
+    private void OnElementTargetChanged(SyncRef<T> reference) => OnChanged?.Invoke(this);
 
     public SyncRefList(IWorldElement owner) : this()
     {

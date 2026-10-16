@@ -68,6 +68,11 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
     public readonly Sync<ulong> AllocationIDStart = new();
     public readonly Sync<ulong> AllocationIDEnd = new();
     public readonly Sync<byte> AllocationID = new();
+
+    // The host's second byte, reserved when the host user is made. While the world is frozen what the host
+    // makes for itself is minted here, so it reads as the host's own the way a guest's things read as
+    // theirs, and the authority byte stays the world's. 0 for every other user. -xlinka
+    public readonly Sync<byte> ItemAllocationID = new();
     public readonly Sync<int> Ping = new();
     public readonly Sync<bool> IsPresent = new();
     public readonly Sync<bool> IsSilenced = new();
@@ -92,6 +97,9 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
     public readonly Sync<string> RuntimeVersion = new();
     public readonly Sync<bool> DashOpen = new();
     public readonly Sync<Components.DesktopViewMode> ViewMode = new();
+    public readonly Sync<Input.Chirality> PrimaryHand = new(Input.Chirality.Right);
+    // Streaming, recording, or showing a camera on their screen: everyone sees a live mark on them.
+    public readonly Sync<bool> IsLive = new();
 
     // The host's side of its link to this user, written by the host once a second: the share of packets
     // it had to send again, reliable packets still waiting to go out, what arrived from them in the last
@@ -106,17 +114,28 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
 
     // THE GROUP THIS USER IS WEARING
     //
-    // Written by the user themself (not the host): the account service is the authority on who is in which
-    // group, and the client that owns the account is the only peer that can read its own profile. So these
-    // are ordinary replicated fields, filled from the cloud client's represented group and re-filled when
-    // the wearer changes it. A guest carries empty strings and a clear colour, which is what the nametag
-    // reads as "no card". -xlinka
+    // Host written: the account service says which group an account wears, and the host reads it from the
+    // public record of the account the user proved, alongside the name. A peer never writes its own card,
+    // so nobody can wear a group they are not in. A guest carries empty strings and a clear colour, which
+    // is what the nametag reads as "no card". -xlinka
     public readonly Sync<string> GroupId = new();
     public readonly Sync<string> GroupTag = new();
     public readonly Sync<string> GroupName = new();
     public readonly Sync<string> GroupIconHash = new();
     public readonly Sync<string> GroupRole = new();
     public readonly Sync<Math.color> GroupColor = new();
+
+    // THE ACCOUNT THIS USER PROVED
+    //
+    // Host written, like the name: filled from the accounts service once the account has signed the host's
+    // challenge, and cleared when the user signs out. A guest carries a clear colour and no supporter mark.
+    // -xlinka
+    public readonly Sync<Math.color> NameColor = new();
+    public readonly Sync<bool> IsSupporter = new();
+    public readonly Sync<string> SupporterTier = new();
+    public readonly Sync<Math.color> SupporterColor = new();
+    // Set by the accounts service's staff on the account record, never by anybody in a session.
+    public readonly Sync<bool> IsStaff = new();
     public readonly UserStreamStorage userStreams = new();
     public readonly Sync<uint> streamConfiguration = new();
 
@@ -173,6 +192,12 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
         : AllocationIDEnd.Value != 0 && AllocationID.Value == RefIDConstants.AUTHORITY_BYTE);
     public bool IsDisposed { get; private set; }
 
+    // Whether this byte is the host's item byte. Never the authority byte.
+    public bool IsItemByte(byte userByte) => RefIDConstants.IsValidUserByte(userByte) && ItemAllocationID.Value == userByte;
+
+    // Whether ids minted in this byte are this user's: the byte it joined on, or the host's item byte.
+    public bool HoldsByte(byte userByte) => AllocationID.Value == userByte || IsItemByte(userByte);
+
     // PERMISSION GATE VIEW
     // The gate identifies a user by the host-assigned allocation byte, never by anything the client
     // sends. AllocationID reads 0 until the host's value syncs across, which is why the gate falls back
@@ -181,6 +206,8 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
     ulong IPermissionActor.Id => ReferenceID.RawValue;
 
     byte IPermissionActor.AllocationByte => AllocationID.Value;
+
+    byte IPermissionActor.ItemAllocationByte => ItemAllocationID.Value;
 
     string? IPermissionActor.DisplayName => UserName?.Value ?? ReferenceID.ToString();
 
@@ -195,8 +222,8 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
 
     string? IPermissionActor.AccountKey => AccountId?.Value;
 
-    // Push the wearer's group card onto the replicated fields. Null clears them, which is also what a
-    // signed-out or guest user carries. Every write is equality-gated: a Sync field has no gate of its own
+    // Host side, from the proven account's record. Null clears the card, which is also what a signed-out
+    // or guest user carries. Every write is equality-gated: a Sync field has no gate of its own
     // and this runs on every world the local user is in whenever the cloud client re-reads the profile, so
     // an ungated apply would push six deltas per world for a card that never moved. -xlinka
     public void ApplyRepresentedGroup(Nexus.Cloud.Cdn.RepresentedGroupInfo? group)
@@ -212,6 +239,31 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
             GroupColor.Value = tint;
     }
 
+    public bool IsGuest => string.IsNullOrEmpty(AccountId.Value);
+
+    // Host side. A card is an account the host has seen prove itself; null is a guest, named after the
+    // machine key the join proved and never after anything the peer typed. -xlinka
+    public void ApplyAccount(AccountCard? card, string? machineKey)
+    {
+        if (World != null && !World.IsAuthority)
+            return;
+
+        SetIfChanged(UserName, card?.Username ?? AccountCard.GuestName(machineKey));
+        SetIfChanged(AccountId, card?.AccountId ?? string.Empty);
+        SetIfChanged(SupporterTier, card?.SupporterTier ?? string.Empty);
+        if (IsSupporter.Value != (card?.IsSupporter ?? false))
+            IsSupporter.Value = card?.IsSupporter ?? false;
+        var nameColor = card?.NameColor ?? default;
+        if (!NameColor.Value.Equals(nameColor))
+            NameColor.Value = nameColor;
+        var supporterColor = card?.SupporterColor ?? default;
+        if (!SupporterColor.Value.Equals(supporterColor))
+            SupporterColor.Value = supporterColor;
+        if (IsStaff.Value != (card?.IsStaff ?? false))
+            IsStaff.Value = card?.IsStaff ?? false;
+        ApplyRepresentedGroup(card?.Group);
+    }
+
     private static void SetIfChanged(Sync<string> field, string value)
     {
         if (field.Value != value)
@@ -221,28 +273,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
     // "#RRGGBB" as the service stores it. Anything unparseable is a clear colour, which the nametag reads
     // as "fall back to the plate's own panel tint" rather than painting a card in whatever the garbage
     // happened to decode to.
-    private static Math.color ParseGroupColor(string? hex)
-    {
-        if (string.IsNullOrEmpty(hex))
-            return default;
-        var span = hex.AsSpan();
-        if (span.Length > 0 && span[0] == '#')
-            span = span.Slice(1);
-        if (span.Length != 6 && span.Length != 8)
-            return default;
-        if (!int.TryParse(span.Slice(0, 2), System.Globalization.NumberStyles.HexNumber, null, out int r)
-            || !int.TryParse(span.Slice(2, 2), System.Globalization.NumberStyles.HexNumber, null, out int g)
-            || !int.TryParse(span.Slice(4, 2), System.Globalization.NumberStyles.HexNumber, null, out int b))
-        {
-            return default;
-        }
-        int a = 255;
-        if (span.Length == 8 && !int.TryParse(span.Slice(6, 2), System.Globalization.NumberStyles.HexNumber, null, out a))
-            a = 255;
-        // Written in sRGB the way a colour picker hands it over, decoded once here so everything downstream
-        // gets a linear value.
-        return new Math.color(r / 255f, g / 255f, b / 255f, a / 255f).ToLinear();
-    }
+    private static Math.color ParseGroupColor(string? hex) => AccountCard.ParseHex(hex);
 
     public void Destroy()
     {
@@ -353,6 +384,10 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
 
     private string MachineAudioKey => MachineID?.Value ?? string.Empty;
 
+    // Up to double: a quiet talker can be brought up past unity, and the master limiter keeps that from
+    // clipping.
+    public const float MaxLocalVolume = 2f;
+
     // How loud this person is FOR ME. Host silencing is absolute and short-circuits it; everything else
     // is a per-category gain on the audio system, written under both the stable key and the machine key
     // so a user who signs in mid-session keeps the level I already set for them.
@@ -378,6 +413,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
             var system = Engine.Current?.AudioSystem;
             if (system == null)
                 return;
+            value = float.IsNaN(value) ? 0f : System.Math.Clamp(value, 0f, MaxLocalVolume);
             system.SetCategoryVolume(StableAudioKey, value);
             system.SetCategoryVolume(MachineAudioKey, value);
         }
@@ -420,7 +456,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
                 if (value != null)
                 {
                     var scope = World?.LocalUser == this ? "local" : "authority";
-                    LumoraLogger.Log($"User: Registered UserRoot for {scope} user '{UserName.Value}'");
+                    LumoraLogger.Debug($"User: Registered UserRoot for {scope} user '{UserName.Value}'");
                 }
             }
             else
@@ -459,9 +495,21 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
             MachineID.MarkHostOnly();
             AccountId.MarkHostOnly();
             AllocationID.MarkHostOnly();
+            ItemAllocationID.MarkHostOnly();
             AllocationIDStart.MarkHostOnly();
             AllocationIDEnd.MarkHostOnly();
             IsSilenced.MarkHostOnly(); // host/platform-imposed silence, a guest can't lift it off themselves. -xlinka
+            NameColor.MarkHostOnly();
+            IsSupporter.MarkHostOnly();
+            SupporterTier.MarkHostOnly();
+            SupporterColor.MarkHostOnly();
+            IsStaff.MarkHostOnly();
+            GroupId.MarkHostOnly();
+            GroupTag.MarkHostOnly();
+            GroupName.MarkHostOnly();
+            GroupIconHash.MarkHostOnly();
+            GroupRole.MarkHostOnly();
+            GroupColor.MarkHostOnly();
             PacketLoss.MarkHostOnly();
             QueuedMessages.MarkHostOnly();
             DeltaMessages.MarkHostOnly();
@@ -528,7 +576,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
             if (syncManager != null && !syncManager.LocalUserRefIDToInit.IsNull && ReferenceID == syncManager.LocalUserRefIDToInit)
             {
                 World.SetLocalUser(this);
-                LumoraLogger.Log($"User.Initialize: Set local user '{UserName.Value}' (RefID: {ReferenceID})");
+                LumoraLogger.Debug($"User.Initialize: Set local user '{UserName.Value}' (RefID: {ReferenceID})");
             }
         }
     }
@@ -738,7 +786,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
             }
         }
 
-        LumoraLogger.Log($"ConfigureLocalTrackingStreams: Configured {StreamCount} streams for local user");
+        LumoraLogger.Debug($"ConfigureLocalTrackingStreams: Configured {StreamCount} streams for local user");
     }
 
     private void EnsureTrackingStreamsInitialized()
@@ -794,8 +842,13 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
         userStreams.OnElementAdded -= OnStreamAdded;
         userStreams.OnElementRemoved -= OnStreamRemoved;
 
-        userStreams.Clear();
-        StreamGroupManager?.Clear();
+        // A user going away takes its streams along. On the authority that is the engine closing the record
+        // of someone who left, not an edit, and a Social or Event world's freeze refused it half way. -xlinka
+        using (World is { IsAuthority: true } world ? world.DataModelPermissions?.EnterSystemBypass() : null)
+        {
+            userStreams.Clear();
+            StreamGroupManager?.Clear();
+        }
         _trackingStreams.Clear();
         _justAddedStreams.Clear();
 

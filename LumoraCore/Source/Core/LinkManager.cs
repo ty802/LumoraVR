@@ -241,7 +241,7 @@ public class LinkManager
 
         foreach (var user in world.GetAllUsers())
         {
-            if (user.AllocationID.Value == authorByte)
+            if (user.HoldsByte(authorByte))
                 return MayWrite(user, target);
         }
         return false;

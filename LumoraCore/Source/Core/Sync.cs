@@ -199,6 +199,32 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         InternalSetValue(in value, sync: false, change: change);
     }
 
+    // A simulation's own write, a physics step's pose or velocity for a member nothing links: it skips the
+    // gates a hand edit goes through (who may write, the config lock), whose answer is the same for every step of
+    // every body, and still dirties the member for sync and raises its change. False leaves the write to the
+    // ordinary setter, which knows what to do with a link.
+    internal bool SetSimulatedValue(T value)
+    {
+        if (IsDisposed || IsLinked || IsConfigLocked || ModificationBlocked)
+            return false;
+        if (SyncCoder.Equals(_value, value))
+            return true;
+        _value = value;
+        WasChanged = true;
+        if (GenerateSyncData)
+            InvalidateSyncElement();
+        BlockModification();
+        try
+        {
+            ValueChanged();
+        }
+        finally
+        {
+            UnblockModification();
+        }
+        return true;
+    }
+
     // Bypasses the IsDriven check so drives can push values.
     internal void SetDrivenValue(T value)
     {
@@ -315,8 +341,8 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
     public override void Load(DataTreeNode node, LoadControl control)
     {
         var value = DataTreeCoder.Decode<T>(node);
-        // Pure load: don't generate network sync data or fire change events.
-        InternalSetValue(in value, sync: false, change: false);
+        // No change events on a load; sent only into a running world.
+        InternalSetValue(in value, sync: LoadReplicates, change: false);
     }
 
     public override string ParentHierarchyToString()
@@ -366,6 +392,8 @@ public class Sync<T> : SyncField<T>
         base.ValueChanged();
         OnChanged?.Invoke(_value);
     }
+
+    internal override bool DeltaIsCurrentValue => true;
 
     public Sync() : base()
     {

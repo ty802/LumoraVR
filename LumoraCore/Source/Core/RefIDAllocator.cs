@@ -7,11 +7,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Manages RefID range allocation for users.
-/// Each user gets a unique byte (1-253) for their ID domain.
-/// Authority uses byte 0, local objects use byte 254.
-/// </summary>
+// Each user gets one byte (1-253) as its ID domain; authority is byte 0, local objects byte 254.
 public class RefIDAllocator
 {
     private byte _nextUserByte = RefIDConstants.FIRST_USER_BYTE;
@@ -21,14 +17,12 @@ public class RefIDAllocator
     // Track latest position for each user byte (for save/load)
     private readonly ulong[] _latestUserPosition = new ulong[256];
 
-    // Track which user bytes are allocated and to whom
     private readonly Dictionary<byte, User> _userByteToUser = new Dictionary<byte, User>();
 
     // Bytes from users who left, ready to be handed out again so a long session with lots of
     // join/leave churn doesn't burn through the 253 slots and faceplant. Lowest free byte first. -xlinka
     private readonly SortedSet<byte> _freedUserBytes = new SortedSet<byte>();
 
-    // Statistics
     private long _totalAllocations;
     private long _authorityAllocations;
     private long _localAllocations;
@@ -45,9 +39,6 @@ public class RefIDAllocator
 
     #region Allocation
 
-    /// <summary>
-    /// Allocate an ID range for a new user.
-    /// </summary>
     public RefIDRange AllocateUserIDRange(User user = null!)
     {
         lock (_lock)
@@ -80,7 +71,7 @@ public class RefIDAllocator
                 _userByteToUser[userByte] = user;
             }
 
-            LumoraLogger.Log($"Allocated ID range for user byte {userByte}: {range}");
+            LumoraLogger.Debug($"Allocated ID range for user byte {userByte}: {range}");
 
             return range;
         }
@@ -118,36 +109,24 @@ public class RefIDAllocator
         return resume;
     }
 
-    /// <summary>
-    /// Allocate an ID range for a new user (tuple version for compatibility).
-    /// </summary>
     public (RefID start, RefID end) AllocateUserIDRangeTuple(User user = null!)
     {
         var range = AllocateUserIDRange(user);
         return (range.Start, range.End);
     }
 
-    /// <summary>
-    /// Get the authority's ID range (always uses byte 0).
-    /// </summary>
     public RefIDRange GetAuthorityIDRange()
     {
         return RefIDRange.Authority;
     }
 
-    /// <summary>
-    /// Get the local allocation ID range.
-    /// </summary>
     public RefIDRange GetLocalIDRange()
     {
         return RefIDRange.Local;
     }
 
-    /// <summary>
-    /// Release a user's allocation when they leave. The byte goes back into the free pool so a future
-    /// joiner can reuse it; the per-byte position counter is deliberately left alone so reused bytes
-    /// keep minting fresh IDs instead of replaying old ones.
-    /// </summary>
+    // The byte goes back to the free pool; its position counter is left alone on purpose so a reused
+    // byte keeps minting fresh IDs instead of replaying old ones.
     public void ReleaseUserAllocation(byte userByte)
     {
         lock (_lock)
@@ -160,7 +139,7 @@ public class RefIDAllocator
                 _freedUserBytes.Add(userByte);
             }
 
-            LumoraLogger.Log($"Released allocation for user byte {userByte}");
+            LumoraLogger.Debug($"Released allocation for user byte {userByte}");
         }
     }
 
@@ -168,10 +147,6 @@ public class RefIDAllocator
 
     #region Position Tracking
 
-    /// <summary>
-    /// Update latest position tracking for a user byte.
-    /// Called after allocation to track highest used position.
-    /// </summary>
     public void UpdateLatestPosition(RefID id)
     {
         byte userByte = id.GetUserByte();
@@ -184,7 +159,6 @@ public class RefIDAllocator
                 _latestUserPosition[userByte] = position;
             }
 
-            // Update statistics
             _totalAllocations++;
             if (userByte == RefIDConstants.AUTHORITY_BYTE)
                 _authorityAllocations++;
@@ -193,10 +167,6 @@ public class RefIDAllocator
         }
     }
 
-    /// <summary>
-    /// Get the latest position for a user byte.
-    /// Used when resuming allocation after load.
-    /// </summary>
     public ulong GetLatestPosition(byte userByte)
     {
         lock (_lock)
@@ -205,10 +175,6 @@ public class RefIDAllocator
         }
     }
 
-    /// <summary>
-    /// Set the latest position for a user byte.
-    /// Used when loading world state.
-    /// </summary>
     public void SetLatestPosition(byte userByte, ulong position)
     {
         lock (_lock)
@@ -217,9 +183,6 @@ public class RefIDAllocator
         }
     }
 
-    /// <summary>
-    /// Get the next ID that would be allocated for a user byte.
-    /// </summary>
     public RefID PeekNextID(byte userByte)
     {
         lock (_lock)
@@ -232,9 +195,6 @@ public class RefIDAllocator
 
     #region Query Methods
 
-    /// <summary>
-    /// Get the number of user bytes already allocated.
-    /// </summary>
     public int AllocatedUserCount
     {
         get
@@ -247,24 +207,12 @@ public class RefIDAllocator
         }
     }
 
-    /// <summary>
-    /// Get the maximum number of users supported.
-    /// </summary>
     public int MaxUserCount => RefIDConstants.MAX_USERS;
 
-    /// <summary>
-    /// Get the number of remaining user slots.
-    /// </summary>
     public int RemainingUserSlots => MaxUserCount - AllocatedUserCount;
 
-    /// <summary>
-    /// Check if more users can be allocated.
-    /// </summary>
     public bool CanAllocateMoreUsers => RemainingUserSlots > 0;
 
-    /// <summary>
-    /// Get the user associated with a user byte.
-    /// </summary>
     public User GetUserForByte(byte userByte)
     {
         lock (_lock)
@@ -273,9 +221,6 @@ public class RefIDAllocator
         }
     }
 
-    /// <summary>
-    /// Get the user that owns a specific RefID.
-    /// </summary>
     public User GetOwner(RefID refId)
     {
         if (refId.IsNull || refId.IsLocalID || refId.IsAuthorityID)
@@ -284,9 +229,6 @@ public class RefIDAllocator
         return GetUserForByte(refId.GetUserByte());
     }
 
-    /// <summary>
-    /// Check if a RefID belongs to a specific user.
-    /// </summary>
     public bool BelongsToUser(RefID refId, User user)
     {
         if (user == null || refId.IsNull)
@@ -299,9 +241,6 @@ public class RefIDAllocator
         }
     }
 
-    /// <summary>
-    /// Get IDs allocated count for a specific user byte.
-    /// </summary>
     public ulong GetAllocationCount(byte userByte)
     {
         lock (_lock)
@@ -310,9 +249,6 @@ public class RefIDAllocator
         }
     }
 
-    /// <summary>
-    /// Get the utilization percentage for a user byte's allocation space.
-    /// </summary>
     public double GetUtilization(byte userByte)
     {
         lock (_lock)
@@ -325,33 +261,21 @@ public class RefIDAllocator
 
     #region Statistics
 
-    /// <summary>
-    /// Total RefIDs allocated across all domains.
-    /// </summary>
     public long TotalAllocations
     {
         get { lock (_lock) return _totalAllocations; }
     }
 
-    /// <summary>
-    /// RefIDs allocated in authority domain.
-    /// </summary>
     public long AuthorityAllocations
     {
         get { lock (_lock) return _authorityAllocations; }
     }
 
-    /// <summary>
-    /// RefIDs allocated in local domain.
-    /// </summary>
     public long LocalAllocations
     {
         get { lock (_lock) return _localAllocations; }
     }
 
-    /// <summary>
-    /// Get diagnostic information about the allocator.
-    /// </summary>
     public string GetDiagnostics()
     {
         lock (_lock)
@@ -378,9 +302,6 @@ public class RefIDAllocator
 
     #region Lifecycle
 
-    /// <summary>
-    /// Reset the allocator to initial state.
-    /// </summary>
     public void Reset()
     {
         lock (_lock)
@@ -397,7 +318,7 @@ public class RefIDAllocator
                 _latestUserPosition[i] = 1;
             }
 
-            LumoraLogger.Log("RefIDAllocator reset");
+            LumoraLogger.Debug("RefIDAllocator reset");
         }
     }
 

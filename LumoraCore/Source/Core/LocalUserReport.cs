@@ -31,5 +31,13 @@ internal static class LocalUserReport
             : DesktopHeadDrive.ResolveMode(user.Root?.Slot?.GetComponent<UserInputState>());
         if (user.ViewMode.Value != mode)
             user.ViewMode.Value = mode;
+
+        var hand = EngineSettings.PrimaryHand;
+        if (user.PrimaryHand.Value != hand)
+            user.PrimaryHand.Value = hand;
+
+        bool live = Photos.LiveStatus.IsLive;
+        if (user.IsLive.Value != live)
+            user.IsLive.Value = live;
     }
 }

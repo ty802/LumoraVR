@@ -52,12 +52,17 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
     // before its startup runs, so ApplyChanges must not fire until then. - xlinka
     private bool _hookReady;
 
+    // How many times something has asked for an apply. A hook doing work of its own every frame compares it with
+    // the count it last saw, instead of asking after every field that could have changed.
+    public int ApplyRequests { get; private set; }
+
     // Queue this component for hook ApplyChanges at the next ProcessHookUpdates
     // drain (end of frame, post-decode). Sync field setters call into this via
     // OnChanges, so we never fire Hook.ApplyChanges synchronously mid-decode.
     // - xlinka
     internal void RunApplyChanges()
     {
+        ApplyRequests++;
         if (Hook != null && _hookReady && World != null)
         {
             World.UpdateManager?.RegisterHookUpdate(this);

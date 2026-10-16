@@ -10,15 +10,8 @@ using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Event delegate for reference changes.
-/// </summary>
-/// <typeparam name="T"></typeparam>
 public delegate void ReferenceEvent<T>(SyncRef<T> reference) where T : class, IWorldElement;
 
-/// <summary>
-/// Non-generic SyncRef for untyped references.
-/// </summary>
 public sealed class SyncRef : SyncRef<IWorldElement>
 {
     public override IWorldElement Target
@@ -28,14 +21,12 @@ public sealed class SyncRef : SyncRef<IWorldElement>
     }
 }
 
-/// <summary>
-/// Synchronized reference to another world element.
-/// Handles async resolution, network synchronization, and proper state tracking.
-/// </summary>
-/// <typeparam name="T"></typeparam>
-public class SyncRef<T> : SyncField<RefID>, ISyncRef<T>, ISyncRef, IWorldElementReceiver
+public class SyncRef<T> : SyncField<RefID>, ISyncRef<T>, ISyncRef, IWorldElementReceiver, IReadableRef<T>
     where T : class, IWorldElement
 {
+    // Its delta is the target's id and nothing else.
+    internal override bool DeltaIsCurrentValue => true;
+
     public SyncRef()
     {
         State = ReferenceState.Null;
@@ -54,8 +45,7 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef<T>, ISyncRef, IWorldElement
         State = ReferenceState.Null;
         // Don't set _world here! Set _parent for later Initialize() to use.
         _parent = owner;
-        // Note: Don't set Target here either - it might try to sync before RefID is allocated
-        // The target should be set after Initialize() is called
+        // Not Target either: it might sync before the RefID is allocated. Set it after Initialize().
     }
 
     private const int PreassignedFlag = 16;
@@ -134,7 +124,6 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef<T>, ISyncRef, IWorldElement
     // been removed instead of getting null'd out like the Target getter. -xlinka
     IWorldElement ISyncRef.RawTarget => RawTarget;
 
-    /// <summary>Clear this reference (equivalent to setting Target to null).</summary>
     public void Clear() => Target = null!;
 
     public virtual T Target
@@ -381,9 +370,6 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef<T>, ISyncRef, IWorldElement
     }
 }
 
-/// <summary>
-/// Interface for SyncRef without generic parameter.
-/// </summary>
 public interface ISyncRef
 {
     RefID Value { get; set; }
@@ -397,10 +383,14 @@ public interface ISyncRef
     bool TrySet(IWorldElement target);
 }
 
-/// <summary>
-/// Typed interface for a SyncRef, exposing a strongly-typed Target.
-/// </summary>
 public interface ISyncRef<T> : ISyncRef where T : class, IWorldElement
 {
     new T Target { get; set; }
+}
+
+// A reference seen only for what it points at. Covariant, so a reference to a user also reads as a reference
+// to any world element: a member that only reads can take a reference to anything narrower than it asks for.
+public interface IReadableRef<out T> : IWorldElement where T : class, IWorldElement
+{
+    T Target { get; }
 }

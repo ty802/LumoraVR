@@ -129,8 +129,6 @@ public class EngineMixerManager : IDisposable
     private IAudioMixer _mixer = new CacheMixer();
     public IAudioMixer Mixer => _mixer;
 
-    public External.Audio.Godot.IAudioCapureEffect? MicCapture { get; private set; }
-
     public void Initialize(IAudioMixer mixer)
     {
         ArgumentNullException.ThrowIfNull(mixer);
@@ -142,14 +140,6 @@ public class EngineMixerManager : IDisposable
             ImportCacheInto(mixer);
 
         _mixer = mixer;
-        if (mixer is External.Audio.Godot.IAudioCaputreProvider mixerWithInput)
-        {
-            mixerWithInput.InitializeInput();
-            if(mixerWithInput.TryGetCatpureEffect(out var cap)){
-                int samplerate = mixerWithInput.GetSampleRate();
-                int framesize = (samplerate*20)/1000;
-            }
-        }
     }
 
     public bool IsInitialized()

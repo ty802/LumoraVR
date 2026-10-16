@@ -15,7 +15,7 @@ public sealed class WorkerInitInfo
     // One compiled reader per sync-member field, in the same order as SyncMemberFields. Built once per
     // type; a worker snapshots them into its own table at init so the per-frame and per-load paths never
     // touch reflection again. -xlinka
-    public Func<Worker, ISyncMember>[] SyncMemberGetters = null!;
+    public Action<Worker, ISyncMember?[]> FillSyncMembers = null!;
 
     public MethodInfo[] ListedMethods = null!;
     public Dictionary<string, int> ListedMethodNameToIndex = null!;

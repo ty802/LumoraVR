@@ -72,6 +72,7 @@ public static class GenericComponentTypes
         typeof(colorHDR),
         typeof(int4),
         typeof(BoundingBox),
+        typeof(float3x3),
     };
 
     // Every enum a component actually declares a Sync field of.

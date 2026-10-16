@@ -24,7 +24,7 @@ public class UpdateManager
     private bool _processingMovedSlots;
     private float _currentDeltaTime = 0f;
 
-    private SortedDictionary<int, List<IUpdatable>> _updateBuckets = new SortedDictionary<int, List<IUpdatable>>();
+    private SortedDictionary<int, UpdateBucket> _updateBuckets = new SortedDictionary<int, UpdateBucket>();
     private Queue<IUpdatable> _startupQueue = new Queue<IUpdatable>();
     private Queue<IUpdatable> _destructionQueue = new Queue<IUpdatable>();
     private SortedDictionary<int, Queue<IUpdatable>> _changeBuckets = new SortedDictionary<int, Queue<IUpdatable>>();
@@ -34,9 +34,61 @@ public class UpdateManager
     // Flat mirrors of the two sorted-bucket dictionaries. A SortedDictionary foreach allocates its
     // traversal stack, and the per-frame loops here were the entire idle allocation floor of a world.
     // Rebuilt only when a bucket APPEARS (buckets are never removed, only emptied). -xlinka
-    private readonly List<List<IUpdatable>> _updateBucketList = new List<List<IUpdatable>>();
+    private readonly List<UpdateBucket> _updateBucketList = new List<UpdateBucket>();
     private readonly List<Queue<IUpdatable>> _changeBucketList = new List<Queue<IUpdatable>>();
     private bool _bucketListsDirty = true;
+
+    // One update order's updatables, in the order they registered. A removal leaves a hole that the next
+    // pass closes, instead of a list removal walking and shifting the whole bucket: an import of 65536 mesh
+    // colliders, each leaving the dispatch after its fourth frame, spent most of a minute in those. A hole
+    // reads as null to a pass already under way. -xlinka
+    private sealed class UpdateBucket
+    {
+        private readonly List<IUpdatable?> _items = new();
+        private readonly Dictionary<IUpdatable, int> _index = new(ReferenceEqualityComparer.Instance);
+        private int _holes;
+
+        public int Count => _items.Count - _holes;
+
+        public int Slots => _items.Count;
+
+        public IUpdatable? this[int slot] => _items[slot];
+
+        public void Add(IUpdatable updatable)
+        {
+            if (_index.ContainsKey(updatable))
+                return;
+            _index[updatable] = _items.Count;
+            _items.Add(updatable);
+        }
+
+        public void Remove(IUpdatable updatable)
+        {
+            if (!_index.Remove(updatable, out int slot))
+                return;
+            _items[slot] = null;
+            _holes++;
+        }
+
+        // Between passes only: a pass walks the list by position.
+        public void Compact()
+        {
+            if (_holes == 0)
+                return;
+            int kept = 0;
+            for (int i = 0; i < _items.Count; i++)
+            {
+                var item = _items[i];
+                if (item == null)
+                    continue;
+                _items[kept] = item;
+                _index[item] = kept;
+                kept++;
+            }
+            _items.RemoveRange(kept, _items.Count - kept);
+            _holes = 0;
+        }
+    }
 
     private void EnsureBucketLists()
     {
@@ -119,12 +171,10 @@ public class UpdateManager
         int order = updatable.UpdateOrder;
         if (!_updateBuckets.TryGetValue(order, out var bucket))
         {
-            bucket = new List<IUpdatable>();
+            bucket = new UpdateBucket();
             _updateBuckets[order] = bucket;
             _bucketListsDirty = true;
         }
-        // No duplicate scan: registration happens once per component (startup), and UpdateBucketChanged
-        // removes before re-adding. The old Contains made every load O(n^2) in the order-0 bucket. -xlinka
         bucket.Add(updatable);
     }
 
@@ -170,7 +220,7 @@ public class UpdateManager
             }
             catch (Exception ex)
             {
-                Logging.Logger.Error($"UpdateManager: Error in late update for {component}: {ex.Message}");
+                ReportError("late update", component, ex);
             }
             finally
             {
@@ -296,13 +346,47 @@ public class UpdateManager
                 continue;
 
             double elapsedMs = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
-            if (elapsedMs >= StartupBudgetMs)
+            if (elapsedMs >= StartupBudgetMs * Engine.LoadScale || Engine.LoadAllowanceSpent(started, Engine.LoadShareStartups))
+            {
+                Engine.ChargeLoad(started);
                 return;
+            }
         }
 
+        Engine.ChargeLoad(started);
         _startupBacklog = false;
         _startupBurst = false;
     }
+
+    // Startups still queued, changes still queued, and hook updates still waiting. Read by the settle gate.
+    public int StartupQueueCount => _startupQueue.Count;
+
+    public int QueuedChangeCount
+    {
+        get
+        {
+            EnsureBucketLists();
+            int queued = 0;
+            for (int b = 0; b < _changeBucketList.Count; b++)
+                queued += _changeBucketList[b].Count;
+            return queued;
+        }
+    }
+
+    public int PendingHookUpdateCount
+    {
+        get { lock (_hookUpdatesLock) { return _pendingHookUpdates.Count; } }
+    }
+
+    // A hook queue this deep is a load landing, not a normal frame's handful. Kept well above what a busy
+    // world's drivers queue every frame: past it the hook drain stops at the shared allowance, not at its own budget.
+    private const int HookBacklogThreshold = 512;
+
+    // True while this world is still working through a startup, change or hook backlog that a load,
+    // a join or a big spawn queued.
+    public bool IsDrainingBacklog
+        => _startupBacklog || _startupBurst || _changeBurst || _startupQueue.Count >= StartupBurstThreshold
+           || QueuedChangeCount >= ChangeBurstThreshold || PendingHookUpdateCount >= HookBacklogThreshold;
 
     // Re-attempt updatables whose startup previously threw. Drops one only when it finally starts, is
     // destroyed, or exhausts its retry budget (logged loudly then). Pumped each frame after RunStartups. -xlinka
@@ -413,10 +497,11 @@ public class UpdateManager
         for (int b = 0; b < _updateBucketList.Count; b++)
         {
             var bucket = _updateBucketList[b];
-            for (int i = 0; i < bucket.Count; i++)
+            bucket.Compact();
+            for (int i = 0; i < bucket.Slots; i++)
             {
                 var updatable = bucket[i];
-                if (!updatable.IsDestroyed)
+                if (updatable != null && !updatable.IsDestroyed)
                 {
                     try
                     {
@@ -441,7 +526,7 @@ public class UpdateManager
                     }
                     catch (Exception ex)
                     {
-                        Logging.Logger.Error($"UpdateManager: Error in update for {updatable}: {ex.Message}");
+                        ReportError("update", updatable, ex);
                     }
                     finally
                     {
@@ -450,6 +535,23 @@ public class UpdateManager
                 }
             }
         }
+    }
+
+    // A broken update throws again next frame, and the frame after. The first one says what is wrong; the
+    // repeats only bury everything else in the log, so they are counted and named every few hundred. -xlinka
+    private readonly Dictionary<(object, string), int> _repeatedErrors = new();
+
+    private void ReportError(string stage, object source, Exception ex)
+    {
+        var key = (source, ex.Message);
+        _repeatedErrors.TryGetValue(key, out int seen);
+        _repeatedErrors[key] = ++seen;
+        if (seen == 1)
+            Logging.Logger.Error($"UpdateManager: Error in {stage} for {source}: {ex.Message}");
+        else if (seen % 600 == 0)
+            Logging.Logger.Error($"UpdateManager: Error in {stage} for {source} repeated {seen} times: {ex.Message}");
+        if (_repeatedErrors.Count > 4096)
+            _repeatedErrors.Clear();
     }
 
     // THE STREAM TICK
@@ -507,10 +609,12 @@ public class UpdateManager
             return;
         }
 
-        var typeName = comp.GetType().Name + phaseSuffix;
+        var type = comp.GetType();
+        if (!_profNames.TryGetValue((type, phaseSuffix), out var typeName))
+            _profNames[(type, phaseSuffix)] = typeName = type.Name + phaseSuffix;
         if (!_profByType.TryGetValue(typeName, out var tb))
         {
-            tb = new ProfBucket { Name = typeName };
+            tb = RentBucket(typeName);
             _profByType[typeName] = tb;
         }
         tb.Ticks += ticks;
@@ -521,12 +625,36 @@ public class UpdateManager
         {
             if (!_profBySlot.TryGetValue(slot, out var sb))
             {
-                sb = new ProfBucket { Name = string.IsNullOrEmpty(slot.SlotName.Value) ? "<unnamed slot>" : slot.SlotName.Value };
+                sb = RentBucket(string.IsNullOrEmpty(slot.SlotName.Value) ? "<unnamed slot>" : slot.SlotName.Value);
                 _profBySlot[slot] = sb;
             }
             sb.Ticks += ticks;
             sb.Count++;
         }
+    }
+
+    // A profile in a big world touched a bucket per slot per frame, and making them new every frame was the
+    // profiler causing the very collections it should be showing. They go back to a pool at each frame start,
+    // and a type's name with its phase is made once. -xlinka
+    private readonly List<ProfBucket> _profPool = new();
+    private readonly Dictionary<(Type Type, string Phase), string> _profNames = new();
+
+    private ProfBucket RentBucket(string name)
+    {
+        ProfBucket bucket;
+        if (_profPool.Count > 0)
+        {
+            bucket = _profPool[^1];
+            _profPool.RemoveAt(_profPool.Count - 1);
+        }
+        else
+        {
+            bucket = new ProfBucket();
+        }
+        bucket.Name = name;
+        bucket.Ticks = 0;
+        bucket.Count = 0;
+        return bucket;
     }
 
     // Copy the latest frame's update profile into the caller's lists (by component type, and by slot), converted
@@ -544,6 +672,15 @@ public class UpdateManager
         }
     }
 
+    // Same shape as the startup burst: a change queue this deep only turns up when a load, a join or a big spawn
+    // has just dirtied a world's worth of components, and applying them all in one frame is the spike, every
+    // panel's first layout among them. While it lasts, changes run inside a budget and the rest wait a frame
+    // where they are; a normal frame's handful run as they always did. -xlinka
+    private const int ChangeBurstThreshold = 256;
+    private const double ChangeBudgetMs = 6.0;
+    private static readonly long ChangeBudgetTicks = (long)(ChangeBudgetMs * Stopwatch.Frequency / 1000.0);
+    private bool _changeBurst;
+
     public void RunChangeApplications()
     {
         _changeUpdateIndex++;
@@ -551,11 +688,25 @@ public class UpdateManager
         bool attribute = _attributionFramesLeft > 0;
 
         EnsureBucketLists();
+        int queued = 0;
+        for (int b = 0; b < _changeBucketList.Count; b++)
+            queued += _changeBucketList[b].Count;
+        if (queued >= ChangeBurstThreshold)
+            _changeBurst = true;
+        else if (queued == 0)
+            _changeBurst = false;
+        long started = Stopwatch.GetTimestamp();
+        long changeBudget = (long)(ChangeBudgetTicks * Engine.LoadScale);
+        bool ranOne = false;
+
         for (int b = 0; b < _changeBucketList.Count; b++)
         {
             var queue = _changeBucketList[b];
             while (queue.Count > 0)
             {
+                if (_changeBurst && ranOne && (Stopwatch.GetTimestamp() - started >= changeBudget
+                    || Engine.LoadAllowanceSpent(started, Engine.LoadShareChanges)))
+                    goto spent;
                 var updatable = queue.Dequeue();
                 if (updatable.IsDestroyed || !updatable.IsChangeDirty)
                     continue;
@@ -598,9 +749,13 @@ public class UpdateManager
                 {
                     CurrentlyUpdating = null!;
                 }
+                ranOne = true;
             }
         }
 
+    spent:
+        if (_changeBurst)
+            Engine.ChargeLoad(started);
         if (_reDirtied.Count > 0)
         {
             for (int i = 0; i < _reDirtied.Count; i++)
@@ -667,6 +822,8 @@ public class UpdateManager
         // inside the same UpdateComponents call, so a component's OnStart cost was recorded and then
         // immediately wiped - startups were structurally unmeasurable, which is exactly the phase a world
         // spends its first seconds in. Clearing belongs to the frame, not to one phase of it. -xlinka
+        _profPool.AddRange(_profByType.Values);
+        _profPool.AddRange(_profBySlot.Values);
         _profByType.Clear();
         _profBySlot.Clear();
     }
@@ -705,7 +862,6 @@ public class UpdateManager
         _currentDeltaTime = deltaTime;
 
         const int maxUpdates = 100000;
-        int processed = 0;
 
         // Per-frame wall-clock budget so a burst of hook work spreads across frames instead of freezing the one.
         // Without it, an import that dirties N skinned renderers at once builds all N Godot meshes (ArrayMesh +
@@ -713,7 +869,7 @@ public class UpdateManager
         // be split, so one heavy mesh still costs its frame, but N meshes now spread over N frames and the main
         // thread (which also renders + paints the loading bar) stays responsive. Normal frames drain a tiny queue
         // far under budget, so this is a no-op except during bursts. GetTimestamp is allocation-free. -xlinka
-        const double budgetMs = 6.0;
+        double budgetMs = 6.0 * Engine.LoadScale;
         long startTicks = System.Diagnostics.Stopwatch.GetTimestamp();
         double ticksToMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 
@@ -782,6 +938,29 @@ public class UpdateManager
             _slotFlushBatch.Clear();
         }
 
+        // A world still draining its arrival draws its expensive hooks from the frame's shared load
+        // allowance as well; any other world keeps just its own budget.
+        bool sharesLoad = _world != null && _world.IsDrainingArrival;
+        long loadStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            DrainHookUpdates(startTicks, ticksToMs, budgetMs, maxUpdates, sharesLoad, loadStart);
+        }
+        finally
+        {
+            if (sharesLoad)
+                Engine.ChargeLoad(loadStart);
+        }
+    }
+
+    // A startup burst can spend the shared allowance before this drain starts, and stopping on it after every
+    // item trickled cheap hooks (a floor's collider, a light) through at one a pass. The own budget above still
+    // stops it from the first item. -xlinka
+    private const int HookShareMinBites = 16;
+
+    private void DrainHookUpdates(long startTicks, double ticksToMs, double budgetMs, int maxUpdates, bool sharesLoad, long loadStart)
+    {
+        int processed = 0;
         while (true)
         {
             IImplementable implementable;
@@ -831,7 +1010,8 @@ public class UpdateManager
 
             // Out of frame budget: leave the rest of the queue for next frame so rendering isn't stalled. The
             // undrained items stay in _pendingHookUpdates/_queuedHookUpdates and get picked up next tick.
-            if ((System.Diagnostics.Stopwatch.GetTimestamp() - startTicks) * ticksToMs >= budgetMs)
+            if ((System.Diagnostics.Stopwatch.GetTimestamp() - startTicks) * ticksToMs >= budgetMs
+                || (sharesLoad && processed >= HookShareMinBites && Engine.LoadAllowanceSpent(loadStart, Engine.LoadShareAll)))
             {
                 return;
             }

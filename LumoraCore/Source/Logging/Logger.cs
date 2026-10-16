@@ -183,22 +183,52 @@ namespace Lumora.Core.Logging
                 _repeats.Clear();
         }
 
+        // The game engine's console prints on the logger's own thread. A print there flushes stdout every line
+        // in a debug build, and a burst of lines in a load cost the frame that logged them. A warning or an
+        // error still prints on the caller's thread, after everything queued ahead of it, so the console keeps
+        // its order and the line before a crash is not left sitting in a queue. -xlinka
+        private static readonly ConcurrentQueue<(LogLevel Level, string Message)> _engineQueue = new();
+        private static readonly object _engineLock = new();
+
         private static void Emit(LogLevel level, DateTime now, string message)
         {
             string timestamp = now.ToString("yyyy-MM-dd HH:mm:ss");
             string logEntry = $"[{timestamp}] [{level}] {message}";
             _logQueue.Enqueue(logEntry);
-            _logEvent.Set();
 
-            // Keep stdout focused on important messages.
             if (level == LogLevel.WARN || level == LogLevel.ERROR)
             {
-                Console.WriteLine(logEntry);
+                lock (_engineLock)
+                {
+                    DrainEngineQueue();
+                    if (LogToGameEngine is { } engine)
+                        engine(level, message);
+                    else
+                        Console.WriteLine(logEntry);
+                }
             }
-            LogToGameEngine?.Invoke(level,message);
+            else
+            {
+                _engineQueue.Enqueue((level, message));
+            }
+            _logEvent.Set();
             OnLogWritten?.Invoke(level, timestamp, message);
         }
 
+        // Under _engineLock.
+        private static void DrainEngineQueue()
+        {
+            var engine = LogToGameEngine;
+            while (_engineQueue.TryDequeue(out var line))
+                engine?.Invoke(line.Level, line.Message);
+        }
+
+        // Prints whatever is still queued for the game engine's console, on this thread.
+        public static void FlushToGameEngine()
+        {
+            lock (_engineLock)
+                DrainEngineQueue();
+        }
 
         private static void ProcessLogQueue(CancellationToken cancellationToken)
         {
@@ -207,6 +237,7 @@ namespace Lumora.Core.Logging
                 try
                 {
                     _logEvent.WaitOne(TimeSpan.FromSeconds(10)); // Wait for either a timeout or a new log entry
+                    FlushToGameEngine();
                     SweepRepeats();
                     // The bootstrap pins the data folder within the first frames. Until it has, hold the
                     // queue rather than commit the file to the fallback folder; after a few seconds

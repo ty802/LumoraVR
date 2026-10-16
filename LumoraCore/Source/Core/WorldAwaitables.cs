@@ -25,10 +25,11 @@ public readonly struct ToWorldAwaitable : INotifyCompletion
 
     public ToWorldAwaitable GetAwaiter() => this;
 
-    // Already on the world thread: no queue hop, the continuation runs inline on this stack. An owner
-    // that died is still reported through GetResult below, so the fast path cannot smuggle a dead
-    // worker past the check.
-    public bool IsCompleted => _scope != null && _scope.World.IsOnWorldThread;
+    // Already inside the world's update: no queue hop, the continuation runs inline on this stack. On the
+    // world thread outside an update it queues like anywhere else, or its writes race the sync thread's hold
+    // (an import failed on exactly that). An owner that died is still reported through GetResult below, so
+    // the fast path cannot smuggle a dead worker past the check.
+    public bool IsCompleted => _scope != null && _scope.World.IsInsideWorldHold;
 
     // A missing context is reported from GetResult, not from here. An exception out of OnCompleted
     // escapes the state machine and lands on the thread pool unhandled, which is a process kill, so

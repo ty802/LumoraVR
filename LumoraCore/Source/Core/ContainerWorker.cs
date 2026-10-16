@@ -48,6 +48,7 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
 
     public T AttachComponent<T>(bool runOnAttachBehavior = true, Action<T>? beforeAttach = null) where T : C, new()
     {
+        ComponentExecutionPolicy.Demand(typeof(T), World);
         CheckAttachComponent(typeof(T));
         var component = WorkerManager.Instantiate<T>();
         AttachComponentInternal(component, runOnAttachBehavior, c => beforeAttach?.Invoke((T)c));
@@ -56,6 +57,7 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
 
     public C AttachComponent(Type type, bool runOnAttachBehavior = true, Action<C>? beforeAttach = null)
     {
+        ComponentExecutionPolicy.Demand(type, World);
         CheckAttachComponent(type);
         var component = (C)WorkerManager.Instantiate(type);
         AttachComponentInternal(component, runOnAttachBehavior, beforeAttach);
@@ -312,6 +314,7 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
         // those can throw. Without the scope that throw skipped the end of the local block and left the
         // controller minting LOCAL ids for the rest of the session. -xlinka
         using (World.ReferenceController.ElementAllocationScope(RefID.Null, IsLocalElement))
+        using (IsLocalElement ? default : World.ReferenceController.InheritedAllocationScope(ReferenceID))
         {
             var key = World.ReferenceController.PeekID();
             componentCollection.Add(key, component, isNewlyCreated: true);

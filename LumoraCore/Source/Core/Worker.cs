@@ -27,6 +27,28 @@ public abstract class Worker : IWorker
 
     public RefID ReferenceID { get; private set; } = RefID.Null;
     public bool IsLocalElement { get; private set; }
+
+    // Whether this machine made it: its id was minted in this machine's allocation (the authority's own
+    // byte counts for content the host builds before its user exists). OnInit is not that test: a component
+    // created during the session arrives at every peer marked new and runs OnInit there too. -xlinka
+    public bool IsMintedHere
+    {
+        get
+        {
+            if (IsLocalElement)
+                return true;
+            var world = World;
+            if (world == null || ReferenceID.IsNull)
+                return false;
+            byte owner = ReferenceID.GetUserByte();
+            if (world.IsAuthority)
+                return owner == RefIDConstants.AUTHORITY_BYTE || world.LocalUser?.HoldsByte(owner) == true;
+            // A client's own byte reads 0 until the host's values arrive, and 0 is the authority's: until
+            // then nothing counts as this client's.
+            var local = world.LocalUser;
+            return local != null && local.AllocationIDEnd.Value != 0 && local.AllocationID.Value == owner;
+        }
+    }
     public bool IsDestroyed { get; protected set; }
     public bool IsInitialized { get; private set; }
 
@@ -58,7 +80,7 @@ public abstract class Worker : IWorker
     }
 
     // Reads the table built at init. Before init (a detached worker being inspected, say) the table is
-    // empty and the compiled accessor reads the field live, which is what the reflected read used to do.
+    // empty and the fields are read live.
     public virtual ISyncMember GetSyncMember(int index)
     {
         var table = _syncMemberTable;
@@ -67,7 +89,9 @@ public abstract class Worker : IWorker
             return table[index];
         }
 
-        return InitInfo.SyncMemberGetters[index](this);
+        var live = new ISyncMember?[SyncMemberCount];
+        InitInfo.FillSyncMembers(this, live);
+        return live[index]!;
     }
 
     public FieldInfo GetSyncMemberFieldInfo(int index)
@@ -257,6 +281,18 @@ public abstract class Worker : IWorker
             // A type that cannot be built detached still gets sensible defaults below.
         }
 
+        var probeMembers = new ISyncMember?[defaults.Length];
+        if (probe != null)
+        {
+            try
+            {
+                info.FillSyncMembers(probe, probeMembers);
+            }
+            catch (Exception)
+            {
+            }
+        }
+
         for (int i = 0; i < defaults.Length; i++)
         {
             if (info.DefaultValues[i] != null)
@@ -270,7 +306,7 @@ public abstract class Worker : IWorker
             {
                 try
                 {
-                    value = (info.SyncMemberGetters[i](probe) as IField)?.BoxedValue;
+                    value = (probeMembers[i] as IField)?.BoxedValue;
                 }
                 catch (Exception)
                 {
@@ -280,7 +316,7 @@ public abstract class Worker : IWorker
 
             if (value == null)
             {
-                var valueType = (info.SyncMemberGetters[i](probe!) as IField)?.ValueType;
+                var valueType = (probeMembers[i] as IField)?.ValueType;
                 value = valueType is { IsValueType: true } ? Activator.CreateInstance(valueType) : null;
             }
 
@@ -404,6 +440,12 @@ public abstract class Worker : IWorker
                 // extra GUID on every member of every slot is real weight in a large world. -xlinka
                 if (NeedsSavedIdentity(member, control))
                     dictionary.Add(memberName + "-ID", control.SaveReference(member.ReferenceID));
+
+                // A list element, or a field inside one, has no key of its own to write an identity beside,
+                // so the ones something points at are written by path under the member: "2" for a list's
+                // third element, "2/Texture" for a field inside it. -xlinka
+                if (SaveInnerIdentities(member, control) is { } inner)
+                    dictionary.Add(memberName + "-IDs", inner);
             }
             catch (NotSupportedException)
             {
@@ -424,6 +466,53 @@ public abstract class Worker : IWorker
     private static bool NeedsSavedIdentity(ISyncMember member, SaveControl control)
         => member is ILinkable { IsLinked: true }
         || control.ReferenceTranslator.HasLocal(member.ReferenceID);
+
+    private static DataTreeDictionary? SaveInnerIdentities(ISyncMember member, SaveControl control)
+    {
+        DataTreeDictionary? identities = null;
+        SaveInnerIdentities(member, string.Empty, control, ref identities);
+        return identities;
+    }
+
+    private static void SaveInnerIdentities(ISyncMember member, string path, SaveControl control, ref DataTreeDictionary? identities)
+    {
+        foreach (var (key, inner) in InnerMembers(member))
+        {
+            if (inner is SyncElement { IsPersistent: false })
+                continue;
+            bool named = inner.ReferenceID != RefID.Null && NeedsSavedIdentity(inner, control);
+            if (!named && !HoldsMembers(inner))
+                continue;
+            var at = path.Length == 0 ? key : path + "/" + key;
+            if (named)
+                (identities ??= new DataTreeDictionary()).Add(at, control.SaveReference(inner.ReferenceID));
+            SaveInnerIdentities(inner, at, control, ref identities);
+        }
+    }
+
+    private static void LoadInnerIdentities(ISyncMember member, DataTreeDictionary identities, LoadControl control)
+    {
+        foreach (var (path, identity) in identities.Children)
+        {
+            ISyncMember? at = member;
+            foreach (var key in path.Split('/'))
+                at = at == null ? null : InnerMember(at, key);
+            if (at != null && at.ReferenceID != RefID.Null)
+                control.AssociateReference(at.ReferenceID, identity);
+        }
+    }
+
+    private static ISyncMember? InnerMember(ISyncMember member, string key)
+    {
+        if (member is ISyncList list)
+            return int.TryParse(key, out int index) && index >= 0 && index < list.Count ? list.GetElement(index) : null;
+        foreach (var (name, inner) in InnerMembers(member))
+        {
+            if (name == key)
+                return inner;
+        }
+        return null;
+    }
 
     public virtual void Load(DataTreeNode node, LoadControl control)
     {
@@ -488,6 +577,8 @@ public abstract class Worker : IWorker
             try
             {
                 member.Load(memberNode, control);
+                if (HoldsMembers(member) && dictionary.TryGetDictionary(memberName + "-IDs") is { } inner)
+                    LoadInnerIdentities(member, inner, control);
             }
             catch (Exception ex)
             {
@@ -558,7 +649,7 @@ public abstract class Worker : IWorker
         }
     }
 
-    private static IEnumerable<IWorldElement> CollectMemberReferences(ISyncMember member, bool assetRefOnly, bool persistentOnly)
+    internal static IEnumerable<IWorldElement> CollectMemberReferences(ISyncMember member, bool assetRefOnly, bool persistentOnly)
     {
         if (member is ISyncRef syncRef)
         {
@@ -584,24 +675,11 @@ public abstract class Worker : IWorker
 
             yield return target;
         }
-        else if (member is ISyncList list)
+        else
         {
-            foreach (var element in list.Elements)
+            foreach (var (_, inner) in InnerMembers(member))
             {
-                if (element is ISyncMember childMember)
-                {
-                    foreach (var referenced in CollectMemberReferences(childMember, assetRefOnly, persistentOnly))
-                    {
-                        yield return referenced;
-                    }
-                }
-            }
-        }
-        else if (member is ISyncObject syncObject)
-        {
-            foreach (var childMember in syncObject.SyncMembers)
-            {
-                foreach (var referenced in CollectMemberReferences(childMember, assetRefOnly, persistentOnly))
+                foreach (var referenced in CollectMemberReferences(inner, assetRefOnly, persistentOnly))
                 {
                     yield return referenced;
                 }
@@ -609,25 +687,75 @@ public abstract class Worker : IWorker
         }
     }
 
+    // What a member holds: a list's elements by index, a sync object's members and a composite entry's fields by
+    // name. The one walk for everything that looks inside members, so the references a save follows, the ids it
+    // lets through and the identities it writes all see the same members. -xlinka
+    internal static IEnumerable<(string Key, ISyncMember Member)> InnerMembers(ISyncMember member)
+        => HoldsMembers(member) ? WalkInnerMembers(member) : Array.Empty<(string, ISyncMember)>();
+
+    // Asked first so a plain field, by far the common member, costs no enumerator on every save and load.
+    private static bool HoldsMembers(ISyncMember member)
+        => member is ISyncList or ISyncObject or SyncElement { MemberType: SyncMemberType.Object };
+
+    private static IEnumerable<(string Key, ISyncMember Member)> WalkInnerMembers(ISyncMember member)
+    {
+        switch (member)
+        {
+            case ISyncList list:
+                for (int i = 0; i < list.Count; i++)
+                {
+                    if (list.GetElement(i) is { } element)
+                        yield return (i.ToString(), element);
+                }
+                break;
+            case ISyncObject syncObject:
+                foreach (var child in syncObject.SyncMembers)
+                {
+                    if (child != null)
+                        yield return (child.Name ?? string.Empty, child);
+                }
+                break;
+            case SyncElement { MemberType: SyncMemberType.Object }:
+                foreach (var field in CompositeFields(member.GetType()))
+                {
+                    if (field.GetValue(member) is ISyncMember child)
+                        yield return (field.Name, child);
+                }
+                break;
+        }
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, FieldInfo[]> _compositeFields = new();
+
+    // A composite entry's members are its readonly sync member fields, the ones discovery set up for it.
+    private static FieldInfo[] CompositeFields(Type type) => _compositeFields.GetOrAdd(type, static t =>
+        Array.FindAll(t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance),
+            field => field.IsInitOnly && typeof(ISyncMember).IsAssignableFrom(field.FieldType)));
+
     public virtual string ParentHierarchyToString()
     {
         return WorkerType.Name;
     }
 
+    // Every field holds an instance afterwards, and the table snapshots them. The fields are readonly and
+    // nothing rewrites them later, so the snapshot stays correct for the life of the worker.
     protected virtual void InitializeSyncMembers()
     {
-        for (int i = 0; i < SyncMemberCount; i++)
+        var table = new ISyncMember?[SyncMemberCount];
+        InitInfo.FillSyncMembers(this, table);
+        for (int i = 0; i < table.Length; i++)
         {
-            var field = InitInfo.SyncMemberFields[i];
-            var member = InitInfo.SyncMemberGetters[i](this);
+            var member = table[i];
             if (member == null)
             {
+                var field = InitInfo.SyncMemberFields[i];
                 member = Activator.CreateInstance(field.FieldType) as ISyncMember;
                 if (member == null)
                 {
                     throw new InvalidOperationException($"Failed to create sync member for field {field.Name} on {GetType().FullName}");
                 }
                 field.SetValue(this, member);
+                table[i] = member;
             }
 
             if (member is SyncElement syncElement)
@@ -642,22 +770,9 @@ public abstract class Worker : IWorker
                 }
             }
         }
+        _syncMemberTable = table!;
     }
 
-    // Runs once, straight after InitializeSyncMembers has guaranteed every field holds an instance. The
-    // fields are readonly and nothing rewrites them afterwards, so this snapshot stays correct for the
-    // life of the worker.
-    private void BuildSyncMemberTable()
-    {
-        var getters = InitInfo.SyncMemberGetters;
-        var table = new ISyncMember[getters.Length];
-        for (int i = 0; i < getters.Length; i++)
-        {
-            table[i] = getters[i](this);
-        }
-
-        _syncMemberTable = table;
-    }
 
     protected virtual void InitializeSyncMemberDefaults()
     {
@@ -709,7 +824,6 @@ public abstract class Worker : IWorker
             Parent = parent;
 
             InitializeSyncMembers();
-            BuildSyncMemberTable();
             AssignSyncMemberMetadata();
 
             ReferenceID = World.ReferenceController.AllocateID();
@@ -779,13 +893,18 @@ public abstract class Worker : IWorker
         IsDestroyed = true;
     }
 
+    // One handler shared by every member: a method group made a new delegate per member, a world's worth of
+    // garbage on every load. -xlinka
+    private Action<IChangeable>? _memberChanged;
+
     private void HookSyncMemberChanges()
     {
+        var handler = _memberChanged ??= SyncMemberChangedInternal;
         for (int i = 0; i < SyncMemberCount; i++)
         {
             if (GetSyncMember(i) is IChangeable changeable)
             {
-                changeable.Changed += SyncMemberChangedInternal;
+                changeable.Changed += handler;
             }
         }
     }

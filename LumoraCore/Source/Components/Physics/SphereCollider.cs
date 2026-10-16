@@ -38,5 +38,15 @@ public class SphereCollider : Collider
         return new BoundingBox(Offset.Value - extent, Offset.Value + extent);
     }
 
+    // Around every vertex drawn at and under this slot, in this slot's own space.
+    [SyncMethod]
+    public void FitToMesh()
+    {
+        if (!SlotBoundsHelper.TryFitSphere(Slot, out var centre, out var radius))
+            return;
+        Offset.Value = centre;
+        Radius.Value = radius;
+    }
+
 }
 

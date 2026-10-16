@@ -13,7 +13,9 @@ namespace Lumora.Core.Components.Meshes;
 //
 // The hull is rebuilt from scratch on every change because its vertex count follows the input; there
 // is no fixed topology to update in place. That makes this the one procedural mesh here you should
-// not drive per frame off a moving source. -xlinka
+// not drive per frame off a moving source. Point edits arrive one element at a time, from a script, a
+// drawing stroke or a delta off the network, so they gather into one rebuild at the next sync point
+// instead of solving the hull once per point. -xlinka
 [ComponentCategory("Assets/Procedural Meshes")]
 public class ConvexHullMesh : ProceduralMesh
 {
@@ -47,6 +49,19 @@ public class ConvexHullMesh : ProceduralMesh
         FlatShading = new Sync<bool>(this, false);
         MinPointDistance = new Sync<float>(this, 0f);
         UVScale = new Sync<float2>(this, float2.One);
+        _watch = new MeshSourceWatch(() =>
+        {
+            if (!IsDestroyed)
+                RegenerateMesh();
+        });
+    }
+
+    private readonly MeshSourceWatch _watch;
+
+    public override void OnDestroy()
+    {
+        _watch.Watch(null);
+        base.OnDestroy();
     }
 
     public override void OnAwake()
@@ -59,7 +74,7 @@ public class ConvexHullMesh : ProceduralMesh
             RegenerateMesh();
             ArmSourceReadyRetry();
         };
-        Points.OnChanged += _ => RegenerateMesh();
+        Points.OnChanged += _ => QueueRegenerate();
         SubscribeToChanges(FlatShading);
         SubscribeToChanges(MinPointDistance);
         SubscribeToChanges(UVScale);
@@ -71,15 +86,31 @@ public class ConvexHullMesh : ProceduralMesh
         ArmSourceReadyRetry();
     }
 
-    // A referenced asset-backed mesh decodes off-thread and nothing re-drives this when it lands, so
-    // the hull would sit empty forever. Poll a few frames apart until the geometry exists, then
-    // regenerate once. Same shape as the mesh collider's wait.
+    private bool _regenerateQueued;
+
+    // not before the first build, which OnStart does from whatever the list holds by then
+    private void QueueRegenerate()
+    {
+        if (PhosMesh == null || _regenerateQueued || World == null)
+            return;
+        _regenerateQueued = true;
+        World.RunSynchronously(() =>
+        {
+            _regenerateQueued = false;
+            if (!IsDestroyed)
+                RegenerateMesh();
+        });
+    }
+
+    // A provider's mesh arrives through the watch; a procedural source builds on its own within a frame
+    // or two and is looked at again a few frames apart until it has. -xlinka
     private void ArmSourceReadyRetry()
     {
         if (IsDestroyed || World == null)
             return;
 
         Component? source = SourceMesh.Target;
+        _watch.Watch(source as Lumora.Core.Assets.IAssetProvider);
         if (source == null)
             return;
 
@@ -89,7 +120,7 @@ public class ConvexHullMesh : ProceduralMesh
             return;
         }
 
-        if (_sourceReadyRetries++ > 600)
+        if (source is not ProceduralMesh || _sourceReadyRetries++ > 600)
             return;
 
         World.RunInUpdates(10, ArmSourceReadyRetry);

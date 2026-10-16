@@ -36,7 +36,29 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
     private bool _isCrouching;
     private float _currentHeight;
     private float _targetHeight;
+    private bool _shapesDirty = true;
+    private float _shapeScale = float.NaN;
+    private float _steppedHorizontalSpeed;
     private TransformStreamDriver _rootStreamDriver = null!;
+
+    // LEAN
+    //
+    // The capsule stands under the head, so bending over a table puts it into the table, and a push-out that
+    // went straight into the root would undo every lean: the head could never get within a capsule radius of
+    // anything solid. With no stick input and the feet on the floor, the sideways push-out goes into an offset
+    // between the head's floor point and the capsule, up to LeanAllowance; only what is past that moves the
+    // root. Only while the head itself is clear: a head that would be inside something drops the offset, the
+    // capsule goes back under it and pushes the root, so walls still push and the head never goes in. The
+    // offset bleeds toward zero every step and the push-out puts back what the obstacle still needs, so the
+    // capsule rests at its edge. Root-local, so it turns and scales with the user. -xlinka
+    private const float LeanAllowance = 0.4f;
+    private const float LeanBleedRate = 0.6f;
+    private const float LeanStillSpeed = 0.05f;
+    private const float HeadProbeRadius = 0.12f;
+    private float3 _leanOffset;
+    private PhysicsShapeQueryParameters3D? _headProbe;
+    private SphereShape3D? _headProbeShape;
+    private float _headProbeScale = float.NaN;
 
     // Surface the character is standing on, captured from the floor slide contact each move. Surfaces
     // carry CharacterControllerModifier components (ice, speed strips, low-jump zones); the matching
@@ -45,6 +67,20 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
     private readonly List<CharacterControllerModifier> _floorModifiers = new();
     private float3 _floorContactPos;
     private float3 _floorContactNormal;
+
+    // GROUND HOLD
+    //
+    // The character's body exists from its first step, the floor's body only once the collider hook gets
+    // its turn in the queue, and on a slow start the user was through a thin floor before it landed. So
+    // until something solid is found under the feet, the character waits while its world is still
+    // building and falls once it is not. The wait adds up over the hook's life, so a floor that never
+    // arrives costs it once, not on every respawn. -xlinka
+    private const float GroundHoldTimeout = 10f;
+    private const float GroundProbeReach = 3f;
+    private bool _groundHold = true;
+    private float _groundWaited;
+    private bool _groundWarned;
+    private PhysicsRayQueryParameters3D? _groundProbe;
 
     // When a TransformStreamDriver shares the root slot, the Root stream is the transport for the root position -
     // so writes must be SILENT (no field sync) or the root would replicate over BOTH the stream and the delta
@@ -96,7 +132,6 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         _characterBody.CollisionMask = characterBit;
         (Owner?.World?.Hook as WorldHook)?.RegisterBody(Owner?.Slot, _characterBody.GetRid());
 
-        // Initialize crouch state
         _currentHeight = Owner!.StandingHeight;
         _targetHeight = Owner.StandingHeight;
         _isCrouching = false;
@@ -104,7 +139,9 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
 
     public override void ApplyChanges()
     {
-        // Runtime movement is stepped from CharacterController.OnUpdate.
+        // Runtime movement is stepped from CharacterController.OnUpdate. What lands here is the capsule being
+        // refitted (an avatar fit, an inspector edit); the next step rebuilds the shapes from it.
+        _shapesDirty = true;
     }
 
     public void SetSimulationEnabled(bool enabled)
@@ -112,8 +149,14 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         if (_simulationEnabled == enabled)
             return;
         _simulationEnabled = enabled;
+        // Whatever held the character (noclip, a seat, the world in the background) moved the rig on its own
+        // terms, so a lean or a jump pressed before it does not carry over.
+        _leanOffset = float3.Zero;
         if (!enabled)
+        {
             _velocity = Vector3.Zero;
+            _jumpRequested = false;
+        }
     }
 
     public void Simulate(float delta)
@@ -141,11 +184,36 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         if (!spaceRid.IsValid)
             return;
 
+        // The shapes follow the collider and the user's size; neither changes often, so only refit on a change.
+        float scale = UserScale();
+        if (_shapesDirty || scale != _shapeScale)
+        {
+            _shapesDirty = false;
+            _shapeScale = scale;
+            UpdateColliderHeights();
+        }
+
+        var head = Owner.HeadReference.Target;
+        bool hasHead = head != null && !head.IsDestroyed;
+        bool stickInput = _moveDirection.LengthSquared() > 1e-6f;
+        bool headClear = hasHead && !stickInput && HeadIsClear(spaceRid, head!.GlobalPosition, scale);
+        if (!hasHead || stickInput || !headClear)
+            _leanOffset = float3.Zero;
+        else
+            BleedLean(delta);
+
         // Re-base the body from the engine root. With a head reference the
         // body stands at the head's ground projection so the collider follows
         // the player through room-scale space.
         var referencePos = ComputeReferencePosition();
         _characterBody.GlobalPosition = new Vector3(referencePos.x, referencePos.y, referencePos.z);
+
+        if (_groundHold && HoldForGround(spaceRid, delta, scale))
+        {
+            _velocity = Vector3.Zero;
+            _jumpRequested = false;
+            return;
+        }
 
         StepMovement(delta);
 
@@ -154,6 +222,12 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         // in the tracking data; the root must not absorb it twice.
         var bodyPos = _characterBody.GlobalPosition;
         var moved = new float3(bodyPos.X, bodyPos.Y, bodyPos.Z) - referencePos;
+        if (headClear && !stickInput && _characterBody.IsOnFloor()
+            && _steppedHorizontalSpeed <= LeanStillSpeed * scale
+            && _characterBody.GetPlatformVelocity().LengthSquared() < 1e-4f)
+        {
+            moved = AbsorbLean(moved);
+        }
         if (moved.LengthSquared > 1e-12f)
         {
             // The local user driving their own root via locomotion is engine movement, not a user edit. Bypass
@@ -182,7 +256,115 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         // Head position in root space, projected to the root's ground plane.
         var local = root.GlobalPointToLocal(head.GlobalPosition);
         local.y = 0f;
+        local += _leanOffset;
         return root.LocalPointToGlobal(local);
+    }
+
+    private void BleedLean(float delta)
+    {
+        float length = _leanOffset.Length;
+        float bleed = LeanBleedRate * delta;
+        _leanOffset = length <= bleed ? float3.Zero : _leanOffset * ((length - bleed) / length);
+    }
+
+    // The sideways part of this step's push goes into the lean offset; what does not fit, and anything
+    // vertical, still moves the root. Works in root space, where the offset lives.
+    private float3 AbsorbLean(float3 moved)
+    {
+        var root = Owner.Slot;
+        var local = root.GlobalDirectionToLocal(moved);
+        var wanted = _leanOffset + new float3(local.x, 0f, local.z);
+        var kept = wanted;
+        float length = wanted.Length;
+        if (length > LeanAllowance)
+            kept = wanted * (LeanAllowance / length);
+        _leanOffset = kept;
+        var overflow = wanted - kept;
+        return root.LocalDirectionToGlobal(new float3(overflow.x, local.y, overflow.z));
+    }
+
+    // Is the head out of everything a walking body stops against? The user's own capsule is left out of the
+    // query; it stands right under the head.
+    private bool HeadIsClear(Rid spaceRid, float3 headPosition, float scale)
+    {
+        var space = PhysicsServer3D.SpaceGetDirectState(spaceRid);
+        if (space == null)
+            return false;
+
+        if (_headProbe == null || _headProbeShape == null)
+        {
+            _headProbeShape = new SphereShape3D();
+            _headProbe = new PhysicsShapeQueryParameters3D
+            {
+                Shape = _headProbeShape,
+                CollideWithAreas = false,
+                CollideWithBodies = true,
+                Exclude = new global::Godot.Collections.Array<Rid> { _characterBody.GetRid() },
+            };
+        }
+        if (scale != _headProbeScale)
+        {
+            _headProbeScale = scale;
+            _headProbeShape.Radius = HeadProbeRadius * scale;
+        }
+        _headProbe.CollisionMask = _characterBody.CollisionMask;
+        _headProbe.Transform = new Transform3D(Basis.Identity, new Vector3(headPosition.x, headPosition.y, headPosition.z));
+
+        using var contact = space.GetRestInfo(_headProbe);
+        return contact.Count == 0;
+    }
+
+    private bool HoldForGround(Rid spaceRid, float delta, float scale)
+    {
+        if (GroundNear(spaceRid, scale))
+        {
+            _groundHold = false;
+            return false;
+        }
+
+        var world = Owner.World;
+        bool building = world != null
+            && ((world.Hook as WorldHook)?.PendingSolidCount > 0 || world.IsDrainingArrival || world.IsLoading);
+        if (building && _groundWaited < GroundHoldTimeout)
+        {
+            _groundWaited += delta;
+            return true;
+        }
+
+        _groundHold = false;
+        if (building && !_groundWarned)
+        {
+            _groundWarned = true;
+            LumoraLogger.Warn($"CharacterControllerHook: no ground under '{Owner.Slot.SlotName.Value}' after {GroundHoldTimeout:0} s with the world still building, letting go");
+        }
+        return false;
+    }
+
+    // Straight down from the capsule's middle to a little under the feet, against what a walking body stops on.
+    // Ground further down does not count while the world builds, so a spawn platform still on its way gets
+    // the chance to land first.
+    private bool GroundNear(Rid spaceRid, float scale)
+    {
+        var space = PhysicsServer3D.SpaceGetDirectState(spaceRid);
+        if (space == null)
+            return false;
+
+        if (_groundProbe == null)
+        {
+            _groundProbe = new PhysicsRayQueryParameters3D
+            {
+                CollideWithAreas = false,
+                CollideWithBodies = true,
+                Exclude = new global::Godot.Collections.Array<Rid> { _characterBody.GetRid() },
+            };
+        }
+        var feet = _characterBody.GlobalPosition;
+        _groundProbe.CollisionMask = _characterBody.CollisionMask;
+        _groundProbe.From = feet + Vector3.Up * (0.9f * scale);
+        _groundProbe.To = feet - Vector3.Up * (GroundProbeReach * scale);
+
+        using var hit = space.IntersectRay(_groundProbe);
+        return hit.Count > 0;
     }
 
     // Everything here scales LINEARLY with the person's size: walk speed, jump speed and gravity
@@ -226,7 +408,9 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         }
 
         bool onFloor = _characterBody.IsOnFloor();
-        bool hasInput = _moveDirection.LengthSquared() > 0.001f;
+        // The direction's length is the pace asked for, a light stick push or a slow walk well under one, so
+        // anything above rest counts as input.
+        bool hasInput = _moveDirection.LengthSquared() > 1e-6f;
 
         if (onFloor)
         {
@@ -254,9 +438,10 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
             // AirSpeed, and only while we're below AirSpeed along that direction (so high momentum from
             // a sprint jump is left fully intact). -xlinka
             var horiz = new Vector2(_velocity.X, _velocity.Z);
-            var dir = new Vector2(_moveDirection.X, _moveDirection.Z).Normalized();
+            var push = new Vector2(_moveDirection.X, _moveDirection.Z);
+            var dir = push.Normalized();
             float along = horiz.Dot(dir);
-            float airSpeed = Owner.AirSpeed * scale;
+            float airSpeed = Owner.AirSpeed * scale * Mathf.Min(1f, push.Length());
             if (along < airSpeed)
             {
                 float add = Mathf.Min(AirControlAcceleration * scale * delta, airSpeed - along);
@@ -273,6 +458,7 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
             _jumpRequested = false;
         }
 
+        _steppedHorizontalSpeed = new Vector2(_velocity.X, _velocity.Z).Length();
         _characterBody.Velocity = _velocity;
         _characterBody.MoveAndSlide();
         _velocity = _characterBody.Velocity;
@@ -282,13 +468,17 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         int collisionCount = _characterBody.GetSlideCollisionCount();
         for (int i = 0; i < collisionCount; i++)
         {
-            var collision = _characterBody.GetSlideCollision(i);
+            // A fresh wrapper each call; disposed here instead of waiting on the finalizer, every step.
+            using var collision = _characterBody.GetSlideCollision(i);
             var collider = collision.GetCollider();
-            if (collider is RigidBody3D rigidBody)
+            // Simulated bodies live on the physics server with a plain stand-in node, so they are told apart
+            // by what the server says the body is.
+            var hitBody = collision.GetColliderRid();
+            if (collider is RigidBody3D || (hitBody.IsValid && PhysicsServer3D.BodyGetMode(hitBody) == PhysicsServer3D.BodyMode.Rigid))
             {
                 var pushDir = -collision.GetNormal();
                 var pushForce = pushDir * Owner.Speed * 0.5f;
-                rigidBody.ApplyCentralImpulse(new Vector3(pushForce.X, 0, pushForce.Z));
+                PhysicsServer3D.BodyApplyCentralImpulse(hitBody, new Vector3(pushForce.X, 0, pushForce.Z));
             }
 
             var normal = collision.GetNormal();
@@ -342,10 +532,9 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         var node = collider;
         while (node != null && GodotObject.IsInstanceValid(node))
         {
-            if (node.HasMeta("LumoraSlotRef") &&
-                ulong.TryParse(node.GetMeta("LumoraSlotRef").AsString(), out var raw))
+            if (SlotRefMeta.TryRead(node, out var id))
             {
-                return Owner?.World?.ReferenceController?.GetObjectOrNull(new Lumora.Core.RefID(raw)) as Lumora.Core.Slot;
+                return Owner?.World?.ReferenceController?.GetObjectOrNull(id) as Lumora.Core.Slot;
             }
             node = node.GetParent();
         }
@@ -365,6 +554,8 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
     public void Teleport(float3 position)
     {
         _velocity = Vector3.Zero;
+        _leanOffset = float3.Zero;
+        _groundHold = true;
         if (_characterBody != null)
             _characterBody.GlobalPosition = new Vector3(position.x, position.y, position.z);
         if (Owner?.Slot != null)
@@ -398,25 +589,55 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         LumoraLogger.Debug($"CharacterControllerHook: Crouch={crouching}, TargetHeight={_targetHeight}");
     }
 
+    // Shapes are rebuilt from the collider and the user's size. The body hangs off the world root, so the
+    // user's scale never reaches it on its own; it is applied here. Heights come from the collider, not from
+    // fixed numbers: a fitted capsule (a quadruped stands lower than a person) keeps its own height, and a
+    // crouch takes the same share of it that the controller's crouch takes of its standing height. -xlinka
     private void UpdateColliderHeights()
     {
+        float scale = UserScale();
+        float standing = Mathf.Max(Owner.StandingHeight, 0.01f);
+        float share = Mathf.Clamp(_currentHeight / standing, 0.05f, 1f);
+
         foreach (var kvp in _collisionShapes)
         {
             var collider = kvp.Key;
             var shape = kvp.Value;
-            if (shape.Shape is CapsuleShape3D capsule && collider is CapsuleCollider capCollider)
-            {
-                capsule.Height = _currentHeight;
+            if (collider == null || collider.IsDestroyed || shape == null || !GodotObject.IsInstanceValid(shape))
+                continue;
 
-                // CapsuleShape3D is CENTRE-anchored: shrinking the height lifts the bottom off the floor
-                // and gravity drops the whole body, sinking the user root (and the avatar with it) under
-                // the ground on crouch. Lower the shape's centre by half the height change so the capsule
-                // BOTTOM stays put. Measured against the controller's STANDING height (the value the
-                // transition runs between) - the collider's authored Height can legitimately differ, and
-                // using it offset the capsule even while standing. -xlinka
-                var offset = capCollider.Offset.Value;
-                float centerDrop = (Owner.StandingHeight - _currentHeight) * 0.5f;
-                shape.Position = new Vector3(offset.x, offset.y - centerDrop, offset.z);
+            var offset = collider.Offset.Value;
+            switch (collider)
+            {
+                case CapsuleCollider capCollider when shape.Shape is CapsuleShape3D capsule:
+                {
+                    float full = Mathf.Max(capCollider.Height.Value, 0.01f);
+                    float height = full * share;
+                    float radius = Mathf.Min(Mathf.Max(capCollider.Radius.Value, 0.001f), height * 0.5f);
+                    capsule.Radius = radius * scale;
+                    capsule.Height = height * scale;
+
+                    // CapsuleShape3D is CENTRE-anchored: shrinking the height lifts the bottom off the floor
+                    // and gravity drops the whole body, sinking the user root (and the avatar with it) under
+                    // the ground on crouch. Lower the shape's centre by half the height change so the capsule
+                    // BOTTOM stays put. -xlinka
+                    float centerDrop = (full - height) * 0.5f;
+                    shape.Position = new Vector3(offset.x, offset.y - centerDrop, offset.z) * scale;
+                    break;
+                }
+                case BoxCollider box when shape.Shape is BoxShape3D boxShape:
+                {
+                    float3 size = box.Size.Value * scale;
+                    boxShape.Size = new Vector3(size.x, size.y, size.z);
+                    shape.Position = new Vector3(offset.x, offset.y, offset.z) * scale;
+                    break;
+                }
+                case SphereCollider sphere when shape.Shape is SphereShape3D sphereShape:
+                {
+                    sphereShape.Radius = sphere.Radius.Value * scale;
+                    shape.Position = new Vector3(offset.x, offset.y, offset.z) * scale;
+                    break;
+                }
             }
         }
     }
@@ -457,6 +678,7 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
 
         _characterBody.AddChild(collisionShape);
         _collisionShapes[collider] = collisionShape;
+        _shapesDirty = true;
     }
 
     public void RemoveColliderShape(Collider collider)

@@ -39,11 +39,28 @@ public abstract class Collider : ImplementableComponent
 
     protected IColliderOwner _owner = null!;
     protected bool _shapeChanged = true;
-    private bool _ownerSearchComplete = false;
-    private int _updatesSinceAwake = 0;
+    private int _ownerSearches;
 
     // The component that manages this collider, e.g. a CharacterController.
     public IColliderOwner ColliderOwner => _owner;
+
+    // The rigid body whose simulated body carries this shape: the nearest one at or above this slot, for a
+    // solid collider. Null leaves the collider a body of its own.
+    public RigidBody? Body
+    {
+        get => _body;
+        internal set
+        {
+            _body = value;
+            WatchMoves();
+        }
+    }
+
+    private RigidBody? _body;
+
+    // Something rests on it, pushes against it, or is pushed by it. Triggers and NoCollision only answer
+    // queries, and a character collider belongs to its controller.
+    public bool IsSolid => Type.Value is ColliderType.Static or ColliderType.Active;
 
     // Local bounds offset after the owner has post-processed it.
     public float3 LocalBoundsOffset
@@ -76,103 +93,83 @@ public abstract class Collider : ImplementableComponent
 
         // Keep hook in sync when collider properties change
         Offset.OnChanged += _ => RunApplyChanges();
-        Type.OnChanged += _ => RunApplyChanges();
+        Type.OnChanged += _ =>
+        {
+            // Solid or not decides which body carries it, so the rigid body above looks again.
+            RigidBody.Above(Slot)?.MarkCollidersDirty();
+            RunApplyChanges();
+        };
         Mass.OnChanged += _ => RunApplyChanges();
         CharacterCollider.OnChanged += _ => RunApplyChanges();
         IgnoreRaycasts.OnChanged += _ => RunApplyChanges();
         // Re-sync whenever this slot's WORLD transform changes - its own local move, an ancestor
         // moving, or a scale change - coalesced to once per frame. (The old per-field local hooks
         // only caught this slot's own position/rotation; ancestor moves and scale were missed.)
-        Slot.WorldTransformChanged += OnSlotTransformChanged;
+        WatchMoves();
+        // Its body hangs under the world root, not the slot, so a slot switched off stays solid and still
+        // takes a laser until the hook looks again. -xlinka
+        Slot.ActiveChanged += OnSlotActiveChanged;
 
-        // Lumora Pattern: If this is a CharacterController collider,
-        // notify CharacterController components in the SAME slot (not parent slots)
-        if (Type.Value == ColliderType.CharacterController)
-        {
-            foreach (var component in Slot.Components)
-            {
-                if (component is IColliderOwner owner)
-                {
-                    _owner = owner;
-                    _owner.OnColliderAdded(this);
-                    LumoraLogger.Log($"Collider: Notified owner {_owner.GetType().Name} in same slot");
-                    break; // Only register with first owner found
-                }
-            }
-
-            if (_owner == null)
-            {
-                LumoraLogger.Warn($"Collider: No IColliderOwner found in same slot '{Slot.SlotName.Value}' for CharacterController collider");
-            }
-        }
-        // For non-CharacterController colliders, register with physics system directly
-        // (handled by physics hook)
+        // A CharacterController collider tells the controller on its own slot (not a parent's) that it is
+        // there; every other collider goes straight to the physics hook.
+        SearchForOwner();
         RunApplyChanges();
     }
 
-    // UPDATE
+    // OWNER
 
-    public override void OnUpdate(float delta)
+    // The controller may not be awake yet, so the search is tried again over the next three updates. It
+    // used to ride the per-frame update for that, which kept every collider on the dispatch until its
+    // fourth update: never, for a collider on a switched-off slot, which is dispatched but not updated.
+    // 65536 of those in one package cost most of a minute of empty calls. -xlinka
+    private void SearchForOwner()
     {
-        base.OnUpdate(delta);
-
-        // Keep searching for owner for first few updates (components might not be awake yet)
-        if (!_ownerSearchComplete)
-        {
-            _updatesSinceAwake++;
-
-            // Re-search for owner if we didn't find one yet (CharacterController colliders only)
-            if (_owner == null && _updatesSinceAwake <= 3 && Type.Value == ColliderType.CharacterController)
-            {
-                // Search same slot for IColliderOwner
-                foreach (var component in Slot.Components)
-                {
-                    if (component is IColliderOwner owner)
-                    {
-                        _owner = owner;
-                        _owner.OnColliderAdded(this);
-                        LumoraLogger.Log($"Collider: Found owner {_owner.GetType().Name} after {_updatesSinceAwake} updates");
-                        _ownerSearchComplete = true;
-                        break;
-                    }
-                }
-            }
-            else if (_updatesSinceAwake > 3)
-            {
-                // After 3 updates, give up searching - this is a standalone collider
-                _ownerSearchComplete = true;
-                if (_owner == null)
-                {
-                    LumoraLogger.Debug($"Collider: No owner found after {_updatesSinceAwake} updates, creating standalone static body");
-                }
-            }
-
-            if (_ownerSearchComplete)
-                DropOffTheUpdateDispatch();
-        }
-    }
-
-    // The owner search is the ONLY thing this component wanted a per-frame update for, and it finishes
-    // in four frames. Everything after that is event driven: sync fields queue the hook, and the world
-    // transform event covers moving. A world like Scratch carries hundreds of colliders, and leaving
-    // them all on the dispatch means hundreds of virtual calls a frame to run a branch that is already
-    // false. Deferred by one update because the removal happens from inside the dispatch's own loop.
-    // -xlinka
-    private void DropOffTheUpdateDispatch()
-    {
-        if (_droppedFromUpdates)
+        if (IsDestroyed || _owner != null || Type.Value != ColliderType.CharacterController)
             return;
-        _droppedFromUpdates = true;
-        World?.RunInUpdates(1, () =>
+
+        foreach (var component in Slot.Components)
         {
-            if (!IsDestroyed)
-                World?.UpdateManager?.UnregisterFromUpdates(this);
-        });
+            if (component is IColliderOwner owner)
+            {
+                _owner = owner;
+                _owner.OnColliderAdded(this);
+                LumoraLogger.Debug($"Collider: found owner {_owner.GetType().Name} on its slot after {_ownerSearches} retries");
+                return;
+            }
+        }
+
+        if (_ownerSearches++ < 3)
+            World?.RunInUpdates(1, SearchForOwner);
+        else
+            LumoraLogger.Warn($"Collider: No IColliderOwner found in same slot '{Slot.SlotName.Value}' for CharacterController collider");
     }
 
-    private bool _droppedFromUpdates;
+    private bool _watchingMoves;
 
-    private void OnSlotTransformChanged(Slot _) => RunApplyChanges();
+    // A collider on its rigid body's own slot moves with the body by construction: the body carries the shape,
+    // and the body's own hook hears of moves that come from outside it. Listening there anyway queued a notice
+    // per body per physics step for nothing.
+    private void WatchMoves()
+    {
+        bool watch = !IsDestroyed && Slot != null && !(_body != null && ReferenceEquals(_body.Slot, Slot));
+        if (watch == _watchingMoves || Slot == null)
+            return;
+        _watchingMoves = watch;
+        if (watch)
+            Slot.WorldTransformChanged += OnSlotTransformChanged;
+        else
+            Slot.WorldTransformChanged -= OnSlotTransformChanged;
+    }
+
+    private void OnSlotTransformChanged(Slot _)
+    {
+        // A part of a body further down its model: the body re-poses the shape, the collider's own hook has no
+        // body to move.
+        if (_body != null && !_body.IsDestroyed)
+            _body.MarkPartMoved();
+        else
+            RunApplyChanges();
+    }
 
     // ABSTRACT METHODS
 
@@ -181,6 +178,8 @@ public abstract class Collider : ImplementableComponent
     // fitting and overlap pre-tests.
     public abstract BoundingBox GetLocalBounds();
 
+    private void OnSlotActiveChanged(Slot _) => RunApplyChanges();
+
     // CLEANUP
 
     public override void OnDestroy()
@@ -188,10 +187,17 @@ public abstract class Collider : ImplementableComponent
         World?.UnregisterCollider(this);
 
         if (Slot != null)
-            Slot.WorldTransformChanged -= OnSlotTransformChanged;
+        {
+            if (_watchingMoves)
+                Slot.WorldTransformChanged -= OnSlotTransformChanged;
+            _watchingMoves = false;
+            Slot.ActiveChanged -= OnSlotActiveChanged;
+        }
 
         _owner?.OnColliderRemoved(this);
         _owner = null!;
+        _body?.MarkCollidersDirty();
+        _body = null;
 
         base.OnDestroy();
         LumoraLogger.Debug($"Collider: Destroyed {GetType().Name}");

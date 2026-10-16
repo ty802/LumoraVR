@@ -16,8 +16,8 @@ namespace Lumora.Core.Components;
 // backend decided. -xlinka
 //
 // The hull is cached and only re-solved when the source reference, the point list or the tolerance
-// changes. Geometry edited in place behind a reference (a procedural mesh regenerating) raises no
-// event here, so that case has the Rebuild Hull action.
+// changes, or when a procedural source builds itself again. Geometry edited in place behind any other
+// reference raises no event here, so that case has the Rebuild Hull action.
 [ComponentCategory("Physics/Colliders")]
 public class ConvexHullCollider : Collider
 {
@@ -45,6 +45,40 @@ public class ConvexHullCollider : Collider
         Mesh = new SyncRef<Component>(this);
         Points = new SyncFieldList<float3>(this);
         MinPointDistance = new Sync<float>(this, 0f);
+        _watch = new MeshSourceWatch(() =>
+        {
+            if (!IsDestroyed)
+                MarkHullDirty();
+        });
+    }
+
+    private readonly MeshSourceWatch _watch;
+
+    public override void OnDestroy()
+    {
+        _watch.Watch(null);
+        FollowRebuilds(null);
+        base.OnDestroy();
+    }
+
+    private ProceduralMesh? _rebuildSource;
+
+    private void FollowRebuilds(Component? source)
+    {
+        var procedural = source as ProceduralMesh;
+        if (ReferenceEquals(procedural, _rebuildSource))
+            return;
+        if (_rebuildSource != null)
+            _rebuildSource.Regenerated -= OnSourceRebuilt;
+        _rebuildSource = procedural;
+        if (procedural != null)
+            procedural.Regenerated += OnSourceRebuilt;
+    }
+
+    private void OnSourceRebuilt(ProceduralMesh mesh)
+    {
+        if (!IsDestroyed && ReferenceEquals(mesh, Mesh.Target))
+            MarkHullDirty();
     }
 
     public override void OnAwake()
@@ -81,15 +115,16 @@ public class ConvexHullCollider : Collider
         RunApplyChanges();
     }
 
-    // Asset-backed meshes decode off-thread and nothing re-drives the hook when the data lands, so the
-    // shape would silently stay missing. Poll a few frames apart until the geometry exists, then push
-    // one rebuild. Same wait the mesh collider uses.
+    // A provider's mesh arrives through the watch; a procedural mesh builds on its own within a frame or
+    // two and is looked at again a few frames apart until it has. -xlinka
     private void ArmMeshReadyRetry()
     {
         if (IsDestroyed || World == null)
             return;
 
         Component? source = Mesh.Target;
+        _watch.Watch(source as Lumora.Core.Assets.IAssetProvider);
+        FollowRebuilds(source);
         if (source == null)
             return;
 
@@ -99,7 +134,7 @@ public class ConvexHullCollider : Collider
             return;
         }
 
-        if (_meshReadyRetries++ > 600)
+        if (source is not ProceduralMesh || _meshReadyRetries++ > 600)
             return;
 
         World.RunInUpdates(10, ArmMeshReadyRetry);
@@ -125,6 +160,19 @@ public class ConvexHullCollider : Collider
 
     // read after GetHullPoints
     public ConvexHullSolver.Result LastResult => _cachedResult;
+
+    // The hull collider over mesh on slot: the one already there for that mesh, or a new one.
+    public static ConvexHullCollider Ensure(Slot slot, Component mesh)
+    {
+        foreach (var component in slot.Components)
+        {
+            if (component is ConvexHullCollider found && !found.IsDestroyed && ReferenceEquals(found.Mesh.Target, mesh))
+                return found;
+        }
+        var made = slot.AttachComponent<ConvexHullCollider>();
+        made.Mesh.Target = mesh;
+        return made;
+    }
 
     public override BoundingBox GetLocalBounds()
     {

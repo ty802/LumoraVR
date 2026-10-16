@@ -31,6 +31,9 @@ public sealed class WorldPhysics
 
     private IPhysicsQueryHook? QueryHook => _world.Hook as IPhysicsQueryHook;
 
+    // Once a frame from the world update, before scripts and components read a pose.
+    public void Step() => (_world.Hook as IPhysicsStepHook)?.StepBodies();
+
     // RAYCAST
 
     /// <summary>
@@ -157,20 +160,33 @@ public sealed class WorldPhysics
 
     private readonly Dictionary<Slot, List<ContactWatch>> _contactWatches = new();
 
+    // Bodies only report touches while something in the world listens for them: tracking every body's contacts
+    // doubled the cost of a physics step for a pile of boxes nobody was watching.
+    public bool WatchesContacts => _contactWatches.Count > 0;
+
+    public event Action? ContactWatchingChanged;
+
     // Returns what stops the watch.
     public Action WatchContacts(Slot slot, Action<PhysicsContact>? began, Action<PhysicsContact>? ended)
     {
         var watch = new ContactWatch { Began = began, Ended = ended };
+        bool first = _contactWatches.Count == 0;
         if (!_contactWatches.TryGetValue(slot, out var watches))
         {
             watches = new List<ContactWatch>(1);
             _contactWatches[slot] = watches;
         }
         watches.Add(watch);
+        if (first)
+            ContactWatchingChanged?.Invoke();
         return () =>
         {
             if (_contactWatches.TryGetValue(slot, out var list) && list.Remove(watch) && list.Count == 0)
+            {
                 _contactWatches.Remove(slot);
+                if (_contactWatches.Count == 0)
+                    ContactWatchingChanged?.Invoke();
+            }
         };
     }
 

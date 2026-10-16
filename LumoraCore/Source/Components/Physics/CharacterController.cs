@@ -63,7 +63,10 @@ public class CharacterController : ImplementableComponent, IColliderOwner
         if (!_colliders.Contains(collider))
         {
             _colliders.Add(collider);
-            LumoraLogger.Log($"CharacterController: Added collider {collider.GetType().Name}");
+            // After setup the shapes are already built; a collider arriving later needs its own.
+            if (_isReady)
+                CharacterHook?.AddColliderShape(collider);
+            LumoraLogger.Debug($"CharacterController: Added collider {collider.GetType().Name}");
         }
     }
 
@@ -72,13 +75,16 @@ public class CharacterController : ImplementableComponent, IColliderOwner
         if (_colliders.Remove(collider))
         {
             CharacterHook?.RemoveColliderShape(collider);
-            LumoraLogger.Log($"CharacterController: Removed collider {collider.GetType().Name}");
+            LumoraLogger.Debug($"CharacterController: Removed collider {collider.GetType().Name}");
         }
     }
 
+    // An avatar fit or an inspector edit of the capsule. The hook refits its shapes on the step after its
+    // ApplyChanges, so the body the world pushes is the one the collider describes.
     public void OnColliderShapeChanged(Collider collider)
     {
-        // Hook rebuilds the shape on its next ApplyChanges call
+        if (_colliders.Contains(collider))
+            RunApplyChanges();
     }
 
     public void PostprocessBoundsOffset(ref float3 offset) { }
@@ -109,14 +115,14 @@ public class CharacterController : ImplementableComponent, IColliderOwner
                 collider.Type.Value == ColliderType.CharacterController)
             {
                 _colliders.Add(collider);
-                LumoraLogger.Log($"CharacterController: Found {collider.GetType().Name} with Type=CharacterController");
+                LumoraLogger.Debug($"CharacterController: Found {collider.GetType().Name} with Type=CharacterController");
             }
         }
 
         if (_colliders.Count > 1)
             LumoraLogger.Warn($"CharacterController: Found {_colliders.Count} colliders, using first one");
 
-        LumoraLogger.Log($"CharacterController: Discovered {_colliders.Count} colliders in same slot");
+        LumoraLogger.Debug($"CharacterController: Discovered {_colliders.Count} colliders in same slot");
     }
 
     public IReadOnlyList<Collider> GetColliders() => _colliders;
@@ -126,6 +132,10 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+
+        // Stop the cached walking velocity and gravity step from moving a parked avatar.
+        if (World?.IsFocused != true)
+            return;
 
         if (!_isReady)
             TryInitializeLocalUser();
@@ -164,7 +174,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
                 CharacterHook.AddColliderShape(collider);
 
             RunApplyChanges();
-            LumoraLogger.Log("CharacterController: Physics enabled!");
+            LumoraLogger.Debug("CharacterController: Physics enabled!");
         }
         else
         {
@@ -172,7 +182,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
         }
 
         _isReady = true;
-        LumoraLogger.Log($"CharacterController: Initialized for local user '{_userRoot.ActiveUser.UserName.Value}' with {_colliders.Count} colliders");
+        LumoraLogger.Debug($"CharacterController: Initialized for local user '{_userRoot.ActiveUser.UserName.Value}' with {_colliders.Count} colliders");
     }
 
     // PUBLIC API (Called by LocomotionController)
@@ -248,6 +258,6 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     {
         _colliders.Clear();
         base.OnDestroy();
-        LumoraLogger.Log("CharacterController: Destroyed");
+        LumoraLogger.Debug("CharacterController: Destroyed");
     }
 }

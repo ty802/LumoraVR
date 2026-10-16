@@ -6,24 +6,19 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Tracks which users are inside the colliders on this slot (trigger volumes, capture zones, doors).
-/// Each peer detects and replicates ONLY its own membership: the local user's root point is tested
-/// against this slot's collider bounds a few times a second, and the synced list carries everyone's
-/// self-reported state. The host prunes entries for users who leave. -xlinka
-/// </summary>
+// Tracks which users are inside the colliders on this slot (trigger volumes, capture zones, doors).
+// Each peer detects and replicates ONLY its own membership: the local user's root point is tested
+// against this slot's collider bounds a few times a second, and the synced list carries everyone's
+// self-reported state. The host prunes entries for users who leave. -xlinka
 [ComponentCategory("Physics")]
 public class ColliderUserTracker : Component
 {
-    /// <summary>Users currently inside. Each user's own peer manages its entry.</summary>
+    // Each user's own peer manages its entry.
     public readonly SyncRefList<User> UsersInside;
 
     public bool IsLocalUserInside { get; private set; }
     public bool IsAnyUserInside => UsersInside.Count > 0;
     public int NumberOfUsersInside => UsersInside.Count;
-
-    private const int CheckInterval = 5;   // updates between containment tests
-    private int _updateCounter;
 
     public ColliderUserTracker()
     {
@@ -36,9 +31,19 @@ public class ColliderUserTracker : Component
         World?.RegisterEventReceiver(this);
     }
 
+    // Looked at by the world's round, every fifth update, instead of counting frames in its own update.
+    public override void OnStart()
+    {
+        base.OnStart();
+        if (World != null)
+            ColliderUserRound.For(World).Add(this);
+    }
+
     public override void OnDestroy()
     {
         World?.UnregisterEventReceiver(this);
+        if (World != null)
+            ColliderUserRound.For(World).Remove(this);
         base.OnDestroy();
     }
 
@@ -52,13 +57,11 @@ public class ColliderUserTracker : Component
             UsersInside.Remove(user);
     }
 
-    public override void OnUpdate(float delta)
+    // What its update did on every fifth call: switched off or out of the tree, it is not looked at.
+    internal void Look()
     {
-        base.OnUpdate(delta);
-
-        if (++_updateCounter < CheckInterval)
+        if (IsDestroyed || !Enabled.Value || Slot is not { IsActive: true })
             return;
-        _updateCounter = 0;
 
         var localUser = World?.LocalUser;
         if (localUser == null)
@@ -91,9 +94,10 @@ public class ColliderUserTracker : Component
 
         float3 point = rootSlot.GlobalPosition + new float3(0f, 0.1f, 0f);
 
-        foreach (var collider in Slot.GetComponents<Collider>())
+        var components = Slot.Components;
+        for (int i = 0; i < components.Count; i++)
         {
-            if (collider == null || !collider.Enabled)
+            if (components[i] is not Collider collider || !collider.Enabled)
                 continue;
             float3 local = collider.Slot.GlobalPointToLocal(point);
             var bounds = collider.GetLocalBounds();

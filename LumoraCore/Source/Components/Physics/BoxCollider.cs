@@ -37,5 +37,16 @@ public class BoxCollider : Collider
         return new BoundingBox(Offset.Value - half, Offset.Value + half);
     }
 
+    // Offset and Size to the exact box around the meshes drawn at and under this slot, measured in this
+    // slot's own space, so it sits on the geometry whatever the slot's scale and rotation.
+    [SyncMethod]
+    public void FitToMesh()
+    {
+        if (!SlotBoundsHelper.TryComputeGeometryBounds(Slot, Slot, out var bounds))
+            return;
+        Offset.Value = bounds.Center;
+        Size.Value = bounds.Size;
+    }
+
 }
 

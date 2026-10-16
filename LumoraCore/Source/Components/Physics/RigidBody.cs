@@ -1,13 +1,14 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System.Collections.Generic;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
-using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-// requires a Collider component on the same slot to define the collision shape
+// Its shape is every solid collider on its slot and below it, down to the next rigid body: a model with its
+// colliders on child parts falls as one piece.
 [ComponentCategory("Physics")]
 public class RigidBody : ImplementableComponent
 {
@@ -73,26 +74,188 @@ public class RigidBody : ImplementableComponent
     public override void OnAwake()
     {
         base.OnAwake();
-        Slot.WorldTransformChanged += OnSlotMoved;
-        LumoraLogger.Debug($"RigidBody: Initialized on '{Slot.SlotName.Value}' with Mass={Mass.Value}kg");
+        WatchMoves(true);
+        // Switched off it stops updating, so this is the only word the hook gets of it. -xlinka
+        Slot.ActiveChanged += OnSlotActiveChanged;
+        Slot.SubtreeStructureChanged += OnSubtreeChanged;
+        // A grab puts the object under the holder's user, which hands the simulation to their machine.
+        Slot.ActiveUserRootChanged += OnOwnerChanged;
+    }
+
+    public override void OnStart()
+    {
+        base.OnStart();
+        GatherColliders();
     }
 
     public override void OnDestroy()
     {
         if (Slot != null)
-            Slot.WorldTransformChanged -= OnSlotMoved;
+        {
+            WatchMoves(false);
+            Slot.ActiveChanged -= OnSlotActiveChanged;
+            Slot.SubtreeStructureChanged -= OnSubtreeChanged;
+            Slot.ActiveUserRootChanged -= OnOwnerChanged;
+        }
+        foreach (var collider in _colliders)
+        {
+            if (collider.Body != this)
+                continue;
+            collider.Body = null;
+            if (!collider.IsDestroyed)
+                collider.RunApplyChanges();
+        }
+        _colliders.Clear();
         base.OnDestroy();
     }
 
+    // COLLIDERS
+
+    private readonly List<Collider> _colliders = new();
+    private readonly HashSet<Collider> _gathered = new();
+    private readonly List<Collider> _gatherOrder = new();
+    private bool _collidersDirty = true;
+    private bool _gatherQueued;
+
+    // Every peer gathers, simulating or not: a collider handed to this body stops being a body of its own
+    // on every machine. Read by the hook, which takes the latest answer.
+    public IReadOnlyList<Collider> Colliders
+    {
+        get
+        {
+            if (_collidersDirty)
+                GatherColliders();
+            return _colliders;
+        }
+    }
+
+    // A burst of edits under the slot, an import landing say, is gathered once, the next update.
+    public void MarkCollidersDirty()
+    {
+        if (IsDestroyed)
+            return;
+        _collidersDirty = true;
+        RunApplyChanges();
+        if (_gatherQueued || World == null)
+            return;
+        _gatherQueued = true;
+        World.RunInUpdates(1, () =>
+        {
+            _gatherQueued = false;
+            if (_collidersDirty && !IsDestroyed)
+                GatherColliders();
+        });
+    }
+
+    // The nearest rigid body at or above a slot: the one a solid collider there belongs to.
+    public static RigidBody? Above(Slot? slot)
+    {
+        for (var s = slot; s != null; s = s.Parent)
+        {
+            var body = s.GetComponent<RigidBody>();
+            if (body != null && !body.IsDestroyed)
+                return body;
+        }
+        return null;
+    }
+
+    private void OnSubtreeChanged(Slot _) => MarkCollidersDirty();
+
+    // Brings the object up to its body's last physics step before something reads where it is. With many bodies
+    // moving the object is written every few steps, not every one.
+    public void RefreshPose() => (Hook as IRigidBodyHook)?.WritePoseNow();
+
+    // A collider further down the model moved: its shape is posed again relative to the body.
+    public void MarkPartMoved() => RunApplyChanges();
+
+    private void GatherColliders()
+    {
+        _collidersDirty = false;
+        _gathered.Clear();
+        _gatherOrder.Clear();
+        if (!IsDestroyed && Slot != null && !Slot.IsDestroyed)
+            Gather(Slot, isRoot: true);
+
+        foreach (var collider in _colliders)
+        {
+            if (_gathered.Contains(collider) || collider.Body != this)
+                continue;
+            collider.Body = null;
+            if (!collider.IsDestroyed)
+                collider.RunApplyChanges();
+        }
+        foreach (var collider in _gatherOrder)
+        {
+            if (collider.Body == this)
+                continue;
+            collider.Body = this;
+            collider.RunApplyChanges();
+        }
+        _colliders.Clear();
+        _colliders.AddRange(_gatherOrder);
+    }
+
+    private void Gather(Slot slot, bool isRoot)
+    {
+        if (slot.IsDestroyed)
+            return;
+        if (!isRoot && slot.GetComponent<RigidBody>() is { IsDestroyed: false })
+            return;
+        foreach (var component in slot.Components)
+        {
+            if (component is Collider { IsDestroyed: false } collider && collider.IsSolid && _gathered.Add(collider))
+                _gatherOrder.Add(collider);
+        }
+        foreach (var child in slot.Children)
+            Gather(child, isRoot: false);
+    }
+
+    private void OnSlotActiveChanged(Slot _) => RunApplyChanges();
+
+    // The simulating hook's report of how fast the body moves. An output, never an instruction to the body, so it
+    // is not a change for the hook to apply either: that loop queued every moving body's hook again each step.
+    public void ReportMotion(in float3 linear, in float3 angular)
+    {
+        if (!LinearVelocity.SetSimulatedValue(linear))
+            LinearVelocity.Value = linear;
+        if (!AngularVelocity.SetSimulatedValue(angular))
+            AngularVelocity.Value = angular;
+    }
+
+    protected override void OnSyncMemberChanged(IChangeable member)
+    {
+        if (ReferenceEquals(member, LinearVelocity) || ReferenceEquals(member, AngularVelocity))
+            return;
+        base.OnSyncMemberChanged(member);
+    }
+
+    private void OnOwnerChanged(Slot _) => RunApplyChanges();
+
     // A body this machine does not simulate still follows its object here, so a cast or a search meets it
-    // where the object is. Only when the object moved: a still one costs nothing.
+    // where the object is, and one at rest, carried or switched off here takes up wherever it was put. Only
+    // when the object moved: a still one costs nothing. The hook takes a note and does the work once a frame.
     private void OnSlotMoved(Slot _)
     {
-        if (!IsSimulationOwner)
+        if (Hook is IRigidBodyHook body)
+            body.SlotMoved();
+        else
             RunApplyChanges();
     }
 
-    private bool _wasOwner;
+    private bool _watchingMoves;
+
+    // Off while the hook moves the object every physics step itself: its own writes are not news, and every one
+    // of them would queue a notice. On again once the body rests or stops being simulated here.
+    public void WatchMoves(bool watch)
+    {
+        if (watch == _watchingMoves || Slot == null)
+            return;
+        _watchingMoves = watch;
+        if (watch)
+            Slot.WorldTransformChanged += OnSlotMoved;
+        else
+            Slot.WorldTransformChanged -= OnSlotMoved;
+    }
 
     public override void OnInit()
     {
@@ -137,29 +300,10 @@ public class RigidBody : ImplementableComponent
         }
     }
 
-    public override void OnUpdate(float delta)
-    {
-        base.OnUpdate(delta);
-
-        bool owner = IsSimulationOwner;
-        if (owner)
-        {
-            // Owner drives the sim: queue the hook so it integrates forces and writes the synced pose/velocity. -xlinka
-            RunApplyChanges();
-        }
-        else
-        {
-            // Non-owner: never run a local sim that would fight the replicated transform. Drop any forces that
-            // got queued locally so they can't accumulate and fire if ownership later transfers to us. The body
-            // follows the Slot transform the owner replicates, moved whenever the slot is (OnSlotMoved). A body
-            // just handed to another machine, by a grab, gets one more pass so it stops simulating here at
-            // once instead of carrying on as a ghost that snaps the object back when it returns. -xlinka
-            ClearPendingForces();
-            if (_wasOwner)
-                RunApplyChanges();
-        }
-        _wasOwner = owner;
-    }
+    // Nothing here runs per frame. A body still moving is stepped by the platform's physics pass, a body at rest
+    // costs nothing, and every change of what it should do arrives as an event: a field write, a force, a move
+    // from outside, a hand-off of the simulation to another machine by a grab (OnOwnerChanged). The machine
+    // giving it up drops its forces and follows the object from then on; it never simulates a ghost. -xlinka
 
     // Sync-change handler. The base queues the hook to ApplyChanges on every replicated field write; a non-owner
     // must NOT be driven that way (an incoming velocity/pose write would otherwise kick off a local sim that
@@ -179,6 +323,7 @@ public class RigidBody : ImplementableComponent
         if (!IsSimulationOwner)
             return;
         PendingForce += force;
+        RunApplyChanges();
     }
 
     // instantaneous velocity change; no-op on a non-owner
@@ -187,6 +332,7 @@ public class RigidBody : ImplementableComponent
         if (!IsSimulationOwner)
             return;
         PendingImpulse += impulse;
+        RunApplyChanges();
     }
 
     // no-op on a non-owner
@@ -195,6 +341,7 @@ public class RigidBody : ImplementableComponent
         if (!IsSimulationOwner)
             return;
         PendingTorque += torque;
+        RunApplyChanges();
     }
 
     // Exact velocity hand-off, for a throw. An impulse is the wrong tool here: it would need the mass divided
@@ -243,7 +390,7 @@ public class RigidBody : ImplementableComponent
         return lengthSquared > limit * limit ? value.Normalized * limit : value;
     }
 
-    // Pending forces (consumed by hook each frame)
+    // Pending forces, consumed by the hook on its next apply
     public float3 PendingForce;
     public float3 PendingImpulse;
     public float3 PendingTorque;

@@ -23,9 +23,26 @@ public class MeshCollider : Collider
     {
         Mesh = new SyncRef<Component>(this);
         Convex = new Sync<bool>(this, false);
+        _watch = new MeshSourceWatch(() =>
+        {
+            if (!IsDestroyed)
+                RunApplyChanges();
+        });
     }
 
     private int _meshReadyRetries;
+
+    // A mesh provider tells its references when its mesh lands, and a collider is one: it needs the data as
+    // much as a renderer does. Polling for it instead cost a check every ten frames per collider, which an
+    // import of 65536 colliders on one mesh paid for most of a minute, and a mesh only a collider used was
+    // never loaded at all, since nothing had referenced it. -xlinka
+    private readonly MeshSourceWatch _watch;
+
+    public override void OnDestroy()
+    {
+        _watch.Watch(null);
+        base.OnDestroy();
+    }
 
     public override void OnAwake()
     {
@@ -45,13 +62,14 @@ public class MeshCollider : Collider
         ArmMeshReadyRetry();
     }
 
-    // The provider's mesh data decodes async and nothing re-drives the hook when it lands (Mesh is a
-    // plain SyncRef, not an asset ref), so the shape would silently stay missing. Poll a few frames
-    // apart until the data exists, then push one ApplyChanges. -xlinka
+    // A provider's mesh decodes async and arrives through the watch above; a procedural mesh builds on its
+    // own within a frame or two and is looked at again a few frames apart until it has. -xlinka
     private void ArmMeshReadyRetry()
     {
         if (IsDestroyed || World == null)
             return;
+
+        _watch.Watch(Mesh.Target as IAssetProvider);
 
         bool ready = Mesh.Target switch
         {
@@ -66,7 +84,7 @@ public class MeshCollider : Collider
             return;
         }
 
-        if (Mesh.Target == null || _meshReadyRetries++ > 600)
+        if (Mesh.Target is not ProceduralMesh || _meshReadyRetries++ > 600)
             return;
 
         World.RunInUpdates(10, ArmMeshReadyRetry);
@@ -83,6 +101,50 @@ public class MeshCollider : Collider
         }
 
         return new BoundingBox(Offset.Value, Offset.Value);
+    }
+
+    // A box over the mesh's own bounds, carrying this collider's settings, in place of the trimesh: far
+    // cheaper to collide with when the shape does not need to be exact.
+    [SyncMethod]
+    public void ReplaceWithBox()
+    {
+        if (!TryGetMeshBounds(out var bounds))
+            return;
+        var box = Slot.AttachComponent<BoxCollider>();
+        box.Offset.Value = bounds.Center + Offset.Value;
+        box.Size.Value = bounds.Size;
+        box.Type.Value = Type.Value;
+        box.Mass.Value = Mass.Value;
+        box.CharacterCollider.Value = CharacterCollider.Value;
+        box.IgnoreRaycasts.Value = IgnoreRaycasts.Value;
+        box.Enabled.Value = Enabled.Value;
+        Destroy();
+    }
+
+    // The hull of the same mesh, carrying this collider's settings, in place of the trimesh: a shape a moving
+    // body can carry, and far cheaper to collide with than every triangle when the hollows do not matter.
+    [SyncMethod]
+    public void ReplaceWithConvexHull()
+    {
+        if (Mesh.Target is not (ProceduralMesh or MeshProvider))
+            return;
+        var hull = ConvexHullCollider.Ensure(Slot, Mesh.Target);
+        hull.Offset.Value = Offset.Value;
+        hull.Type.Value = Type.Value;
+        hull.Mass.Value = Mass.Value;
+        hull.CharacterCollider.Value = CharacterCollider.Value;
+        hull.IgnoreRaycasts.Value = IgnoreRaycasts.Value;
+        hull.Enabled.Value = Enabled.Value;
+        Destroy();
+    }
+
+    // Several hulls in place of the trimesh, worked out in a dialog: a chair keeps the gap under its seat, and
+    // every part is still a shape a moving body can carry.
+    [SyncMethod]
+    public void SplitIntoConvexHulls()
+    {
+        if (Mesh.Target is ProceduralMesh or MeshProvider)
+            ConvexSplitDialog.Open(this);
     }
 
     private bool TryGetMeshBounds(out BoundingBox bounds)

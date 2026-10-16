@@ -121,7 +121,7 @@ public class RespawnPlane : ImplementableComponent
             controller.Teleport(spawnPos);
         else
             userRoot.Slot.GlobalPosition = spawnPos;
-        Logging.Logger.Log($"RespawnPlane: Teleported user '{userRoot.ActiveUser?.UserName?.Value ?? "Unknown"}' to spawn");
+        Logging.Logger.Debug($"RespawnPlane: Teleported user '{userRoot.ActiveUser?.UserName?.Value ?? "Unknown"}' to spawn");
     }
 
     private static void ResetToOrigin(Slot slot, RespawnData data)
@@ -133,7 +133,7 @@ public class RespawnPlane : ImplementableComponent
         // owner's pose for a frame.
         if (rigidBody != null && !rigidBody.IsSimulationOwner)
             return;
-        Logging.Logger.Log($"RespawnPlane: Reset '{slot.SlotName.Value}' from {slot.GlobalPosition} to {originalPos}");
+        Logging.Logger.Debug($"RespawnPlane: Reset '{slot.SlotName.Value}' from {slot.GlobalPosition} to {originalPos}");
         if (rigidBody != null)
         {
             rigidBody.Teleport(originalPos, originalRot);
@@ -151,7 +151,7 @@ public class RespawnPlane : ImplementableComponent
         {
             var spawnPos = UserRespawnPosition.Value;
             userRoot.Slot.GlobalPosition = spawnPos;
-            Logging.Logger.Log($"RespawnPlane: Teleported user '{userRoot.ActiveUser?.UserName?.Value ?? "Unknown"}' to spawn");
+            Logging.Logger.Debug($"RespawnPlane: Teleported user '{userRoot.ActiveUser?.UserName?.Value ?? "Unknown"}' to spawn");
             return;
         }
         var respawnData = objectSlot.GetComponent<RespawnData>();

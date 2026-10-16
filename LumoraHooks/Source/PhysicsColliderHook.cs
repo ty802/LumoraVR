@@ -12,22 +12,27 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks
 {
-    // Creates a StaticBody3D or RigidBody3D with a CollisionShape3D and keeps it synced to the slot.
-    // CharacterController colliders are handled separately by CharacterControllerHook.
+    // Creates the body a collider stands for and keeps it on the slot: a StaticBody3D for a surface, a
+    // kinematic body for one that is carried about, or an Area3D for a shape that only answers queries.
+    // CharacterController colliders belong to CharacterControllerHook, and a solid collider under a rigid
+    // body is part of that body's shape, built by RigidBodyHook.
     [ImplementableHook(typeof(BoxCollider), typeof(CapsuleCollider), typeof(SphereCollider), typeof(CylinderCollider), typeof(Lumora.Core.Components.MeshCollider), typeof(ConeCollider), typeof(TriangleCollider), typeof(ConvexHullCollider))]
     public class PhysicsColliderHook : ComponentHook<Collider>
     {
         private Node3D _bodyNode = null!;
         private CollisionShape3D _collisionShape = null!;
         private Shape3D _shape = null!;
-        private bool _isDynamic;
+        private BodyKind _kind;
         private PhysicsMaterial _material = null!;
         private MeshInstance3D _debugMesh = null!;
         private static bool _showDebugColliders = false;
 
-        // Mesh-shape bake key: the slot's global scale is baked into the vertices (the body node stays
-        // at scale 1 like every other collider here), so a rebuild is needed when the source geometry,
-        // the scale, or the convex flag changes - and only then, cooking a trimesh isn't free. -xlinka
+        private readonly Lumora.Godot.Helpers.ColliderShapeBake _bake = new();
+
+        // Static: a surface where it was put. Moving: kinematic, so what rests on it is carried and woken when
+        // it moves, and what it moves into is pushed. Query: an Area3D nothing collides with, found by casts.
+        private enum BodyKind { None, Static, Moving, Query }
+
         // Last values actually pushed into the physics server, so a per-frame re-apply on a moving
         // collider stops writing the same numbers back.
         private bool _lastEnabled;
@@ -35,67 +40,97 @@ namespace Lumora.Godot.Hooks
         private uint _lastMask = uint.MaxValue;
         private Vector3 _lastBodyPosition = new Vector3(float.NaN, float.NaN, float.NaN);
         private Quaternion _lastBodyRotation = new Quaternion(float.NaN, float.NaN, float.NaN, float.NaN);
-
-        private float3[]? _meshBakeSource;
-        private int _meshBakeIndexCount;
-        private Vector3 _meshBakeScale;
-
-        private bool _meshBakeConvex;
-
-        // Hull-shape bake key. The hull itself is solved engine-side and cached there, so all this
-        // side tracks is which version of it was uploaded and at what scale.
-        private int _hullBakeVersion = -1;
-        private int _hullBakePointCount = -1;
-        private Vector3 _hullBakeScale;
+        private int _lastQueryRules = -1;
 
         public override void Initialize()
         {
             base.Initialize();
             // Don't create body here - Type.Value may not be set yet
             // Body creation is deferred to ApplyChanges()
+            NoteSolidPending(true);
+        }
+
+        // Pending until the first apply decides what this collider is, and after that for as long as a
+        // character-blocking body has no shape in the space. A character with nothing under it waits on these.
+        private void NoteSolidPending(bool pending)
+            => (Owner?.World?.Hook as WorldHook)?.NoteSolidPending(this, pending);
+
+        // Bodies made in one frame, across every collider. An arriving import brings hundreds of colliders
+        // at once, and making them all in one frame handed the physics step hundreds of new bodies and
+        // shapes to settle together: it ran out of jobs and waited, with the frame. The rest come back the
+        // next frame. -xlinka
+        private const int BodiesPerFrame = 24;
+        private static ulong _bodyFrame = ulong.MaxValue;
+        private static int _bodiesThisFrame;
+
+        private static bool TakeBodyTurn()
+        {
+            ulong frame = global::Godot.Engine.GetProcessFrames();
+            if (frame != _bodyFrame)
+            {
+                _bodyFrame = frame;
+                _bodiesThisFrame = 0;
+            }
+            return _bodiesThisFrame++ < BodiesPerFrame;
+        }
+
+        // A character collider's shape lives in the character's own body, so an edit to it (an avatar fit,
+        // the inspector) is passed to the controller that owns it. This apply also runs every frame the
+        // user root moves, so only a real change of shape is passed on.
+        private BoundingBox _ownerShapeBounds;
+        private bool _ownerShapeKnown;
+
+        private void NotifyOwnerOfShape()
+        {
+            var owner = Owner.ColliderOwner;
+            if (owner == null)
+                return;
+            var bounds = Owner.GetLocalBounds();
+            if (_ownerShapeKnown && bounds.Min == _ownerShapeBounds.Min && bounds.Max == _ownerShapeBounds.Max)
+                return;
+            _ownerShapeBounds = bounds;
+            _ownerShapeKnown = true;
+            owner.OnColliderShapeChanged(Owner);
         }
 
         public override void ApplyChanges()
         {
-            // CharacterController colliders are handled by CharacterControllerHook
-            // NoCollision colliders should not create any physics body
-            // If a RigidBody component exists on the same slot, RigidBodyHook handles the physics body
-            bool hasRigidBody = Owner.Slot.GetComponent<Lumora.Core.Components.RigidBody>() != null;
-            if (Owner.Type.Value == ColliderType.CharacterController ||
-                Owner.Type.Value == ColliderType.NoCollision ||
-                hasRigidBody)
+            // A solid collider with a rigid body at or above it is part of that body. The body on its own slot
+            // is asked directly as well, for the first apply that can come before the body has gathered.
+            bool carried = Owner.Body != null
+                || (Owner.IsSolid && Owner.Slot.GetComponent<Lumora.Core.Components.RigidBody>() is { IsDestroyed: false });
+            if (Owner.Type.Value == ColliderType.CharacterController)
+                NotifyOwnerOfShape();
+            if (Owner.Type.Value == ColliderType.CharacterController || carried)
             {
                 // If we already created a body (Type changed after init), destroy it
                 if (_bodyNode != null && GodotObject.IsInstanceValid(_bodyNode))
                 {
-                    LumoraLogger.Debug($"PhysicsColliderHook: Destroying body - hasRigidBody={hasRigidBody}, Type={Owner.Type.Value}");
+                    LumoraLogger.Debug($"PhysicsColliderHook: Destroying body - carried={carried}, Type={Owner.Type.Value}");
                     DestroyBody(true);
                 }
+                NoteSolidPending(false);
                 return;
             }
+
+            var kind = DesiredKind();
 
             // Create body if needed (deferred from Initialize)
             if (_bodyNode == null || !GodotObject.IsInstanceValid(_bodyNode))
             {
+                if (!TakeBodyTurn())
+                {
+                    Owner.MarkChangeDirty();
+                    return;
+                }
                 LumoraLogger.Debug($"PhysicsColliderHook: Creating body for {Owner.GetType().Name} on '{Owner.Slot.SlotName.Value}'");
-                CreateBody();
+                CreateBody(kind);
                 // BuildShape and UpdateTransform run below on every path; no need to do them twice.
             }
-
-            // A sensor is never dynamic, whatever its mass says: Collider.Mass defaults to 1, and asking
-            // the mass alone here tore every Trigger, image and grabbable sensor down and rebuilt it on
-            // EVERY apply (a body collider on a moving bone applies every frame). The rebuilt Area3D kept
-            // Godot's default layer 1 because the layer cache below still matched, so a worn avatar's
-            // bone capsules sat on the one bit every world's query used to read, and the userspace
-            // dash pointer landed on the wearer's arm. -xlinka
-            bool shouldBeSensor = ShouldBeSensor();
-            bool shouldBeDynamic = !shouldBeSensor && Owner.Mass.Value > 0.0001f && Owner.Type.Value != ColliderType.Static;
-            bool isSensor = _bodyNode is Area3D;
-            if (shouldBeDynamic != _isDynamic || shouldBeSensor != isSensor)
+            else if (kind != _kind)
             {
                 DestroyBody(true);
-                CreateBody();
-                BuildShape();
+                CreateBody(kind);
             }
 
             BuildShape();
@@ -120,15 +155,15 @@ namespace Lumora.Godot.Hooks
             // A collider that stops a walking body carries the world's character bit as well, and
             // that bit is the only thing the character's capsule is looking for. One that does not -
             // an imported model, a decorative prop - stays on the general bit, where lasers still hit
-            // it and physics objects still rest on it, and a person walks straight through. -xlinka
-            if (enabled && !(_bodyNode is Area3D) && (Owner?.CharacterCollider.Value ?? false)
-                && Owner?.Type.Value != Lumora.Core.Physics.ColliderType.Trigger)
+            // it and physics objects still rest on it, and a person walks straight through. A prop you
+            // can pick up never stops people: it would shove the holder along with it. -xlinka
+            if (enabled && _kind != BodyKind.Query && (Owner?.CharacterCollider.Value ?? false) && !IsPickedUpProp())
             {
                 layer |= WorldHook.GetCharacterCollisionBitFor(Owner?.World);
             }
-            // sensor only (Area3D). on physics layer for engine-side interaction, mask=0 so nothing
-            // pushes against it - xlinka
-            uint mask = _bodyNode is Area3D ? 0u : (enabled ? worldBit : 0u);
+            // A query shape sits on the world bit, so casts find it, and masks nothing, so nothing pushes
+            // against it.
+            uint mask = _kind == BodyKind.Query ? 0u : (enabled ? worldBit : 0u);
 
             if (enabled != _lastEnabled)
             {
@@ -147,47 +182,82 @@ namespace Lumora.Godot.Hooks
                     collisionObject.CollisionMask = mask;
                     _lastMask = mask;
                 }
+                PushQueryRules();
             }
+
+            NoteSolidPending(enabled && _kind != BodyKind.Query
+                && (layer & WorldHook.GetCharacterCollisionBitFor(Owner?.World)) != 0
+                && _collisionShape?.Shape == null);
         }
 
-        private void CreateBody()
+        // NoCollision is met by every cast though nothing collides with it; a Trigger only by casts that ask
+        // for triggers; IgnoreRaycasts by none.
+        private void PushQueryRules()
         {
-            _isDynamic = Owner.Mass.Value > 0.0001f && Owner.Type.Value != ColliderType.Static;
+            bool queryArea = _kind == BodyKind.Query && Owner.Type.Value == ColliderType.NoCollision;
+            bool ignoreRays = Owner.IgnoreRaycasts.Value;
+            int rules = (queryArea ? 1 : 0) | (ignoreRays ? 2 : 0);
+            if (rules == _lastQueryRules)
+                return;
+            _lastQueryRules = rules;
+            (Owner?.World?.Hook as WorldHook)?.SetQueryRules(_registeredRid, queryArea, ignoreRays);
+        }
 
-            if (ShouldBeSensor())
+        private BodyKind DesiredKind()
+        {
+            var type = Owner.Type.Value;
+            if (type is ColliderType.Trigger or ColliderType.NoCollision)
+                return BodyKind.Query;
+            if (type == ColliderType.Active && Owner.Mass.Value > 0.0001f)
+                return BodyKind.Moving;
+            return IsPickedUpProp() ? BodyKind.Moving : BodyKind.Static;
+        }
+
+        // A grabbable or an image on the collider's own slot. As a sensor nothing could rest on it and casts that
+        // skip triggers would pass through, so it is solid, on the general bit only, and kinematic, so what sits
+        // on one rides with it when it is picked up. -xlinka
+        private bool IsPickedUpProp()
+        {
+            var slot = Owner?.Slot;
+            if (slot == null)
+                return false;
+            return slot.GetComponent<Grabbable>() != null || slot.GetComponent<ImageProvider>() != null;
+        }
+
+        private void CreateBody(BodyKind kind)
+        {
+            _kind = kind;
+            switch (kind)
             {
-                // images and grabbable objects shouldn't act like walls. Area3D = sensor that raycasts still hit but physics never contacts - xlinka
-                _isDynamic = false;
-                _bodyNode = new Area3D
-                {
-                    Name = "GrabbableSensor",
-                    Monitoring = false,
-                    Monitorable = true,
-                };
-            }
-            else if (_isDynamic)
-            {
-                // Kinematic: with no RigidBody on the slot nothing carries a simulated pose back to the
-                // object, so a live body here fell away from it on every machine while casts kept meeting
-                // the body. It follows its object, like a static one, and pushes what it moves into. -xlinka
-                _material = new PhysicsMaterial { Friction = 1f, Bounce = 0f };
-                _bodyNode = new RigidBody3D
-                {
-                    Name = "RigidCollider",
-                    PhysicsMaterialOverride = _material,
-                    Mass = Owner.Mass.Value,
-                    FreezeMode = RigidBody3D.FreezeModeEnum.Kinematic,
-                    Freeze = true,
-                };
-            }
-            else
-            {
-                _material = new PhysicsMaterial { Friction = 1f, Bounce = 0f };
-                _bodyNode = new StaticBody3D
-                {
-                    Name = "StaticCollider",
-                    PhysicsMaterialOverride = _material
-                };
+                case BodyKind.Query:
+                    _bodyNode = new Area3D
+                    {
+                        Name = "QueryCollider",
+                        Monitoring = false,
+                        Monitorable = true,
+                    };
+                    break;
+                case BodyKind.Moving:
+                    // Kinematic: nothing carries a simulated pose back to the object, so it follows the object
+                    // and pushes what it moves into. -xlinka
+                    _material = new PhysicsMaterial { Friction = 1f, Bounce = 0f };
+                    _bodyNode = new RigidBody3D
+                    {
+                        Name = "MovingCollider",
+                        PhysicsMaterialOverride = _material,
+                        Mass = System.MathF.Max(Owner.Mass.Value, 0.001f),
+                        FreezeMode = RigidBody3D.FreezeModeEnum.Kinematic,
+                        Freeze = true,
+                    };
+                    break;
+                default:
+                    _material = new PhysicsMaterial { Friction = 1f, Bounce = 0f };
+                    _bodyNode = new StaticBody3D
+                    {
+                        Name = "StaticCollider",
+                        PhysicsMaterialOverride = _material
+                    };
+                    break;
             }
 
             // A world in the background keeps its bodies in the physics space, so its scripts still meet them.
@@ -199,7 +269,7 @@ namespace Lumora.Godot.Hooks
 
             if (Owner?.Slot != null)
             {
-                _bodyNode.SetMeta("LumoraSlotRef", Owner.Slot.ReferenceID.ToDecimalString());
+                SlotRefMeta.Tag(_bodyNode, Owner.Slot.ReferenceID);
             }
 
             // Parent under world root to avoid double transforms
@@ -225,20 +295,13 @@ namespace Lumora.Godot.Hooks
                 return;
 
             var scale = Lumora.Godot.Helpers.ColliderShapeScaling.ScaleOf(Owner);
-            var primitive = Lumora.Godot.Helpers.ColliderShapeScaling.Update(Owner, scale, _shape, out _);
-            if (primitive != null)
+            var shape = _bake.Build(Owner, scale, simulated: false, out _);
+            if (!ReferenceEquals(_shape, shape))
             {
-                if (!ReferenceEquals(_shape, primitive))
-                {
-                    _shape = primitive;
-                    _collisionShape.Shape = _shape;
-                }
+                _shape = shape!;
+                _collisionShape.Shape = shape;
             }
-            else if (Owner is Lumora.Core.Components.MeshCollider meshCollider)
-                BuildMeshShape(meshCollider);
-            else if (Owner is ConvexHullCollider hullCollider)
-                BuildConvexHullShape(hullCollider);
-            else
+            if (shape == null)
                 return;
 
             var offsetVector = Lumora.Godot.Helpers.ColliderShapeScaling.OffsetOf(Owner, scale);
@@ -252,164 +315,6 @@ namespace Lumora.Godot.Hooks
             {
                 ClearDebugVisualization();
             }
-        }
-
-        private static ConvexPolygonShape3D BuildConeShape(float radius, float height)
-        {
-            const int segments = 16;
-            var points = new Vector3[segments + 1];
-            float halfH = height * 0.5f;
-            for (int i = 0; i < segments; i++)
-            {
-                float a = System.MathF.Tau * i / segments;
-                points[i] = new Vector3(System.MathF.Cos(a) * radius, -halfH, System.MathF.Sin(a) * radius);
-            }
-            points[segments] = new Vector3(0f, halfH, 0f);
-            return new ConvexPolygonShape3D { Points = points };
-        }
-
-        private static ConcavePolygonShape3D BuildTriangleShape(float3 a, float3 b, float3 c)
-        {
-            var faces = new[]
-            {
-                new Vector3(a.x, a.y, a.z),
-                new Vector3(b.x, b.y, b.z),
-                new Vector3(c.x, c.y, c.z),
-            };
-            return new ConcavePolygonShape3D { Data = faces, BackfaceCollision = true };
-        }
-
-        // Trimesh (or convex hull) from the referenced mesh's geometry. The slot's global scale is
-        // baked into the vertices because the physics body deliberately never inherits scale; the
-        // Collider base re-applies on WorldTransformChanged, so a rescale lands here and the bake key
-        // triggers the rebuild. Missing data is NOT an error: the provider decodes async and the
-        // component polls until it lands.
-        private void BuildMeshShape(Lumora.Core.Components.MeshCollider meshCollider)
-        {
-            PhosMesh? mesh = meshCollider.Mesh.Target switch
-            {
-                Lumora.Core.Components.Meshes.ProceduralMesh procedural => procedural.PhosMesh,
-                MeshProvider provider => provider.Asset?.MeshData,
-                _ => null
-            };
-            int vertexCount = mesh?.VertexCount ?? 0;
-            if (mesh == null || vertexCount == 0)
-                return;
-
-            var gs = Owner.Slot.GlobalScale;
-            var scale = new Vector3(gs.x, gs.y, gs.z);
-            bool convex = meshCollider.Convex.Value;
-
-            int totalIndexCount = 0;
-            foreach (var submesh in mesh.Submeshes)
-            {
-                if (submesh.Topology == PhosTopology.Triangles)
-                    totalIndexCount += submesh.IndexCount;
-            }
-
-            if (_shape != null && ReferenceEquals(_meshBakeSource, mesh.RawPositions)
-                && _meshBakeIndexCount == totalIndexCount && _meshBakeScale == scale && _meshBakeConvex == convex)
-                return;
-
-            var positions = mesh.RawPositions;
-
-            if (convex)
-            {
-                var points = new Vector3[vertexCount];
-                for (int i = 0; i < vertexCount; i++)
-                {
-                    var p = positions[i];
-                    points[i] = new Vector3(p.x * scale.X, p.y * scale.Y, p.z * scale.Z);
-                }
-                _shape = new ConvexPolygonShape3D { Points = points };
-            }
-            else
-            {
-                if (totalIndexCount == 0)
-                    return;
-
-                var faces = new Vector3[totalIndexCount];
-                int write = 0;
-                foreach (var submesh in mesh.Submeshes)
-                {
-                    if (submesh.Topology != PhosTopology.Triangles)
-                        continue;
-                    var indices = submesh.RawIndices;
-                    int count = submesh.IndexCount;
-                    for (int i = 0; i + 2 < count; i += 3)
-                    {
-                        int a = indices[i], b = indices[i + 1], c = indices[i + 2];
-                        // An index past the vertex buffer would corrupt the cook; drop the triangle.
-                        if ((uint)a >= (uint)vertexCount || (uint)b >= (uint)vertexCount || (uint)c >= (uint)vertexCount)
-                            continue;
-                        faces[write++] = new Vector3(positions[a].x * scale.X, positions[a].y * scale.Y, positions[a].z * scale.Z);
-                        faces[write++] = new Vector3(positions[b].x * scale.X, positions[b].y * scale.Y, positions[b].z * scale.Z);
-                        faces[write++] = new Vector3(positions[c].x * scale.X, positions[c].y * scale.Y, positions[c].z * scale.Z);
-                    }
-                }
-                if (write == 0)
-                    return;
-                if (write != totalIndexCount)
-                    System.Array.Resize(ref faces, write);
-
-                // BackfaceCollision: imported world geometry has no winding guarantee; single-sided
-                // trimeshes let users fall through inverted faces.
-                _shape = new ConcavePolygonShape3D { Data = faces, BackfaceCollision = true };
-            }
-
-            _collisionShape.Shape = _shape;
-            _meshBakeSource = positions;
-            _meshBakeIndexCount = totalIndexCount;
-            _meshBakeScale = scale;
-            _meshBakeConvex = convex;
-            LumoraLogger.Debug($"PhysicsColliderHook: Built {(convex ? "convex" : "trimesh")} collision for '{Owner.Slot.SlotName.Value}' ({vertexCount} verts)");
-        }
-
-        // Points only. The hull is solved in the component so every peer collides against the same
-        // shape; this side just scales the result into the body's space and uploads it. The slot's
-        // global scale is baked into the points because the physics body deliberately never inherits
-        // scale, and the Collider base re-applies on WorldTransformChanged, so a rescale lands here and
-        // the bake key catches it. Missing points are NOT an error: an asset-backed source decodes
-        // async and the component polls until it lands.
-        private void BuildConvexHullShape(ConvexHullCollider hullCollider)
-        {
-            var hull = hullCollider.GetHullPoints();
-            if (hull.Count < 4)
-            {
-                // Under four points there is no volume to collide with. Leaving the previous shape in
-                // place would be worse than having none, so drop it.
-                if (_shape != null)
-                {
-                    _shape = null!;
-                    _collisionShape.Shape = null;
-                    _hullBakeVersion = -1;
-                    _hullBakePointCount = -1;
-                }
-                return;
-            }
-
-            var gs = Owner.Slot.GlobalScale;
-            var scale = new Vector3(gs.x, gs.y, gs.z);
-
-            if (_shape != null
-                && _hullBakeVersion == hullCollider.HullVersion
-                && _hullBakePointCount == hull.Count
-                && _hullBakeScale == scale)
-                return;
-
-            var points = new Vector3[hull.Count];
-            for (int i = 0; i < hull.Count; i++)
-            {
-                var p = hull[i];
-                points[i] = new Vector3(p.x * scale.X, p.y * scale.Y, p.z * scale.Z);
-            }
-
-            _shape = new ConvexPolygonShape3D { Points = points };
-            _collisionShape.Shape = _shape;
-            _hullBakeVersion = hullCollider.HullVersion;
-            _hullBakePointCount = hull.Count;
-            _hullBakeScale = scale;
-            LumoraLogger.Debug($"PhysicsColliderHook: Built convex hull collision for '{Owner.Slot.SlotName.Value}' ({hull.Count} hull points, {hullCollider.LastResult})");
         }
 
         private void UpdateDebugVisualization()
@@ -507,28 +412,6 @@ namespace Lumora.Godot.Hooks
             return Owner.Slot.GetComponent<ImageProvider>() != null;
         }
 
-        // any grabbable slot without its own RigidBody should also act as a sensor so the player
-        // can walk through it / grab it without getting bounced. covers shader orbs and similar - xlinka
-        private bool ShouldBeSensor()
-        {
-            // Explicit query-only collider (e.g. a worn avatar's bone capsules): raycast-hittable for grab/laser but
-            // never a solid body, so it can't push the wearer's own character controller around. -xlinka
-            if (Owner != null && Owner.Type.Value == ColliderType.Trigger)
-                return true;
-
-            if (IsImageCollider())
-                return true;
-
-            var slot = Owner?.Slot;
-            if (slot == null)
-                return false;
-
-            if (slot.GetComponent<Grabbable>() == null)
-                return false;
-
-            return slot.GetComponent<Lumora.Core.Components.RigidBody>() == null;
-        }
-
         private static ArrayMesh? BuildBoxWireMesh(Vector3 size)
         {
             float hx = size.X * 0.5f;
@@ -605,21 +488,15 @@ namespace Lumora.Godot.Hooks
             // sync field, an enable, a shape edit), and a transform write on a static body re-inserts it
             // into the broadphase and wakes whatever was resting on it. Same pose in, nothing out.
             // -xlinka
+            // From the slot itself, never its node: the node takes its pose when the slot hook flushes, which
+            // for a slot made this frame is after us, and a body placed from it sat at the node's old pose
+            // until the slot happened to move again. Reading the slot also keeps its world transform computed,
+            // which is what lets the next move of anything above it reach this collider. -xlinka
             bool inTree = slotNode.IsInsideTree();
-            Vector3 position;
-            Quaternion rotation;
-            if (inTree)
-            {
-                position = slotNode.GlobalPosition;
-                rotation = slotNode.GlobalBasis.GetRotationQuaternion();
-            }
-            else
-            {
-                var globalPos = Owner.Slot.GlobalPosition;
-                var globalRot = Owner.Slot.GlobalRotation;
-                position = new Vector3(globalPos.x, globalPos.y, globalPos.z);
-                rotation = new Quaternion(globalRot.x, globalRot.y, globalRot.z, globalRot.w);
-            }
+            var globalPos = Owner.Slot.GlobalPosition;
+            var globalRot = Owner.Slot.GlobalRotation;
+            var position = new Vector3(globalPos.x, globalPos.y, globalPos.z);
+            var rotation = new Quaternion(globalRot.x, globalRot.y, globalRot.z, globalRot.w);
 
             if (position == _lastBodyPosition && rotation == _lastBodyRotation)
                 return;
@@ -641,6 +518,7 @@ namespace Lumora.Godot.Hooks
 
         public override void Destroy(bool destroyingWorld)
         {
+            NoteSolidPending(false);
             DestroyBody(!destroyingWorld);
             base.Destroy(destroyingWorld);
         }
@@ -649,6 +527,7 @@ namespace Lumora.Godot.Hooks
         {
             if (_registeredRid.IsValid)
             {
+                (Owner?.World?.Hook as WorldHook)?.ClearQueryRules(_registeredRid);
                 (Owner?.World?.Hook as WorldHook)?.UnregisterBody(_registeredSlot, _registeredRid);
                 _registeredRid = default;
                 _registeredSlot = null;
@@ -660,6 +539,9 @@ namespace Lumora.Godot.Hooks
             _lastMask = uint.MaxValue;
             _lastBodyPosition = new Vector3(float.NaN, float.NaN, float.NaN);
             _lastBodyRotation = new Quaternion(float.NaN, float.NaN, float.NaN, float.NaN);
+            _lastQueryRules = -1;
+            _kind = BodyKind.None;
+            _bake.Clear();
 
             if (_debugMesh != null && GodotObject.IsInstanceValid(_debugMesh) && queueFree)
             {

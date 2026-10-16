@@ -32,6 +32,17 @@ public static class ConvexHullPointSource
         };
     }
 
+    // The mesh component a hull is taken from: a mesh itself, or the one a renderer draws. Null for anything else.
+    public static Component? Resolve(Component? source)
+    {
+        return source switch
+        {
+            ProceduralMesh or MeshProvider => source,
+            MeshRenderer renderer => renderer.Mesh.Target is ProceduralMesh or MeshProvider ? renderer.Mesh.Target : null,
+            _ => null
+        };
+    }
+
     // null when there is none yet
     public static PhosMesh? GetMesh(Component? source)
     {

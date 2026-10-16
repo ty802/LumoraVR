@@ -34,7 +34,16 @@ public class NameBadgeDriver : Component, IAvatarEquipReceiver
             UpdateBadge(manager);
     }
 
-    public void OnDequip(AvatarSocket slot) { }
+    // Nobody wears it now, so it names nobody. Written by the machine taking it off, while the avatar is still
+    // under its wearer. -xlinka
+    public void OnDequip(AvatarSocket slot)
+    {
+        foreach (var target in LabelTargets)
+        {
+            if (target != null && !target.IsDestroyed)
+                target.Text.Value = string.Empty;
+        }
+    }
 
     public void UpdateBadge(AvatarEquipManager manager)
     {

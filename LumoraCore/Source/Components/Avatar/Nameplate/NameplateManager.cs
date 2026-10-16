@@ -62,7 +62,7 @@ public sealed class NameplateManager : UserRootComponent
     // How much of a chip the mark inside it takes. The icon art is drawn to the edge of its own square and
     // a letter is not, so the two need different numbers to sit at the same optical size.
     private const float IconScale = 0.66f;
-    private const float GlyphScale = 0.62f;
+    private const float GlyphScale = 0.74f;
     // A two-letter mark (the role chips) steps down so both letters fit the same square.
     private const float PairGlyphScale = 0.44f;
     private const float RowGap = Gap * 1.2f;
@@ -82,6 +82,8 @@ public sealed class NameplateManager : UserRootComponent
     // and grows outward from its outline, so the two share an edge and there is no second alpha layer
     // stacked behind the panel to darken it.
     private const float RimWidth = 0.002f;
+    // A staff ring is wider so the light running round it has room to be seen.
+    private const float StaffRimWidth = RimWidth * 2.5f;
 
     // The one place the user's own colour still lands: a short bar on the plate's bottom edge instead of
     // the fat coloured border that used to wrap the whole thing.
@@ -154,6 +156,9 @@ public sealed class NameplateManager : UserRootComponent
     private TextRenderer? _label;
     private Meshes.RoundedQuadMesh? _panelMesh;
     private Meshes.RoundedQuadRingMesh? _rimMesh;
+    private MeshRenderer? _rimRenderer;
+    private NameplateTheme? _theme;
+    private bool _staff;
     private Meshes.RoundedQuadMesh? _accentMesh;
     private Meshes.RoundedQuadMesh? _statusMesh;
 
@@ -196,6 +201,7 @@ public sealed class NameplateManager : UserRootComponent
     private bool _labelDirty = true;
     private float2 _laidOutFor = new float2(-1f, -1f);
     private bool _plateVisible = true;
+    private RenderLayerOverride? _plateLayer;
 
     public NameplatePresence Presence => _activity.State;
 
@@ -217,11 +223,10 @@ public sealed class NameplateManager : UserRootComponent
         ShowBadges.Value = true;
         ShowGroupCard.Value = true;
         // Off by default: the presence dot is real data but it reads as clutter floating beside the
-        // panel, and the owner vetoed it. The machinery stays for worlds that want it. -xlinka
+        // panel. The machinery stays for worlds that want it. -xlinka
         ShowStatus.Value = false;
-        // Off at the owner's request so your own plate is visible for look testing. Flip back to true
-        // once the plate visuals are signed off - seeing your own name glued to your face is not the
-        // shipping experience. -xlinka
+        // Off: your own plate never reaches your own eyes (it rides the band they skip), and mirrors and
+        // cameras should show it. On hides it from them too. -xlinka
         HideInFirstPerson.Value = false;
     }
 
@@ -259,6 +264,11 @@ public sealed class NameplateManager : UserRootComponent
             _userChanged = _ => { _labelDirty = true; _badgesDirty = true; };
             _user.UserName.Changed += _userChanged;
             _user.IsPresent.Changed += _userChanged;
+            _user.IsLive.Changed += _userChanged;
+            _user.AccountId.Changed += _userChanged;
+            _user.IsSupporter.Changed += _userChanged;
+            _user.SupporterColor.Changed += _userChanged;
+            _user.IsStaff.Changed += _userChanged;
 
             // The card is rebuilt off a change event, never polled: six string compares per frame per
             // visible user is the sort of thing that only shows up when a room fills. -xlinka
@@ -346,6 +356,10 @@ public sealed class NameplateManager : UserRootComponent
         plate.Persistent.Value = false;
         plate.AttachComponent<PositionAtUser>().VerticalOffset.Value = HeightOffset.Value;
         plate.AttachComponent<FaceLocalUser>();
+        // Everything under the plate draws on the name plate band, so a camera told to leave plates out
+        // drops the name, the chips and the card together, and nothing else goes with them.
+        _plateLayer = plate.AttachComponent<RenderLayerOverride>();
+        _plateLayer.Layer.Value = RenderLayerOverride.NameplateLayer;
         // None of this is anybody's to edit, and this component rewrites all of it every time the name
         // reshapes - which is exactly why the marker is a TOOLING one. It takes the plate out of the
         // inspector and off the tools without touching a single write below it. Marked on the plate
@@ -362,7 +376,8 @@ public sealed class NameplateManager : UserRootComponent
         _rimMesh.Size.Value = new float2(0.4f, startHeight);
         _rimMesh.CornerRadius.Value = startHeight * PanelRadiusRatio;
         _rimMesh.RimWidth.Value = RimWidth;
-        AttachRenderer(rim, _rimMesh, theme.PlateMaterial);
+        _rimRenderer = AttachRenderer(rim, _rimMesh, theme.PlateMaterial);
+        _theme = theme;
 
         var panel = plate.AddSlot(PanelSlotName);
         panel.LocalPosition.Value = new float3(0f, 0f, PanelDepth);
@@ -593,6 +608,13 @@ public sealed class NameplateManager : UserRootComponent
             && !UserInputState.FocusedExternalCameraActive)
             show = false;
 
+        // Your own plate is for mirrors and cameras: on the band your eyes skip, unless the view is not
+        // behind your eyes at all.
+        int band = root != null && root.IsLocalUserRoot && !UserInputState.FocusedExternalCameraActive
+            ? RenderLayerOverride.OwnNameplateLayer : RenderLayerOverride.NameplateLayer;
+        if (_plateLayer != null && !_plateLayer.IsDestroyed && _plateLayer.Layer.Value != band)
+            _plateLayer.Layer.Value = band;
+
         if (show == _plateVisible)
             return;
         _plateVisible = show;
@@ -633,7 +655,46 @@ public sealed class NameplateManager : UserRootComponent
         var outline = authored ? _equip!.BadgeOutline.Value : FallbackOutline;
         _label.OutlineColor.Value = new colorHDR(outline.r, outline.g, outline.b, outline.a);
 
+        ApplyStaff();
         MarkLayoutDirty();
+    }
+
+    // Staff wear a living ring and a light that crosses the name, both run by the GPU off the clock: one
+    // ring material shared by every staff plate in the world, and the label's own text material told how
+    // strong. Nothing here runs per frame. -xlinka
+    private void ApplyStaff()
+    {
+        bool staff = _user != null && !_user.IsDestroyed && !_user.IsGuest && _user.IsStaff.Value;
+
+        if (_label != null && !_label.IsDestroyed)
+        {
+            float shimmer = staff ? 1f : 0f;
+            if (_label.Shimmer.Value != shimmer)
+                _label.Shimmer.Value = shimmer;
+            if (staff && !_label.ShimmerColor.Value.Equals(NameplateTheme.StaffGlint))
+                _label.ShimmerColor.Value = NameplateTheme.StaffGlint;
+        }
+
+        if (_rimRenderer != null && !_rimRenderer.IsDestroyed && _theme != null && !_theme.IsDestroyed)
+        {
+            Lumora.Core.Assets.IAssetProvider<Lumora.Core.Assets.MaterialAsset>? wanted =
+                staff ? _theme.StaffRimMaterial : _theme.PlateMaterial;
+            if (wanted != null && !ReferenceEquals(_rimRenderer.Material.Target, wanted))
+                _rimRenderer.Material.Target = wanted;
+        }
+
+        if (_rimMesh != null && !_rimMesh.IsDestroyed)
+        {
+            float width = staff ? StaffRimWidth : RimWidth;
+            if (_rimMesh.RimWidth.Value != width)
+                _rimMesh.RimWidth.Value = width;
+        }
+
+        if (_staff != staff)
+        {
+            _staff = staff;
+            ApplyPlateColors();
+        }
     }
 
     // Trailing dots rather than an ellipsis character: the shipping face does not carry every dot glyph a
@@ -658,7 +719,7 @@ public sealed class NameplateManager : UserRootComponent
         if (_panelMesh != null && !_panelMesh.IsDestroyed)
             _panelMesh.Color = NameplateTheme.PlateFill;
         if (_rimMesh != null && !_rimMesh.IsDestroyed)
-            _rimMesh.Color = NameplateTheme.PlateEdge;
+            _rimMesh.Color = _staff ? NameplateTheme.StaffRim : NameplateTheme.PlateEdge;
     }
 
     // The accent is the supporter-reward surface: one authored colour living on the EQUIP manager, which
@@ -797,8 +858,11 @@ public sealed class NameplateManager : UserRootComponent
         var glyph = glyphSlot.AttachComponent<TextRenderer>();
         if (theme?.Font != null)
             glyph.Font.Target = theme.Font;
-        glyph.Text.Value = badge.Glyph;
-        glyph.Size.Value = size * (badge.Glyph.Length > 1 ? PairGlyphScale : GlyphScale);
+        // A lone letter (the host's H) is read from across a room, so it is set bold and as large as the chip allows.
+        bool single = badge.Glyph.Length == 1;
+        glyph.RichText.Value = single;
+        glyph.Text.Value = single ? "<b>" + badge.Glyph + "</b>" : badge.Glyph;
+        glyph.Size.Value = size * (single ? GlyphScale : PairGlyphScale);
         glyph.Color.Value = badge.Ink;
         glyph.HorizontalAlign.Value = TextHorizontalAlignment.Center;
         glyph.VerticalAlign.Value = TextVerticalAlignment.Middle;
@@ -861,7 +925,7 @@ public sealed class NameplateManager : UserRootComponent
         }
 
         // The quiet marker for a group's own staff, and only inside that group's own world. No word and no
-        // glyph on purpose: the owner's line was "not blatant, not to be confused with official staff", and
+        // glyph on purpose: it must not be blatant or be confused with official staff, and
         // a dot in the group's own colour is as far as that goes. -xlinka
         bool showDot = groupId.Length > 0
             && string.Equals(groupId, _hostGroupId, StringComparison.Ordinal)
@@ -1097,7 +1161,7 @@ public sealed class NameplateManager : UserRootComponent
     }
 
     // The row is centred over the name, one RowGap of daylight off the plate's top edge, and it steps over
-    // the group card when there is one. Slot order is registry order, which is host, role, voice by Order.
+    // the group card when there is one. Slot order is registry order, which is host, role, voice, live by Order.
     private void SpreadBadgeRow(float panelHeight)
     {
         if (_badgeRow == null || _badgeRow.IsDestroyed)
@@ -1132,6 +1196,11 @@ public sealed class NameplateManager : UserRootComponent
             {
                 _user.UserName.Changed -= _userChanged;
                 _user.IsPresent.Changed -= _userChanged;
+                _user.IsLive.Changed -= _userChanged;
+                _user.AccountId.Changed -= _userChanged;
+                _user.IsSupporter.Changed -= _userChanged;
+                _user.SupporterColor.Changed -= _userChanged;
+                _user.IsStaff.Changed -= _userChanged;
             }
             if (_groupChanged != null)
             {

@@ -107,6 +107,9 @@ public static class NameplateBadgeRegistry
         Register(new HostBadgeSource());
         Register(new RoleBadgeSource());
         Register(new VoiceBadgeSource());
+        Register(new LiveBadgeSource());
+        Register(new SupporterBadgeSource());
+        Register(new StaffBadgeSource());
     }
 
     public static void Register(INameplateBadgeSource source)
@@ -189,7 +192,7 @@ public static class NameplateBadgeRegistry
 }
 
 // SHIPPING SOURCES
-// Three, and only the three that have a real signal behind them. A badge that cannot be derived from
+// Four, and only the four that have a real signal behind them. A badge that cannot be derived from
 // replicated state or from the gate is a badge that lies on somebody's plate.
 
 // The ink a chip is read by. Straight off the dash tokens, so a role over somebody's head is the colour
@@ -205,6 +208,7 @@ public static class NameplateBadgeColors
         new color(DashTheme.Panel.r, DashTheme.Panel.g, DashTheme.Panel.b, 1f);
 
     public static readonly color Host = DashTheme.Warning;
+    public static readonly color Staff = NameplateTheme.StaffRim;
     public static readonly color Admin = DashTheme.Negative;
     public static readonly color Moderator = DashTheme.IconBlue;
     public static readonly color Builder = DashTheme.Positive;
@@ -215,6 +219,10 @@ public static class NameplateBadgeColors
     public static readonly color Whisper = DashTheme.TextDim;
     public static readonly color Shout = DashTheme.Warning;
     public static readonly color Broadcast = DashTheme.ModeEvent;
+
+    // The camera's tally red, decoded like the tokens above, so the plate and the camera body say live in
+    // the same colour.
+    public static readonly color Live = new color(1f, 0.08f, 0.06f, 1f).ToLinear();
 
     // Keyed on the gate's role identifiers, not the words on screen (see RoleLabels).
     public static color ForRole(string? roleName) => roleName switch
@@ -322,5 +330,54 @@ internal sealed class VoiceBadgeSource : INameplateBadgeSource
                 output.Add(NameplateBadge.Icon("voice", "broadcast", NameplateBadgeColors.Broadcast, 2));
                 break;
         }
+    }
+}
+
+// Streaming, recording or showing a camera on their screen, as their own machine reports it: anyone in
+// the room can end up in that picture, so it rides over the name for as long as it is true. The word is
+// drawn in the icon rather than set in the plate font because four letters do not fit the square chip at
+// any size that reads. -xlinka
+internal sealed class LiveBadgeSource : INameplateBadgeSource
+{
+    public void CollectBadges(in NameplateBadgeContext context, List<NameplateBadge> output)
+    {
+        var user = context.User;
+        if (user == null || user.IsDestroyed || !user.IsLive.Value)
+            return;
+
+        output.Add(NameplateBadge.Icon("live", "live", NameplateBadgeColors.Live, 3));
+    }
+}
+
+// Someone who keeps the lights on, as the accounts service says and the host wrote down: never something
+// a peer can claim for itself. The chip takes their tier's colour when it has one. -xlinka
+internal sealed class SupporterBadgeSource : INameplateBadgeSource
+{
+    public void CollectBadges(in NameplateBadgeContext context, List<NameplateBadge> output)
+    {
+        var user = context.User;
+        if (user == null || user.IsDestroyed || user.IsGuest || !user.IsSupporter.Value)
+            return;
+
+        var tint = user.SupporterColor.Value;
+        output.Add(NameplateBadge.Letter("supporter", "\u2665",
+            tint.a > 0f ? tint : NameplateTheme.SupporterAccent, 4));
+    }
+}
+
+// The staff mark, first in the row. Holds its place in the registry with no art yet: name an icon under
+// the icon folder in IconName and the chip shows on every staff plate. The ring and the light across the
+// name already say staff without it. -xlinka
+internal sealed class StaffBadgeSource : INameplateBadgeSource
+{
+    public static string IconName = string.Empty;
+
+    public void CollectBadges(in NameplateBadgeContext context, List<NameplateBadge> output)
+    {
+        var user = context.User;
+        if (IconName.Length == 0 || user == null || user.IsDestroyed || user.IsGuest || !user.IsStaff.Value)
+            return;
+
+        output.Add(NameplateBadge.Icon("staff", IconName, NameplateBadgeColors.Staff, -1));
     }
 }

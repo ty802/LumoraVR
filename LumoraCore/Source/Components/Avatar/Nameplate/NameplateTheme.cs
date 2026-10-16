@@ -51,6 +51,20 @@ public sealed class NameplateTheme : Component
     public static readonly color ChipInk = DashTheme.TextDim;
     public static readonly color NameInk = DashTheme.Text;
 
+    // Somebody who is not signed in: still readable, a step back from an account's name so the two never
+    // read as the same kind of thing at a glance.
+    public static readonly color GuestInk = DashTheme.TextDim;
+
+    // The accent a supporter gets when their tier names no colour of its own.
+    public static readonly color SupporterAccent = new color(0.96f, 0.38f, 0.55f, 1f).ToLinear();
+
+    // Platform staff: a cool ring that carries the moving light, and the light that crosses the name. The
+    // light is tinted, not white, because most names already are white.
+    public static readonly color StaffRim = new color(0.36f, 0.84f, 0.92f, 0.95f).ToLinear();
+    public static readonly colorHDR StaffGlint = new colorHDR(0.3f, 0.86f, 1f, 1f);
+
+    private const string StaffRimShader = "res://Shaders/Nameplate_StaffRim.gdshader";
+
     // Faint, not a black keyline: the plate behind the name does most of the contrast work and the ring is
     // only there for the range where the plate has faded out from under it.
     public static readonly color NameOutline = new color(0f, 0f, 0f, 0.6f);
@@ -62,6 +76,24 @@ public sealed class NameplateTheme : Component
     public UnlitMaterial? PlateMaterial { get; private set; }
 
     private readonly Dictionary<string, UnlitMaterial> _iconMaterials = new();
+    private CustomShaderMaterial? _staffRim;
+
+    // Built the first time a staff plate asks, then shared by every staff plate in the world.
+    public CustomShaderMaterial? StaffRimMaterial
+    {
+        get
+        {
+            if (_staffRim != null && !_staffRim.IsDestroyed)
+                return _staffRim;
+            if (Slot == null || Slot.IsDestroyed)
+                return null;
+            _staffRim = Slot.AddSlot("Staff Rim").AttachComponent<CustomShaderMaterial>();
+            _staffRim.ShaderPath.Value = StaffRimShader;
+            _staffRim.BlendMode.Value = BlendMode.Alpha;
+            _staffRim.Culling.Value = Culling.None;
+            return _staffRim;
+        }
+    }
 
     public override void OnStart()
     {

@@ -22,7 +22,8 @@ public sealed class ServiceConfig
         ApiBase = "https://api.lumoravr.com",
         ContentBase = "https://assets.lumoravr.com",
         CdnBase = "https://cdn.lumoravr.com",
-        ThumbnailBase = "https://cdn.lumoravr.com/thumbs"
+        ThumbnailBase = "https://cdn.lumoravr.com/thumbs",
+        SessionServerHost = "relay-eu.lumoravr.com"
     };
 
     public static readonly ServiceConfig Development = new()
@@ -39,6 +40,7 @@ public sealed class ServiceConfig
     public required string ContentBase { get; init; }
     public required string CdnBase { get; init; }
     public required string ThumbnailBase { get; init; }
+    public string SessionServerHost { get; init; } = "localhost";
 
     public static void Use(ServiceConfig config) => _current = config;
 

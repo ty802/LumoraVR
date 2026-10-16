@@ -39,10 +39,9 @@ public class Session : IDisposable
     // Guid.Empty when not hosting or not announcing.
     public Guid LANAnnouncerId => _lanAnnouncer?.AnnouncerId ?? Guid.Empty;
 
-    // Deployment endpoints are sourced from the config store (Settings) so a build can point at a real
-    // server without code edits; the localhost/dev values are explicit fallbacks for local development
-    // only - they are NOT a production default. An explicit setter still wins (host bootstrap / tests).
-    // -xlinka
+    // Deployment endpoints are sourced from the config store (Settings) so a build can point at another
+    // server without code edits; unset, they follow ServiceConfig. An explicit setter still wins (host
+    // bootstrap / tests). -xlinka
     private const string KeyServerAddress = "Network.SessionServer.Address";
     private const string KeyServerPort = "Network.SessionServer.Port";
     private const string KeyBackendUrl = "Network.BackendDirectory.Url";
@@ -51,14 +50,16 @@ public class Session : IDisposable
     private static int? _sessionServerPort;
     private static string? _backendSessionDirectoryUrl;
 
-    // Config key Network.SessionServer.Address; falls back to localhost for local dev.
+    // Config key Network.SessionServer.Address; falls back to the service config's relay host, which is
+    // localhost under --local-services. -xlinka
     public static string SessionServerAddress
     {
-        get => _sessionServerAddress ??= Settings.ReadValue(KeyServerAddress, "localhost");
+        get => _sessionServerAddress ??= Settings.ReadValue(KeyServerAddress,
+            Lumora.Nexus.Cloud.Cdn.ServiceConfig.Current.SessionServerHost);
         set => _sessionServerAddress = value;
     }
 
-    // Config key Network.SessionServer.Port; falls back to 8000 for local dev.
+    // Config key Network.SessionServer.Port; 8000 is the relay box's session port (relay traffic rides it too).
     public static int SessionServerPort
     {
         get => _sessionServerPort ??= Settings.ReadValue(KeyServerPort, 8000);
@@ -89,6 +90,10 @@ public class Session : IDisposable
     {
         World = world;
         Connections = new SessionConnectionManager(this);
+        // Wired here, for a joined session as much as a hosted one. Only the hosting path used to wire it,
+        // and that is the one side whose host link never closes: a guest heard its host go and stayed in
+        // the dead world, because nothing passed the word on to the world manager. -xlinka
+        Connections.OnHostDisconnected += () => OnDisconnected?.Invoke();
     }
 
     public static Session NewSession(World world, ushort port = 7777)
@@ -105,6 +110,8 @@ public class Session : IDisposable
 
     public static Session NewSession(World world, ushort port, SessionMetadata metadata)
     {
+        if (world.IsUserspace)
+            throw new InvalidOperationException("Private userspace cannot be networked.");
         var session = new Session(world);
 
         session.Metadata = metadata ?? new SessionMetadata();
@@ -114,7 +121,7 @@ public class Session : IDisposable
         session.Metadata.HostUsername ??= Environment.UserName;
         session.Metadata.ActiveUsers = 1;
 
-        LumoraLogger.Log($"[lnl] Creating new session '{metadata!.Name}' on port {port}");
+        LumoraLogger.Debug($"[lnl] Creating new session '{metadata!.Name}' on port {port}");
         LumoraLogger.Log($"[lnl] Session ID: {session.Metadata.SessionId}");
 
         if (!session.Connections.StartListener(port))
@@ -146,8 +153,6 @@ public class Session : IDisposable
         if (Engine.Current is { } e)
             e.ActiveSessionTransferer = session.AssetTransferer;
 
-        session.Connections.OnHostDisconnected += () => session.OnDisconnected?.Invoke();
-
         if (metadata.Visibility == SessionVisibility.LAN ||
             metadata.Visibility == SessionVisibility.Public)
         {
@@ -165,7 +170,7 @@ public class Session : IDisposable
             }, TaskScheduler.Default);
         }
 
-        LumoraLogger.Log($"[lnl] Session created as host with {session.Metadata.SessionURLs.Count} URLs");
+        LumoraLogger.Debug($"[lnl] Session created as host with {session.Metadata.SessionURLs.Count} URLs");
         return session;
     }
 
@@ -182,9 +187,11 @@ public class Session : IDisposable
 
     public static async Task<Session?> JoinSessionAsync(World world, IEnumerable<Uri> addresses)
     {
+        if (world.IsUserspace)
+            throw new InvalidOperationException("Private userspace cannot join a network session.");
         var session = new Session(world);
 
-        LumoraLogger.Log($"[lnl] Joining session at {string.Join(", ", addresses)}");
+        LumoraLogger.Debug($"[lnl] Joining session at {string.Join(", ", addresses)}");
 
         // Run the ENTIRE join - socket connect, handshake, and starting the sync threads - on a background
         // thread, never the main/update thread. Our network is polled from the engine update loop, so doing
@@ -250,7 +257,6 @@ public class Session : IDisposable
         if (_serverClient != null || _directoryClient != null)
             return;
 
-        var natRegistered = false;
         try
         {
             _serverClient = new SessionServerClient(SessionServerAddress, SessionServerPort);
@@ -260,7 +266,6 @@ public class Session : IDisposable
 
             if (connected)
             {
-                natRegistered = true;
                 LumoraLogger.Log($"[lnl] Session registered with public server at {SessionServerAddress}:{SessionServerPort}");
             }
             else
@@ -279,13 +284,6 @@ public class Session : IDisposable
 
         try
         {
-            if (string.IsNullOrWhiteSpace(BackendAuthTokenProvider?.Invoke()))
-            {
-                if (!natRegistered)
-                    LumoraLogger.Warn("[lnl] Session: Not signed in, session will not be listed on the backend directory");
-                return;
-            }
-
             var backendUrl = BackendSessionDirectoryUrl;
             // Auth tokens ride this URL; warn on plain http unless it's an explicit loopback dev target.
             if (backendUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
@@ -295,9 +293,14 @@ public class Session : IDisposable
                 LumoraLogger.Warn($"[lnl] Session: backend directory URL '{backendUrl}' is plain http; use https in deployment.");
             }
 
+            // Listed as a guest when nobody is signed in, and it stays a guest's listing for the life of the
+            // session: signing in halfway would present a different owner for a listing the guest key holds.
+            bool asGuest = string.IsNullOrWhiteSpace(BackendAuthTokenProvider?.Invoke());
             _directoryClient = new BackendSessionDirectoryClient(
                 backendUrl,
-                () => BackendAuthTokenProvider?.Invoke());
+                asGuest ? () => null : () => BackendAuthTokenProvider?.Invoke());
+            if (asGuest)
+                LumoraLogger.Log("[lnl] Session: not signed in, listing the session as a guest");
 
             // True means the publisher is running, not that the first register succeeded - it keeps retrying
             // and re-registers itself if the directory expires us. Only a missing token gives up here.
@@ -483,4 +486,3 @@ public class Session : IDisposable
         Metadata = null!;
     }
 }
-

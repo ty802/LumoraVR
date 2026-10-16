@@ -72,6 +72,11 @@ public sealed class BackendSessionDirectoryClient : IDisposable
 
     private DateTime _lastPushUtc = DateTime.MinValue;
 
+    // Made up for this session and sent with every call. A host that is not signed in is listed as a guest,
+    // and this is what makes the listing theirs: the directory only lets the holder of the key change or
+    // remove it. A signed-in host sends it too; the account decides there.
+    private readonly string _hostKey = NewHostKey();
+
     public bool IsRegistered => _registered;
 
     public BackendSessionDirectoryClient(string apiBaseUrl, Func<string?> tokenProvider)
@@ -94,9 +99,9 @@ public sealed class BackendSessionDirectoryClient : IDisposable
             : apiBaseUrl.TrimEnd('/');
     }
 
-    // Returns false only when there is no auth token to publish with. A backend that is down or refusing
-    // right now still returns true, because the loop keeps trying and the session gets listed as soon as
-    // it comes back.
+    // Returns false only when there is no session to publish. A backend that is down or refusing right now
+    // still returns true, because the loop keeps trying and the session gets listed as soon as it comes back.
+    // Signed in or not, it publishes: without a token the session is listed as a guest's.
     public async Task<bool> StartAsync(SessionMetadata metadata, Func<string[]> getUserList)
     {
         if (_running)
@@ -105,12 +110,6 @@ public sealed class BackendSessionDirectoryClient : IDisposable
         if (metadata == null || string.IsNullOrEmpty(metadata.SessionId))
         {
             LumoraLogger.Warn("BackendSessionDirectoryClient: Cannot publish a session with no id");
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(_tokenProvider.Invoke()))
-        {
-            LumoraLogger.Warn("BackendSessionDirectoryClient: Not signed in, session will not be listed on the internet");
             return false;
         }
 
@@ -358,15 +357,11 @@ public sealed class BackendSessionDirectoryClient : IDisposable
     // -xlinka
     private HttpRequestMessage? CreateRequest(HttpMethod method, string url, object? payload)
     {
-        var token = _tokenProvider.Invoke();
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            LumoraLogger.Warn("BackendSessionDirectoryClient: Auth token went away, cannot reach the directory");
-            return null;
-        }
-
         var request = new HttpRequestMessage(method, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var token = _tokenProvider.Invoke();
+        if (!string.IsNullOrWhiteSpace(token))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.Add("X-Host-Key", _hostKey);
 
         if (payload != null)
         {
@@ -376,6 +371,10 @@ public sealed class BackendSessionDirectoryClient : IDisposable
 
         return request;
     }
+
+    private static string NewHostKey()
+        => Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     // Everything the directory needs and nothing it does not. Host identity is deliberately absent: the
     // backend takes the host user id and username from our token, so sending them here would only be an

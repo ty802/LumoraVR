@@ -106,7 +106,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
 
             if (_serverPeer == null)
             {
-                LumoraLogger.Error("SessionServerClient: Failed to initiate connection");
+                LumoraLogger.Warn($"SessionServerClient: cannot reach {_serverAddress}:{_serverPort}");
                 Disconnect();
                 return false;
             }
@@ -164,7 +164,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
 
             SendNATPunchRequest(targetSessionId, joinTicket);
 
-            LumoraLogger.Log($"SessionServerClient: NAT punch request sent for session {targetSessionId}");
+            LumoraLogger.Debug($"SessionServerClient: NAT punch request sent for session {targetSessionId}");
             return true;
         }
         catch (Exception ex)
@@ -240,7 +240,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
             ? $"client:{targetSessionId}"
             : $"client:{targetSessionId}:{joinTicket}";
         _client.NatPunchModule.SendNatIntroduceRequest(_serverAddress, _serverPort, token);
-        LumoraLogger.Log($"SessionServerClient: Sent NAT punch request for session {targetSessionId}");
+        LumoraLogger.Debug($"SessionServerClient: Sent NAT punch request for session {targetSessionId}");
     }
 
     // Called when the server notifies us of an incoming client.
@@ -254,7 +254,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
 
         string token = $"server:{ServerSecret}";
         _client.NatPunchModule.SendNatIntroduceRequest(_serverAddress, _serverPort, token);
-        LumoraLogger.Log($"SessionServerClient: Sent NAT punch response with token: {token}");
+        LumoraLogger.Debug("SessionServerClient: Sent NAT punch response");
     }
 
     private async Task PollLoop()
@@ -349,7 +349,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
         _serverPeer.Send(writer, DeliveryMethod.ReliableOrdered);
 
         IsReady = true;
-        LumoraLogger.Log($"SessionServerClient: Sent session ready - Name: {metadata.Name}, SessionId: {metadata.SessionId}");
+        LumoraLogger.Debug($"SessionServerClient: Sent session ready - Name: {metadata.Name}, SessionId: {metadata.SessionId}");
     }
 
     public void SendSessionUpdate(int activeUsers, string[] userList)
@@ -368,14 +368,14 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
         }
         _serverPeer.Send(writer, DeliveryMethod.ReliableOrdered);
 
-        LumoraLogger.Log($"SessionServerClient: Sent session update - Users: {activeUsers}");
+        LumoraLogger.Debug($"SessionServerClient: Sent session update - Users: {activeUsers}");
     }
 
     // INetEventListener implementation
 
     public void OnPeerConnected(NetPeer peer)
     {
-        LumoraLogger.Log($"SessionServerClient: Connected to server");
+        LumoraLogger.Debug($"SessionServerClient: Connected to server");
         OnConnected?.Invoke();
     }
 
@@ -403,20 +403,20 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
                 case OP_HANDSHAKE:
                     // Server sends secret after connection
                     ServerSecret = reader.GetString();
-                    LumoraLogger.Log($"SessionServerClient: Received server secret");
+                    LumoraLogger.Debug($"SessionServerClient: Received server secret");
 
                     SendSessionReady();
                     break;
 
                 case OP_NAT_INTRO_NOTIFY:
-                    LumoraLogger.Log("SessionServerClient: NAT introduction requested - responding");
+                    LumoraLogger.Debug("SessionServerClient: NAT introduction requested - responding");
                     RespondToNATIntro();
                     OnNATIntroStarted?.Invoke();
                     break;
 
                 case OP_RELAY_CONFIRM:
                     var targetId = reader.GetString();
-                    LumoraLogger.Log($"SessionServerClient: Relay confirmed for {targetId}");
+                    LumoraLogger.Debug($"SessionServerClient: Relay confirmed for {targetId}");
                     OnRelayConfirmed?.Invoke(targetId);
                     break;
 
@@ -465,12 +465,12 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
 
     public void OnNatIntroductionRequest(IPEndPoint localEndPoint, IPEndPoint remoteEndPoint, string token)
     {
-        LumoraLogger.Log($"SessionServerClient: NAT introduction request received - Local: {localEndPoint}, Remote: {remoteEndPoint}, Token: {token}");
+        LumoraLogger.Debug($"SessionServerClient: NAT introduction request received - Local: {localEndPoint}, Remote: {remoteEndPoint}");
     }
 
     public void OnNatIntroductionSuccess(IPEndPoint targetEndPoint, NatAddressType type, string token)
     {
-        LumoraLogger.Log($"SessionServerClient: NAT punch SUCCESS! Endpoint: {targetEndPoint}, Type: {type}, Token: {token}");
+        LumoraLogger.Log($"SessionServerClient: NAT punch SUCCESS! Endpoint: {targetEndPoint}, Type: {type}");
         OnNATPunchSuccess?.Invoke(targetEndPoint);
     }
 

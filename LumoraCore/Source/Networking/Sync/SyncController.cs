@@ -12,7 +12,7 @@ namespace Lumora.Core.Networking.Sync;
 
 public class SyncController
 {
-	private Dictionary<RefID, SyncElement> syncElements;
+	private RefIdMap<SyncElement> syncElements;
 	private List<SyncElement> dirtySyncElements;
 	private readonly object _dirtyLock = new object();
 
@@ -27,7 +27,7 @@ public class SyncController
 	public SyncController(World owner)
 	{
 		Owner = owner;
-		syncElements = new Dictionary<RefID, SyncElement>();
+		syncElements = new RefIdMap<SyncElement>();
 		dirtySyncElements = new List<SyncElement>();
 		_streamScratchWriter = new BinaryWriter(_streamScratch);
 	}
@@ -60,6 +60,9 @@ public class SyncController
 		syncElements.Remove(element.ReferenceID);
 	}
 
+	// Set by the sync loop while this world hosts nobody, cleared the moment a peer connects.
+	internal volatile bool DropFieldDeltas;
+
 	public void AddDirtySyncElement(SyncElement element)
 	{
 		if (Owner.State != World.WorldState.Running && !Owner.IsAuthority)
@@ -74,7 +77,9 @@ public class SyncController
 
 	// Null when nothing is dirty: an idle tick used to build (and immediately dispose) a batch, and a
 	// DeltaBatch carries a MemoryStream and a BinaryWriter. That is per tick, per world, forever. -xlinka
-	public DeltaBatch? CollectDeltaMessages()
+	// anyReceiver false: nobody is connected to take the batch, so a plain value's delta is let go unencoded
+	// (DropDelta) and only what keeps state between deltas is encoded, for that state to move on.
+	public DeltaBatch? CollectDeltaMessages(bool anyReceiver = true)
 	{
 		var elementsToSend = _dirtyScratch;
 		lock (_dirtyLock)
@@ -90,10 +95,17 @@ public class SyncController
 		}
 
 		DeltaBatch deltaBatch = new DeltaBatch(Owner.StateVersion, Owner.SyncTick);
-		elementsToSend.Sort((SyncElement a, SyncElement b) => a.ReferenceID.CompareTo(b.ReferenceID));
+		if (anyReceiver)
+			elementsToSend.Sort((SyncElement a, SyncElement b) => a.ReferenceID.CompareTo(b.ReferenceID));
 		for (int i = 0; i < elementsToSend.Count; i++)
 		{
 			var dirtySyncElement = elementsToSend[i];
+
+			if (!anyReceiver && dirtySyncElement.DeltaIsCurrentValue && dirtySyncElement.IsValid && !dirtySyncElement.IsDisposed)
+			{
+				dirtySyncElement.DropDelta();
+				continue;
+			}
 
 			// Skip invalid or disposed elements - they'll be retried once valid
 			if (!dirtySyncElement.IsValid || dirtySyncElement.IsDisposed)
@@ -110,6 +122,8 @@ public class SyncController
 			{
 				dirtySyncElement.EncodeDelta(writer, deltaBatch);
 				deltaBatch.FinishDataRecord(dirtySyncElement.ReferenceID);
+				if (dirtySyncElement.DeltaIsCurrentValue && dirtySyncElement.StampDelta(Owner.SyncTick))
+					deltaBatch.MarkLastRecordCoalescable();
 			}
 			catch (Exception ex)
 			{
@@ -170,25 +184,56 @@ public class SyncController
 			else if (element.Parent is Component) componentFieldCount++;
 			else otherCount++;
 
-			BinaryWriter writer = fullBatch.BeginNewDataRecord(element.ReferenceID);
-			try
-			{
-				element.EncodeFull(writer, fullBatch, forFullBatch: true);
-				fullBatch.FinishDataRecord(element.ReferenceID);
-			}
-			catch (Exception ex)
-			{
-				// One element that throws while encoding must not abort the entire world's full state
-				// for every joiner. Drop just this record (rewinds the stream) and keep going. -xlinka
-				fullBatch.CancelDataRecord();
-				LumoraLogger.Error($"SyncController.EncodeFullBatch: skipped {element.GetType().Name} RefID={element.ReferenceID} - encode threw: {ex.Message}");
-			}
+			EncodeFullRecord(element, fullBatch);
 		}
 
 		if (debugLog)
 			LumoraLogger.Debug($"SyncController.EncodeFullBatch: Summary - SlotFields={slotFieldCount}, ComponentFields={componentFieldCount}, Other={otherCount}");
 
 		return fullBatch;
+	}
+
+	internal void EncodeFullRecord(SyncElement element, FullBatch fullBatch)
+	{
+		BinaryWriter writer = fullBatch.BeginNewDataRecord(element.ReferenceID);
+		try
+		{
+			element.EncodeFull(writer, fullBatch, forFullBatch: true);
+			fullBatch.FinishDataRecord(element.ReferenceID);
+		}
+		catch (Exception ex)
+		{
+			// One element that throws while encoding must not abort the entire world's full state
+			// for every joiner. Drop just this record (rewinds the stream) and keep going. -xlinka
+			fullBatch.CancelDataRecord();
+			LumoraLogger.Error($"SyncController.EncodeFullBatch: skipped {element.GetType().Name} RefID={element.ReferenceID} - encode threw: {ex.Message}");
+		}
+	}
+
+	// Every element a joiner gets, as the world stands now, in RefID order: the order a full batch has
+	// always gone out in, owners ahead of what they own. Sorted on the raw ids, a primitive sort instead of
+	// a comparison call per pair over tens of thousands of elements. -xlinka
+	internal (ulong[] Keys, SyncElement[] Elements) SnapshotReplicated()
+	{
+		int count = 0;
+		foreach (var element in syncElements.Values)
+		{
+			if (!element.IsLocalElement)
+				count++;
+		}
+		var keys = new ulong[count];
+		var elements = new SyncElement[count];
+		int at = 0;
+		foreach (var element in syncElements.Values)
+		{
+			if (element.IsLocalElement)
+				continue;
+			keys[at] = element.ReferenceID;
+			elements[at] = element;
+			at++;
+		}
+		Array.Sort(keys, elements);
+		return (keys, elements);
 	}
 
 	public void EncodeFull(RefID id, BinaryMessageBatch syncMessage)

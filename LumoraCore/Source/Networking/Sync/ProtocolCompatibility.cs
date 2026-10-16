@@ -26,7 +26,10 @@ public static class ProtocolCompatibility
     // 3: User lost a member. A user is not a component, so the schema hash never sees its layout and a
     //    v2 peer would read every later user field one member off.
     // 4: User gained its peak rates, versions, dash and view flags and the host's link figures.
-    private const int ProtocolVersion = 4;
+    // 5: a full batch header carries the record count of the world it is a slice of, and Rect, float4x4
+    //    and float3? fields carry their values instead of an empty marker.
+    // 6: int? fields carry their values instead of an empty marker.
+    private const int ProtocolVersion = 6;
 
     private static byte[]? _baseHash;
     private static readonly object _lock = new();

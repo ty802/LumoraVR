@@ -53,6 +53,13 @@ public class ReplicatedComponentCollection<C> : ReplicatedObjectCollection<C> wh
             return null!;
         }
 
+        // Personal components are never accepted from replication, including a forged host
+        // snapshot. Skip just this entry so ordinary components in the same batch still load.
+        if (ComponentExecutionPolicy.IsUserspaceOnly(type))
+        {
+            LumoraLogger.Warn($"WorkerCollection: refused userspace-only component {type.Name} for {key}");
+            return null!;
+        }
         return (C)WorkerManager.Instantiate(type);
     }
 }

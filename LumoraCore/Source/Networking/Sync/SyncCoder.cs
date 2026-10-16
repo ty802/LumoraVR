@@ -40,9 +40,17 @@ public static class SyncCoder
         [typeof(RefID)] = (w, v) => w.Write((ulong)(RefID)v),
         [typeof(WorldDelegate)] = (w, v) => EncodeWorldDelegate(w, (WorldDelegate)v),
         [typeof(BoundingBox)] = (w, v) => EncodeBoundingBox(w, (BoundingBox)v),
+        // These three had no entry and went out as an empty marker, so every joiner read the default: a
+        // zero UV rect on every UI image and UI material, no rest pose on a skeleton builder, no forward
+        // axis on a humanoid rig. -xlinka
+        [typeof(Rect)] = (w, v) => { var r = (Rect)v; w.Write(r.x); w.Write(r.y); w.Write(r.width); w.Write(r.height); },
+        [typeof(float4x4)] = (w, v) => EncodeMatrix(w, (float4x4)v),
+        [typeof(float3x3)] = (w, v) => EncodeMatrix3(w, (float3x3)v),
+        [typeof(float3?)] = (w, v) => EncodeNullableFloat3(w, (float3?)v),
         [typeof(BodyNode)] = (w, v) => w.Write((int)(BodyNode)v),
         [typeof(BodyNode?)] = (w, v) => EncodeNullableBodyNode(w, (BodyNode?)v),
         [typeof(float?)] = (w, v) => EncodeNullableFloat(w, (float?)v),
+        [typeof(int?)] = (w, v) => EncodeNullableInt(w, (int?)v),
         [typeof(object)] = (w, v) => EncodeObject(w, v),
     };
 
@@ -80,9 +88,14 @@ public static class SyncCoder
         [typeof(RefID)] = r => new RefID(r.ReadUInt64()),
         [typeof(WorldDelegate)] = r => DecodeWorldDelegate(r),
         [typeof(BoundingBox)] = r => DecodeBoundingBox(r),
+        [typeof(Rect)] = r => new Rect(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
+        [typeof(float4x4)] = r => DecodeMatrix(r),
+        [typeof(float3x3)] = r => DecodeMatrix3(r),
+        [typeof(float3?)] = r => DecodeNullableFloat3(r)!,
         [typeof(BodyNode)] = r => (BodyNode)r.ReadInt32(),
         [typeof(BodyNode?)] = r => DecodeNullableBodyNode(r)!,
         [typeof(float?)] = r => DecodeNullableFloat(r)!,
+        [typeof(int?)] = r => DecodeNullableInt(r)!,
         [typeof(object)] = r => DecodeObject(r),
     };
 
@@ -111,6 +124,7 @@ public static class SyncCoder
         [typeof(RefID)] = RefID.Null,
         [typeof(WorldDelegate)] = default(WorldDelegate),
         [typeof(BoundingBox)] = new BoundingBox(),
+        [typeof(float3x3)] = float3x3.Identity,
         [typeof(BodyNode)] = BodyNode.NONE,
         [typeof(BodyNode?)] = null!,
         [typeof(float?)] = null!,
@@ -210,12 +224,10 @@ public static class SyncCoder
         return default!;
     }
 
-    public static bool Equals<T>(T a, T b)
-    {
-        if (a == null && b == null) return true;
-        if (a == null || b == null) return false;
-        return EqualityComparer<T>.Default.Equals(a, b);
-    }
+    // The default comparer already answers null against null and null against a value. Checking `a == null`
+    // here first boxed both values of a struct field on every write wherever the code ran unoptimized: the
+    // editor build, and every method before it tiers up. -xlinka
+    public static bool Equals<T>(T a, T b) => EqualityComparer<T>.Default.Equals(a, b);
 
     private static void EncodeWorldDelegate(BinaryWriter writer, WorldDelegate value)
     {
@@ -266,6 +278,71 @@ public static class SyncCoder
         return new BoundingBox(new float3(minX, minY, minZ), new float3(maxX, maxY, maxZ));
     }
 
+    private static void EncodeMatrix3(BinaryWriter writer, float3x3 value)
+    {
+        WriteFloat3(writer, value.c0);
+        WriteFloat3(writer, value.c1);
+        WriteFloat3(writer, value.c2);
+    }
+
+    private static float3x3 DecodeMatrix3(BinaryReader reader)
+    {
+        var c0 = new float3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+        var c1 = new float3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+        var c2 = new float3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+        return new float3x3(c0, c1, c2);
+    }
+
+    private static void WriteFloat3(BinaryWriter writer, in float3 value)
+    {
+        writer.Write(value.x);
+        writer.Write(value.y);
+        writer.Write(value.z);
+    }
+
+    private static void EncodeMatrix(BinaryWriter writer, float4x4 value)
+    {
+        void Column(in float4 c)
+        {
+            writer.Write(c.x);
+            writer.Write(c.y);
+            writer.Write(c.z);
+            writer.Write(c.w);
+        }
+        Column(value.c0);
+        Column(value.c1);
+        Column(value.c2);
+        Column(value.c3);
+    }
+
+    private static float4x4 DecodeMatrix(BinaryReader reader)
+    {
+        float4 Column() => new float4(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+        var c0 = Column();
+        var c1 = Column();
+        var c2 = Column();
+        var c3 = Column();
+        return new float4x4(c0, c1, c2, c3);
+    }
+
+    private static void EncodeNullableFloat3(BinaryWriter writer, float3? value)
+    {
+        writer.Write(value.HasValue);
+        if (value is { } v)
+        {
+            writer.Write(v.x);
+            writer.Write(v.y);
+            writer.Write(v.z);
+        }
+    }
+
+    private static float3? DecodeNullableFloat3(BinaryReader reader)
+    {
+        if (!reader.ReadBoolean())
+            return null;
+        return new float3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+    }
+
     private static void EncodeNullableBodyNode(BinaryWriter writer, BodyNode? value)
     {
         bool hasValue = value.HasValue;
@@ -304,6 +381,28 @@ public static class SyncCoder
         if (hasValue)
         {
             return reader.ReadSingle();
+        }
+        return null;
+    }
+
+    // A grabbable's priority while held is an int?, and with no coder it went out as an empty marker: every
+    // other machine read null, and every encode of it printed a line to the console.
+    private static void EncodeNullableInt(BinaryWriter writer, int? value)
+    {
+        bool hasValue = value.HasValue;
+        writer.Write(hasValue);
+        if (hasValue)
+        {
+            writer.Write(value.GetValueOrDefault());
+        }
+    }
+
+    private static int? DecodeNullableInt(BinaryReader reader)
+    {
+        bool hasValue = reader.ReadBoolean();
+        if (hasValue)
+        {
+            return reader.ReadInt32();
         }
         return null;
     }

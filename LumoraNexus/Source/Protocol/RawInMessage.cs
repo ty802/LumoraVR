@@ -11,4 +11,6 @@ public class RawInMessage
     public int Offset { get; set; }
     public int Length { get; set; }
     public IConnection Sender { get; set; } = null!;
+    // Stopwatch ticks when the transport handed it over.
+    public long Arrived { get; set; }
 }

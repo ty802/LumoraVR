@@ -484,7 +484,9 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
         if (!IsLoading)
         {
-            AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove, DataModelPermissionSurface.List, index: index);
+            // Keyed with the entry going, so the gate can tell somebody taking out an entry they added.
+            AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove,
+                DataModelPermissionSurface.List, index: index, key: EntryIdAt(index));
         }
 
         BeginModification();
@@ -788,6 +790,10 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         }
     }
 
+    // The id of the entry at an index, or nothing when there is none.
+    private object? EntryIdAt(int index)
+        => index >= 0 && index < _records.Count && _records[index].Node is { } node ? node.ReferenceID : null;
+
     public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
     {
         var validity = base.Validate(syncMessage, reader, rules);
@@ -810,12 +816,29 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
             var count = (uint)reader.Read7BitEncoded();
             var offset = new RefID(reader.Read7BitEncoded());
 
+            // The batch read whole first. When it takes anything out, the ids are followed op by op as the batch
+            // leaves them, so a removal is keyed with the entry it really takes out and not with whatever sits at
+            // that index before the batch's earlier adds and removes land.
+            var batch = new List<DeltaRecord>();
             for (uint i = 0; i < count; i++)
+                batch.Add(DeltaRecord.Decode(reader, offset));
+            List<RefID>? ids = null;
+            foreach (var queued in batch)
             {
-                var record = DeltaRecord.Decode(reader, offset);
+                if (queued.Message != DeltaMessage.Remove)
+                    continue;
+                ids = new List<RefID>(_records.Count + batch.Count);
+                for (int r = 0; r < _records.Count; r++)
+                    ids.Add(_records[r].Node?.ReferenceID ?? RefID.Null);
+                break;
+            }
+
+            foreach (var record in batch)
+            {
                 switch (record.Message)
                 {
                     case DeltaMessage.Clear:
+                        ids?.Clear();
                         if (!AuthorizeDataModelMutation(
                                 DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionClear | DataModelPermissionAction.Replicate,
                                 DataModelPermissionSurface.List,
@@ -841,6 +864,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
                         {
                             return MessageValidity.Conflict;
                         }
+                        ids?.Add(record.Id);
                         break;
                     case DeltaMessage.Insert:
                         if (record.Index < 0 || record.Index > _records.Count)
@@ -862,22 +886,36 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
                         {
                             return MessageValidity.Conflict;
                         }
+                        if (ids != null)
+                        {
+                            if (record.Index > ids.Count)
+                                return MessageValidity.Conflict;
+                            ids.Insert(record.Index, record.Id);
+                        }
                         break;
                     case DeltaMessage.Remove:
                         if (record.Index < 0 || record.Index >= _records.Count)
                         {
                             return MessageValidity.Conflict;
                         }
+                        var held = ids!;
+                        if (record.Index >= held.Count)
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        var removed = held[record.Index];
                         if (!AuthorizeDataModelMutation(
                                 DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.Replicate,
                                 DataModelPermissionSurface.List,
                                 syncMessage.SenderUser,
                                 isNetwork: true,
                                 index: record.Index,
+                                key: removed.IsNull ? null : removed,
                                 throwOnError: false))
                         {
                             return MessageValidity.Conflict;
                         }
+                        held.RemoveAt(record.Index);
                         break;
                     case DeltaMessage.Empty:
                         break;

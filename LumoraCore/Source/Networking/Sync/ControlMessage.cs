@@ -51,10 +51,24 @@ public class ControlMessage : SyncMessage
         // peer's deltas and rebase the link cursor, which cannot be inferred from the peer's own
         // counter since that keeps running across the repair.
         ResyncComplete,
+
+        // Signing in or out while in the session.
+        // Peer -> authority: the account it now claims (id + login session), or nothing for signed out.
+        AccountChange,
+        // Authority -> peer: nonce the claimed account has to sign.
+        AccountChallenge,
+        // Peer -> authority: that nonce signed with the account key.
+        AccountProof,
     }
 
     public override MessageType MessageType => MessageType.Control;
     public override bool Reliable => true;
+
+    // Asset transfer rides the background channel, every message of it, so a start never overtakes or
+    // trails its own chunks. On the foreground channel a big transfer filled the reliable window and the
+    // world's own changes queued behind it for as long as it ran. -xlinka
+    public override bool Background => ControlMessageType is Message.AssetRequest or Message.AssetTransmissionStart
+        or Message.AssetChunk or Message.AssetNextChunkRequest or Message.AssetNotAvailable;
 
     public Message ControlMessageType { get; set; }
     public byte[] Payload { get; set; } = null!;

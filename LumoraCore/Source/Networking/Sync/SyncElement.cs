@@ -229,6 +229,13 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     // saves. -xlinka
     public bool ValueCameFromData { get => GetFlag((int)InternalFlags.ValueCameFromData); internal set => SetFlag((int)InternalFlags.ValueCameFromData, value); }
 
+    // A save read into a world that is already running is news to every peer in it, like any edit: a spawned
+    // item, a paste, an undone delete. Their copies only ever hear what is marked to send. Read into a world
+    // still being built, it reaches peers in the full state they join with, so it stays quiet. A member only
+    // the host may author keeps a guest's loaded copy to itself; the host's own word on it follows. -xlinka
+    protected virtual bool LoadReplicates
+        => World?.State == Lumora.Core.World.WorldState.Running && (World.IsAuthority || !IsConfigLocked);
+
     public bool IsPersistent => !NonPersistent;
     public bool IsDestroyed => IsDisposed;
     public bool GenerateSyncData => !IsLocalElement && World?.State == World.WorldState.Running;
@@ -559,6 +566,11 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
             return;
         }
 
+        // A host with nobody connected: a plain value's delta would only be let go at the next sync cycle, after
+        // a lock and a set insert per write. A joiner is handed full state.
+        if (World.SyncController.DropFieldDeltas && DeltaIsCurrentValue)
+            return;
+
         IsSyncDirty = true;
         World.SyncController.AddDirtySyncElement(this);
     }
@@ -613,6 +625,31 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     {
         _deltaBaseCaptured = false;
         _deltaBaseCount = 0;
+    }
+
+    // A delta that is nothing but the current value: with nobody to send it to it can be let go, since the next
+    // delta carries the value whole and a joiner is handed full state.
+    internal virtual bool DeltaIsCurrentValue => false;
+
+    // The sync cycle this element last went out as a delta, and how close two of them must be for it to count as
+    // a value that keeps changing.
+    private uint _lastDeltaCycle;
+    internal const uint HotCycles = 16;
+
+    // Notes a delta this cycle; true when the one before was recent.
+    internal bool StampDelta(ulong cycle)
+    {
+        uint now = (uint)cycle | 1u;
+        bool hot = _lastDeltaCycle != 0 && now - _lastDeltaCycle <= HotCycles;
+        _lastDeltaCycle = now;
+        return hot;
+    }
+
+    internal void DropDelta()
+    {
+        IsSyncDirty = false;
+        InternalClearDirty();
+        ResetDeltaBase();
     }
 
     // Count this delta window started from, falling back to the live count when no mutation opened a window (an

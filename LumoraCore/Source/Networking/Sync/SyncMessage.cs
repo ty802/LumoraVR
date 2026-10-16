@@ -17,6 +17,8 @@ public abstract class SyncMessage : IDisposable
     public ulong SenderSyncTick { get; set; }
     public double SenderTime { get; set; }
     public float SecondsSinceReceived { get; set; }
+    // Stopwatch ticks when the transport handed it over; zero for one made here.
+    public long Arrived { get; set; }
     public User SenderUser { get; set; } = null!;
     public IConnection Sender { get; set; }
     public List<IConnection> Targets { get; } = new();
@@ -24,6 +26,10 @@ public abstract class SyncMessage : IDisposable
     public abstract MessageType MessageType { get; }
     public virtual bool Reliable => true;
     public virtual bool Background => false;
+
+    // Reliable, and free to arrive out of order with other bulk messages. Only set on a message whose
+    // receiver has said it takes that.
+    public bool Bulk { get; set; }
 
     // Minimum encoded size (bytes) at/above which this message's frame is worth compressing,
     // or 0 to never compress. Small/latency-critical messages (Confirmation, Control, Ping,
@@ -79,6 +85,7 @@ public abstract class SyncMessage : IDisposable
         message.SenderStateVersion = stateVersion;
         message.SenderSyncTick = syncTick;
         message.Sender = raw.Sender;
+        message.Arrived = raw.Arrived;
         return message;
     }
 

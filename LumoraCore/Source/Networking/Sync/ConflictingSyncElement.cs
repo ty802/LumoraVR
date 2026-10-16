@@ -91,6 +91,8 @@ public abstract class ConflictingSyncElement : SyncElement
         DirectAccessOnly = true;
     }
 
+    protected override bool LoadReplicates => base.LoadReplicates && (!IsHostOnly || World?.IsAuthority == true);
+
     public override MessageValidity Validate(BinaryMessageBatch inboundMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
     {
         if (!IsValid)

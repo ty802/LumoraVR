@@ -135,6 +135,33 @@ public abstract class BinaryMessageBatch : SyncMessage
         return _reader;
     }
 
+    // One record into another batch as it stands, straight out of this batch's buffer.
+    public void CopyDataRecordTo(int index, BinaryMessageBatch target)
+    {
+        var record = _dataRecords[index];
+        var writer = target.BeginNewDataRecord(record.TargetID);
+        int length = record.EndOffset - record.StartOffset;
+        if (length > 0)
+        {
+            if (_stream.TryGetBuffer(out var buffer))
+                writer.Write(buffer.Array!, buffer.Offset + record.StartOffset, length);
+            else
+                writer.Write(_stream.ToArray(), record.StartOffset, length);
+        }
+        target.FinishDataRecord(record.TargetID);
+        if (record.Coalescable)
+            target.MarkLastRecordCoalescable();
+    }
+
+    public void MarkLastRecordCoalescable() => MarkCoalescable(_dataRecords.Count - 1);
+
+    public void MarkCoalescable(int index)
+    {
+        var record = _dataRecords[index];
+        record.Coalescable = true;
+        _dataRecords[index] = record;
+    }
+
     public void MarkDataRecordAsProcessed(int index)
     {
         var record = _dataRecords[index];
@@ -180,7 +207,8 @@ public abstract class BinaryMessageBatch : SyncMessage
     // Encode this batch to bytes for transmission.
     //
     // Header: [type][stateVersion:7bit][syncTick:7bit][senderTime:f64][linkSequence:7bit]
-    // [confirmTime:7bit, Confirmation only][recordCount:7bit], then [RefID][len:7bit][data] per record.
+    // [confirmTime:7bit, Confirmation only][expectedRecords:7bit, Full only][recordCount:7bit], then
+    // [RefID][len:7bit][data] per record.
     // The link sequence is part of the header for every batch type - a build that does not write it
     // misreads the record count as a sequence and produces garbage, so ProtocolCompatibility's
     // protocol version is bumped alongside this and the join handshake refuses the mismatch outright
@@ -207,6 +235,10 @@ public abstract class BinaryMessageBatch : SyncMessage
         if (this is ConfirmationMessage confirmation)
         {
             writer.Write7BitEncoded(confirmation.ConfirmTime);
+        }
+        else if (this is FullBatch full)
+        {
+            writer.Write7BitEncoded((ulong)full.ExpectedRecords);
         }
 
         writer.Write7BitEncoded((ulong)_dataRecords.Count);
@@ -241,16 +273,23 @@ public abstract class BinaryMessageBatch : SyncMessage
         var senderTime = reader.ReadDouble();
         var linkSequence = reader.Read7BitEncoded();
         var confirmTime = 0UL;
+        var expectedRecords = 0UL;
         if (messageType == MessageType.Confirmation)
         {
             confirmTime = reader.Read7BitEncoded();
         }
+        else if (messageType == MessageType.Full)
+        {
+            expectedRecords = reader.Read7BitEncoded();
+        }
         var recordCount = (int)reader.Read7BitEncoded();
+        if (recordCount < 0)
+            throw new InvalidDataException($"Record count {recordCount} is not a count");
 
         BinaryMessageBatch batch = messageType switch
         {
             MessageType.Delta => new DeltaBatch(stateVersion, syncTick),
-            MessageType.Full => new FullBatch(stateVersion, syncTick),
+            MessageType.Full => new FullBatch(stateVersion, syncTick) { ExpectedRecords = (int)System.Math.Min(expectedRecords, int.MaxValue) },
             MessageType.Confirmation => new ConfirmationMessage(confirmTime, stateVersion, syncTick),
             _ => throw new InvalidOperationException($"Unknown message type: {messageType}")
         };
@@ -258,14 +297,22 @@ public abstract class BinaryMessageBatch : SyncMessage
         batch.SenderTime = senderTime;
         batch.LinkSequence = linkSequence;
 
-        batch._stream = new MemoryStream();
+        // Sized to the frame and filled straight from it. A full world is tens of thousands of records, and
+        // a byte array read out per record plus a stream doubling its way up to the size was the bulk of
+        // what a join allocated before it applied anything. -xlinka
+        int remaining = System.Math.Max(0, data.Length - (int)input.Position);
+        batch._stream = new MemoryStream(remaining);
         batch._writer = new BinaryWriter(batch._stream);
+        // A record is two bytes at the least, so the count a frame can really hold caps what is reserved.
+        batch._dataRecords.Capacity = System.Math.Min(recordCount, remaining / 2);
 
         for (int i = 0; i < recordCount; i++)
         {
             var targetID = reader.ReadRefID();
             var dataLength = (int)reader.Read7BitEncoded();
-            var recordData = reader.ReadBytes(dataLength);
+            int from = (int)input.Position;
+            if (dataLength < 0 || from + dataLength > data.Length)
+                throw new EndOfStreamException($"Record {i} of {recordCount} runs past the end of the frame");
 
             var record = new DataRecord
             {
@@ -277,7 +324,8 @@ public abstract class BinaryMessageBatch : SyncMessage
             };
 
             batch._dataRecords.Add(record);
-            batch._stream.Write(recordData, 0, dataLength);
+            batch._stream.Write(data, from, dataLength);
+            input.Position = from + dataLength;
         }
 
         batch._reader = new BinaryReader(batch._stream);
@@ -308,6 +356,9 @@ public struct DataRecord
 	// Set once the authority has judged the record. A record whose target did not exist yet at that
 	// point is still unjudged and must be judged before it decodes. -xlinka
 	public bool Validated;
+	// Never on the wire. The record is nothing but an element's current value, one that changes every few
+	// cycles, so a peer behind on its link may skip it for a newer one.
+	public bool Coalescable;
 }
 
 public enum MessageType : byte

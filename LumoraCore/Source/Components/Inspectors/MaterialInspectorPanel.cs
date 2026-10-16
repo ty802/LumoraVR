@@ -37,6 +37,7 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
     private bool _rowsDirty;
     private bool _hadShaderSource;
     private bool _graphWasOpen;
+    private int _builtShape;
     private CustomShaderMaterial? _hookedMaterial;
 
     public MaterialInspectorPanel()
@@ -153,6 +154,7 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
         var scrollUi = new UIBuilder(host);
         InspectorUI.ApplyTheme(scrollUi, Slot);
         var scroll = scrollUi.ScrollRect(out var content, null, InspectorUI.PaneColor);
+        scroll.RowsActOnRelease.Value = true;
         scroll.Slot.GetComponent<Image>()!.CornerRadius.Value = DashTheme.RadiusCard;
         InspectorUI.FillParent(scroll.Slot.GetComponent<RectTransform>()!);
 
@@ -189,6 +191,12 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
             }
             // The node tool opens and closes the graph too, so the button follows it from here.
             if (custom.Shader.Target is ShaderGraphSource graph && graph.IsGraphOpen != _graphWasOpen)
+            {
+                _rowsDirty = true;
+                MarkChangeDirty();
+            }
+            // A recompile changes a property's type or range in place, so its row is built again from here.
+            if (ParameterShape(custom) != _builtShape)
             {
                 _rowsDirty = true;
                 MarkChangeDirty();
@@ -278,6 +286,22 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
         MarkChangeDirty();
     }
 
+    // What a row is built from: each property's name, type and range. Its value and texture are not, since
+    // the row's own editor follows those.
+    private static int ParameterShape(CustomShaderMaterial material)
+    {
+        var hash = new HashCode();
+        foreach (var param in material.Parameters)
+        {
+            hash.Add(param.Name.Value);
+            hash.Add(param.Type.Value);
+            hash.Add(param.IsColor.Value);
+            hash.Add(param.HasRange.Value);
+            hash.Add(param.Range.Value);
+        }
+        return hash.ToHashCode();
+    }
+
     private void RebuildRows()
     {
         var content = _content.Target;
@@ -307,6 +331,7 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
 
         var custom = material as CustomShaderMaterial;
         _hadShaderSource = custom != null && !string.IsNullOrWhiteSpace(custom.Shader.Asset?.Source);
+        _builtShape = custom != null ? ParameterShape(custom) : 0;
 
         // Regular member rows, minus the raw Parameters list (it gets first-class rows below).
         // [Group] fields open sections here too, same semantics as the generic builder.
@@ -347,10 +372,12 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
 
         WorkerInspectorBuilder.BuildMethodRows(material, content, Slot);
 
-        // Diagnostics block (the sandbox verdict for custom shaders) appends after everything.
+        // Diagnostics block (the sandbox verdict for custom shaders) appends after everything. A Poiyomi
+        // material's body is its whole property layout, which brings its own headers.
         if (material is ICustomInspectorUI extra)
         {
-            InspectorUI.SectionHeader(content, "DIAGNOSTICS", Slot);
+            if (material is not PoiyomiMaterial)
+                InspectorUI.SectionHeader(content, "DIAGNOSTICS", Slot);
             var bodyHost = content.AddSlot("CustomBody");
             bodyHost.AttachComponent<RectTransform>();
             var bodyLayout = bodyHost.AttachComponent<VerticalLayout>();

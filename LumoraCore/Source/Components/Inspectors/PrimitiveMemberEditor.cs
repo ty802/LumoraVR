@@ -8,9 +8,12 @@ using Lumora.Core;
 
 namespace Lumora.Core.Components;
 
-// string members write LIVE on every keystroke; everything else commits on enter so partial
+// string members write LIVE on every keystroke; everything else commits when typing ends so partial
 // numeric input ("-", "1e") never writes. undo records one edit per typing session: value
 // captured on focus, recorded on focus loss.
+// Number fields take math (FieldMath: "*2" doubles what is there) and keep what was typed on Enter or a
+// click away; Escape puts the value back. Text that does not work out leaves the value alone and says
+// why in red for a moment. Other types commit on Enter only.
 [ComponentCategory("Utility/Inspectors")]
 public class PrimitiveMemberEditor : MemberEditor
 {
@@ -28,15 +31,23 @@ public class PrimitiveMemberEditor : MemberEditor
 
     private bool IsLiveString => LeafType == typeof(string);
 
+    private bool IsNumber => FieldMath.IsNumberType(LeafType);
+
     protected override void BuildUI(UIBuilder ui)
     {
         ui.PushStyle();
         ui.FlexibleWidth(1f);
-        var input = InspectorUI.CreateTextInput(ui);
+        var input = InspectorUI.CreateTextInput(ui, alignment:
+            IsLiveString || LeafType == typeof(Uri) ? TextHorizontalAlignment.Left : TextHorizontalAlignment.Center);
         if (IsLiveString)
             input.SetChangeAction(OnTyped);
         else
             input.SetSubmitAction(OnSubmitted);
+        if (IsNumber)
+        {
+            input.SubmitOnBlur.Value = true;
+            input.Tip.Value = FieldMath.Tip;
+        }
         _input.Target = input;
         // Field-state color on the input backing: a driven field reads magenta so it's obvious why
         // typing into it does nothing (writes are refused while driven).
@@ -86,6 +97,10 @@ public class PrimitiveMemberEditor : MemberEditor
 
     private void OnFocusLost(TextInput input, string text)
     {
+        // Escape, or a blur that typed nothing: the field shows the value again. A kept edit arrives
+        // in OnSubmitted right after this and writes over it.
+        if (IsNumber)
+            RefreshDisplay();
         if (!_sessionActive)
             return;
         _sessionActive = false;
@@ -101,6 +116,7 @@ public class PrimitiveMemberEditor : MemberEditor
         var input = _input.Target;
         if (input == null || input.IsDestroyed || input.IsFocused)
             return;
+        FieldHint.Clear(input);
         input.Text.Value = FormatValue(GetMemberValue());
     }
 
@@ -119,9 +135,36 @@ public class PrimitiveMemberEditor : MemberEditor
         var leafType = LeafType;
         if (leafType == null)
             return;
+        if (FieldMath.IsNumberType(leafType))
+        {
+            SubmitNumber(input, text, leafType);
+            return;
+        }
         if (TryParse(text, leafType, out object? parsed))
             SetMemberValue(parsed);
         RefreshDisplay(); // snap the text back to the canonical value either way
+    }
+
+    // Text that still reads as the value shown writes nothing: the display rounds (0.###), so writing it
+    // back would quietly trim a value nobody edited.
+    private void SubmitNumber(TextInput input, string text, Type leafType)
+    {
+        object? current = GetMemberValue();
+        if (string.Equals((text ?? "").Trim(), FormatValue(current), StringComparison.Ordinal))
+        {
+            RefreshDisplay();
+            return;
+        }
+        if (!FieldMath.TryConvert(text, leafType, current, out object? value, out var result))
+        {
+            RefreshDisplay();
+            if (result.Error != FieldMathError.Empty && !IsReadOnly && input != null && !input.IsDestroyed)
+                FieldHint.Show(input, text ?? "", result.Hint, RefreshDisplay);
+            return;
+        }
+        if (!Equals(value, current))
+            SetMemberValue(value);
+        RefreshDisplay();
     }
 
     internal static string FormatValue(object? value)
@@ -143,6 +186,7 @@ public class PrimitiveMemberEditor : MemberEditor
             if (type == typeof(string)) { value = text; return true; }
             if (type == typeof(Uri)) { value = string.IsNullOrEmpty(text) ? null : new Uri(text, UriKind.RelativeOrAbsolute); return true; }
             if (type.IsEnum) { return Enum.TryParse(type, text, ignoreCase: true, out value!); }
+            if (FieldMath.IsNumberType(type)) { return FieldMath.TryConvert(text, type, null, out value, out _); }
             value = Convert.ChangeType(text, type, CultureInfo.InvariantCulture);
             return true;
         }

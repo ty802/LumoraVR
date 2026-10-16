@@ -16,4 +16,5 @@ public sealed class InspectorTab : Component
     public readonly SyncFieldList<ulong> ExpandedComponents = new();
     public readonly Sync<float2> TreeScroll = new();
     public readonly Sync<float2> ComponentScroll = new();
+    public readonly Sync<float> HierarchyWidth = new(SceneInspectorPanel.DefaultHierarchyWidth);
 }

@@ -97,7 +97,8 @@ public class InspectorMethodArgument : Component
 
         ui.PushStyle();
         ui.FlexibleWidth(1f);
-        var input = InspectorUI.CreateTextInput(ui);
+        var input = InspectorUI.CreateTextInput(ui, alignment:
+            type == typeof(string) ? TextHorizontalAlignment.Left : TextHorizontalAlignment.Center);
         input.Text.Value = Value.Value;
         input.SetChangeAction(OnTyped);
         input.SetSubmitAction(OnSubmitted);

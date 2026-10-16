@@ -511,6 +511,7 @@ public class ColorPickerPanel : Component, IInspectorActionHandler
         var scrollUi = new UIBuilder(host);
         InspectorUI.ApplyTheme(scrollUi, Slot);
         var scroll = scrollUi.ScrollRect(out var content, null, InspectorUI.PaneColor);
+        scroll.RowsActOnRelease.Value = true;
         InspectorUI.FillParent(scroll.Slot.GetComponent<RectTransform>()!);
 
         var contentLayout = content.Slot.AttachComponent<VerticalLayout>();
@@ -832,8 +833,10 @@ public class ColorPickerPanel : Component, IInspectorActionHandler
         ui.MinWidth(56f);
         ui.PreferredWidth(56f);
         ui.FlexibleWidth(0f);
-        input = InspectorUI.CreateTextInput(ui, label + "Byte");
+        input = InspectorUI.CreateTextInput(ui, label + "Byte", TextHorizontalAlignment.Center);
         input.SetSubmitAction(submitted);
+        input.SubmitOnBlur.Value = true;
+        input.Tip.Value = FieldMath.Tip;
         ui.PopStyle();
         return slider;
     }
@@ -898,13 +901,13 @@ public class ColorPickerPanel : Component, IInspectorActionHandler
     public void OnAlphaChanged(Slider slider, float value) => WriteChannel(3, value);
 
     [SyncMethod]
-    public void OnRedSubmitted(TextInput input, string text) => SubmitByte(0, text);
+    public void OnRedSubmitted(TextInput input, string text) => SubmitByte(input, 0, text);
     [SyncMethod]
-    public void OnGreenSubmitted(TextInput input, string text) => SubmitByte(1, text);
+    public void OnGreenSubmitted(TextInput input, string text) => SubmitByte(input, 1, text);
     [SyncMethod]
-    public void OnBlueSubmitted(TextInput input, string text) => SubmitByte(2, text);
+    public void OnBlueSubmitted(TextInput input, string text) => SubmitByte(input, 2, text);
     [SyncMethod]
-    public void OnAlphaSubmitted(TextInput input, string text) => SubmitByte(3, text);
+    public void OnAlphaSubmitted(TextInput input, string text) => SubmitByte(input, 3, text);
 
     // #RRGGBB or #RRGGBBAA, applied when editing finishes.
     [SyncMethod]
@@ -923,21 +926,26 @@ public class ColorPickerPanel : Component, IInspectorActionHandler
         SyncControls(parsed);
     }
 
-    // The byte fields are the precise way in: 0-255 per channel, anything else snaps back.
-    private void SubmitByte(int channel, string text)
+    // The byte fields are the precise way in: 0-255 per channel, math against the byte shown now ("*2",
+    // "+16"), anything that does not work out snaps back with a note saying why.
+    private void SubmitByte(TextInput? input, int channel, string text)
     {
         if (IsDestroyed)
             return;
         var current = ReadColor();
         if (current == null)
             return;
-        if (!float.TryParse((text ?? "").Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float raw))
+        var c = current.Value;
+        float now = channel switch { 0 => c.r, 1 => c.g, 2 => c.b, _ => c.a };
+        var result = FieldMath.Evaluate(text, ColorSwatchStore.ToByte(now));
+        if (!result.Ok)
         {
-            SyncControls(current.Value);
+            SyncControls(c);
+            if (result.Error != FieldMathError.Empty && input != null && !input.IsDestroyed)
+                FieldHint.Show(input, text ?? "", result.Hint, () => { if (ReadColor() is { } shown) SyncControls(shown); });
             return;
         }
-        if (raw < 0f) raw = 0f;
-        if (raw > 255f) raw = 255f;
+        float raw = (float)System.Math.Clamp(result.Value, 0d, 255d);
         WriteChannel(channel, raw / 255f);
     }
 
@@ -986,6 +994,7 @@ public class ColorPickerPanel : Component, IInspectorActionHandler
             {
                 color c => c,
                 colorHDR hdr => new color(hdr.r, hdr.g, hdr.b, hdr.a),
+                float4 v => new color(v.x, v.y, v.z, v.w),
                 _ => null,
             };
         }
@@ -1021,6 +1030,8 @@ public class ColorPickerPanel : Component, IInspectorActionHandler
         object leaf = c;
         if (accessor.LeafType == typeof(colorHDR))
             leaf = new colorHDR(c.r, c.g, c.b, c.a);
+        else if (accessor.LeafType == typeof(float4))
+            leaf = new float4(c.r, c.g, c.b, c.a);
         object? after = accessor.SetValue(field.BoxedValue, leaf);
         field.BoxedValue = after!;
     }
@@ -1096,6 +1107,7 @@ public class ColorPickerPanel : Component, IInspectorActionHandler
     {
         if (input == null || input.IsDestroyed || input.IsFocused)
             return;
+        FieldHint.Clear(input);
         input.Text.Value = ColorSwatchStore.ToByte(value).ToString(CultureInfo.InvariantCulture);
     }
 

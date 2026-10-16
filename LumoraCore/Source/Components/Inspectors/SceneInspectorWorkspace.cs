@@ -37,7 +37,7 @@ public partial class SceneInspectorPanel
     private readonly SyncRef<ScrollRect> _treeScroll = new();
     private readonly SyncRef<ScrollRect> _componentScroll = new();
 
-    public const float DefaultHierarchyWidth = 340f;
+    public const float DefaultHierarchyWidth = 380f;
     private const float MinHierarchyWidth = 230f;
     private const float MinDetailWidth = 400f;
     // Shell and page padding, both column gaps and the divider: width the hierarchy can never take.
@@ -93,7 +93,6 @@ public partial class SceneInspectorPanel
     private string _tabSignature = "";
     private int _builtOrder;
     private float _laidOutHierarchyWidth = DefaultHierarchyWidth;
-    private InspectorTab? _restoringTab;
     private Component? _dropTarget;
     private User? _actionActor;
     private Slot? _compassLine;
@@ -418,6 +417,7 @@ public partial class SceneInspectorPanel
         tab.Selected.Target = Selected.Target;
         Tabs.Add(tab);
         ActiveTab.Target = tab;
+        ParkActiveTab();
     }
 
     private Slot? TabRoot(InspectorTab tab)
@@ -425,15 +425,17 @@ public partial class SceneInspectorPanel
 
     private void ParkActiveTab()
     {
-        // Mid-switch the scroll has not been put back yet, and parking now would save the wrong one.
-        if (_restoringTab != null || ActiveTab.Target is not { IsDestroyed: false } tab)
+        if (ActiveTab.Target is not { IsDestroyed: false } tab)
             return;
         SetRef(tab.Root, Root.Target);
         SetRef(tab.Selected, Selected.Target);
         CopyExpansion(ExpandedSlots, tab.ExpandedSlots);
         CopyExpansion(ExpandedComponents, tab.ExpandedComponents);
-        SetValue(tab.TreeScroll, _treeScroll.Target?.NormalizedPosition ?? float2.Zero);
-        SetValue(tab.ComponentScroll, _componentScroll.Target?.NormalizedPosition ?? float2.Zero);
+        if (_treeScroll.Target is { IsDestroyed: false } tree)
+            SetValue(tab.TreeScroll, tree.NormalizedPosition);
+        if (_componentScroll.Target is { IsDestroyed: false } components)
+            SetValue(tab.ComponentScroll, components.NormalizedPosition);
+        SetValue(tab.HierarchyWidth, HierarchyWidth.Value);
     }
 
     private static void CopyExpansion(SyncFieldList<ulong> from, SyncFieldList<ulong> to)
@@ -459,8 +461,6 @@ public partial class SceneInspectorPanel
                 if (existing is not { IsDestroyed: false } || !ReferenceEquals(TabRoot(existing), target))
                     continue;
                 SwitchTab(existing);
-                Selected.Target = target;
-                RunApplyChangesSafe();
                 return;
             }
         }
@@ -475,6 +475,7 @@ public partial class SceneInspectorPanel
         var tab = Slot.AttachComponent<InspectorTab>();
         tab.Root.Target = target;
         tab.Selected.Target = target;
+        tab.HierarchyWidth.Value = HierarchyWidth.Value;
         Tabs.Add(tab);
         SwitchTab(tab);
     }
@@ -485,30 +486,26 @@ public partial class SceneInspectorPanel
             return;
         ParkActiveTab();
         ActiveTab.Target = tab;
+        RestoreTab(tab);
+    }
+
+    private void RestoreTab(InspectorTab tab)
+    {
         Root.Target = tab.Root.Target is { IsDestroyed: false } root ? root : World.RootSlot;
         Selected.Target = tab.Selected.Target is { IsDestroyed: false } selected ? selected : Root.Target;
         CopyExpansion(tab.ExpandedSlots, ExpandedSlots);
         CopyExpansion(tab.ExpandedComponents, ExpandedComponents);
+        SetHierarchyWidth(tab.HierarchyWidth.Value);
+
+        // ScrollRect stores normalized positions independently of layout. Restore them immediately:
+        // the next layout uses the new range, and a quick switch cannot park another tab's position.
+        // Setting the position also stops any wheel animation left over from the previous tab.
+        if (_treeScroll.Target is { IsDestroyed: false } tree)
+            tree.NormalizedPosition = tab.TreeScroll.Value;
+        if (_componentScroll.Target is { IsDestroyed: false } components)
+            components.NormalizedPosition = tab.ComponentScroll.Value;
         _hierarchyDirty = _componentsDirty = true;
         RunApplyChangesSafe();
-
-        // Normalized scroll only lands right once the new rows are laid out. A newer switch takes over
-        // the token and this one drops out.
-        _restoringTab = tab;
-        var treeScroll = tab.TreeScroll.Value;
-        var componentScroll = tab.ComponentScroll.Value;
-        World.RunInUpdates(2, () =>
-        {
-            if (!ReferenceEquals(_restoringTab, tab))
-                return;
-            _restoringTab = null;
-            if (IsDestroyed || !ReferenceEquals(ActiveTab.Target, tab))
-                return;
-            if (_treeScroll.Target is { IsDestroyed: false } tree)
-                tree.NormalizedPosition = treeScroll;
-            if (_componentScroll.Target is { IsDestroyed: false } components)
-                components.NormalizedPosition = componentScroll;
-        });
     }
 
     // Closing the last tab closes the panel, the neighbour to the right takes over otherwise.
@@ -556,9 +553,9 @@ public partial class SceneInspectorPanel
         var pane = SpawnBeside(this, root, new float3(0f, 0f, TearOffLift));
         if (pane == null)
             return null;
-        pane.Selected.Target = tab.Selected.Target is { IsDestroyed: false } selected ? selected : root;
-        CopyExpansion(tab.ExpandedSlots, pane.ExpandedSlots);
-        CopyExpansion(tab.ExpandedComponents, pane.ExpandedComponents);
+        pane.EnsureTab();
+        pane.RestoreTab(tab);
+        pane.ParkActiveTab();
         CloseTab(tab);
         return pane.Slot.GetComponent<Grabbable>();
     }
@@ -873,6 +870,7 @@ public partial class SceneInspectorPanel
             mesh.Height.Value = 1f;
             mesh.Segments.Value = 8;
             var material = _compassLine.AttachComponent<OverlayUnlitMaterial>();
+            material.BlendMode.Value = BlendMode.Alpha;
             material.FrontTintColor.Value = new colorHDR(0.3f, 0.8f, 1f, 1f);
             material.BehindTintColor.Value = new colorHDR(0.3f, 0.8f, 1f, 0.4f);
             var renderer = _compassLine.AttachComponent<MeshRenderer>();

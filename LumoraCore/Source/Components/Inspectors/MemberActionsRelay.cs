@@ -44,11 +44,20 @@ public class MemberActionsRelay : Component
 
         var userRoot = context.Actor?.Root?.Slot;
         var menu = userRoot?.GetComponentInChildren<UI.ContextMenuSystem>();
-        if (menu == null || menu.IsOpen.Value)
+        if (menu == null || menu.IsShown)
             return;
 
         var page = new UI.ContextMenuPage((member as ISyncMember)?.Name ?? "Member");
         var field = Field;
+
+        // With the script node tool out, the nodes it makes for the field come first, and the vector helpers
+        // fold into a page of their own so the ring stays one ring.
+        bool nodes = false;
+        if (World != null && Interaction.ScriptNodeTool.ForLocalUser(World) is { } tool && Lumora.Core.Scripting.ScriptFieldNodes.Offers(member).Count > 0)
+        {
+            tool.PopulateFieldActions(page, member, () => menu.Close());
+            nodes = true;
+        }
 
         if (field != null)
         {
@@ -78,29 +87,13 @@ public class MemberActionsRelay : Component
         var comps = field != null ? VectorFloatFields(field.ValueType) : null;
         if (comps != null)
         {
-            page.AddItem(new UI.ContextMenuItem
+            var vectorPage = page;
+            if (nodes)
             {
-                Label = "Normalize",
-                FillColor = ItemFill,
-                OnPressed = _ => { menu.Close(); MutateVector(comps, Normalize); },
-            });
-            page.AddItem(new UI.ContextMenuItem
-            {
-                Label = "Set All Avg",
-                FillColor = ItemFill,
-                OnPressed = _ => { menu.Close(); MutateVector(comps, SetAllToAverage); },
-            });
-            for (int i = 0; i < comps.Length; i++)
-            {
-                int axis = i; // captured per item
-                page.AddItem(new UI.ContextMenuItem
-                {
-                    Label = $"All = {comps[i].Name.ToUpperInvariant()}",
-                    FillColor = ItemFill,
-                    LabelColor = ToFill(AxisColor(i)),
-                    OnPressed = _ => { menu.Close(); MutateVector(comps, v => SetAllToComponent(v, axis)); },
-                });
+                vectorPage = new UI.ContextMenuPage(VectorLabel.Resolve());
+                page.AddItem(new UI.ContextMenuItem { Label = VectorLabel.Resolve(), FillColor = ItemFill, SubPage = vectorPage });
             }
+            AddVectorItems(vectorPage, menu, comps);
         }
 
         page.AddItem(new UI.ContextMenuItem
@@ -111,6 +104,35 @@ public class MemberActionsRelay : Component
         });
 
         menu.OpenPage(page, BuildMenuContext(this, context.Actor));
+    }
+
+    private static readonly Localization.LocaleText VectorLabel = Localization.LocaleText.Keyed("Inspector.Member.Vector", "Vector");
+
+    private void AddVectorItems(UI.ContextMenuPage page, UI.ContextMenuSystem menu, FieldInfo[] comps)
+    {
+        page.AddItem(new UI.ContextMenuItem
+        {
+            Label = "Normalize",
+            FillColor = ItemFill,
+            OnPressed = _ => { menu.Close(); MutateVector(comps, Normalize); },
+        });
+        page.AddItem(new UI.ContextMenuItem
+        {
+            Label = "Set All Avg",
+            FillColor = ItemFill,
+            OnPressed = _ => { menu.Close(); MutateVector(comps, SetAllToAverage); },
+        });
+        for (int i = 0; i < comps.Length; i++)
+        {
+            int axis = i; // captured per item
+            page.AddItem(new UI.ContextMenuItem
+            {
+                Label = $"All = {comps[i].Name.ToUpperInvariant()}",
+                FillColor = ItemFill,
+                LabelColor = ToFill(AxisColor(i)),
+                OnPressed = _ => { menu.Close(); MutateVector(comps, v => SetAllToComponent(v, axis)); },
+            });
+        }
     }
 
     // menu context aimed at the pressing user's laser hand (right hand owns the menu on desktop) -

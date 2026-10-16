@@ -22,10 +22,9 @@ namespace Lumora.Core.Components;
 // phase takes, what every script in the world costs and what it cost to compile, the memory scripts and
 // the process hold, and a self-test that times the engine here.
 //
-// The panel is LOCAL. Every number on it belongs to the machine it is open on, a guest's memory is not
-// the host's, so it is built from local slots: nobody else sees it, it sends nothing while it updates,
-// and anyone may open one whatever the world lets them spawn. A Shared script runs only on the host, so
-// on any other machine its cost is what the host publishes while a panel like this asks for it. -xlinka
+// The shell is shared and anyone can use it. Each peer builds the diagnostic contents locally: process
+// metrics, clipboard actions and benchmarks belong to the person using it. A Shared script's costs
+// still come from the host. Local view slots are reconstructed by every peer, not sent per frame.
 [ComponentCategory("Utility/Inspectors")]
 public sealed class LoomDiagnostic : Component, IInspectorActionHandler
 {
@@ -53,6 +52,9 @@ public sealed class LoomDiagnostic : Component, IInspectorActionHandler
 
     private enum Tab { Overview, Scripts, Memory, Benchmark, SelfTest }
 
+    public readonly Sync<int> SelectedPage = new();
+    public readonly SyncRef<ScriptHost> SelectedScript = new();
+
     private enum CostBand { Stopped, Idle, Light, Busy, Heavy }
 
     private readonly record struct Live(Text Text, Func<string> Value, Func<color>? Tint);
@@ -70,6 +72,7 @@ public sealed class LoomDiagnostic : Component, IInspectorActionHandler
     private readonly Dictionary<string, string> _authorNames = new(StringComparer.Ordinal);
     private readonly StringBuilder _text = new(512);
     private Tab _tab;
+    private Slot? _view;
     private Slot? _body;
     private ScriptHost? _selected;
     private float _poll;
@@ -123,7 +126,7 @@ public sealed class LoomDiagnostic : Component, IInspectorActionHandler
             return existing;
         }
 
-        var panelSlot = world.RootSlot.AddLocalSlot("Loom Diagnostic");
+        var panelSlot = world.AddSpawnSlot(world.RootSlot, "Loom Diagnostic");
         panelSlot.Persistent.Value = false;
         panelSlot.Tag.Value = "Developer";
         panelSlot.LocalScale.Value = float3.One * PanelScale;
@@ -160,16 +163,31 @@ public sealed class LoomDiagnostic : Component, IInspectorActionHandler
     public override void OnAttach()
     {
         base.OnAttach();
+        var theme = Slot.GetOrAttachComponent<UITheme>();
+        var shell = Slot.GetOrAttachComponent<PanelShell>();
+        shell.Title.Value = "Loom Diagnostic · This client";
+        shell.Size.Value = new float2(PanelWidth, PanelHeight);
+        theme.ApplyTo(shell);
+        // Build the shared shell before peers reconstruct their own diagnostic controls.
+        _ = shell.ContentSlot;
+    }
+
+    public override void OnStart()
+    {
+        base.OnStart();
+        EnsureView();
+    }
+
+    private void EnsureView()
+    {
+        if (_view is { IsDestroyed: false }) return;
+        if (Slot.GetComponent<PanelShell>()?.ContentSlot is not { } content) return;
         for (int generation = 0; generation < _gcAtOpen.Length; generation++)
             _gcAtOpen[generation] = GC.CollectionCount(generation);
         SampleProcess();
-
-        var theme = Slot.GetOrAttachComponent<UITheme>();
-        var shell = Slot.GetOrAttachComponent<PanelShell>();
-        shell.Title.Value = "Loom Diagnostic";
-        shell.Size.Value = new float2(PanelWidth, PanelHeight);
-        theme.ApplyTo(shell);
-        shell.RebuildContent(BuildLayout);
+        _view = content.AddLocalSlot("Loom View");
+        InspectorUI.FillParent(_view.AttachComponent<RectTransform>());
+        BuildLayout(new UIBuilder(_view));
     }
 
     public override void OnDestroy()
@@ -212,6 +230,7 @@ public sealed class LoomDiagnostic : Component, IInspectorActionHandler
         var scrollUi = new UIBuilder(host);
         InspectorUI.ApplyTheme(scrollUi, Slot);
         var scroll = scrollUi.ScrollRect(out var content, null, InspectorUI.PaneColor);
+        scroll.RowsActOnRelease.Value = true;
         InspectorUI.FillParent(scroll.Slot.GetComponent<RectTransform>()!);
 
         var contentLayout = content.Slot.AttachComponent<VerticalLayout>();
@@ -220,7 +239,8 @@ public sealed class LoomDiagnostic : Component, IInspectorActionHandler
         contentLayout.ForceExpandHeight.Value = false;
         _body = content.Slot;
 
-        ShowTab(Tab.Overview);
+        _selected = SelectedScript.Target;
+        ShowTab(Enum.IsDefined(typeof(Tab), SelectedPage.Value) ? (Tab)SelectedPage.Value : Tab.Overview);
     }
 
     private void AddTab(UIBuilder ui, Tab tab, string label)
@@ -232,6 +252,7 @@ public sealed class LoomDiagnostic : Component, IInspectorActionHandler
 
     private void ShowTab(Tab tab)
     {
+        SelectedPage.Value = (int)tab;
         _tab = tab;
         _notice = string.Empty;
         if (tab == Tab.Memory)
@@ -276,9 +297,17 @@ public sealed class LoomDiagnostic : Component, IInspectorActionHandler
     public override void OnCommonUpdate()
     {
         base.OnCommonUpdate();
+        EnsureView();
         var world = World;
         if (world == null || Slot == null || !Slot.IsActive)
             return;
+
+        var page = Enum.IsDefined(typeof(Tab), SelectedPage.Value) ? (Tab)SelectedPage.Value : Tab.Overview;
+        if (_tab != page || _selected != SelectedScript.Target)
+        {
+            _selected = SelectedScript.Target;
+            ShowTab(page);
+        }
 
         var profile = world.LastFrameProfile;
         if (profile.UpdateIndex != _profileIndex)
@@ -1148,6 +1177,7 @@ public sealed class LoomDiagnostic : Component, IInspectorActionHandler
 
     public void HandleInspectorAction(string action)
     {
+        EnsureView();
         if (action.StartsWith("tab:", StringComparison.Ordinal))
         {
             if (Enum.TryParse<Tab>(action[4..], out var tab))
@@ -1158,6 +1188,7 @@ public sealed class LoomDiagnostic : Component, IInspectorActionHandler
         {
             if (int.TryParse(action[4..], NumberStyles.Integer, Inv, out int index) && index >= 0 && index < _listed.Count)
                 _selected = ReferenceEquals(_selected, _listed[index]) ? null : _listed[index];
+            SelectedScript.Value = _selected?.ReferenceID ?? RefID.Null;
             _notice = string.Empty;
             Rebuild();
             return;
@@ -1167,6 +1198,7 @@ public sealed class LoomDiagnostic : Component, IInspectorActionHandler
         {
             case "back":
                 _selected = null;
+                SelectedScript.Value = RefID.Null;
                 Rebuild();
                 return;
             case "sort":

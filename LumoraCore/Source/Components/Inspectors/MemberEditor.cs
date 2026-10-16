@@ -289,7 +289,8 @@ public static class InspectorUI
         return theme;
     }
 
-    public static TextInput CreateTextInput(UIBuilder ui, string name = "Input")
+    public static TextInput CreateTextInput(UIBuilder ui, string name = "Input",
+        TextHorizontalAlignment alignment = TextHorizontalAlignment.Left)
     {
         var slot = ui.Next(name);
         ui.NestInto(slot);
@@ -305,6 +306,11 @@ public static class InspectorUI
         var text = textSlot.AttachComponent<Text>();
         text.Size.Value = FontSize;
         text.Color.Value = TextColor;
+        text.HorizontalAlignment.Value = alignment;
+        text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        text.WordWrap.Value = false;
+        text.ClipToRect.Value = true;
+        text.KeepCaretVisible.Value = true;
         var theme = slot.GetComponentInParent<Lumora.Core.Components.UI.UITheme>();
         if (theme?.ThemeFont != null)
             text.Font.Target = theme.ThemeFont;

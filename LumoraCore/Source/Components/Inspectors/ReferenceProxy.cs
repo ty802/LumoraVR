@@ -36,6 +36,11 @@ public class ReferenceProxy : Component, IHeldActivatable
     // be used to duplicate it. Synced so every peer agrees whether a shared card is live. -xlinka
     public readonly Sync<bool> SpawnInstanceOnActivate;
 
+    // A card pulled from a row is spent: it goes when dropped, activated, left alone or emptied. One that
+    // is part of an object (an imported item that stands for a clip or a source) is not, and stays put
+    // through all of that. -xlinka
+    public readonly Sync<bool> Temporary;
+
     // Seconds a card nobody is holding survives before it cleans itself up.
     private const float UnheldLifetime = 10f;
 
@@ -47,6 +52,7 @@ public class ReferenceProxy : Component, IHeldActivatable
     {
         Target = new SyncRef<IWorldElement>(this);
         SpawnInstanceOnActivate = new Sync<bool>(this, true);
+        Temporary = new Sync<bool>(this, true);
     }
 
     public override void OnStart()
@@ -81,7 +87,7 @@ public class ReferenceProxy : Component, IHeldActivatable
         // Let reference receivers and held activation finish the release transaction first.
         World.RunInUpdates(1, () =>
         {
-            if (!IsDestroyed && !Slot.IsDestroyed && _grabbable?.IsGrabbed != true)
+            if (!IsDestroyed && !Slot.IsDestroyed && _grabbable?.IsGrabbed != true && Temporary.Value)
                 Slot.Destroy();
         });
     }
@@ -89,7 +95,7 @@ public class ReferenceProxy : Component, IHeldActivatable
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
-        if (_grabbable?.IsGrabbed == true) { _idleTime = 0; return; }
+        if (!Temporary.Value || _grabbable?.IsGrabbed == true) { _idleTime = 0; return; }
         _idleTime += delta;
         if (World.IsAuthority && (_idleTime >= UnheldLifetime || Target.Target == null || Target.Target.IsDestroyed))
             Slot.Destroy();
@@ -128,7 +134,7 @@ public class ReferenceProxy : Component, IHeldActivatable
     {
         OpenInspectorForTarget();
         TrySpawnAssetInstance();
-        if (Slot != null && !Slot.IsDestroyed)
+        if (Slot != null && !Slot.IsDestroyed && Temporary.Value)
             Slot.Destroy();
     }
 
@@ -152,7 +158,7 @@ public class ReferenceProxy : Component, IHeldActivatable
         if (slot == null || slot.IsDestroyed)
             return false;
 
-        var panel = SceneInspectorPanel.OpenOrFocus(World, slot, Slot.GlobalPosition);
+        var panel = SceneInspectorPanel.OpenOrFocus(World, slot, Slot.GlobalPosition, mineOnly: true);
         if (panel == null)
             return false;
         if (component != null && !SceneInspectorPanel.IsExpanded(panel.ExpandedComponents, component.ReferenceID.RawValue))
@@ -318,7 +324,7 @@ public class ReferenceProxy : Component, IHeldActivatable
     {
         if (grabbed != null)
             grabber?.Release(grabbed);
-        if (Slot != null && !Slot.IsDestroyed)
+        if (Slot != null && !Slot.IsDestroyed && Temporary.Value)
             Slot.Destroy();
     }
 

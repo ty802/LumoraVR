@@ -3,6 +3,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using System.Text.RegularExpressions;
 using Lumora.Core.Components.Interaction;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Math;
@@ -20,7 +23,7 @@ namespace Lumora.Core.Components;
 // rule the import dialog's dead checkboxes broke.
 //
 // The rule every recipe here obeys: a bare component is almost never a usable object. A mesh with no
-// renderer draws the mesh hook's grey placeholder, a text renderer with no font renders zero glyphs, a
+// renderer draws nothing, a text renderer with no font renders zero glyphs, a
 // light on an empty slot has no geometry to grab, and nothing is grabbable at all without a collider,
 // because the laser resolves a grab target by walking up from a COLLIDER hit. So every entry attaches
 // the whole set or it does not ship.
@@ -43,6 +46,7 @@ public static class CreateNewCatalog
     {
         public string Name = string.Empty;
         public Action<Slot> Build = null!;
+        public bool OpensInspector;
     }
 
     public sealed class Node
@@ -55,7 +59,7 @@ public static class CreateNewCatalog
 
     public static readonly Node Root = new();
 
-    public static void Add(string path, string name, Action<Slot> build)
+    public static void Add(string path, string name, Action<Slot> build, bool opensInspector = false)
     {
         var node = Root;
         foreach (var part in (path ?? string.Empty).Split('/', StringSplitOptions.RemoveEmptyEntries))
@@ -71,7 +75,37 @@ public static class CreateNewCatalog
             }
             node = child;
         }
-        node.Entries.Add(new Entry { Name = name, Build = build });
+        node.Entries.Add(new Entry { Name = name, Build = build, OpensInspector = opensInspector });
+    }
+
+    // Every kind of material as an orb of its own, under the category its component is filed in, so New and
+    // Convert on a material tool can offer each one. -xlinka
+    private static void AddMaterialKinds()
+    {
+        const string root = "Assets/Materials";
+        var kinds = typeof(MaterialProvider).Assembly.GetTypes()
+            .Where(t => !t.IsAbstract && typeof(MaterialProvider).IsAssignableFrom(t) && t.GetConstructor(Type.EmptyTypes) != null)
+            .Select(t => (Type: t, Category: t.GetCustomAttribute<ComponentCategoryAttribute>()?.Category))
+            .Where(k => k.Category != null && k.Category.StartsWith(root, StringComparison.Ordinal))
+            .OrderBy(k => k.Category, StringComparer.Ordinal)
+            .ThenBy(k => KindName(k.Type), StringComparer.Ordinal)
+            .ToList();
+        foreach (var (type, category) in kinds)
+        {
+            var kind = type;
+            Add("Materials" + category!.Substring(root.Length), KindName(kind),
+                slot => MaterialOrb.Build(slot, (MaterialProvider)slot.AttachComponent(kind)));
+        }
+    }
+
+    // PBS_Metallic reads "PBS Metallic", XiexeToonMaterial "Xiexe Toon", UIUnlitMaterial "UI Unlit".
+    private static string KindName(Type type)
+    {
+        var name = type.Name;
+        if (name.EndsWith("Material", StringComparison.Ordinal) && name.Length > "Material".Length)
+            name = name.Substring(0, name.Length - "Material".Length);
+        name = name.Replace('_', ' ');
+        return Regex.Replace(name, "(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ").Replace("  ", " ").Trim();
     }
 
     public static Node? GetNode(string? path)
@@ -88,7 +122,9 @@ public static class CreateNewCatalog
 
     static CreateNewCatalog()
     {
-        Add("", "Empty Object", _ => { });
+        // An empty draws nothing and has nothing for a laser to hit, so an inspector on it is the only
+        // handle anyone gets.
+        Add("", "Empty Object", _ => { }, opensInspector: true);
 
         // A bare particle system is NOT an object you spawned. With no emitter attached the system
         // falls back to its built-in disc spray over a 24.5 m half-extent, which is a world-wide
@@ -108,6 +144,7 @@ public static class CreateNewCatalog
         // A blank material orb with its shader graph open above it, a Material Output ready to wire into.
         // The orb wears whatever the graph makes, and the material tool takes it to anything else.
         Add("Materials", "Shader Graph", slot => Lumora.Core.Scripting.ShaderGraphMaterials.BuildOrb(slot));
+        AddMaterialKinds();
 
         // Editor entries open a wizard panel rather than spawning an object, so the slot the browser
         // made for the entry is dropped first.
@@ -169,6 +206,9 @@ public static class CreateNewCatalog
         Add("Tools", "Duplicator", slot => SpawnTool<DuplicatorTool>(slot));
         Add("Tools", "Meter Tool", slot => SpawnTool<MeterTool>(slot));
         Add("Tools", "Script Node Tool", slot => SpawnTool<ScriptNodeTool>(slot));
+        Add("Tools", "Camera", slot => slot.AttachComponent<PhotoCamera>());
+        Add("Tools", "Camera Anchor", SpawnCameraAnchor);
+        Add("Tools", "Camera Leave-Out Tool", slot => SpawnTool<CameraLeaveOutTool>(slot));
     }
 
     // RECIPES
@@ -556,6 +596,16 @@ public static class CreateNewCatalog
         // Grab the probe itself so its capture point follows the sphere.
         slot.AttachComponent<SphereCollider>().Radius.Value = 0.15f;
         slot.AttachComponent<Grabbable>();
+    }
+
+    // Turned to whoever made it, so the first camera sent there films them.
+    private static void SpawnCameraAnchor(Slot slot)
+    {
+        var head = slot.World?.LocalUser?.Root?.HeadPosition;
+        var toward = head.HasValue ? head.Value - slot.GlobalPosition : float3.Zero;
+        if (toward.LengthSquared > 1e-6f)
+            slot.GlobalRotation = Lumora.Core.Photos.PhotoShot.Looking(toward.Normalized, float3.Up);
+        slot.AttachComponent<CameraAnchor>();
     }
 
     // A tool item attaches its own grabbable and builds its own visual, so this really is one line.

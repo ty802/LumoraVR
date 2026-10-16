@@ -8,7 +8,8 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-// color/colorHDR members: float fields are addressed via leaf paths r/g/b/a on top of this editor's own path
+// color/colorHDR members, and float4 values that hold a color (a shader's color uniform): float fields are
+// addressed via leaf paths r/g/b/a (x/y/z/w for a float4) on top of this editor's own path
 [ComponentCategory("Utility/Inspectors")]
 public class ColorMemberEditor : MemberEditor
 {
@@ -24,11 +25,14 @@ public class ColorMemberEditor : MemberEditor
     protected override void BuildUI(UIBuilder ui)
     {
         string basePath = string.IsNullOrEmpty(MemberPath.Value) ? "" : MemberPath.Value + ".";
-        foreach (var channel in new[] { "r", "g", "b", "a" })
+        var channels = LeafType == typeof(float4) ? new[] { "x", "y", "z", "w" } : new[] { "r", "g", "b", "a" };
+        string[] names = { "R", "G", "B", "A" };
+        for (int i = 0; i < channels.Length; i++)
         {
+            var channel = channels[i];
             ui.PushStyle();
             ui.FlexibleWidth(1f);
-            var channelSlot = ui.Next(channel.ToUpperInvariant());
+            var channelSlot = ui.Next(names[i]);
             channelSlot.AttachComponent<Helio.UI.Layout.HorizontalLayout>();
             ui.NestInto(channelSlot);
             var editor = channelSlot.AttachComponent<PrimitiveMemberEditor>();
@@ -101,6 +105,7 @@ public class ColorMemberEditor : MemberEditor
         {
             color c => c,
             colorHDR hdr => new color(hdr.r, hdr.g, hdr.b, hdr.a),
+            float4 v => new color(v.x, v.y, v.z, v.w),
             _ => color.White
         };
 

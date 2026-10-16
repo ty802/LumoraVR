@@ -116,6 +116,7 @@ public sealed class ReflectionProbeWizard : Component, IInspectorActionHandler
         var scrollUi = new UIBuilder(host);
         InspectorUI.ApplyTheme(scrollUi, Slot);
         var scroll = scrollUi.ScrollRect(out var content, null, InspectorUI.PaneColor);
+        scroll.RowsActOnRelease.Value = true;
         InspectorUI.FillParent(scroll.Slot.GetComponent<RectTransform>()!);
 
         var contentLayout = content.Slot.AttachComponent<VerticalLayout>();

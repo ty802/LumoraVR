@@ -9,16 +9,16 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Euler-angle editor for floatQ members: yaw/pitch/roll text fields in DEGREES (floatQ.Euler takes
-/// radians; the conversion lives here so nobody types 90 and gets 90 radians).
-/// </summary>
+// Fields are in DEGREES. floatQ.Euler takes radians; the conversion lives here so nobody types 90 and
+// gets 90 radians. Each angle takes math against what it shows now ("+90" turns a quarter more) and is kept
+// on Enter or a click away; Escape puts it back.
 [ComponentCategory("Utility/Inspectors")]
 public class QuaternionMemberEditor : MemberEditor
 {
     private readonly SyncRef<TextInput> _yaw;
     private readonly SyncRef<TextInput> _pitch;
     private readonly SyncRef<TextInput> _roll;
+    private bool _focusHooked;
 
     public QuaternionMemberEditor()
     {
@@ -31,15 +31,52 @@ public class QuaternionMemberEditor : MemberEditor
     {
         ui.PushStyle();
         ui.FlexibleWidth(1f);
-        _yaw.Target = InspectorUI.CreateTextInput(ui, "Yaw");
-        _pitch.Target = InspectorUI.CreateTextInput(ui, "Pitch");
-        _roll.Target = InspectorUI.CreateTextInput(ui, "Roll");
+        _yaw.Target = InspectorUI.CreateTextInput(ui, "Yaw", TextHorizontalAlignment.Center);
+        _pitch.Target = InspectorUI.CreateTextInput(ui, "Pitch", TextHorizontalAlignment.Center);
+        _roll.Target = InspectorUI.CreateTextInput(ui, "Roll", TextHorizontalAlignment.Center);
         ui.PopStyle();
 
-        _yaw.Target.SetSubmitAction(OnSubmitted);
-        _pitch.Target.SetSubmitAction(OnSubmitted);
-        _roll.Target.SetSubmitAction(OnSubmitted);
+        foreach (var input in new[] { _yaw.Target, _pitch.Target, _roll.Target })
+        {
+            input.SetSubmitAction(OnSubmitted);
+            input.SubmitOnBlur.Value = true;
+            input.Tip.Value = FieldMath.Tip;
+        }
+        HookFocus();
     }
+
+    public override void OnStart()
+    {
+        base.OnStart();
+        HookFocus();
+    }
+
+    public override void OnDestroy()
+    {
+        if (_focusHooked)
+        {
+            foreach (var input in new[] { _yaw.Target, _pitch.Target, _roll.Target })
+            {
+                if (input != null)
+                    input.FocusLost -= OnFocusLost;
+            }
+        }
+        base.OnDestroy();
+    }
+
+    // Local events, so every peer hooks them (the builder only ran on the authority).
+    private void HookFocus()
+    {
+        if (_focusHooked || _yaw.Target == null || _pitch.Target == null || _roll.Target == null)
+            return;
+        _focusHooked = true;
+        _yaw.Target.FocusLost += OnFocusLost;
+        _pitch.Target.FocusLost += OnFocusLost;
+        _roll.Target.FocusLost += OnFocusLost;
+    }
+
+    // Escape or a blur that typed nothing: show the angle again. A kept edit lands in OnSubmitted next.
+    private void OnFocusLost(TextInput input, string text) => RefreshDisplay();
 
     protected override void RefreshDisplay()
     {
@@ -56,24 +93,43 @@ public class QuaternionMemberEditor : MemberEditor
     {
         if (input == null || input.IsDestroyed || input.IsFocused)
             return;
-        input.Text.Value = (radians * (180f / MathF.PI)).ToString("0.##", CultureInfo.InvariantCulture);
+        FieldHint.Clear(input);
+        input.Text.Value = Degrees(radians);
     }
 
+    private static string Degrees(float radians)
+        => (radians * (180f / MathF.PI)).ToString("0.##", CultureInfo.InvariantCulture);
+
+    // One angle changes; the other two stay what the rotation holds now, not what their boxes read.
     [SyncMethod]
     public void OnSubmitted(TextInput input, string text)
     {
-        if (TryRead(_yaw.Target, out float yaw) && TryRead(_pitch.Target, out float pitch) && TryRead(_roll.Target, out float roll))
+        if (GetMemberValue() is not floatQ rotation)
+            return;
+        var euler = rotation.ToEuler();
+        int axis = ReferenceEquals(input, _yaw.Target) ? 0 : ReferenceEquals(input, _pitch.Target) ? 1 : ReferenceEquals(input, _roll.Target) ? 2 : -1;
+        if (axis < 0)
+            return;
+        float shownRadians = axis == 0 ? euler.y : axis == 1 ? euler.x : euler.z;
+        float shown = shownRadians * (180f / MathF.PI);
+        if (string.Equals((text ?? "").Trim(), Degrees(shownRadians), StringComparison.Ordinal))
         {
-            const float DegToRad = MathF.PI / 180f;
-            SetMemberValue(floatQ.Euler(yaw * DegToRad, pitch * DegToRad, roll * DegToRad));
+            RefreshDisplay();
+            return;
         }
+        var result = FieldMath.Evaluate(text, shown);
+        if (!result.Ok || !float.IsFinite((float)result.Value))
+        {
+            RefreshDisplay();
+            if (result.Error != FieldMathError.Empty && !IsReadOnly && input != null && !input.IsDestroyed)
+                FieldHint.Show(input, text ?? "", result.Ok ? new FieldMath.Result(0d, FieldMathError.NotFinite).Hint : result.Hint, RefreshDisplay);
+            return;
+        }
+        const float DegToRad = MathF.PI / 180f;
+        float yaw = euler.y, pitch = euler.x, roll = euler.z;
+        float typed = (float)result.Value * DegToRad;
+        if (axis == 0) yaw = typed; else if (axis == 1) pitch = typed; else roll = typed;
+        SetMemberValue(floatQ.Euler(yaw, pitch, roll));
         RefreshDisplay();
-    }
-
-    private static bool TryRead(TextInput? input, out float degrees)
-    {
-        degrees = 0f;
-        return input != null && !input.IsDestroyed
-            && float.TryParse(input.Text.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out degrees);
     }
 }

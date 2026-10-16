@@ -198,11 +198,11 @@ public class TextureRefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
         return line;
     }
 
-    // no held card = nothing; use ≡ to pull one out
+    // nothing held = nothing; use ≡ to pull one out
     [SyncMethod]
     public void OnPreviewPressed(Button button, UIInteractionContext context)
     {
-        TryConsumeHeldProxy(context.Actor);
+        HeldTexture.OfferHeldBy(context.Actor, this);
     }
 
     [SyncMethod]
@@ -241,7 +241,8 @@ public class TextureRefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
         RefreshDisplay();
     }
 
-    // grip released over the preview while holding cards: assign the first compatible texture
+    // grip released, or primary pressed, over the preview while holding a texture's card or a textured
+    // object: assign the texture the hand means, by the same rule a shader card's texture slot goes by
     public bool TryReceiveProxy(IReadOnlyList<IGrabbable> held, Grabber grabber)
     {
         var reference = Ref;
@@ -249,58 +250,21 @@ public class TextureRefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
         if (reference == null || IsReadOnly)
             return false;
 
-        for (int i = 0; i < held.Count; i++)
+        return HeldTexture.Offer(held, grabber, texture =>
         {
-            if (held[i] is not Component component || component.Slot == null)
-                continue;
-            var proxy = component.Slot.GetComponent<ReferenceProxy>();
-            var element = proxy?.Target.Target;
-            if (element == null)
-                continue;
-
             object? before = Field?.BoxedValue;
-            if (!TryAssign(reference, element))
-                continue;
+            if (!TryAssign(reference, texture))
+                return false;
 
             if (Field is { } field && !Equals(before, field.BoxedValue))
                 InspectorUndo.RecordEdit(this, field, before, field.BoxedValue);
             RefreshDisplay();
-            proxy!.Consume(held[i], grabber);
             return true;
-        }
-        return false;
+        });
     }
 
-    private bool TryConsumeHeldProxy(User? actor)
-    {
-        var root = actor?.Root?.Slot;
-        if (root == null)
-            return false;
-        var grabbers = new List<Grabber>();
-        CollectGrabbers(root, grabbers);
-        foreach (var grabber in grabbers)
-        {
-            // Snapshot: a successful receive releases and destroys the card, mutating the hold list.
-            if (!grabber.IsHoldingObjects)
-                continue;
-            var snapshot = new List<IGrabbable>(grabber.GrabbedObjects);
-            if (TryReceiveProxy(snapshot, grabber))
-                return true;
-        }
-        return false;
-    }
-
-    private static void CollectGrabbers(Slot slot, List<Grabber> result)
-    {
-        var grabber = slot.GetComponent<Grabber>();
-        if (grabber != null)
-            result.Add(grabber);
-        foreach (var child in slot.Children)
-            CollectGrabbers(child, result);
-    }
-
-    // Same ladder the plain reference row uses (element, then a ref's target, then a slot's own
-    // members/components), so a card holding a texture provider - or the slot it lives on - wires in.
+    // The plain reference row's assignment, for its type check and its guard: a texture another world or
+    // only this machine has fails here rather than throwing out of the release.
     private static bool TryAssign(ISyncRef reference, IWorldElement element)
         => RefMemberEditor.TryAssign(reference, element);
 }

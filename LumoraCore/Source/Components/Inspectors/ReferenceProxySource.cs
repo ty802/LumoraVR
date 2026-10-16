@@ -20,9 +20,79 @@ public class ReferenceProxySource : Component, IProxySource
     public readonly SyncRef<IWorldElement> Target;
     public readonly SyncRef<Slot> GrabArea = new();
 
+    // Every row source of a world, so whatever points at a member can find the row showing it.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<World, System.Collections.Generic.HashSet<ReferenceProxySource>> InWorld = new();
+
     public ReferenceProxySource()
     {
         Target = new SyncRef<IWorldElement>(this);
+    }
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        if (World == null)
+            return;
+        var sources = InWorld.GetValue(World, static _ => new());
+        lock (sources)
+            sources.Add(this);
+    }
+
+    public override void OnDestroy()
+    {
+        if (World != null && InWorld.TryGetValue(World, out var sources))
+        {
+            lock (sources)
+                sources.Remove(this);
+        }
+        base.OnDestroy();
+    }
+
+    // Where a shown row for an element meets a line: its left edge, halfway down. False when no row shows it,
+    // or the row is scrolled out of its panel.
+    public static bool TryRowPoint(World? world, IWorldElement element, out float3 point)
+    {
+        point = default;
+        if (world == null || element == null || !InWorld.TryGetValue(world, out var sources))
+            return false;
+        lock (sources)
+        {
+            foreach (var source in sources)
+            {
+                if (ReferenceEquals(source.Target.Target, element) && source.TryRowPoint(out point))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    // Every row showing an element now, for whoever looks its points up again each frame.
+    public static void RowsOf(World? world, IWorldElement element, System.Collections.Generic.List<ReferenceProxySource> into)
+    {
+        if (world == null || element == null || !InWorld.TryGetValue(world, out var sources))
+            return;
+        lock (sources)
+        {
+            foreach (var source in sources)
+            {
+                if (!source.IsDestroyed && ReferenceEquals(source.Target.Target, element))
+                    into.Add(source);
+            }
+        }
+    }
+
+    public bool TryRowPoint(out float3 point)
+    {
+        point = default;
+        if (IsDestroyed || Slot is not { IsActive: true } row || row.GetComponent<RectTransform>() is not { } rect
+            || row.GetComponentInParents<Canvas>() is not { } canvas)
+            return false;
+        var area = rect.LocalComputeRect;
+        var at = new float2(area.x, area.Center.y) + canvas.ScrollOffsetOf(row);
+        if (canvas.Slot.GetComponent<RectTransform>() is { } whole && !whole.LocalComputeRect.Contains(at))
+            return false;
+        point = canvas.Slot.LocalPointToGlobal(canvas.CanvasToLocal(at));
+        return true;
     }
 
     public IGrabbable? TryCreateProxy(Grabber grabber, in float3 spawnPoint)

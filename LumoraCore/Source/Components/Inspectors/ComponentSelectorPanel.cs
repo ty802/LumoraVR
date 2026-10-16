@@ -26,6 +26,9 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
     // set to browse replacements for this component instead of attaching a new one
     public readonly SyncRef<Component> SwapTarget;
 
+    // Off for a selector standing on its own, which keeps taking components until it is closed.
+    public readonly Sync<bool> CloseAfterAttach;
+
     private readonly SyncRef<Slot> _listContent;
     private readonly SyncRef<TextInput> _searchInput;
     private readonly Sync<string> _builtPath;
@@ -51,17 +54,20 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
         _builtPath = new Sync<string>(this, "unbuilt");
         _builtQuery = new Sync<string>(this, "unbuilt");
         SwapTarget = new SyncRef<Component>(this);
+        CloseAfterAttach = new Sync<bool>(this, true);
         GenericPath = new Sync<string>(this, "");
         _builtGeneric = new Sync<string>(this, "unbuilt");
     }
 
     private bool IsSwapMode => SwapTarget.Target is { IsDestroyed: false };
 
-    public static ComponentSelectorPanel Spawn(SceneInspectorPanel owner, Slot target)
+    public static ComponentSelectorPanel Spawn(SceneInspectorPanel owner, Slot target, string category = "")
     {
         var selector = Create(owner.Slot);
         selector.Owner.Target = owner;
         selector.TargetSlot.Target = target;
+        if (!string.IsNullOrEmpty(category))
+            selector.CategoryPath.Value = category;
         return selector;
     }
 
@@ -135,6 +141,7 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
         var scrollUi = new UIBuilder(host);
         InspectorUI.ApplyTheme(scrollUi, Slot);
         var scroll = scrollUi.ScrollRect(out var content, null, InspectorUI.PaneColor);
+        scroll.RowsActOnRelease.Value = true;
         InspectorUI.FillParent(scroll.Slot.GetComponent<RectTransform>()!);
 
         // Fixed-height rows stacked from the top; never stretched to share the viewport.
@@ -147,10 +154,11 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
 
     public override void OnUpdate(float delta)
     {
-        // Close the husk when the slot this selector would attach to dies.
+        // Close the husk when the slot this selector would attach to dies, or the inspector it belongs to.
         if (World?.IsAuthority != true)
             return;
-        if (TargetSlot.RawTarget is { IsDestroyed: true } || SwapTarget.RawTarget is { IsDestroyed: true })
+        if (TargetSlot.RawTarget is { IsDestroyed: true } || SwapTarget.RawTarget is { IsDestroyed: true }
+            || Owner.RawTarget is { IsDestroyed: true })
             Slot.Destroy();
     }
 
@@ -214,7 +222,15 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
             AddRow(container, sub.Name + " >", "cat:" + sub.Path, InspectorUI.AccentColor);
 
         foreach (var type in node.Types)
-            AddRow(container, ComponentLibrary.DisplayName(type), "type:" + type.AssemblyQualifiedName, InspectorUI.TextColor);
+        {
+            var label = ComponentLibrary.DisplayName(type);
+            if (ComponentExecutionPolicy.IsUserspaceOnly(type))
+                label += " (Userspace only)";
+            if (!ComponentExecutionPolicy.CanAttach(type, TargetSlot.Target?.World ?? World))
+                AddLabelRow(container, label, InspectorUI.MutedColor);
+            else
+                AddRow(container, label, "type:" + type.AssemblyQualifiedName, InspectorUI.TextColor);
+        }
     }
 
     // The type-argument page for one open generic.
@@ -339,6 +355,13 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
     private void AddSearchRow(Slot container, Type type, string categoryPath)
     {
         var label = ComponentLibrary.DisplayName(type);
+        if (ComponentExecutionPolicy.IsUserspaceOnly(type))
+            label += " (Userspace only)";
+        if (!ComponentExecutionPolicy.CanAttach(type, TargetSlot.Target?.World ?? World))
+        {
+            AddLabelRow(container, label, InspectorUI.MutedColor);
+            return;
+        }
         InspectorUI.FixedRow(container, label, RowHeight, out var ui, Slot);
         ui.PushStyle();
         ui.FlexibleWidth(1f);
@@ -354,6 +377,9 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
         InspectorUI.FillParent(path.RectTransform!);
         path.HorizontalAlignment.Value = TextHorizontalAlignment.Right;
         path.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        path.WordWrap.Value = false;
+        path.ClipToRect.Value = true;
+        path.Ellipsis.Value = true;
         ui.PopStyle();
     }
 
@@ -386,9 +412,16 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
         if (text == null)
             return;
         text.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        text.WordWrap.Value = false;
+        text.ClipToRect.Value = true;
+        text.Ellipsis.Value = true;
         var rect = text.RectTransform;
         if (rect != null)
+        {
             rect.OffsetMin.Value = new float2(10f, 0f);
+            rect.OffsetMax.Value = new float2(-10f, 0f);
+        }
     }
 
     // action strings: "back:", "cat:Path", "type:AssemblyQualifiedName"
@@ -435,6 +468,8 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
             }
 
             var swapTarget = SwapTarget.Target;
+            if (type != null && !ComponentExecutionPolicy.CanAttach(type, swapTarget?.World ?? TargetSlot.Target?.World ?? World))
+                return;
             if (swapTarget != null && !swapTarget.IsDestroyed
                 && !WorldConfigLock.IsConfigComponentType(type)
                 && !WorldConfigLock.IsConfigComponent(swapTarget))
@@ -455,9 +490,59 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
             {
                 var attached = target.AttachComponent(type);
                 ComponentUndo.RecordAttach(this, attached);
-                Owner.Target?.MarkListsDirty();
+                var owner = Owner.Target;
+                owner?.MarkListsDirty();
+                // A selector puts one component on and goes, and the inspector opens the next on the same
+                // category. A pick that attached nothing leaves it up. -xlinka
+                bool close = CloseAfterAttach.Value;
+                if (close)
+                {
+                    owner?.RememberSelectorCategory(CategoryPath.Value);
+                    ClosePanel();
+                }
+                ShowAttached(owner, attached);
+                if (IsDestroyed || Slot == null || Slot.IsDestroyed)
+                    return;
             }
-            Slot.Destroy();
+            // A picked generic argument goes back to the list the generic was found in. -xlinka
+            if (GenericPath.Value.Length > 0)
+                GenericPath.Value = "";
+        }
+    }
+
+    // Anyone can press the rows, but only someone allowed to remove the panel closes it. Anyone else is
+    // refused and it stays up for whoever opened it.
+    private void ClosePanel()
+    {
+        if (IsDestroyed || Slot == null || Slot.IsDestroyed)
+            return;
+        try
+        {
+            var shell = Slot.GetComponent<PanelShell>();
+            if (shell != null)
+                shell.Close();
+            else
+                Slot.Destroy();
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    // The new component's section opens in the inspector, so it shows straight away. A presser that
+    // inspector refuses goes without.
+    private static void ShowAttached(SceneInspectorPanel? owner, Component attached)
+    {
+        if (owner == null || owner.IsDestroyed || attached.IsDestroyed)
+            return;
+        ulong id = attached.ReferenceID.RawValue;
+        try
+        {
+            if (!SceneInspectorPanel.IsExpanded(owner.ExpandedComponents, id))
+                owner.ExpandedComponents.Add(id);
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 }

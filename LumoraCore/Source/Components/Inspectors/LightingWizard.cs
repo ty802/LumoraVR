@@ -109,6 +109,7 @@ public sealed class LightingWizard : Component, IInspectorActionHandler
         var scrollUi = new UIBuilder(host);
         InspectorUI.ApplyTheme(scrollUi, Slot);
         var scroll = scrollUi.ScrollRect(out var content, null, InspectorUI.PaneColor);
+        scroll.RowsActOnRelease.Value = true;
         InspectorUI.FillParent(scroll.Slot.GetComponent<RectTransform>()!);
 
         var contentLayout = content.Slot.AttachComponent<VerticalLayout>();
@@ -169,11 +170,17 @@ public sealed class LightingWizard : Component, IInspectorActionHandler
         InspectorUI.SectionHeader(container, "Global", Slot);
         AddInfo(container, "Shadow quality", EngineSettings.DescribeShadowQuality(EngineSettings.ShadowQuality), InspectorUI.TextColor);
         AddInfo(container, "Shadow distance", $"{EngineSettings.ShadowDistanceScale:0.##}x", InspectorUI.TextColor);
+        AddInfo(container, "Shadowed lights", $"{EngineSettings.ShadowedLights} desktop, {EngineSettings.ShadowedLightsVR} headset", InspectorUI.TextColor);
         AddButton(container, "Shadow quality: cycle", "quality", InspectorUI.TextColor);
     }
 
+    // A point light's shadow: six cube faces, or two hemispheres on the Hard preset.
+    private static int PointPasses => EngineSettings.ShadowQuality == 0 ? 2 : 6;
+
     // The number the user actually asked about. Counted rather than modelled: a shadow casting light is
-    // six cube-face renders for a point, one per cascade for a sun, one for a spot.
+    // six cube-face renders for a point (two on Hard), one per cascade for a sun, one for a spot. That is
+    // what the lights ASK for; the budget line below says how many point and spot lights actually cast
+    // for this viewer right now.
     private void BuildBudget(Slot container)
     {
         int casters = 0;
@@ -193,7 +200,7 @@ public sealed class LightingWizard : Component, IInspectorActionHandler
             casters++;
             passes += light.Type.Value switch
             {
-                LightType.Point => 6,
+                LightType.Point => PointPasses,
                 LightType.Directional => light.ShadowSplits.Value switch
                 {
                     ShadowSplitMode.Four => 4,
@@ -208,6 +215,8 @@ public sealed class LightingWizard : Component, IInspectorActionHandler
         AddInfo(container, "Lights", $"{_lights.Count}  ({unshadowed} free, {casters} casting)", InspectorUI.TextColor);
         AddInfo(container, "Shadow passes / frame", passes.ToString(),
             passes > 24 ? InspectorUI.DangerColor : passes > 8 ? InspectorUI.CyanColor : InspectorUI.TextColor);
+        AddInfo(container, "Casting now", $"{ShadowBudgetPlanner.LastGranted} of {ShadowBudgetPlanner.LastCandidates} point/spot lights in reach (budget {ShadowBudgetPlanner.LastBudget})",
+            InspectorUI.TextColor);
         AddInfo(container, "", "An unshadowed light is nearly free. The passes above are the cost.", InspectorUI.MutedColor);
     }
 
@@ -237,7 +246,7 @@ public sealed class LightingWizard : Component, IInspectorActionHandler
             string cost = casts
                 ? light.Type.Value switch
                 {
-                    LightType.Point => "6 passes",
+                    LightType.Point => $"{PointPasses} passes",
                     LightType.Directional => $"{(light.ShadowSplits.Value == ShadowSplitMode.Four ? 4 : light.ShadowSplits.Value == ShadowSplitMode.Two ? 2 : 1)} cascades",
                     _ => "1 pass",
                 }

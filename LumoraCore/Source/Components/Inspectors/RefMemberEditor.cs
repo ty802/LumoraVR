@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using Helio.UI;
 using Lumora.Core;
 using Lumora.Core.Components.Interaction;
+using Lumora.Core.Components.Meshes;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
 
@@ -13,8 +14,9 @@ namespace Lumora.Core.Components;
 // Editor for SyncRef members: a compact square-button cluster then the target readout stretched
 // across the remaining row. Cluster: pull the target's reference card, open the target as a tab in
 // this panel, then (after the wide target button) clear. Pressing the target button assigns a held
-// ReferenceProxy card when the presser holds one, otherwise selects the target in this panel.
-// Grip-releasing a card over the row assigns too (type-checked either way).
+// ReferenceProxy card, or the asset a held object carries (an orb's material, an imported sound's clip, a
+// shape's mesh; see HeldAsset), when the presser holds one in either hand, otherwise selects the target in
+// this panel. Grip-releasing one over the row assigns too (type-checked either way).
 // The ≡ button is the one PULL spot for the CURRENT TARGET, by press or by the grab action, so a target
 // can be dragged from one field into another without going through the tree. Nothing else on the editor
 // hands out a card: when the whole readout did, a squeeze while pressing it pulled one every time. -xlinka
@@ -124,7 +126,8 @@ public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
     [SyncMethod]
     public void OnTargetPressed(Button button, UIInteractionContext context)
     {
-        if (TryConsumeHeldProxy(context.Actor))
+        _refusedThisPress = false;
+        if (TryConsumeHeldProxy(context.Actor) || _refusedThisPress)
             return;
 
         var panel = Slot.GetComponentInParent<SceneInspectorPanel>();
@@ -143,8 +146,17 @@ public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
         if (text == null || text.IsDestroyed)
             return;
 
-        text.Content.Value = Describe(Ref);
-        text.Color.Value = Ref?.Target == null ? InspectorUI.MutedColor : InspectorUI.TextColor;
+        if (_refusal != null && World != null && World.Time.TotalTime < _refusalUntil)
+        {
+            text.Content.Value = $"<i>can't use: {_refusal}</i>";
+            text.Color.Value = Lumora.Core.Components.UI.DashTheme.Warning;
+        }
+        else
+        {
+            _refusal = null;
+            text.Content.Value = Describe(Ref);
+            text.Color.Value = Ref?.Target == null ? InspectorUI.MutedColor : InspectorUI.TextColor;
+        }
 
         // The state color can change without the VALUE changing (a drive attaching writes no value),
         // so the tint component owns the steady-state updates; this just keeps a fresh row honest.
@@ -222,7 +234,7 @@ public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
         RefreshDisplay();
     }
 
-    // grip released (or primary pressed) over this row while holding cards: assign the first compatible one
+    // grip released (or primary pressed) over this row while holding cards or assets: assign the first that fits
     public bool TryReceiveProxy(IReadOnlyList<IGrabbable> held, Grabber grabber)
     {
         var reference = Ref;
@@ -230,27 +242,84 @@ public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
         if (reference == null || IsReadOnly)
             return false;
 
+        bool meshField = MeshSource.IsMeshField(reference);
+        bool assetField = !meshField && HeldAsset.IsAssetField(reference);
+        string? refusal = null;
         for (int i = 0; i < held.Count; i++)
         {
             if (held[i] is not Component component || component.Slot == null)
                 continue;
             var proxy = component.Slot.GetComponent<ReferenceProxy>();
-            var element = proxy?.Target.Target;
-            if (element == null)
-                continue;
-
             object? before = Field?.BoxedValue;
-            if (!TryAssign(reference, element))
+            if (proxy == null)
+            {
+                // A held object fills an asset field with what it carries and stays in the hand: an orb its
+                // material, an imported sound its clip. Only asset fields take one, and only of their own kind:
+                // a renderer's mesh field takes any component, and an object is not a card for its own slot.
+                var carried = HeldAsset.CarriedBy(component.Slot, reference);
+                if (meshField && carried is Component candidate && MeshSource.FeedsBack(reference, candidate) is { } loop)
+                {
+                    refusal ??= loop;
+                    continue;
+                }
+                string? setRefusal = null;
+                if (carried == null || !TrySetGuarded(reference, carried, out setRefusal))
+                {
+                    if (meshField)
+                        refusal ??= HeldAsset.MeshRefusal(component.Slot, reference);
+                    else if (assetField)
+                        refusal ??= setRefusal ?? $"'{component.Slot.SlotName.Value}' carries no {HeldAsset.KindName(reference)}";
+                    continue;
+                }
+            }
+            else if (proxy.Target.Target is not { } element)
+            {
+                if (meshField || assetField)
+                    refusal ??= "the card points at nothing";
                 continue;
+            }
+            else if (!TryAssign(reference, element, out var why))
+            {
+                if (meshField || assetField)
+                    refusal ??= why;
+                continue;
+            }
 
             if (Field is { } field && !Equals(before, field.BoxedValue))
                 InspectorUndo.RecordEdit(this, field, before, field.BoxedValue);
+            _refusal = null;
             RefreshDisplay();
-            proxy!.Consume(held[i], grabber);
+            proxy?.Consume(held[i], grabber);
             return true;
         }
+        if (refusal != null)
+            ShowRefusal(refusal);
         return false;
     }
+
+    // A mesh field says why it would not take what was handed to it, in place of its readout, for a few seconds.
+    private const float RefusalSeconds = 4f;
+    private string? _refusal;
+    private double _refusalUntil;
+    private bool _refusedThisPress;
+
+    private void ShowRefusal(string reason)
+    {
+        if (World == null)
+            return;
+        _refusal = reason;
+        _refusalUntil = World.Time.TotalTime + RefusalSeconds;
+        _refusedThisPress = true;
+        RefreshDisplay();
+        World.RunInSeconds(RefusalSeconds + 0.1f, () =>
+        {
+            if (!IsDestroyed)
+                RefreshDisplay();
+        });
+    }
+
+    // What a mesh field is refused for the last card or object handed to it, or null.
+    public string? LastRefusal => _refusal;
 
     private bool TryConsumeHeldProxy(User? actor)
     {
@@ -284,9 +353,15 @@ public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
     // target, then - for a SLOT card - the slot's own ActiveSelf field, then every component on it.
     // Order matters, since a slot card can satisfy several rungs and the most direct one has to win.
     // So ONE slot card can feed a component reference, a bool field, or a mesh field, without the
-    // user having to know which sub-element the field actually wanted. -xlinka
-    internal static bool TryAssign(ISyncRef reference, IWorldElement element)
+    // user having to know which sub-element the field actually wanted. A component card on a slot
+    // field gives the slot it is on, and on an asset field the asset its object carries. -xlinka
+    internal static bool TryAssign(ISyncRef reference, IWorldElement element) => TryAssign(reference, element, out _);
+
+    internal static bool TryAssign(ISyncRef reference, IWorldElement element, out string? refusal)
     {
+        refusal = null;
+        if (MeshSource.IsMeshField(reference))
+            return TryAssignMesh(reference, element, out refusal);
         if (TrySetGuarded(reference, element))
             return true;
         if (element is ISyncRef sourceRef && sourceRef.Target != null && TrySetGuarded(reference, sourceRef.Target))
@@ -301,16 +376,82 @@ public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
                     return true;
             }
         }
+        if (element is Component owner && TrySetGuarded(reference, owner.Slot))
+            return true;
+        // A card for one part of an object on an asset field: the asset that object carries, so a card pulled
+        // from a sound's player still hands over its clip.
+        if (element is Component part && part.Slot is { IsDestroyed: false } partSlot
+            && HeldAsset.IsAssetField(reference) && HeldAsset.OnSlot(partSlot, reference) is { } asset
+            && TrySetGuarded(reference, asset))
+            return true;
+        return false;
+    }
+
+    // A mesh field takes what the card means as a mesh: a slot the mesh it carries (for a soft body its skinned
+    // renderer first), a renderer its mesh or itself, a reference field what it points at, a card for some other part
+    // of a mesh object that object's mesh. A component any field would take is not good enough here: a light in a
+    // renderer's mesh field draws nothing and says nothing, so it is refused in words instead.
+    private static bool TryAssignMesh(ISyncRef reference, IWorldElement element, out string? refusal)
+    {
+        bool keeps = MeshSource.KeepsRenderers(reference);
+        if (element is ISyncRef inner && inner.Target != null)
+            element = inner.Target;
+
+        Component? candidate = null;
+        refusal = null;
+        switch (element)
+        {
+            case Slot slot:
+                candidate = MeshSource.OnSlot(slot, keeps);
+                if (candidate == null)
+                    refusal = $"'{slot.SlotName.Value}' carries no mesh";
+                break;
+            case Component component:
+                candidate = MeshSource.Accepted(component, keeps);
+                if (candidate == null)
+                {
+                    refusal = MeshSource.Refusal(component, keeps);
+                    if (!MeshSource.IsMesh(component) && !MeshSource.IsRenderer(component)
+                        && MeshSource.OnSlot(component.Slot, keeps) is { } onSlot)
+                    {
+                        candidate = onSlot;
+                        refusal = null;
+                    }
+                }
+                break;
+            default:
+                refusal = $"a {element.GetType().Name} is not a mesh";
+                break;
+        }
+        if (candidate == null)
+            return false;
+        if (MeshSource.FeedsBack(reference, candidate) is { } loop)
+        {
+            refusal = loop;
+            return false;
+        }
+        if (TrySetGuarded(reference, candidate))
+            return true;
+        refusal = "it cannot be referenced from here";
         return false;
     }
 
     // TrySet only type-checks; the assignment behind it still throws for a cross-world or local-only
     // target. A card carrying one of those must fail this rung and fall through to the next, not take
     // the whole grip-release path (and everything else queued behind it) down with it. -xlinka
-    private static bool TrySetGuarded(ISyncRef reference, IWorldElement? element)
+    private static bool TrySetGuarded(ISyncRef reference, IWorldElement? element) => TrySetGuarded(reference, element, out _);
+
+    // The refusal is for the person holding it: another world (the dash's own space) or something only they have.
+    private static bool TrySetGuarded(ISyncRef reference, IWorldElement? element, out string? refusal)
     {
+        refusal = null;
         if (element == null || element.IsDestroyed)
             return false;
+        if (reference is IWorldElement owner && owner.World != null && element.World != owner.World)
+        {
+            refusal = "it is in another world";
+            return false;
+        }
         try
         {
             return reference.TrySet(element);
@@ -318,6 +459,8 @@ public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
         catch (System.Exception ex)
         {
             Logging.Logger.Debug($"RefMemberEditor: cannot assign {element.GetType().Name} - {ex.Message}");
+            if (ex.Message.Contains("local", System.StringComparison.OrdinalIgnoreCase))
+                refusal = "it only exists for you, so nobody else could see it";
             return false;
         }
     }

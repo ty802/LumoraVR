@@ -62,6 +62,24 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
     private const int RowBudget = 250;
     private const float RowHeight = InspectorUI.RowHeight;
     private const float IndentPerDepth = 18f;
+    // Deep trees and long names. The indent tightens after FullIndentDepth levels and stops at
+    // MaxIndent, so a row twelve deep keeps room for its name instead of squeezing it to a letter a line that
+    // stacked over the rows below and left them unclickable. Names stay on one line, cut with an ellipsis,
+    // and a name past NameDisplayLimit characters is shortened for the tree only. -xlinka
+    private const int FullIndentDepth = 6;
+    private const float DeepIndentPerDepth = 7f;
+    private const float MaxIndent = 170f;
+    private const int NameDisplayLimit = 64;
+
+    private static float IndentFor(int depth)
+        => MathF.Min(MathF.Min(depth, FullIndentDepth) * IndentPerDepth
+            + MathF.Max(0, depth - FullIndentDepth) * DeepIndentPerDepth, MaxIndent);
+
+    private static string TreeName(string? name)
+    {
+        string value = name ?? "Slot";
+        return value.Length <= NameDisplayLimit ? value : value.Substring(0, NameDisplayLimit - 1) + "\u2026";
+    }
     // Gap between rows. The scroll list, the node wrapper and every child container all use it, so a
     // nested row sits at exactly the pitch the flat list had.
     private const float TreeSpacing = 2f;
@@ -151,7 +169,7 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
     // subtree never appears either, and skipping it at the parent means none of its descendants are
     // ever reached, let alone walked.
     private static bool IsHiddenFromTree(Slot slot)
-        => slot.IsLocalElement || ImmutableComponent.IsProtected(slot);
+        => slot.IsLocalElement || ImmutableComponent.IsProtected(slot) || UndoGraveyard.IsGraveyard(slot);
 
     // Social and Event worlds are view spaces: the authored world is frozen for everyone, host
     // included, and the tooling stays off with no switch to bring it back. Every inspector opens
@@ -202,10 +220,16 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
     // Open-from-a-card entry point. Spawn() drops every panel on the same head-relative spot, so opening
     // the same thing twice stacked two identical panels on top of each other: they z-fight (rows fading in
     // and out), the tree lists "Inspector" once per copy, and the extras read as phantom objects because you
-    // only ever see the front one. A tab already rooted at the slot comes to the front and re-selects; a new
+    // only ever see the front one. A tab already rooted at the slot brings its saved view to the front; a new
     // root becomes a tab in the panel nearest the card when one is within reach, else a panel of its own.
     // -xlinka
-    public static SceneInspectorPanel? OpenOrFocus(World world, Slot rootTarget, float3 near)
+    //
+    // mineOnly keeps to panels this machine minted. A tab writes the panel's tabs, root, selection and
+    // expansion lists, and a builder may add to another user's panel but not clear its lists, so a tab
+    // opened there stops part way with that user's view already switched. A panel pinned to someone else
+    // never takes a tab at all. -xlinka
+    public static SceneInspectorPanel? OpenOrFocus(World world, Slot rootTarget, float3 near, float3? spawnAt = null,
+        bool mineOnly = false)
     {
         if (RefuseLocked(world) || RefuseProtected(rootTarget, "open"))
             return null;
@@ -215,6 +239,8 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
         foreach (var panel in world.RootSlot.GetComponentsInChildren<SceneInspectorPanel>())
         {
             if (panel.IsDestroyed || panel.Slot == null || panel.Slot.IsDestroyed)
+                continue;
+            if (PinnedToSomeoneElse(world, panel) || (mineOnly && !MintedHere(world, panel.Slot)))
                 continue;
             if (panel.HasTabFor(rootTarget))
             {
@@ -233,8 +259,34 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
             nearest.OpenTab(rootTarget);
             return nearest;
         }
-        return Spawn(world, rootTarget);
+        return spawnAt is { } at ? SpawnAt(world, rootTarget, at) : Spawn(world, rootTarget);
     }
+
+    // Spawn() on a spot the caller picked, still turned to face the user.
+    public static SceneInspectorPanel? SpawnAt(World world, Slot root, float3 position)
+    {
+        var panel = Spawn(world, root);
+        if (panel == null)
+            return null;
+        panel.Slot.GlobalPosition = position;
+        var head = world.LocalUser?.Root?.HeadSlot;
+        if (head != null)
+            FaceHead(panel.Slot, head);
+        return panel;
+    }
+
+    // A guest mints in its own allocation byte, the host in the world's.
+    private static bool MintedHere(World world, Slot slot)
+    {
+        if (world.IsAuthority)
+            return slot.ReferenceID.IsAuthorityID;
+        var local = world.LocalUser;
+        return local != null && RefIDConstants.IsValidUserByte(local.AllocationID.Value)
+            && slot.ReferenceID.GetUserByte() == local.AllocationID.Value;
+    }
+
+    private static bool PinnedToSomeoneElse(World world, SceneInspectorPanel panel)
+        => panel.Slot.GetComponent<PanelWorkspace>()?.PinnedUser.Target is { } user && !ReferenceEquals(user, world.LocalUser);
 
     // Metres. A card dropped further than this from every panel opens a panel of its own rather than a
     // tab somewhere across the world.
@@ -525,6 +577,8 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
         var scrollUi = new UIBuilder(host);
         InspectorUI.ApplyTheme(scrollUi, Slot);
         var scroll = scrollUi.ScrollRect(out var content, null, color.Transparent);
+        // Every row here selects, folds or writes the inspected object.
+        scroll.RowsActOnRelease.Value = true;
         var viewport = scroll.Slot.GetComponent<RectTransform>()!;
         InspectorUI.FillParent(viewport);
         viewport.OffsetMax.Value = new float2(-(ScrollColumn + 2f), 0);
@@ -543,12 +597,18 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
         if (World?.IsAuthority != true)
             return;
 
+        bool tabChanged = ActiveTab.GetWasChangedAndClear();
         bool selectionChanged = Selected.GetWasChangedAndClear();
+        if (tabChanged)
+            _hierarchyDirty = _componentsDirty = true;
         if (selectionChanged)
         {
             _componentsDirty = true;
             UpdateSelectionGizmo();
             UpdateComponentSubscription();
+            // An open selector attaches to what is selected now, not to what was selected when it opened.
+            if (_selector.Target is { IsDestroyed: false } selector)
+                SetRef(selector.TargetSlot, Selected.Target);
         }
         if (Root.GetWasChangedAndClear())
             _hierarchyDirty = true;
@@ -562,7 +622,10 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
         }
         // A selection made outside the tree (a reference card, a gizmo, another tool) can point at a
         // slot whose row isn't built. Expanding its ancestor chain builds exactly those rows.
-        if (selectionChanged)
+        // Restoring a tab preserves branches the user collapsed, even around its selected slot.
+        // A new selection still opens its ancestor chain. Check the synced tab on the authority too.
+        bool restoredSelection = tabChanged && ReferenceEquals(Selected.Target, ActiveTab.Target?.Selected.Target);
+        if (selectionChanged && !restoredSelection)
             EnsureSelectionVisible();
         if (_expansionDirty)
         {
@@ -631,7 +694,7 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
 
     private void TraceHierarchyShape(Slot? root, int staleRows)
     {
-        if (root == null || root.IsDestroyed)
+        if (!Lumora.Core.Logging.Logger.EnableDebug || root == null || root.IsDestroyed)
             return;
         var sb = new System.Text.StringBuilder();
         sb.Append("SceneInspector.Hierarchy: root='").Append(root.SlotName.Value)
@@ -692,7 +755,7 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
         if (trace == _lastHierarchyTrace)
             return;
         _lastHierarchyTrace = trace;
-        Lumora.Core.Logging.Logger.Log(trace);
+        Lumora.Core.Logging.Logger.Debug(trace);
     }
 
     private static bool Contains(System.Collections.Generic.IReadOnlyList<Slot> list, Slot slot)
@@ -1041,7 +1104,7 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
             return;
 
         var marker = InspectorUI.FixedRow(container, "More", RowHeight, out var markerUi, Slot);
-        marker.GetComponent<HorizontalLayout>()!.PaddingLeft.Value = 4f + (row.Depth + 1) * IndentPerDepth;
+        marker.GetComponent<HorizontalLayout>()!.PaddingLeft.Value = 4f + IndentFor(row.Depth + 1);
         markerUi.PushStyle();
         markerUi.FlexibleWidth(1f);
         var text = markerUi.Text($"+{hidden} more", InspectorUI.FontSize, InspectorUI.MutedColor);
@@ -1109,7 +1172,7 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
         rowBackground.Tint.Value = color.Transparent;
         rowBackground.CornerRadius.Value = DashTheme.RadiusChip;
         row.Background = rowBackground;
-        rowSlot.GetComponent<HorizontalLayout>()!.PaddingLeft.Value = 4f + row.Depth * IndentPerDepth;
+        rowSlot.GetComponent<HorizontalLayout>()!.PaddingLeft.Value = 4f + IndentFor(row.Depth);
 
         // The ≡ cell at the end of the row pulls a card for the slot.
         var rowSource = rowSlot.AttachComponent<ReferenceProxySource>();
@@ -1134,14 +1197,22 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
 
         ui.PushStyle();
         ui.FlexibleWidth(1f);
+        // The name takes what the row has left and no more, and its ellipsis cuts it there. Sized from its own
+        // text, a long name pushed the row's buttons over. One unit, since zero reads as unset.
+        ui.MinWidth(1f);
+        ui.PreferredWidth(1f);
         var nameButton = InspectorUI.RelayButton(ui, this, $"select:{row.TargetId}",
-            target.SlotName.Value ?? "Slot", 0f);
+            TreeName(target.SlotName.Value), 0f);
         var nameText = nameButton.Slot.GetComponentInChildren<Text>();
         if (nameText != null)
         {
             nameText.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
             // User content: slot names render their inline style tags.
             nameText.RichText.Value = true;
+            nameText.WordWrap.Value = false;
+            nameText.Ellipsis.Value = true;
+            // Whatever runs past the name's own cell is trimmed there, so it can never draw over the row's buttons.
+            nameText.ClipToRect.Value = true;
         }
         row.Label = nameText;
         ui.PopStyle();
@@ -1182,11 +1253,10 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
         color baseColor = row.EffectivePersistent
             ? InspectorUI.TextColor
             : selfPersistent ? InspectorUI.NonPersistentInheritedColor : InspectorUI.NonPersistentColor;
+        // Inactive reads as dimmer solid text. Fading the alpha left the outline at full strength around a
+        // fill that had all but gone, a hollow 1px trace that was hard to read. -xlinka
         if (!target.IsActive)
-        {
-            float fade = target.ActiveSelf.Value ? 0.45f : 0.30f;
-            baseColor = new color(baseColor.r, baseColor.g, baseColor.b, baseColor.a * fade);
-        }
+            baseColor = color.Lerp(baseColor, DashTheme.Panel, target.ActiveSelf.Value ? 0.35f : 0.5f) with { a = 1f };
         row.BaseColor = baseColor;
 
         bool selected = row.TargetId == (Selected.Target?.ReferenceID.RawValue ?? 0);
@@ -1242,7 +1312,7 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
         row.NameChanged = value =>
         {
             if (row.Label != null && !row.Label.IsDestroyed)
-                row.Label.Content.Value = value ?? "Slot";
+                row.Label.Content.Value = TreeName(value);
         };
 
         target.OnChildAdded += row.ChildAdded;
@@ -1686,7 +1756,7 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
             return false;
 
         var menu = context.Actor?.Root?.Slot?.GetComponentInChildren<UI.ContextMenuSystem>();
-        if (menu == null || menu.IsOpen.Value)
+        if (menu == null || menu.IsShown)
             return false; // no menu to ask with - act immediately so the button never goes dead
 
         var ctx = MemberActionsRelay.BuildMenuContext(this, context.Actor);
@@ -1928,7 +1998,7 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
                 if (existing != null && !existing.IsDestroyed)
                     existing.TargetSlot.Target = selected;
                 else
-                    _selector.Target = ComponentSelectorPanel.Spawn(this, selected);
+                    _selector.Target = ComponentSelectorPanel.Spawn(this, selected, _selectorCategory);
                 return;
             }
         }
@@ -2054,6 +2124,13 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
         _componentsDirty = true;
         RunApplyChangesSafe();
     }
+
+    // The category a selector closed on after its attach, so the next one opens there rather than at the
+    // top of the tree. A plain field: the press that closes a selector and the one that opens the next both
+    // run on the presser's machine.
+    private string _selectorCategory = "";
+
+    internal void RememberSelectorCategory(string? path) => _selectorCategory = path ?? "";
 
     private void RunApplyChangesSafe()
     {

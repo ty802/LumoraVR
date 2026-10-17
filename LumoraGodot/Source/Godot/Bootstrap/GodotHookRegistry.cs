@@ -30,6 +30,10 @@ public static class GodotHookRegistry
             "Linux" or "FreeBSD" or "NetBSD" or "OpenBSD" or "BSD" => Lumora.Core.Platform.Linux,
             _ => Lumora.Core.Platform.Other,
         };
+        Lumora.Core.Engine.IsHandheld = AndroidDeviceMode.IsPhone;
+        Lumora.Core.Engine.IsSteamFrameStandalone = HeadsetDeviceMode.IsSteamFrame;
+        if (HeadsetDeviceMode.IsSteamFrame)
+            LumoraLogger.Log($"Device: Steam Frame standalone (Linux), renderer='{(global::Godot.RenderingServer.GetCurrentRenderingMethod())}'");
 
         // The core cannot know what block format this device samples, and the GPU cache key needs it:
         // the same picture baked as BPTC on a desktop and as ASTC on a headset is different bytes, and
@@ -37,6 +41,8 @@ public static class GodotHookRegistry
         // the first point where the render layer is known to the engine and the renderer is up. -xlinka
         var formats = Lumora.Godot.Hooks.TextureAssetHook.QueryDeviceFormats();
         Lumora.Core.Assets.TextureGpuCache.CompressionTag = Lumora.Godot.Hooks.TextureAssetHook.CompressionTag();
+        Lumora.Godot.Hooks.GpuTextureVariants.Install();
+        Lumora.Godot.Hooks.GodotConvexDecomposer.Install();
 
         LumoraLogger.Log($"GodotHookRegistry: registered {componentHooks} component hooks, {assetHooks} asset hooks via reflection "
             + $"(texture formats: {formats}, cache tag: {Lumora.Core.Assets.TextureGpuCache.CompressionTag})");

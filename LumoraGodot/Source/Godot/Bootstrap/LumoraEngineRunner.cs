@@ -58,7 +58,6 @@ public partial class LumoraEngineRunner : Node
 	private Lumora.Core.Engine _engine = null!;
 	private HeadOutput _headOutput = null!;
 	private Lumora.Source.Godot.UI.DashScreenOverlay _dashOverlay = null!;
-	private Lumora.Source.Godot.UI.WorldLoadOverlay _worldLoadOverlay = null!;
 	private SystemInfoHook _systemInfoHook = null!;
 	private InputInterface _inputInterface = null!;
 	private LoadingScreen _loadingScreen = null!;
@@ -74,6 +73,7 @@ public partial class LumoraEngineRunner : Node
 	private InspectorInputHandler _inspectorInputHandler = null!;
 	private DebugUdpSender? _debugUdpSender;
 	private FrameTimeLog? _frameLog;
+	private readonly PhysicsStepPacer _stepPacer = new();
 
 	// STATE
 	private bool _engineInitialized = false;
@@ -108,7 +108,7 @@ public partial class LumoraEngineRunner : Node
 	// the dedicated SubViewport stays so the monitor can show the DesktopCamera mirror while the
 	// headset shows the XR camera.
 	//
-	// Measured on a Pico 4, same scene, 1.3x eye buffer: root viewport 13.3 ms GPU at a flat 72 fps;
+	// Measured on a Pico 4, same scene, 1.3x eye bWWWWWWuffer: root viewport 13.3 ms GPU at a flat 72 fps;
 	// SubViewport 12.2 ms GPU at 62 fps. Less GPU work and fewer frames, because with the SubViewport
 	// the root window is still presented every frame and the Android surface cannot disable vsync
 	// ("V-Sync mode Disabled is not available" at boot), so the present blocks on the flat display
@@ -116,13 +116,14 @@ public partial class LumoraEngineRunner : Node
 	// --xr-subviewport forces the other path on standalone, --xr-root forces this one on desktop. -xlinka
 	// Root viewport on standalone only. Tried on desktop 2026-09-16: the Virtual Desktop runtime
 	// refused the root viewport's swapchain ("Failed to get swapchain images", RUNTIME_FAILURE) and
-	// the headset went dark, while the SubViewport path has always worked there. The desktop
-	// monitor therefore uses a separate mono camera; an XR texture array cannot be assigned directly
-	// to a TextureRect. XRModeManager keeps that mirror at native window resolution. -xlinka
+	// the headset went dark, while the SubViewport path has always worked there. An XR texture array
+	// cannot be assigned to a TextureRect either, so XRModeManager attaches the XR SubViewport to the
+	// window instead and OpenXR copies the left eye onto it; the window renders no world of its own. -xlinka
 	private static bool UseRootViewportForXr
-		=> LaunchArgs.HasFlag("--xr-root") || (OS.HasFeature("android") && !LaunchArgs.HasFlag("--xr-subviewport"));
+		=> XRViewportLayout.UseRootViewport;
 	private bool _vrInitializedAtBoot;
 	private double _discordPresenceTimer;
+	private double _refreshRatePollTimer;
 
 	// Fallback for image formats the engine's own decoder cannot read - WebP above all, which imported
 	// avatars use constantly. Godot decodes it here and hands back straight RGBA rows in the same
@@ -218,6 +219,9 @@ public partial class LumoraEngineRunner : Node
 
 		if (image.GetFormat() != Image.Format.Rgba8)
 			image.Convert(Image.Format.Rgba8);
+		// A DDS carries its mip chain; the caller wants the top level only and builds its own.
+		if (image.HasMipmaps())
+			image.ClearMipmaps();
 
 		width = image.GetWidth();
 		height = image.GetHeight();
@@ -288,7 +292,17 @@ public partial class LumoraEngineRunner : Node
 
 	public override void _Ready()
 	{
+		if (DiscordManager.ExitAfterHandoff)
+			return;
 		LumoraLogger.LogToGameEngine += LogCallback;
+		// --local-services talks to services on this machine, accounts on :5000 and assets on :5001, instead
+		// of the live ones. -xlinka
+		if (LaunchArgs.HasFlag("--local-services"))
+		{
+			Lumora.Nexus.Cloud.Cdn.ServiceConfig.UseEnvironment(Lumora.Nexus.Cloud.Cdn.ServiceEnvironment.Development);
+			var services = Lumora.Nexus.Cloud.Cdn.ServiceConfig.Current;
+			LumoraLogger.Log($"LumoraEngineRunner: local services, accounts at {services.ApiBase}, assets at {services.ContentBase}");
+		}
 		Lumora.Core.Assets.TextureVariantStore.PlatformDecoder = DecodeImageWithGodot;
 		Lumora.Core.Assets.TextureVariantStore.AnimatedDecoder = DecodeAnimatedWithGodot;
 		Lumora.Core.Assets.TextureVariantStore.PlatformHdrDecoder = DecodeHdrImageWithGodot;
@@ -327,9 +341,7 @@ public partial class LumoraEngineRunner : Node
 			return;
 		}
 
-		LumoraLogger.Log("==========================================================");
 		LumoraLogger.Log("LumoraEngineRunner: Starting engine bootstrap...");
-		LumoraLogger.Log("==========================================================");
 
 		if (HasCommandLineFlag(DebugFlag))
 		{
@@ -360,13 +372,11 @@ public partial class LumoraEngineRunner : Node
 		}
 	}
 
-	// Two ways to run this executable as a service instead of a client, both meant for --headless:
-	//   --variant-worker=<key>     take variant jobs from the content service and compute them
+	// One way to run this executable as a service instead of a client, meant for --headless:
 	//   --publish-builtins=<key>   push the build's own assets up by hash and write builtins.json
-	// The key is the service's worker key. Neither opens a world on its own; the engine's local home
-	// still comes up underneath, which costs little and keeps one startup path. -xlinka
-	private System.Threading.CancellationTokenSource? _serviceModes;
-
+	// The key is the service's worker key. It opens no world on its own; the engine's local home still
+	// comes up underneath, which costs little and keeps one startup path. Variants are made by whoever
+	// saves, never by a service, so there is no variant worker. -xlinka
 	private static string? ReadCommandLineValue(string flag) => LaunchArgs.ReadValue(flag);
 
 	private void StartServiceModes()
@@ -374,15 +384,6 @@ public partial class LumoraEngineRunner : Node
 		var client = _engine?.CDNClient;
 		if (client == null)
 			return;
-
-		var workerKey = ReadCommandLineValue("--variant-worker");
-		if (!string.IsNullOrEmpty(workerKey))
-		{
-			_serviceModes ??= new System.Threading.CancellationTokenSource();
-			var name = $"{System.Environment.MachineName}-{System.Environment.ProcessId}";
-			LumoraLogger.Log("LumoraEngineRunner: running as a variant worker");
-			_ = Task.Run(() => Lumora.Core.Assets.VariantWorker.RunAsync(client, workerKey!, name, _serviceModes.Token));
-		}
 
 		var publishKey = ReadCommandLineValue("--publish-builtins");
 		if (!string.IsNullOrEmpty(publishKey))
@@ -441,6 +442,8 @@ public partial class LumoraEngineRunner : Node
 
 	private static XrLaunchMode ResolveXrLaunchMode()
 	{
+		if (AndroidDeviceMode.IsPhone)
+			return XrLaunchMode.Desktop;
 		// On a standalone Android build (Quest, Pico, Vive Focus) there's no
 		// such thing as desktop mode - the device IS the screen. Force VR and
 		// ignore any conflicting --desktop / --xr-mode flag the user might
@@ -593,10 +596,7 @@ public partial class LumoraEngineRunner : Node
 
 			_loadingScreen = loadingScreenScene.Instantiate<LoadingScreen>();
 			AddChild(_loadingScreen);
-			//_loadingScreen.Show();
-			// No need to call Show() - it's already visible from _Ready()
-			//forgor
-			LumoraLogger.Log("LoadingScreen: Initialized and displayed");
+			LumoraLogger.Debug("LoadingScreen: Initialized and displayed");
 		}
 		else
 		{
@@ -638,6 +638,8 @@ public partial class LumoraEngineRunner : Node
 		{
 			LumoraLogger.Error($"LumoraEngineRunner: Initialization failed at phase {_currentPhase}: {ex.Message}");
 			LumoraLogger.Error($"Stack trace: {ex.StackTrace}");
+			_loadingScreen?.ShowError("Startup could not finish. Please restart Lumora.");
+			DisplayServer.ScreenSetKeepOn(false);
 		}
 	}
 
@@ -856,7 +858,7 @@ public partial class LumoraEngineRunner : Node
 	// is decoration; off. -xlinka
 	private void TrimStandaloneRendering()
 	{
-		if (!OS.HasFeature("android"))
+		if (!HeadsetDeviceMode.IsHeadset)
 			return;
 
 		var root = GetViewport();
@@ -914,7 +916,7 @@ public partial class LumoraEngineRunner : Node
 	{
 		if (_xrViewport != null && GodotObject.IsInstanceValid(_xrViewport))
 			return _xrViewport;
-		_xrViewport = XRViewportLayout.Ensure(GetTree()?.CurrentScene ?? this, GetViewport(), UseRootViewportForXr);
+		_xrViewport = XRViewportLayout.Ensure(GetTree()?.CurrentScene ?? this, GetViewport());
 		return _xrViewport;
 	}
 	private void ConfigureOpenXRViewport(Viewport viewport)
@@ -979,7 +981,7 @@ public partial class LumoraEngineRunner : Node
 			// A standalone headset stops at 72. The Pico 4 offers 90, an 11.1 ms budget the 1.2x
 			// supersampled frame does not fit, and missing it means the compositor halves us to 45.
 			// 72 Hz is 13.9 ms, which fits with room; a steady 72 beats a 90 that keeps falling over. -xlinka
-			float ceiling = OS.HasFeature("android") ? StandaloneMaxRefreshRate : MaximumXrRefreshRate;
+			float ceiling = HeadsetDeviceMode.IsHeadset ? StandaloneMaxRefreshRate : MaximumXrRefreshRate;
 			newRate = 0f;
 			foreach (float rate in availableRates)
 			{
@@ -1003,6 +1005,23 @@ public partial class LumoraEngineRunner : Node
 			global::Godot.Engine.PhysicsTicksPerSecond = physicsRate;
 			LumoraLogger.Log($"OpenXR: Physics tick rate set to {physicsRate}");
 		}
+
+		Lumora.Core.Engine.SetDisplayRefreshRate(CurrentDisplayRefreshRate());
+	}
+
+	// The rate frames are actually presented at: the headset's while it drives the frame, the window's
+	// monitor otherwise, 60 when neither will say.
+	private double CurrentDisplayRefreshRate()
+	{
+		bool xr = _xrViewport != null && GodotObject.IsInstanceValid(_xrViewport) && _xrViewport.UseXR;
+		if (xr && _openXRInterface != null && GodotObject.IsInstanceValid(_openXRInterface))
+		{
+			float xrRate = _openXRInterface.DisplayRefreshRate;
+			if (xrRate > 1f)
+				return xrRate;
+		}
+		float screenRate = DisplayServer.ScreenGetRefreshRate(DisplayServer.WindowGetCurrentScreen());
+		return screenRate > 1f ? screenRate : 60.0;
 	}
 
 	private void OnOpenXRVisibleState()
@@ -1062,7 +1081,8 @@ public partial class LumoraEngineRunner : Node
 		uint hiddenAndOverlay = (uint)(Lumora.Godot.Helpers.RenderHelper.HIDDEN_LAYER
 			| Lumora.Godot.Helpers.RenderHelper.OVERLAY_LAYER
 			| Lumora.Godot.Helpers.RenderHelper.FREECAM_INDICATOR_LAYER
-			| Lumora.Godot.Helpers.RenderHelper.LOCAL_HEAD_LAYER);
+			| Lumora.Godot.Helpers.RenderHelper.LOCAL_HEAD_LAYER
+			| Lumora.Godot.Helpers.RenderHelper.OWN_NAMEPLATE_LAYER);
 		_mainCamera.CullMask &= ~hiddenAndOverlay;
 		var xrCamera = GetNodeOrNull<Camera3D>("%XRCamera3D");
 		if (xrCamera != null)
@@ -1080,9 +1100,6 @@ public partial class LumoraEngineRunner : Node
 		_dashOverlay = new Lumora.Source.Godot.UI.DashScreenOverlay { Name = "DashScreenOverlay" };
 		AddChild(_dashOverlay);
 
-		// Says what a world switch or a join is waiting on. Hides itself when nothing is loading.
-		_worldLoadOverlay = new Lumora.Source.Godot.UI.WorldLoadOverlay { Name = "WorldLoadOverlay" };
-		AddChild(_worldLoadOverlay);
 
 		await Task.Delay(180); // Artificial delay to show phase message
 	}
@@ -1164,7 +1181,7 @@ public partial class LumoraEngineRunner : Node
 			// registered"). Steam is already initialized by now (early in _Ready). - xlinka
 			RegisterNetworkManagers();
 
-			LumoraLogger.Log("LumoraEngineRunner: Calling Engine.InitializeAsync()...");
+			LumoraLogger.Debug("LumoraEngineRunner: Calling Engine.InitializeAsync()...");
 			await _engine.InitializeAsync();
 
 			LumoraLogger.Log("LumoraEngineRunner: Engine initialized successfully");
@@ -1176,10 +1193,10 @@ public partial class LumoraEngineRunner : Node
 			}
 
 			var worldManagerHook = WorldManagerHook.Constructor();
-			// IMPORTANT: Set Hook BEFORE Initialize() so existing worlds can find it
+			// Hook set BEFORE Initialize() so existing worlds can find it.
 			_engine.WorldManager.Hook = worldManagerHook;
 			worldManagerHook.Initialize(_engine.WorldManager, GetTree().Root);
-			LumoraLogger.Log("LumoraEngineRunner: WorldManager hook initialized");
+			LumoraLogger.Debug("LumoraEngineRunner: WorldManager hook initialized");
 
 			await Task.Delay(200); // Artificial delay to show phase message (longer for core init)
 		}
@@ -1221,6 +1238,17 @@ public partial class LumoraEngineRunner : Node
 			var audioInput = new GodotAudioDeviceInput();
 			_engine.AudioSystem.RegisterAudioInput(new Lumora.Core.Audio.AudioInput(audioInput));
 
+			// Every endpoint beside it, for streaming: outputs read back, the whole machine minus this
+			// program, every microphone. Godot captures one input and knows no loopbacks, so without
+			// these the stream picker could only ever offer the mic the voice is already on. Registered,
+			// not opened, same as the one above. -xlinka
+			if (OperatingSystem.IsWindows())
+			{
+				Lumora.Audio.Wasapi.WasapiEndpoints.Warn = message => Lumora.Core.Logging.Logger.Warn(message);
+				foreach (var endpoint in Lumora.Audio.Wasapi.WasapiEndpoints.Enumerate())
+					_engine.AudioSystem.RegisterAudioInput(new Lumora.Core.Audio.AudioInput(endpoint));
+			}
+
 			// Enumerates on construction, so the settings screen has a device list from the first time
 			// it is opened. Applying here is what makes a saved choice survive a relaunch, and it needs
 			// the settings read first: the applier node that normally does that is not built until the
@@ -1256,9 +1284,16 @@ public partial class LumoraEngineRunner : Node
 			_engine, _headOutput, _inputInterface, _mainCamera, _vrDriver,
 			startingInVR: _vrInitializedAtBoot,
 			allowAutoVr: _xrLaunchMode != XrLaunchMode.Desktop);
+		if (AndroidDeviceMode.IsPhone)
+		{
+			_xrModeManager.EnableTouchControls(_mouseDriver);
+			OS.RequestPermission("android.permission.RECORD_AUDIO");
+		}
 
 		// Mirrors and portals render from the eye the person is actually using, which only the mode
 		// manager knows across a desktop/VR switch.
+		Lumora.Core.Photos.PhotoEncoder.Platform = Lumora.Godot.Hooks.RenderTextureHook.Encode;
+		Lumora.Core.Photos.PhotoLibrary.PicturesDirectory = OS.GetSystemDir(OS.SystemDir.Pictures);
 		Lumora.Godot.Helpers.RenderHelper.ViewerCamera = () =>
 			_xrModeManager != null && GodotObject.IsInstanceValid(_xrModeManager)
 				? _xrModeManager.CurrentCamera
@@ -1324,7 +1359,7 @@ public partial class LumoraEngineRunner : Node
 		AddChild(_clipboardImporter);
 		_clipboardImporter.Initialize(_localDB, null!, _mainCamera);
 		_clipboardImporter.OnAssetImported += OnClipboardAssetImported;
-		LumoraLogger.Log("ClipboardImporter: Created for paste handling");
+		LumoraLogger.Debug("ClipboardImporter: Created for paste handling");
 	}
 
 	// The OS clipboard's text, straight off DisplayServer. Wrapped in try/catch because the headless
@@ -1396,7 +1431,9 @@ public partial class LumoraEngineRunner : Node
 				}
 
 				var viewport = camera.GetViewport();
-				if (viewport == null)
+				// In VR the window shows the headset's eye and renders no world of its own (XRModeManager),
+				// so its pixels are not the view; an armed eyedropper turns that render back on.
+				if (viewport == null || viewport.Disable3D)
 				{
 					return false;
 				}
@@ -1515,10 +1552,9 @@ public partial class LumoraEngineRunner : Node
 
 	private void OnClipboardAssetImported(string filePath, Lumora.Core.Slot slot)
 	{
-		LumoraLogger.Log($"ClipboardImporter: Asset imported from '{filePath}' to slot '{slot?.SlotName.Value}'");
+		LumoraLogger.Debug($"ClipboardImporter: Asset imported from '{filePath}' to slot '{slot?.SlotName.Value}'");
 	}
 
-	// NOTE: WorldHook is now created by WorldManagerHook automatically
 
 	private async Task PhaseUserspaceSetup()
 	{
@@ -1533,9 +1569,8 @@ public partial class LumoraEngineRunner : Node
 			var dashboardToggle = new DashboardToggle();
 			dashboardToggle.Name = "DashboardToggle";
 			AddChild(dashboardToggle);
-			LumoraLogger.Log("LumoraEngineRunner: DashboardToggle created");
+			LumoraLogger.Debug("LumoraEngineRunner: DashboardToggle created");
 
-			// Note: 3D loading indicator is now created in userspace world via WorldLoadingService
 		}
 		catch (Exception ex)
 		{
@@ -1544,14 +1579,12 @@ public partial class LumoraEngineRunner : Node
 		}
 
 		await Task.Delay(100); // Allow world to initialize
-		LumoraLogger.Log("LumoraEngineRunner: Userspace setup complete");
+		LumoraLogger.Debug("LumoraEngineRunner: Userspace setup complete");
 	}
 
 	private async void OnEngineReady()
 	{
-		LumoraLogger.Log("==========================================================");
 		LumoraLogger.Log("LumoraEngineRunner: Engine initialization COMPLETE!");
-		LumoraLogger.Log("==========================================================");
 
 		_loadingScreen?.UpdatePhase(6);
 
@@ -1566,17 +1599,29 @@ public partial class LumoraEngineRunner : Node
 		Lumora.Source.Godot.UI.WorldLoadingIndicator.EnsureCreated();
 
 		// Discord rich presence (fails soft if no app ID / Discord not running). _Process refreshes it.
-		DiscordManager.Initialize();
-		// Route Discord "Join"/Ask-to-Join (fires on the main thread via DiscordManager.Poll) to the
-		// session join path. Pass the FULL secret URI so its scheme (lnl:// / steam:// / ...) picks the
-		// transport - don't assume LNL.
+		// Keep invites pending through startup and other world loads. A repeat invite to an open world
+		// focuses that world instead of creating a second connection to the same session.
 		DiscordManager.JoinRequested = uri =>
 		{
-			var manager = _engine?.WorldManager;
-			if (manager == null || !uri.IsAbsoluteUri)
-				return;
-			manager.JoinSession(uri.Host, uri);
+			if (_engine?.WorldManager == null || _engine.WorldLoadingService?.IsLoading == true)
+				return false;
+			foreach (var world in _engine.WorldManager.Worlds)
+			{
+				if (!world.IsDisposed && world.SessionURLs.Contains(uri))
+				{
+					_engine.WorldManager.FocusWorld(world);
+					return true;
+				}
+			}
+			_engine.JoinThroughLoader("Discord invite", uri);
+			return true;
 		};
+		DiscordManager.Initialize();
+		DiscordManager.UpdatePresence(_engine.WorldManager?.FocusedWorld);
+
+		// What the settle gate and the shared load allowance read from this side.
+		Lumora.Core.Engine.PlatformWorkPendingProvider = static () => MainThreadWork.Pending;
+		Lumora.Core.Engine.SetDisplayRefreshRate(CurrentDisplayRefreshRate());
 
 		if (_clipboardImporter != null)
 		{
@@ -1585,7 +1630,7 @@ public partial class LumoraEngineRunner : Node
 			{
 				_clipboardImporter.SetTargetSlot(_engine.WorldManager.FocusedWorld.RootSlot);
 			}
-			LumoraLogger.Log("ClipboardImporter: Configured with engine reference");
+			LumoraLogger.Debug("ClipboardImporter: Configured with engine reference");
 		}
 
 		// bound to the "I" key
@@ -1593,7 +1638,7 @@ public partial class LumoraEngineRunner : Node
 		_inspectorInputHandler.Name = "InspectorInputHandler";
 		_inspectorInputHandler.Engine = _engine;
 		AddChild(_inspectorInputHandler);
-		LumoraLogger.Log("InspectorInputHandler: Created for object inspection");
+		LumoraLogger.Debug("InspectorInputHandler: Created for object inspection");
 
 		// Optional scene tree dump for deep diagnostics only.
 		if (DumpSceneTreeOnReady)
@@ -1604,14 +1649,14 @@ public partial class LumoraEngineRunner : Node
 
 		DisplayServer.ScreenSetKeepOn(false);
 
-		// NOTE: WorldRenderers are now created via event subscriptions when worlds are added.
 
-		await Task.Delay(1500); // keep "Ready!" message visible before hiding
+		await Task.Delay(450); // Let the final progress update settle before fading into the world.
 
-		if (_loadingScreen != null)
+		if (_loadingScreen != null && GodotObject.IsInstanceValid(_loadingScreen))
 		{
-			LumoraLogger.Log("LoadingScreen: Hiding loading screen");
-			_loadingScreen.Hide();
+			LumoraLogger.Debug("LoadingScreen: Hiding loading screen");
+			_loadingScreen.Dismiss();
+			_loadingScreen = null!;
 		}
 
 		// Bootstrap.tscn carries a DirectionalLight3D for the loading phase and nothing ever turned it
@@ -1628,10 +1673,20 @@ public partial class LumoraEngineRunner : Node
 		}
 	}
 
+	public override void _PhysicsProcess(double delta) => _stepPacer.OnTick();
+
 	public override void _Process(double delta)
 	{
 		if (!_engineInitialized || _shutdownRequested)
 			return;
+
+		// Wall time since the last frame began. Godot's delta stops at max_physics_steps_per_frame
+		// physics steps, 133 ms at the defaults, and a profiler that never sees past 133 ms hides
+		// every real stall. -xlinka
+		long frameStart = System.Diagnostics.Stopwatch.GetTimestamp();
+		_wallFrameMs = _frameStartTs != 0 ? (frameStart - _frameStartTs) * 1000.0 / System.Diagnostics.Stopwatch.Frequency : delta * 1000.0;
+		_frameStartTs = frameStart;
+		double engineDelta = _stepPacer.BeginFrame(delta, _wallFrameMs / 1000.0);
 
 		if (_inputInterface == null && !_missingInputInterfaceWarned)
 		{
@@ -1644,17 +1699,26 @@ public partial class LumoraEngineRunner : Node
 			SteamManager.RunCallbacks();
 #endif
 
-		// Discord rich presence: pump callbacks every frame, refresh the presence a few times a
-		// second (the update itself de-dups, so this only sends when the world/state changes).
+		// Pump invite callbacks every frame; publish changed session details once a second.
 		long _discordTs = System.Diagnostics.Stopwatch.GetTimestamp();
 		DiscordManager.Poll();
 		_hostDiscordMs = (System.Diagnostics.Stopwatch.GetTimestamp() - _discordTs) * (1000.0 / System.Diagnostics.Stopwatch.Frequency);
 		_discordPresenceTimer += delta;
-		if (_discordPresenceTimer >= 3.0)
+		if (_discordPresenceTimer >= 1.0)
 		{
 			_discordPresenceTimer = 0.0;
 			DiscordManager.UpdatePresence(_engine?.WorldManager?.FocusedWorld);
 		}
+
+		// The headset can come and go and a window can move monitors, so the load allowance follows the rate.
+		_refreshRatePollTimer += delta;
+		if (_refreshRatePollTimer >= 1.0)
+		{
+			_refreshRatePollTimer = 0.0;
+			Lumora.Core.Engine.SetDisplayRefreshRate(CurrentDisplayRefreshRate());
+		}
+
+		Lumora.Godot.Debug.VideoMemoryWatch.Tick(delta, GetTree()?.Root);
 
 		// Pump every registered network manager (LNL + Steam if present). Status-
 		// changed callbacks fire during SteamManager.RunCallbacks() above, so
@@ -1674,8 +1738,8 @@ public partial class LumoraEngineRunner : Node
 		// Run engine update loop (includes one input pass + world updates).
 		// Avoid a duplicate InputInterface.UpdateInputs call here.
 		long _engineTs = System.Diagnostics.Stopwatch.GetTimestamp();
-		_engine?.Update(delta);
-		_engine?.LateUpdate(delta);
+		_engine?.Update(engineDelta);
+		_engine?.LateUpdate(engineDelta);
 		_hostEngineMs = (System.Diagnostics.Stopwatch.GetTimestamp() - _engineTs) * _hostMspt;
 
 		long _tailTs = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -1688,8 +1752,8 @@ public partial class LumoraEngineRunner : Node
 
 		_headOutput?.UpdatePositioning(_engine);
 		_dashOverlay?.Tick(_engine);
-		_worldLoadOverlay?.Tick(_engine);
 		Lumora.Source.Godot.Rendering.CameraSanity.Check(GetViewport(), _xrViewport);
+		Lumora.Source.Godot.Rendering.PipelineMsaa.Follow(_xrViewport != null && GodotObject.IsInstanceValid(_xrViewport) && _xrViewport.UseXR ? _xrViewport : GetViewport());
 		// Includes the telemetry send itself, so the profiler is honest about its own cost.
 		_hostTailMs = (System.Diagnostics.Stopwatch.GetTimestamp() - _tailTs) * _hostMspt;
 
@@ -1699,6 +1763,8 @@ public partial class LumoraEngineRunner : Node
 	private double _hostNetworkMs;
 	private double _hostEngineMs;
 	private double _hostTailMs;
+	private long _frameStartTs;
+	private double _wallFrameMs;
 
 	public override void _Input(InputEvent @event)
 	{
@@ -1735,7 +1801,7 @@ public partial class LumoraEngineRunner : Node
 	// fewer, broader connectors; called before engine initialization
 	private void RegisterHooks()
 	{
-		LumoraLogger.Log("Registering Godot hooks...");
+		LumoraLogger.Debug("Registering Godot hooks...");
 		GodotHookRegistry.RegisterAll();
 
 		LumoraLogger.Log("Hook registration complete");
@@ -1847,8 +1913,8 @@ public partial class LumoraEngineRunner : Node
 		// a whole number and only written every 30 frames. So the profiler graph was drawing a derived,
 		// quantised, stale number and calling it a measurement: a frame time of 16.67 there could be
 		// anything from 16.1 to 17.2 ms, and a single 200 ms hitch never showed up at all. This is the
-		// real process delta. -xlinka
-		var frameTime = (float)(delta * 1000.0);
+		// frame's measured wall time. -xlinka
+		var frameTime = (float)_wallFrameMs;
 
 		_debugUdpSender.SendPerf(
 			fps,
@@ -2033,7 +2099,7 @@ public partial class LumoraEngineRunner : Node
 			EngineCoroutinesMs = enginePhases.CoroutinesMs,
 			EngineFixedMs = enginePhases.FixedMs,
 			EngineAssetsMs = enginePhases.AssetsMs,
-			CpuFrameMs = delta * 1000.0,
+			CpuFrameMs = _wallFrameMs,
 			WorldTotalMs = profile.TotalMs,
 			SyncMs = profile.SyncMs,
 			PreMs = profile.PreMs,
@@ -2397,6 +2463,12 @@ public partial class LumoraEngineRunner : Node
 
 	public override void _ExitTree()
 	{
+		if (DiscordManager.ExitAfterHandoff)
+		{
+			base._ExitTree();
+			return;
+		}
+		Lumora.Godot.Hooks.GpuTextureVariants.Shutdown();
 		LumoraLogger.Log("LumoraEngineRunner: Shutting down...");
 		DisconnectOpenXREvents();
 
@@ -2435,19 +2507,29 @@ public partial class LumoraEngineRunner : Node
 			SteamManager.Shutdown();
 #endif
 
+		// The console prints on the logger's thread; what is still queued goes out here, and nothing after
+		// this reaches a Godot that is going away. The log file still gets it. -xlinka
+		LumoraLogger.FlushToGameEngine();
+		LumoraLogger.LogToGameEngine -= LogCallback;
+
 		base._ExitTree();
 	}
 
-	// Not in editor runs unless asked: SteamAPI.Init is what makes the Steam client inject its overlay
-	// (gameoverlayrenderer64.dll) into the process, and that overlay has crashed editor sessions on
-	// its own (WER faulting module, 2026-09-16). Exports keep Steam; a dev run gets it with --steam. -xlinka
-	private static bool ShouldUseSteam()
+	// On for every desktop run, editor included, beside the direct transport: a host listens on both and
+	// a joiner outside its network gets in over Steam. Without the Steam client running, Init fails and the
+	// game carries on direct only. SteamAPI.Init also makes the client inject its overlay
+	// (gameoverlayrenderer64.dll), which crashed an editor session once (WER faulting module, 2026-09-16);
+	// --no-steam turns it off for a run if that comes back. -xlinka
+	// Asked every frame; the answer is fixed at launch.
+	private static bool? _useSteam;
+
+	private static bool ShouldUseSteam() => _useSteam ??= ResolveUseSteam();
+
+	private static bool ResolveUseSteam()
 	{
 		if (OS.HasFeature("android"))
 			return false;
-		if (OS.HasFeature("editor") && !LaunchArgs.HasFlag("--steam"))
-			return false;
-		return true;
+		return !LaunchArgs.HasFlag("--no-steam");
 	}
 
 	// Runs once after the engine is initialized so transports can publish

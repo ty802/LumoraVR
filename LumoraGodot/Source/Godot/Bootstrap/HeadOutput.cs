@@ -30,7 +30,8 @@ public partial class HeadOutput : Node
 
     // CONFIGURATION
     [Export] public OutputType Type { get; set; } = OutputType.Screen;
-    [Export] public float DefaultFOV { get; set; } = 90f;
+    // The screen camera follows the user's Field of View setting.
+    private static float ScreenFov => Lumora.Core.EngineSettings.FieldOfView;
 
     // 5 mm at user scale 1, and 4 km. The near plane used to be 25 cm "so the head sphere does not clip
     // through", then 2 cm, and both were the near plane doing a job it is bad at: anything you lean into
@@ -92,6 +93,12 @@ public partial class HeadOutput : Node
 
     public bool IsViewTransitioning => _viewTransitionActive;
 
+    // The slot something the local user holds or wears has put the view on (UserRoot.ViewOverride), as
+    // last seen, and the world it was seen in: arriving on it and leaving it fade like a mode switch, but a
+    // change of world snaps, since the old pose is in another space altogether.
+    private Lumora.Core.Slot? _viewOverride;
+    private World? _viewOverrideWorld;
+
     public Vector3 CameraPosition => _camera?.GlobalPosition ?? Vector3.Zero;
 
     public Quaternion CameraRotation => _camera?.GlobalTransform.Basis.GetRotationQuaternion() ?? Quaternion.Identity;
@@ -102,7 +109,6 @@ public partial class HeadOutput : Node
         _camera = _desktopCamera;
         ConfigureCamera(_desktopCamera, setFov: true);
 
-        // Check if VR is active
         var xrInterface = XRServer.FindInterface("OpenXR");
         _isVRActive = xrInterface != null && xrInterface.IsInitialized();
 
@@ -118,7 +124,7 @@ public partial class HeadOutput : Node
             Type = OutputType.Screen;
         }
 
-        LumoraLogger.Debug($"HeadOutput: Initialized with type={Type}, FOV={DefaultFOV}, isVR={_isVRActive}");
+        LumoraLogger.Debug($"HeadOutput: Initialized with type={Type}, FOV={ScreenFov}, isVR={_isVRActive}");
     }
 
     // Locate the XROrigin3D / XRCamera3D defined in Bootstrap.tscn. They live inside the XR
@@ -130,7 +136,7 @@ public partial class HeadOutput : Node
     {
         if (!IsInsideTree())
         {
-            LumoraLogger.Log("HeadOutput: Deferring VR setup until added to scene tree");
+            LumoraLogger.Debug("HeadOutput: Deferring VR setup until added to scene tree");
             CallDeferred(MethodName.SetupVRCamera);
             return;
         }
@@ -148,7 +154,7 @@ public partial class HeadOutput : Node
 
         ConfigureCamera(_vrCamera, setFov: false);
 
-        LumoraLogger.Log("HeadOutput: VR camera bound to %XRCamera3D");
+        LumoraLogger.Debug("HeadOutput: VR camera bound to %XRCamera3D");
     }
 
     private void UseDesktopCamera()
@@ -204,7 +210,7 @@ public partial class HeadOutput : Node
         camera.Far = FarClip;
 
         if (setFov)
-            camera.Fov = Mathf.Clamp(DefaultFOV, 1f, 179f);
+            camera.Fov = Mathf.Clamp(ScreenFov, 1f, 179f);
     }
 
     // Camera positioning from the focused world, once per frame after the engine update.
@@ -271,10 +277,10 @@ public partial class HeadOutput : Node
             _appliedFar = FarClip;
         }
 
-        if (Type == OutputType.Screen && (!sameCamera || _appliedFov != DefaultFOV))
+        if (Type == OutputType.Screen && (!sameCamera || _appliedFov != ScreenFov))
         {
-            _camera.Fov = Mathf.Clamp(DefaultFOV, 1f, 179f);
-            _appliedFov = DefaultFOV;
+            _camera.Fov = Mathf.Clamp(ScreenFov, 1f, 179f);
+            _appliedFov = ScreenFov;
         }
 
         _settingsCamera = _camera;
@@ -286,7 +292,10 @@ public partial class HeadOutput : Node
         if (world.LocalUser == null)
             return;
 
-        var userRootSlot = world.LocalUser.Root?.TrackingSpaceSlot;
+        // A root override draws the headset's space from that slot instead; the head still turns the eyes.
+        // A view override is a screen thing (see UserRoot.ViewOverride).
+        var localRoot = world.LocalUser.Root;
+        var userRootSlot = localRoot?.ActiveRootOverride ?? localRoot?.TrackingSpaceSlot;
         if (_xrOrigin != null)
         {
             if (userRootSlot != null)
@@ -322,6 +331,22 @@ public partial class HeadOutput : Node
             ? _overrideRotation
             : hasHead ? userRoot!.HeadRotation.ToGodot() : _camera.GlobalTransform.Basis.GetRotationQuaternion();
 
+        // Something the user holds or wears asking for the view beats every camera mode, and the camera sits
+        // exactly on it.
+        var viewOverride = hasHead ? userRoot!.ActiveViewOverride : null;
+        if (!ReferenceEquals(viewOverride, _viewOverride))
+        {
+            if (ReferenceEquals(world, _viewOverrideWorld))
+                BeginViewTransition();
+            _viewOverride = viewOverride;
+        }
+        _viewOverrideWorld = world;
+        if (viewOverride != null)
+        {
+            targetPosition = viewOverride.GlobalPosition.ToGodot();
+            targetRotation = viewOverride.GlobalRotation.ToGodot().Normalized();
+        }
+
         if (_viewTransitionActive)
         {
             // A zero delta (node outside a tree) would park the camera off the head for good.
@@ -339,7 +364,7 @@ public partial class HeadOutput : Node
         // Publish whether the camera is off the head (3rd-person / free-cam, or still flying back to it) so
         // the userspace dashboard knows it can't simply lock to the local head pose this frame. -xlinka
         Lumora.Core.Engine.Current?.InputInterface?.SetDesktopCameraOverride(
-            _hasPositionOverride || _hasRotationOverride || _viewTransitionActive);
+            _hasPositionOverride || _hasRotationOverride || _viewTransitionActive || viewOverride != null);
 
         // A pose that is not a number, or a rotation collapsed to zero, would leave the camera with a
         // NaN basis and the frame black. The previous pose is the better frame. -xlinka
@@ -426,7 +451,7 @@ public partial class HeadOutput : Node
             UseDesktopCamera();
         }
 
-        LumoraLogger.Log($"HeadOutput: VR active state -> {isActive}");
+        LumoraLogger.Debug($"HeadOutput: VR active state -> {isActive}");
     }
 
     // Switch output type (VR <-> Screen). When switching to VR call NotifyVRActiveChanged first so
@@ -436,7 +461,7 @@ public partial class HeadOutput : Node
         if (Type == newType)
             return;
 
-        LumoraLogger.Log($"HeadOutput: Switching from {Type} to {newType}");
+        LumoraLogger.Debug($"HeadOutput: Switching from {Type} to {newType}");
 
         // Guard: only allow VR if the XR interface has been activated.
         if (newType == OutputType.VR && !_isVRActive)

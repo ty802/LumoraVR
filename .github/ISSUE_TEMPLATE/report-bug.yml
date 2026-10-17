@@ -14,7 +14,7 @@ body:
     id: reproduction
     attributes:
       label: Steps to Reproduce
-      description: Steps to replicate the issue. Provide specific details or links to demonstrate the problem.
+      description: Steps to replicate the issue. Provide specific details, screenshots, videos or links to demonstrate the problem.
     validations:
       required: true
   - type: textarea
@@ -28,7 +28,7 @@ body:
     id: version
     attributes:
       label: LumoraVR Version
-      placeholder: e.g., 1.2.3
+      placeholder: e.g., Lumora v20xx.xx.xx.x
     validations:
       required: true
   - type: dropdown
@@ -51,6 +51,7 @@ body:
         - "Windows"
         - "Linux"
         - "Android / Quest"
+        - "All"
     validations:
       required: true
   - type: textarea

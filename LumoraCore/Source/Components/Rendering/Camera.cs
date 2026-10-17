@@ -61,6 +61,14 @@ public class Camera : ImplementableComponent
     // the result is going to be composited rather than looked at.
     public readonly Sync<bool> RenderPostProcessing = new();
 
+    // Films what the wearer's own eyes see: their headless self instead of the head the rest of the world
+    // sees. For a camera riding someone's eyes, which would otherwise film the inside of their skull.
+    public readonly Sync<bool> WearerView = new();
+
+    // Also films this machine's own private interface (its dash, its menus). Every texture a camera fills
+    // stays on the machine that filled it, so nobody else's private interface can end up in it. -xlinka
+    public readonly Sync<bool> RenderPrivateUI = new();
+
     // Render ONLY these slots and their children. Empty = render everything the culling mask allows.
     //
     // This is a layer trick underneath: the camera takes one free render layer, the listed subtrees get

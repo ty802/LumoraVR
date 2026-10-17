@@ -93,6 +93,7 @@ public class CameraHook : ComponentHook<Camera>
             OcclusionCulling = Owner.UseOcclusionCulling.Value,
             Msaa = Owner.AllowMSAA.Value,
             PostProcessing = Owner.RenderPostProcessing.Value,
+            WearerView = Owner.WearerView.Value,
         };
     }
 
@@ -102,7 +103,7 @@ public class CameraHook : ComponentHook<Camera>
         // filming into a texture other people can see must not pick up somebody's private UI, and the
         // eyes-only band (the wearer's headless twin) is masked out of PUBLIC_RENDER_MASK for the same
         // reason: a mirror has to show the head.
-        int mask = Owner.CullingMask.Value & RenderHelper.PUBLIC_RENDER_MASK;
+        int mask = Owner.CullingMask.Value & (Owner.RenderPrivateUI.Value ? RenderHelper.PRIVATE_RENDER_MASK : RenderHelper.PUBLIC_RENDER_MASK);
 
         if (_selectiveLayer == 0)
             return mask;

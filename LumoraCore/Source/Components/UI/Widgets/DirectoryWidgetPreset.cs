@@ -12,173 +12,101 @@ using Lumora.Nexus.Cloud.Cdn;
 
 namespace Lumora.Core.Components.UI;
 
-// Two shapes, one card. With the services unreachable there is nothing to report, so the card takes
-// itself down to its title row instead of stacking three lines of zeroes; reachable, it opens up to a
-// donut of who is actually in the worlds this client has open, split by the machine they are on, with
-// what the directory can see and the round trip to the services underneath.
+// Who is online, at a glance: how many clients are running on the services this client talks to, on the title
+// row, and under it one icon per kind of machine with how many are on it. The numbers are the services' own,
+// brought back by this client's presence report (OnlinePresence). Services that keep no count say so, and
+// unreachable ones read Offline, and either way the card is one quiet line.
 //
-// The card owns its own footprint: it writes GridY/GridHeight on its Widget and keeps its BOTTOM edge
-// where it is, so collapsing takes rows off the top rather than leaving a hole above the nav bar. Polled
-// once a second, same as before: the counts behind it move on a backend poll, not per frame. -xlinka
+// The card owns its own footprint: it writes GridY/GridHeight on its Widget and keeps its BOTTOM edge where it
+// is, so going quiet takes rows off the top rather than leaving a hole above it. Polled once a second, same
+// as before: the counts behind it move on a backend poll, not per frame. -xlinka
 [ComponentCategory("Hidden")]
 public sealed class DirectoryWidgetPreset : HomeWidgetPreset
 {
-    private const int CollapsedRows = 3;
-    private const int ExpandedRows = 7;
+    // The two heights the card wants, in canvas units; the rows they take come from the grid it is on.
+    private const float CollapsedHeight = 36f;
+    private const float ExpandedHeight = 62f;
 
-    // Canvas units, sized for the card the Home grid actually hands this widget: thirteen cells by seven
-    // is about 242 x 128, which an 80 unit ring plus two lines under it overran at the bottom edge. The
-    // status lines are pinned to the FLOOR of the card and the ring takes the band left between them and
-    // the title, so neither can land on the other whatever height the card ends up at. -xlinka
-    private const float OuterRadius = 30f;
-    private const float InnerRadius = 20f;
-    private const float DonutSize = OuterRadius * 2f;
-    private const float SliceGap = 2f;
-    private const float TopAngle = 270f;
+    private const float TitleTop = 6f;
+    private const float RowHeight = 20f;
+    private const float PlatformTop = TitleTop + RowHeight + 4f;
+    private const float TotalWidth = 64f;
+    private const float Glyph = 16f;
+    private const float ChipWidth = 56f;
 
-    private const float TitleTop = 4f;
-    private const float TitleHeight = 18f;
-    private const float LineHeight = 14f;
-    private const float BodyTop = TitleTop + TitleHeight;
-    private const float BodyBottom = 8f;
-    private const float StatusBandHeight = LineHeight * 2f;
-    private const float StatusBandGap = 6f;
-    private const float LegendLeft = Pad + DonutSize + 10f;
-    // Four platforms at this height is exactly the ring's square, so a full legend lines up with it.
-    private const float LegendRowHeight = 15f;
-    private const float DotSize = 8f;
-    // Right side of the title row: the status word right-aligned in a fixed column, its dot just left of
-    // it, and the title given everything up to that.
-    private const float StatusWidth = 58f;
-    private const float StatusGap = 6f;
-    private const float StatusDotLeft = -(StatusWidth + StatusGap + DotSize);
-    private const float TitleTextRight = StatusDotLeft - 8f;
-
-    private const string Separator = " · ";
-
-    // Counts are indexed by the Platform enum, which is why the slices and the legend come out Windows,
-    // Linux, Android, Other without a lookup table.
+    // Counts are indexed by the Platform enum, so the icons come out in its order without a lookup table.
     private const int PlatformCount = 4;
+    private static readonly string[] Icons = { "panes", "prompt", "phone", "more" };
 
-    private sealed class LegendRow
+    private sealed class PlatformChip
     {
         public Slot Slot = null!;
         public RectTransform Rect = null!;
-        public RoundedPanel Dot = null!;
-        public Text Name = null!;
         public Text Count = null!;
     }
 
     private readonly int[] _counts = new int[PlatformCount];
-    private readonly HashSet<string> _seenUsers = new();
-    private readonly ArcSegment?[] _slices = new ArcSegment?[PlatformCount];
-    private readonly LegendRow?[] _legend = new LegendRow?[PlatformCount];
+    private readonly PlatformChip?[] _chips = new PlatformChip?[PlatformCount];
 
-    private Widget? _widget;
     private RectTransform? _titleRect;
-    private RoundedPanel? _dot;
-    private Text? _status;
-    private Slot? _body;
+    private Text? _title;
     private Text? _total;
-    private Text? _sessions;
-    private Text? _ping;
+    private Slot? _platforms;
 
     // Null until the first poll applies one, so the card always writes its own footprint once instead of
     // trusting whatever the grid placed it at.
     private bool? _expanded;
 
+    // What the card shows, for checks: the count on the title row, or -1 while it says Offline.
+    public int Shown { get; private set; } = -1;
+    public int ShownOn(Platform platform)
+    {
+        int index = (int)platform;
+        return index >= 0 && index < PlatformCount && _chips[index] is { } chip && chip.Slot.ActiveSelf.Value ? _counts[index] : 0;
+    }
+
     public DirectoryWidgetPreset()
     {
-        MinSize.Value = new float2(200f, 44f);
-        PreferredSize.Value = new float2(244f, 130f);
-        MaxSize.Value = new float2(520f, 260f);
+        MinSize.Value = new float2(180f, 34f);
+        PreferredSize.Value = new float2(300f, 62f);
+        MaxSize.Value = new float2(520f, 120f);
     }
 
     protected override void Build(Widget widget, Slot root)
     {
-        _widget = widget;
-
         // The title row is the only thing both shapes share, so it moves rather than being built twice:
-        // pinned under the top edge while the card is open, centred in the card once it collapses.
+        // pinned under the top edge while the card is open, centred in the card once it goes quiet.
         var title = SettingsUI.Child(root, "Title", new float2(0f, 1f), new float2(1f, 1f),
-            new float2(Pad, -(TitleTop + TitleHeight)), new float2(-Pad, -TitleTop));
+            new float2(Pad, -(TitleTop + RowHeight)), new float2(-Pad, -TitleTop));
         _titleRect = SettingsUI.Rect(title);
-
-        Label(title, "Text", "Directory", DashTheme.FontBody, DashTheme.Text,
+        _title = Label(title, "Text", "Users online", DashTheme.FontBody, DashTheme.Text,
             TextHorizontalAlignment.Left, float2.Zero, new float2(1f, 1f),
-            float2.Zero, new float2(TitleTextRight, 0f), SemiboldFont);
-
-        var dotSlot = SettingsUI.Child(title, "Dot", new float2(1f, 0.5f), new float2(1f, 0.5f),
-            new float2(StatusDotLeft, -DotSize * 0.5f), new float2(StatusDotLeft + DotSize, DotSize * 0.5f));
-        _dot = SettingsUI.Panel(dotSlot, DashTheme.TextMuted, color.Transparent, DotSize * 0.5f);
-
-        _status = Label(title, "Status", "Offline", DashTheme.FontSmall, DashTheme.TextDim,
+            float2.Zero, new float2(-TotalWidth, 0f), SemiboldFont);
+        _total = Label(title, "Total", string.Empty, DashTheme.FontBody, DashTheme.Text,
             TextHorizontalAlignment.Right, new float2(1f, 0f), new float2(1f, 1f),
-            new float2(-StatusWidth, 0f), float2.Zero);
+            new float2(-TotalWidth, 0f), float2.Zero, BoldFont);
 
-        // Everything under the title hangs off one slot, so collapsing the card is a single SetActive.
-        // It stretches between the title and the card's floor rather than carrying a fixed height: the
-        // height it used to assume was taller than the card the grid gives it.
-        var body = SettingsUI.Child(root, "Body", float2.Zero, new float2(1f, 1f),
-            new float2(0f, BodyBottom), new float2(0f, -BodyTop));
-        _body = body;
-
-        // The ring band is everything above the status lines. The ring is a fixed square centred in it
-        // with the legend beside it, so a card with a row more or less moves the band, not the ring.
-        var ringBand = SettingsUI.Child(body, "Ring", float2.Zero, new float2(1f, 1f),
-            new float2(0f, StatusBandHeight + StatusBandGap), float2.Zero);
-
-        var donut = SettingsUI.Child(ringBand, "Donut", new float2(0f, 0.5f), new float2(0f, 0.5f),
-            new float2(Pad, -DonutSize * 0.5f), new float2(Pad + DonutSize, DonutSize * 0.5f));
+        _platforms = SettingsUI.Child(root, "Platforms", new float2(0f, 1f), new float2(1f, 1f),
+            new float2(Pad, -(PlatformTop + RowHeight)), new float2(-Pad, -PlatformTop));
         for (int i = 0; i < PlatformCount; i++)
         {
-            var sliceSlot = SettingsUI.Child(donut, "Slice" + i, float2.Zero, new float2(1f, 1f),
-                float2.Zero, float2.Zero);
-            var arc = sliceSlot.AttachComponent<ArcSegment>();
-            arc.InnerRadius.Value = InnerRadius;
-            arc.OuterRadius.Value = OuterRadius;
-            arc.Tint.Value = PlatformColor(i);
-            // Flat colour: an outline on a 10 unit band would be most of the band.
-            arc.OutlineColor.Value = color.Transparent;
-            arc.OutlineThickness.Value = 0f;
-            arc.ArcLength.Value = 0f;
-            _slices[i] = arc;
-            SetActive(sliceSlot, false);
+            var slot = SettingsUI.Child(_platforms, "Platform" + i, new float2(0f, 0.5f), new float2(0f, 0.5f),
+                new float2(0f, -RowHeight * 0.5f), new float2(ChipWidth, RowHeight * 0.5f));
+            var glyphSlot = SettingsUI.Child(slot, "Glyph", new float2(0f, 0.5f), new float2(0f, 0.5f),
+                new float2(0f, -Glyph * 0.5f), new float2(Glyph, Glyph * 0.5f));
+            var picture = glyphSlot.AttachComponent<Lumora.Core.Assets.ImageProvider>();
+            picture.GenerateMipmaps.Value = false;
+            picture.URL.Value = new Uri("res://Assets/Textures/Icons/" + Icons[i] + ".svg");
+            var glyph = glyphSlot.AttachComponent<Image>();
+            glyph.Texture.Target = picture;
+            glyph.PreserveAspect.Value = true;
+            glyph.InteractionTarget.Value = false;
+            glyph.Tint.Value = PlatformColor(i);
+            var count = Label(slot, "Count", "0", DashTheme.FontSmall, DashTheme.Text, TextHorizontalAlignment.Left,
+                float2.Zero, new float2(1f, 1f), new float2(Glyph + 5f, 0f), float2.Zero, SemiboldFont);
+            _chips[i] = new PlatformChip { Slot = slot, Rect = SettingsUI.Rect(slot), Count = count };
+            SetActive(slot, false);
         }
-
-        _total = Label(donut, "Total", "0", DashTheme.FontBody, DashTheme.Text,
-            TextHorizontalAlignment.Center, float2.Zero, new float2(1f, 1f),
-            float2.Zero, float2.Zero, BoldFont);
-
-        var legend = SettingsUI.Child(ringBand, "Legend", new float2(0f, 0.5f), new float2(1f, 0.5f),
-            new float2(LegendLeft, -DonutSize * 0.5f), new float2(-Pad, DonutSize * 0.5f));
-        for (int i = 0; i < PlatformCount; i++)
-        {
-            var rowSlot = Row(legend, "Row" + i, i * LegendRowHeight, LegendRowHeight, 0f, 0f);
-            var entryDot = SettingsUI.Child(rowSlot, "Dot", new float2(0f, 0.5f), new float2(0f, 0.5f),
-                new float2(0f, -DotSize * 0.5f), new float2(DotSize, DotSize * 0.5f));
-            _legend[i] = new LegendRow
-            {
-                Slot = rowSlot,
-                Rect = SettingsUI.Rect(rowSlot),
-                Dot = SettingsUI.Panel(entryDot, DashTheme.TextMuted, color.Transparent, DotSize * 0.5f),
-                Name = Label(rowSlot, "Name", string.Empty, DashTheme.FontSmall, DashTheme.TextDim,
-                    TextHorizontalAlignment.Left, float2.Zero, new float2(1f, 1f),
-                    new float2(DotSize + 6f, 0f), new float2(-26f, 0f)),
-                Count = Label(rowSlot, "Count", string.Empty, DashTheme.FontSmall, DashTheme.Text,
-                    TextHorizontalAlignment.Right, new float2(1f, 0f), new float2(1f, 1f),
-                    new float2(-26f, 0f), float2.Zero),
-            };
-            SetActive(rowSlot, false);
-        }
-
-        _sessions = Label(StatusLine(body, "Sessions", LineHeight), "Text", string.Empty,
-            DashTheme.FontSmall, DashTheme.TextMuted, TextHorizontalAlignment.Left,
-            float2.Zero, new float2(1f, 1f), float2.Zero, float2.Zero);
-
-        _ping = Label(StatusLine(body, "Ping", 0f), "Text", string.Empty,
-            DashTheme.FontSmall, DashTheme.TextMuted, TextHorizontalAlignment.Left,
-            float2.Zero, new float2(1f, 1f), float2.Zero, float2.Zero);
 
         Poll();
     }
@@ -187,168 +115,102 @@ public sealed class DirectoryWidgetPreset : HomeWidgetPreset
 
     protected override void Poll()
     {
-        if (_status == null || _status.IsDestroyed)
+        if (_total == null || _total.IsDestroyed)
             return;
 
-        var browser = Browser();
-        int internet = 0, users = 0, lan = 0;
-        if (browser != null)
-        {
-            foreach (var entry in browser.GetSessions())
-            {
-                if (entry == null)
-                    continue;
-                if (entry.Source == SessionSource.Internet)
-                {
-                    internet++;
-                    users += entry.ActiveUsers;
-                }
-                else
-                {
-                    lan++;
-                }
-            }
-        }
+        // Still wakes the session browser: the dash's other cards and the world links read its listing.
+        Browser();
 
-        // Unreachable is the health check saying no, or the directory saying no with nothing on the local
-        // network to fall back on. No browser at all is the same answer: there is nothing to report.
-        bool online = Connectivity.IsOnline && browser != null && (!browser.BackendUnreachable || lan > 0);
+        var counts = OnlinePresence.Counts;
+        bool online = counts != null;
         ApplyFootprint(online);
 
-        bool changed = false;
-        if (_dot != null && !_dot.IsDestroyed)
-            SettingsUI.SetFill(_dot, online ? DashTheme.Positive : DashTheme.Negative);
-
-        string status = online ? "Online" : "Offline";
-        if (!string.Equals(_status.Content.Value, status, StringComparison.Ordinal))
+        bool changed;
+        if (counts != null)
         {
-            ListingStyle.SetText(_status, status);
-            changed = true;
+            _counts[(int)Platform.Windows] = counts.Windows;
+            _counts[(int)Platform.Linux] = counts.Linux;
+            _counts[(int)Platform.Android] = counts.Android;
+            _counts[(int)Platform.Other] = counts.Other;
+            Shown = counts.Total;
+            changed = SetLine(_total, counts.Total.ToString(), DashTheme.Text);
+            changed |= LayChips();
         }
-
-        if (online)
-            changed |= WriteBody(internet, users, lan);
+        else
+        {
+            Shown = -1;
+            string quiet = OnlinePresence.State switch
+            {
+                OnlinePresenceState.Waiting => string.Empty,
+                OnlinePresenceState.NoCount => "No count",
+                _ => "Offline",
+            };
+            changed = SetLine(_total, quiet, DashTheme.TextMuted);
+        }
+        if (_title != null && !_title.IsDestroyed)
+        {
+            var ink = online ? DashTheme.Text : DashTheme.TextDim;
+            if (!_title.Color.Value.Equals(ink))
+            {
+                ListingStyle.SetTextColor(_title, ink);
+                changed = true;
+            }
+        }
 
         if (changed)
             Repaint();
     }
 
-    private bool WriteBody(int internet, int users, int lan)
+    // One icon per platform somebody is on, left to right in enum order, none for a platform nobody is on.
+    private bool LayChips()
     {
-        int total = CountUsers();
         bool changed = false;
-
-        float cursor = TopAngle;
+        float x = 0f;
         for (int i = 0; i < PlatformCount; i++)
         {
-            var arc = _slices[i];
-            if (arc == null || arc.IsDestroyed)
+            var chip = _chips[i];
+            if (chip == null || chip.Slot.IsDestroyed)
                 continue;
-
-            int count = _counts[i];
-            if (count <= 0)
+            bool show = _counts[i] > 0;
+            if (chip.Slot.ActiveSelf.Value != show)
             {
-                SetActive(arc.Slot, false);
-                continue;
-            }
-
-            float sweep = 360f * count / total;
-            // The only platform present is a full ring minus the gap, not a hairline; a share too small
-            // to survive the gap still keeps a degree so it cannot vanish outright.
-            float start = cursor + SliceGap * 0.5f;
-            float length = MathF.Max(sweep - SliceGap, 1f);
-            cursor += sweep;
-
-            SetActive(arc.Slot, true);
-            if (arc.AngleStart.Value != start)
-            {
-                arc.AngleStart.Value = start;
+                SetActive(chip.Slot, show);
                 changed = true;
             }
-            if (arc.ArcLength.Value != length)
-            {
-                arc.ArcLength.Value = length;
-                changed = true;
-            }
-        }
-
-        if (_total != null && !_total.IsDestroyed)
-        {
-            string label = total.ToString();
-            if (!string.Equals(_total.Content.Value, label, StringComparison.Ordinal))
-            {
-                ListingStyle.SetText(_total, label);
-                changed = true;
-            }
-        }
-
-        int shown = 0;
-        for (int i = 0; i < PlatformCount; i++)
-        {
-            if (_counts[i] > 0)
-                shown++;
-        }
-
-        // The legend block is centred against the donut, so a single platform lines up with the middle of
-        // the ring instead of hanging off its top edge.
-        float top = (DonutSize - shown * LegendRowHeight) * 0.5f;
-        int row = 0;
-        for (int i = 0; i < PlatformCount; i++)
-        {
-            if (_counts[i] <= 0)
+            if (!show)
                 continue;
-
-            var entry = _legend[row];
-            row++;
-            if (entry == null || entry.Slot.IsDestroyed)
-                continue;
-
-            SetActive(entry.Slot, true);
-            SettingsUI.SetOffsets(entry.Rect,
-                new float2(0f, -(top + row * LegendRowHeight)),
-                new float2(0f, -(top + (row - 1) * LegendRowHeight)));
-            SettingsUI.SetFill(entry.Dot, PlatformColor(i));
-
-            string name = PlatformName(i);
-            string count = _counts[i].ToString();
-            if (!string.Equals(entry.Name.Content.Value, name, StringComparison.Ordinal)
-                || !string.Equals(entry.Count.Content.Value, count, StringComparison.Ordinal))
+            if (MathF.Abs(chip.Rect.OffsetMin.Value.x - x) > 0.01f)
             {
-                ListingStyle.SetText(entry.Name, name);
-                ListingStyle.SetText(entry.Count, count);
+                SettingsUI.SetOffsets(chip.Rect, new float2(x, -RowHeight * 0.5f), new float2(x + ChipWidth, RowHeight * 0.5f));
                 changed = true;
             }
+            changed |= SetLine(chip.Count, _counts[i].ToString(), DashTheme.Text);
+            x += ChipWidth;
         }
-        for (; row < PlatformCount; row++)
-        {
-            var entry = _legend[row];
-            if (entry != null && !entry.Slot.IsDestroyed)
-                SetActive(entry.Slot, false);
-        }
-
-        changed |= SetLine(_sessions, SessionsLine(internet, users, lan));
-        changed |= SetLine(_ping, PingLine());
         return changed;
     }
 
-    // A status line measured UP from the bottom of the body. Row() measures down from the top, which put
-    // the last line wherever the ring happened to end and ran it off the card's bottom edge. -xlinka
-    private static Slot StatusLine(Slot parent, string name, float bottom)
-        => SettingsUI.Child(parent, name, float2.Zero, new float2(1f, 0f),
-            new float2(Pad, bottom), new float2(-Pad, bottom + LineHeight));
-
-    private static bool SetLine(Text? text, string value)
+    private static bool SetLine(Text? text, string value, in color ink)
     {
-        if (text == null || text.IsDestroyed || string.Equals(text.Content.Value, value, StringComparison.Ordinal))
+        if (text == null || text.IsDestroyed)
             return false;
-        ListingStyle.SetText(text, value);
-        return true;
+        bool changed = false;
+        if (!string.Equals(text.Content.Value, value, StringComparison.Ordinal))
+        {
+            ListingStyle.SetText(text, value);
+            changed = true;
+        }
+        if (!text.Color.Value.Equals(ink))
+        {
+            ListingStyle.SetTextColor(text, ink);
+            changed = true;
+        }
+        return changed;
     }
 
-    // Collapsed is 13 x 3, expanded 13 x 7, and the bottom edge does not move: the card takes its rows off
-    // the top, so the row it was anchored to stays the row it is anchored to. A grid too short to hold the
-    // open card (the header strip) keeps the footprint it placed us at and only the content switches.
-    // -xlinka
+    // Collapsed is one line, expanded two, and the bottom edge does not move: the card takes its rows off the
+    // top, so the row it was anchored to stays the row it is anchored to. A grid too short to hold the open
+    // card keeps the footprint it placed us at and only the content switches. -xlinka
     private void ApplyFootprint(bool expanded)
     {
         // The layout switch is latched, the footprint write is not: the first poll can run before the
@@ -358,7 +220,7 @@ public sealed class DirectoryWidgetPreset : HomeWidgetPreset
         _expanded = expanded;
 
         if (switched)
-            SetActive(_body, expanded);
+            SetActive(_platforms, expanded);
 
         var rect = _titleRect;
         if (switched && rect != null && !rect.IsDestroyed)
@@ -366,103 +228,20 @@ public sealed class DirectoryWidgetPreset : HomeWidgetPreset
             if (expanded)
             {
                 SettingsUI.SetAnchors(rect, new float2(0f, 1f), new float2(1f, 1f));
-                SettingsUI.SetOffsets(rect, new float2(Pad, -(TitleTop + TitleHeight)), new float2(-Pad, -TitleTop));
+                SettingsUI.SetOffsets(rect, new float2(Pad, -(TitleTop + RowHeight)), new float2(-Pad, -TitleTop));
             }
             else
             {
                 SettingsUI.SetAnchors(rect, new float2(0f, 0.5f), new float2(1f, 0.5f));
-                SettingsUI.SetOffsets(rect, new float2(Pad, -TitleHeight * 0.5f), new float2(-Pad, TitleHeight * 0.5f));
+                SettingsUI.SetOffsets(rect, new float2(Pad, -RowHeight * 0.5f), new float2(-Pad, RowHeight * 0.5f));
             }
         }
 
-        var widget = _widget != null && !_widget.IsDestroyed ? _widget : Slot.GetComponent<Widget>();
-        if (widget != null)
-        {
-            var grid = Slot.GetComponentInParents<WidgetGrid>();
-            int gridRows = grid != null ? grid.GridSize.rows : 0;
-            if (grid == null || gridRows <= 0 || gridRows >= ExpandedRows)
-            {
-                int rows = expanded ? ExpandedRows : CollapsedRows;
-                int bottom = widget.GridY.Value + widget.GridHeight.Value;
-                int y = bottom - rows;
-                if (y < 0)
-                    y = 0;
-                if (widget.GridHeight.Value != rows)
-                    widget.GridHeight.Value = rows;
-                if (widget.GridY.Value != y)
-                    widget.GridY.Value = y;
-            }
-        }
+        FitRows(expanded ? ExpandedHeight : CollapsedHeight);
 
         if (switched)
             Repaint();
     }
-
-    // Who is in the worlds this client has open, one entry per person: the directory's remote sessions
-    // carry no per-user platform, so the donut can only speak for the worlds we are actually in. The same
-    // person standing in two of them is one dot, not two. -xlinka
-    private int CountUsers()
-    {
-        Array.Clear(_counts, 0, _counts.Length);
-        _seenUsers.Clear();
-
-        var manager = Engine.Current?.WorldManager;
-        if (manager == null)
-            return 0;
-
-        var userspace = manager.UserspaceWorld;
-        int total = 0;
-        foreach (var world in manager.Worlds)
-        {
-            if (world == null || world.IsDestroyed || ReferenceEquals(world, userspace))
-                continue;
-            foreach (var user in world.GetAllUsers())
-            {
-                if (user == null)
-                    continue;
-                string id = user.UserID?.Value ?? string.Empty;
-                if (id.Length > 0 && !_seenUsers.Add(id))
-                    continue;
-                int index = (int)user.UserPlatform.Value;
-                if (index < 0 || index >= PlatformCount)
-                    index = (int)Platform.Other;
-                _counts[index]++;
-                total++;
-            }
-        }
-        return total;
-    }
-
-    private static string SessionsLine(int internet, int users, int lan)
-    {
-        string line = string.Empty;
-        if (internet > 0)
-            line = internet + " internet " + Plural(internet, "session");
-        if (users > 0)
-            line = Append(line, users + " " + Plural(users, "user"));
-        if (lan > 0)
-            line = Append(line, lan + " on LAN");
-        return line.Length == 0 ? "no sessions found" : line;
-    }
-
-    private static string PingLine()
-    {
-        int ms = Connectivity.LastLatencyMs;
-        return ms < 0 ? "ping to services: waiting" : "ping to services: " + ms + " ms";
-    }
-
-    private static string Append(string line, string part)
-        => line.Length == 0 ? part : line + Separator + part;
-
-    private static string Plural(int count, string word) => count == 1 ? word : word + "s";
-
-    private static string PlatformName(int index) => ((Platform)index) switch
-    {
-        Platform.Windows => "Windows",
-        Platform.Linux => "Linux",
-        Platform.Android => "Android",
-        _ => "Other",
-    };
 
     private static color PlatformColor(int index) => ((Platform)index) switch
     {

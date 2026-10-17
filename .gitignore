@@ -15,3 +15,7 @@
 **/obj
 /LumoraGodot/addons/godotopenxrvendors/.bin
 /LumoraGodot/android
+
+# Linux libVLC bundle and its package cache (python tools/libvlc_linux.py); the lock file is tracked
+/.natives
+/tools

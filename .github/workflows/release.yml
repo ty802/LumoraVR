@@ -116,6 +116,14 @@ jobs:
             -e "s/^application\\/product_version=.*/application\\/product_version=\"${VERSION}\"/" \
             export_presets.cfg
 
+      # One Linux build serves Linux desktops, PCVR and the Steam Frame (x86_64 runs there through FEX).
+      # It carries its own libVLC, checked here by loading every library and plugin on this runner.
+      - name: Bundle libVLC for Linux
+        run: |
+          set -euo pipefail
+          python3 tools/libvlc_linux.py
+          python3 tools/libvlc_linux.py --check
+
       - name: Build .NET solution
         run: |
           dotnet restore "${SOLUTION_PATH}"
@@ -134,6 +142,11 @@ jobs:
           set -euo pipefail
           mkdir -p ../build/linux
           godot --headless --export-release "Linux" ../build/linux/LumoraVR.x86_64
+          test -f ../build/linux/data_Lumora_linuxbsd_x86_64/libvlc/linux-x64/lib/libvlc.so.5
+          # Steam's app id beside the executable, for a build started straight from its folder.
+          cp steam_appid.txt ../build/linux/
+          cp Launchers/Lumora-Frame.sh ../build/linux/
+          chmod +x ../build/linux/Lumora-Frame.sh
           ls -la ../build/linux
 
       - name: Add Executable
@@ -257,6 +270,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
+          # Steam's app id beside the executable, for a build started straight from its folder.
+          Copy-Item steam_appid.txt ..\build\windows\
           Get-ChildItem ..\build\windows
 
       - name: Upload artifact
@@ -505,7 +520,13 @@ jobs:
           godot --headless --export-release "Pico" ../build/android/LumoraVR-Pico.apk
           ls -la ../build/android
 
-      - name: Sign Quest + Pico APKs with apksigner
+      - name: Export Android phone APK (unsigned)
+        working-directory: ${{ env.GODOT_PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          godot --headless --export-release "Android Phone" ../build/android/LumoraVR-Android.apk
+
+      - name: Sign Android APKs with apksigner
         working-directory: ${{ env.GODOT_PROJECT_DIR }}
         env:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
@@ -528,7 +549,7 @@ jobs:
           [ -x "${APKSIGNER}" ] || { echo "::error::apksigner not found at ${APKSIGNER}"; exit 1; }
           [ -x "${ZIPALIGN}" ] || { echo "::error::zipalign not found at ${ZIPALIGN}"; exit 1; }
 
-          for APK in ../build/android/LumoraVR-Quest.apk ../build/android/LumoraVR-Pico.apk; do
+          for APK in ../build/android/LumoraVR-Quest.apk ../build/android/LumoraVR-Pico.apk ../build/android/LumoraVR-Android.apk; do
             echo "::group::Sign ${APK}"
             ALIGNED="${APK%.apk}-aligned.apk"
             "${ZIPALIGN}" -p -f 4 "${APK}" "${ALIGNED}"
@@ -565,6 +586,15 @@ jobs:
           archive: false
           name: LumoraVR-${{ needs.version.outputs.version }}-Pico.apk
           path: build/android/LumoraVR-Pico.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Android phone artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          archive: false
+          name: LumoraVR-${{ needs.version.outputs.version }}-android.apk
+          path: build/android/LumoraVR-Android.apk
           if-no-files-found: error
           retention-days: 14
 

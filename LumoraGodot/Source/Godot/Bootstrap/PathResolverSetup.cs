@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.Loader;
 using Godot;
 using Lumora.Core.Persistence;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -14,12 +16,22 @@ public partial class PathResolverSetup : Node
     public override void _EnterTree()
     {
         base._EnterTree();
-        string root = OS.GetUserDataDir();
+        // LUMORA_DATA_DIR points a run at a folder of its own: a second copy of the game on the same machine
+        // then has its own store, settings, sign-in and machine id, so it behaves like another computer.
+        var custom = System.Environment.GetEnvironmentVariable("LUMORA_DATA_DIR");
+        bool own = !string.IsNullOrWhiteSpace(custom);
+        string root = own ? custom!.Trim() : OS.GetUserDataDir();
+        if (!Lumora.Source.Godot.Bootstrap.DiscordManager.PrepareLaunch(root))
+        {
+            GetTree().Quit();
+            return;
+        }
         try { Directory.CreateDirectory(root); } catch { }
         PathResolver.Initialize(root);
+        StartJitProfile();
 
         var notes = new List<string>();
-        foreach (var legacy in LegacyRoots(PathResolver.Root))
+        foreach (var legacy in own ? (IEnumerable<string>)Array.Empty<string>() : LegacyRoots(PathResolver.Root))
         {
             try { FoldInto(legacy, PathResolver.Root, notes); }
             catch (Exception ex) { notes.Add($"Data folder: could not fold '{legacy}' in: {ex.Message}"); }
@@ -28,6 +40,62 @@ public partial class PathResolverSetup : Node
         foreach (var note in notes)
             LumoraLogger.Log(note);
     }
+
+    public override void _ExitTree()
+    {
+        Lumora.Source.Godot.Bootstrap.DiscordManager.StopLaunchRelay();
+        // Stopping writes the profile; the runtime does not reliably do it itself when the engine exits.
+        try { ProfileContext.StartProfileOptimization(null); } catch { }
+        base._ExitTree();
+    }
+
+    private static AssemblyLoadContext ProfileContext
+        => AssemblyLoadContext.GetLoadContext(typeof(PathResolverSetup).Assembly) ?? AssemblyLoadContext.Default;
+
+    // Every method a run compiles goes in a profile, and the next run compiles them on spare cores from here
+    // on, ahead of the code that needs them, so the first world opened stops paying for the JIT. The runtime
+    // skips the entries of an assembly that changed since. Our assemblies are loaded here as well: the
+    // background compiler gives up at the first one not loaded yet, which this early is most of them, and a
+    // world opened a few seconds in got nothing. Measured on the shader gallery opened 5 s after start, with
+    // the engine's warm-up: 692 ms to 326 ms, worst first frame 155 to 57; warm is 231. -xlinka
+    private static void StartJitProfile()
+    {
+        try
+        {
+            var context = ProfileContext;
+            string folder = PathResolver.Resolve("jit");
+            Directory.CreateDirectory(folder);
+            context.SetProfileOptimizationRoot(folder);
+            context.StartProfileOptimization(OS.HasFeature("template") ? "game.jitprofile" : "editor.jitprofile");
+            LoadReferences(context, typeof(PathResolverSetup).Assembly, new HashSet<string>(StringComparer.Ordinal));
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Warn($"JIT profile not started: {ex.Message}");
+        }
+    }
+
+    private static void LoadReferences(AssemblyLoadContext context, Assembly from, HashSet<string> seen)
+    {
+        foreach (var reference in from.GetReferencedAssemblies())
+        {
+            string? name = reference.Name;
+            if (name == null || IsPlatformAssembly(name) || !seen.Add(name))
+                continue;
+            try
+            {
+                LoadReferences(context, context.LoadFromAssemblyName(reference), seen);
+            }
+            catch (Exception)
+            {
+                // Optional at runtime; it loads, or does not, when something first needs it.
+            }
+        }
+    }
+
+    private static bool IsPlatformAssembly(string name)
+        => name.StartsWith("System", StringComparison.Ordinal) || name.StartsWith("Microsoft", StringComparison.Ordinal)
+            || name.StartsWith("Godot", StringComparison.Ordinal) || name is "netstandard" or "mscorlib";
 
     // Where earlier builds put things, per platform, in the order they must be folded: a folder nested
     // inside another candidate goes first so its parent's pass does not carry it across as one entry.

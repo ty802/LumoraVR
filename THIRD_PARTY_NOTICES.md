@@ -2,6 +2,38 @@
 
 Third-party source code included in this repository, and the terms it is used under. Libraries pulled in as NuGet packages carry their own license files and are not listed here.
 
+## Unidot humanoid conversion
+
+`UnityHumanoidTables.cs` and `UnityHumanoidPose.cs` in `LumoraCore/Source/Assets/Interop/Unity/` adapt the tables and humanoid conversion in [Unidot](https://github.com/V-Sekai/unidot_importer/tree/main/humanoid).
+Copyright 2023-present Lyuma and contributors; Copyright 2022-2023 lox9973.
+These portions remain under the Apache License, Version 2.0; see [the full license](ThirdParty/Unidot-Apache-2.0.txt).
+Lumora's modifications port the conversion to C#, add sparse animation coverage, and sample it at runtime.
+
+The reference skeleton data in `UnityHumanoidTables.cs` also derives from Godot Engine's `SkeletonProfileHumanoid` (Godot 4.5), under the MIT license:
+
+```
+Copyright (c) 2014-present Godot Engine contributors.
+Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
 ## RNNoise
 
 Voice noise suppression in `LumoraAudio/Source/Denoise/` is based on RNNoise (https://gitlab.xiph.org/xiph/rnnoise), including its model weights, and is used under the BSD 3-Clause License:

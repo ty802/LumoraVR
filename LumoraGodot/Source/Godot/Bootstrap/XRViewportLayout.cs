@@ -7,9 +7,14 @@ namespace Lumora.Source.Godot.Bootstrap;
 
 public static class XRViewportLayout
 {
-    public static Viewport Ensure(Node sceneRoot, Viewport rootViewport, bool standalone)
+    // Bootstrap and the mode manager must choose the same viewport. Moving the camera after
+    // OpenXR starts replaces the live eye render, including on a Linux standalone headset.
+    public static bool UseRootViewport
+        => LaunchArgs.HasFlag("--xr-root") || (HeadsetDeviceMode.IsHeadset && !LaunchArgs.HasFlag("--xr-subviewport"));
+
+    public static Viewport Ensure(Node sceneRoot, Viewport rootViewport)
     {
-        if (standalone)
+        if (UseRootViewport)
             return rootViewport;
 
         var viewport = sceneRoot.GetNodeOrNull<SubViewport>("%XRViewport")

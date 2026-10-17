@@ -8,22 +8,32 @@ using Godot;
 namespace Lumora.Source.Godot.Bootstrap;
 
 // Godot splits the command line at "--": engine args before it, user args after. A launch flag is
-// written on whichever side the operator happened to put it, so every lookup walks both. -xlinka
+// written on whichever side the operator happened to put it, so every lookup walks both. Read from Godot
+// once: the command line does not change, and some lookups run every frame. -xlinka
 public static class LaunchArgs
 {
     public const string DebugFlag = "--Lumora-Debug";
 
-    public static IEnumerable<string> All()
+    private static string[]? _all;
+
+    public static IEnumerable<string> All() => Args();
+
+    private static string[] Args()
     {
-        foreach (var arg in OS.GetCmdlineArgs())
-            yield return arg;
-        foreach (var arg in OS.GetCmdlineUserArgs())
-            yield return arg;
+        if (_all != null)
+            return _all;
+        var engine = OS.GetCmdlineArgs();
+        var user = OS.GetCmdlineUserArgs();
+        var all = new string[engine.Length + user.Length];
+        engine.CopyTo(all, 0);
+        user.CopyTo(all, engine.Length);
+        _all = all;
+        return all;
     }
 
     public static bool HasFlag(string flag)
     {
-        foreach (var arg in All())
+        foreach (var arg in Args())
         {
             if (arg.Trim().Equals(flag, StringComparison.OrdinalIgnoreCase))
                 return true;
@@ -35,7 +45,7 @@ public static class LaunchArgs
     public static string? ReadValue(string flag)
     {
         var prefix = flag + "=";
-        foreach (var raw in All())
+        foreach (var raw in Args())
         {
             var arg = raw.Trim();
             if (arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))

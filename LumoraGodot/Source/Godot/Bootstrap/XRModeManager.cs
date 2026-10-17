@@ -113,7 +113,7 @@ public partial class XRModeManager : Node
         var sceneRoot = GetTree()?.CurrentScene;
         _xrOrigin = sceneRoot?.GetNodeOrNull<XROrigin3D>("%XROrigin3D")!;
         _xrCamera = sceneRoot?.GetNodeOrNull<XRCamera3D>("%XRCamera3D")!;
-        _xrViewport = XRViewportLayout.Ensure(sceneRoot ?? this, GetViewport(), IsStandalone);
+        _xrViewport = XRViewportLayout.Ensure(sceneRoot ?? this, GetViewport());
 
         ApplyRenderingMode(startingInVR);
         _headOutput?.NotifyVRActiveChanged(startingInVR);
@@ -131,9 +131,9 @@ public partial class XRModeManager : Node
 
         var keyHint = OS.HasFeature("editor") ? "Shift+F8 (editor)" : "F8";
         LumoraLogger.Log($"XRModeManager: Initialized. Mode={( startingInVR ? "VR" : "Desktop" )}");
-        LumoraLogger.Log($"XRModeManager: Press {keyHint} at any time to toggle between Desktop and VR.");
+        LumoraLogger.Debug($"XRModeManager: Press {keyHint} at any time to toggle between Desktop and VR.");
         if (!IsStandalone)
-            LumoraLogger.Log("XRModeManager: Press F9 to re-detect a headset plugged in after launch "
+            LumoraLogger.Debug("XRModeManager: Press F9 to re-detect a headset plugged in after launch "
                            + "(one way into VR, never out of it).");
     }
 
@@ -149,18 +149,18 @@ public partial class XRModeManager : Node
         if (@event is InputEventKey key && key.Pressed && !key.Echo &&
             (key.PhysicalKeycode == global::Godot.Key.F8 || key.Keycode == global::Godot.Key.F8))
         {
-            LumoraLogger.Log($"XRModeManager: F8 _Input event (shift={key.ShiftPressed}, ctrl={key.CtrlPressed}, alt={key.AltPressed})");
+            LumoraLogger.Debug($"XRModeManager: F8 _Input event (shift={key.ShiftPressed}, ctrl={key.CtrlPressed}, alt={key.AltPressed})");
         }
     }
 
-    // On standalone (Quest, Pico, Focus 3, ...) there is no meaningful desktop mode - the headset
+    // On standalone (Quest, Pico, Focus 3, Steam Frame, ...) there is no meaningful desktop mode - the headset
     // IS the screen - so F8 is disabled and gameplay code should avoid offering mode-swap UI here.
-    public static bool IsStandalone => OS.HasFeature("android");
+    public static bool IsStandalone => HeadsetDeviceMode.IsHeadset;
 
     // Edge-triggered polling. Consults Godot's polled key state every frame.
     // This survives any focused Control / GUI consumption that would have
     // swallowed the F8 event before _Input or _UnhandledInput saw it.
-    // Disabled on standalone Android - there's no keyboard and no desktop
+    // Disabled on standalone headsets - there's no keyboard and no desktop
     // mode to switch to.
     // - xlinka
     private bool _f8WasDown;
@@ -168,12 +168,19 @@ public partial class XRModeManager : Node
     public override void _Process(double delta)
     {
         if (!_initialized) return;
-        if (IsStandalone) return;
+        if (IsStandalone)
+        {
+            // Linux headsets can start the app before their runtime is ready. They still need
+            // the automatic retry, even though desktop hotkeys and monitor mirroring do not apply.
+            if (!IsVRActive)
+                WatchForHeadset(delta);
+            return;
+        }
 
         bool f8Down = global::Godot.Input.IsKeyPressed(global::Godot.Key.F8);
         if (f8Down && !_f8WasDown)
         {
-            LumoraLogger.Log($"XRModeManager: F8 polled (IsVRActive={IsVRActive}, queuing toggle)");
+            LumoraLogger.Debug($"XRModeManager: F8 polled (IsVRActive={IsVRActive}, queuing toggle)");
             ToggleMode();
         }
         _f8WasDown = f8Down;
@@ -193,6 +200,7 @@ public partial class XRModeManager : Node
             SyncDesktopMirrorCamera();
         else
             WatchForHeadset(delta);
+        UpdateMonitorView(IsVRActive);
     }
 
     // A HEADSET THAT ARRIVES AFTER LAUNCH GETS PICKED UP WITHOUT A KEYBOARD.
@@ -234,7 +242,7 @@ public partial class XRModeManager : Node
         if (xrInterface == null || xrInterface.IsInitialized())
             return;
 
-        if (!AnyVrServerRunning())
+        if (!IsStandalone && !AnyVrServerRunning())
             return;
 
         var openXRInterface = xrInterface as OpenXRInterface;
@@ -370,7 +378,7 @@ public partial class XRModeManager : Node
 
         if (_switching || _toggleQueued)
         {
-            LumoraLogger.Log("XRModeManager: Mode switch already queued or active; ignoring duplicate request.");
+            LumoraLogger.Debug("XRModeManager: Mode switch already queued or active; ignoring duplicate request.");
             return;
         }
 
@@ -383,7 +391,7 @@ public partial class XRModeManager : Node
 
         _queuedVRTarget = targetVR;
         _toggleQueued = true;
-        LumoraLogger.Log($"XRModeManager: Queued {(targetVR ? "Desktop -> VR" : "VR -> Desktop")} switch.");
+        LumoraLogger.Debug($"XRModeManager: Queued {(targetVR ? "Desktop -> VR" : "VR -> Desktop")} switch.");
         CallDeferred(nameof(ProcessQueuedModeSwitch));
     }
 
@@ -429,7 +437,7 @@ public partial class XRModeManager : Node
         if (!IsVRActive)
             return false;
 
-        LumoraLogger.Log("XRModeManager: Switching to Desktop mode...");
+        LumoraLogger.Debug("XRModeManager: Switching to Desktop mode...");
 
         ApplyRenderingMode(false);
         _headOutput?.NotifyVRActiveChanged(false);
@@ -451,7 +459,7 @@ public partial class XRModeManager : Node
         if (IsVRActive)
             return false;
 
-        LumoraLogger.Log("XRModeManager: Switching to VR mode...");
+        LumoraLogger.Debug("XRModeManager: Switching to VR mode...");
 
         try
         {
@@ -466,12 +474,12 @@ public partial class XRModeManager : Node
             ViewportQuality.ConfigureOpenXRBeforeInitialize(openXRInterface, LumoraLogger.Log);
 
             if (!_xrAvailable)
-                LumoraLogger.Log("XRModeManager: OpenXR capability not established yet; checking runtime now.");
+                LumoraLogger.Debug("XRModeManager: OpenXR capability not established yet; checking runtime now.");
 
             // Recovery path - session is normally already up from PhaseXRDetection.
             if (!xrInterface.IsInitialized())
             {
-                LumoraLogger.Log("XRModeManager: OpenXR session not yet initialized; attempting Initialize()...");
+                LumoraLogger.Debug("XRModeManager: OpenXR session not yet initialized; attempting Initialize()...");
                 bool ok = false;
                 try { ok = xrInterface.Initialize(); }
                 catch (Exception initEx)
@@ -593,9 +601,11 @@ public partial class XRModeManager : Node
                 SetDesktopMirrorQuality(true);
                 SyncDesktopMirrorCamera();
             }
+            UpdateMonitorView(true);
         }
         else
         {
+            UpdateMonitorView(false);
             SetDesktopMirrorQuality(false);
             _spectatorMirrorLogShown = false;
             _vrDriver?.SetModeActive(false);
@@ -653,6 +663,46 @@ public partial class XRModeManager : Node
         return _mainCamera.GetViewport() == _xrCamera.GetViewport();
     }
 
+    // Keep the desktop window on its own viewport. OpenXR owns the eye swapchains and may draw only
+    // part of them; attaching those directly exposed stale edge pixels and fought window resize updates.
+    // The existing desktop camera follows the head. A director feed is composited over it normally.
+    private MonitorPresentation? _monitorPresentation;
+
+    private void UpdateMonitorView(bool vrActive)
+    {
+        if (IsStandalone || OS.HasFeature("android"))
+            return;
+        var root = GetTree()?.Root;
+        if (root == null)
+            return;
+
+        bool separate = _xrViewport is SubViewport && GodotObject.IsInstanceValid(_xrViewport) && !CamerasShareViewport();
+        var feed = vrActive && separate && !EyedropperArmed()
+            ? (Lumora.Core.Photos.DesktopFeed.Shown?.Hook as Lumora.Godot.Hooks.RenderTextureHook)?.FilmViewport
+            : null;
+        bool showFeed = feed != null && GodotObject.IsInstanceValid(feed);
+        if (showFeed && _monitorPresentation == null)
+        {
+            _monitorPresentation = new MonitorPresentation { Name = "MonitorCameraFeed" };
+            AddChild(_monitorPresentation);
+        }
+        _monitorPresentation?.ShowFeed(showFeed ? feed!.GetTexture() : null);
+        // Drawing the feed only needs the canvas. Otherwise keep the spectator camera rendering the
+        // entire window every frame, including after F8, feed removal, resize and eyedropper use.
+        if (root.Disable3D != showFeed)
+            root.Disable3D = showFeed;
+    }
+
+    public override void _ExitTree()
+    {
+        if (_monitorPresentation is { Visible: true } && GetTree()?.Root is { } root)
+            root.Disable3D = false;
+        base._ExitTree();
+    }
+
+    private static bool EyedropperArmed()
+        => Lumora.Core.Components.ColorPickerPanel.ActiveSampler is { IsSampling: true } panel && !panel.IsDestroyed;
+
     // Preserve desktop preferences across mode changes; XR and its mirror own quality while active.
     private void SetDesktopMirrorQuality(bool on)
     {
@@ -671,7 +721,7 @@ public partial class XRModeManager : Node
             _savedTaa = root.UseTaa;
             ViewportQuality.ApplyDesktopMirrorDefaults(root);
             _cheapMirrorApplied = true;
-            LumoraLogger.Log("XRModeManager: desktop mirror at full resolution with 4x MSAA, while VR is active.");
+            LumoraLogger.Debug("XRModeManager: desktop mirror at full resolution with 4x MSAA, while VR is active.");
             return;
         }
 
@@ -710,7 +760,7 @@ public partial class XRModeManager : Node
 
         if (!_spectatorMirrorLogShown)
         {
-            LumoraLogger.Log("XRModeManager: DesktopCamera is mirroring XRCamera3D for the monitor view.");
+            LumoraLogger.Debug("XRModeManager: DesktopCamera is mirroring XRCamera3D for the monitor view.");
             _spectatorMirrorLogShown = true;
         }
     }
@@ -730,14 +780,25 @@ public partial class XRModeManager : Node
         AddChild(_desktopCamera);
         _desktopCamera.Initialize(_engine, _headOutput);
 
-        LumoraLogger.Log("XRModeManager: Desktop input providers ready (F5=third-person, F6=free-cam)");
+        LumoraLogger.Debug("XRModeManager: Desktop input providers ready (F5=third-person, F6=free-cam)");
+    }
+
+    public void EnableTouchControls(GodotMouseDriver mouseDriver)
+    {
+        if (!AndroidDeviceMode.IsPhone || IsVRActive) return;
+        var layer = new CanvasLayer { Name = "TouchControlsLayer", Layer = 110 };
+        var controls = new TouchControls { Name = "TouchControls" };
+        controls.Initialize(_inputInterface, mouseDriver, _desktopCamera);
+        layer.AddChild(controls);
+        AddChild(layer);
+        _inputInterface.RegisterInputDriver(controls);
     }
 
     private void TeardownDesktopInput()
     {
         FreeIfValid(ref _desktopInput);
         FreeIfValid(ref _desktopCamera);
-        LumoraLogger.Log("XRModeManager: Desktop input providers removed");
+        LumoraLogger.Debug("XRModeManager: Desktop input providers removed");
     }
 
 

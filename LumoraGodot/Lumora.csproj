@@ -1,6 +1,6 @@
-﻿<Project Sdk="Godot.NET.Sdk/4.7.0-dev.4">
+﻿<Project Sdk="Godot.NET.Sdk/4.8.0-dev.7">
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <LangVersion>preview</LangVersion>
     <Nullable>enable</Nullable>
@@ -10,7 +10,7 @@
     <PackageReference Include="Steamworks.NET" Version="2024.8.0" Condition="'$(GodotTargetPlatform)' != 'android' And '$(GodotTargetPlatform)' != 'ios'" />
     <PackageReference Include="LiteNetLib" Version="2.0.2" />
     <!-- libvlc natives for the desktop video backend. The Windows package drops libvlc/win-x64 next to
-         the assemblies; Linux uses the system libvlc, so there is no package for it. -xlinka -->
+         the assemblies; Linux has no package, so tools/libvlc_linux.py builds the bundle below. -xlinka -->
     <PackageReference Include="LibVLCSharp" Version="3.10.1" Condition="'$(GodotTargetPlatform)' != 'android' And '$(GodotTargetPlatform)' != 'ios'" />
     <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.23.1" Condition="'$(GodotTargetPlatform)' != 'android' And '$(GodotTargetPlatform)' != 'ios'" />
   </ItemGroup>
@@ -25,10 +25,30 @@
     <VlcWindowsArm64Enabled>true</VlcWindowsArm64Enabled>
     <VlcWindowsX64Enabled>false</VlcWindowsX64Enabled>
   </PropertyGroup>
+  <!-- A Linux export carried 102 MB of Windows natives it can never load. -xlinka -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != '' And $(RuntimeIdentifier.StartsWith('linux'))">
+    <VlcWindowsX64Enabled>false</VlcWindowsX64Enabled>
+    <VlcWindowsArm64Enabled>false</VlcWindowsArm64Enabled>
+  </PropertyGroup>
+  <!-- The Linux libvlc bundle (python tools/libvlc_linux.py) rides in data_*/libvlc/linux-x64. Players
+       on SteamOS, the Frame and most distros have no libvlc to fall back on, so a Linux export without
+       it plays nothing but Theora. -xlinka -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'linux-x64' And Exists('..\.natives\libvlc-linux-x64\lib\libvlc.so.5')">
+    <None Include="..\.natives\libvlc-linux-x64\**" LinkBase="libvlc\linux-x64" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\LumoraCore\LumoraCore.csproj" />
     <ProjectReference Include="..\LumoraHooks\LumoraHooks.csproj" />
   </ItemGroup>
+  <!-- Desktop exports ship their code precompiled. Compiled on first call instead, the first open of
+       anything in a session cost two to four times its later opens: measured headless, the shader gallery's
+       first build took 974 ms against 480 ms precompiled, and the scratch space's worst first frame 175 ms
+       against 87 ms. Hot code is still recompiled at full optimisation later, so steady state is the same.
+       Only applies to publish, so editor builds are untouched; Android exports run on Mono and are left
+       alone. -xlinka -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != '' And ($(RuntimeIdentifier.StartsWith('win-')) Or $(RuntimeIdentifier.StartsWith('linux-'))) And !$(RuntimeIdentifier.Contains('bionic'))">
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
   <!-- for steam rt 4 builds -->
   <!-- run with env vars UseAppLocalIcu=true IcuVersion="72.1.0.3" replace with current version -->
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux')) And '$(UseAppLocalIcu)' == 'true'">
@@ -56,11 +76,16 @@
     <Copy SourceFiles="$(OutputPath)LumoraMath.pdb" DestinationFolder="$(ProjectDir)addons\lumora\bin" Condition="Exists('$(OutputPath)LumoraMath.pdb')" />
   </Target>
 
-  <!-- Copy the Steam native redistributables to output after build (Windows x64 + Linux x64). -->
-  <Target Name="CopySteamAPI" AfterTargets="Build">
-    <Copy SourceFiles="$(ProjectDir)steam_api64.dll" DestinationFolder="$(OutputPath)" Condition="Exists('$(ProjectDir)steam_api64.dll')" />
-    <Copy SourceFiles="$(ProjectDir)libsteam_api.so" DestinationFolder="$(OutputPath)" Condition="Exists('$(ProjectDir)libsteam_api.so')" />
-  </Target>
+  <!-- The Steam native redistributables ride the build AND the publish output: an export copies the publish
+       output into its data folder, where the runtime looks for them. Copied only on build, every export
+       shipped without them and Steam never started outside the editor. -->
+  <ItemGroup Condition="'$(GodotTargetPlatform)' != 'android' And '$(GodotTargetPlatform)' != 'ios'">
+    <None Remove="steam_api64.dll;libsteam_api.so" />
+    <None Include="steam_api64.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          Condition="Exists('steam_api64.dll') And ('$(RuntimeIdentifier)' == '' Or $(RuntimeIdentifier.StartsWith('win')))" />
+    <None Include="libsteam_api.so" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          Condition="Exists('libsteam_api.so') And ('$(RuntimeIdentifier)' == '' Or $(RuntimeIdentifier.StartsWith('linux')))" />
+  </ItemGroup>
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''"> 
     <DefineConstants Condition="$(RuntimeIdentifier.Contains('linux'))">$(DefineConstants);LINUX</DefineConstants>
     <DefineConstants Condition="$(RuntimeIdentifier.Contains('osx')) Or $(RuntimeIdentifier.Contains('mac'))">$(DefineConstants);OSX</DefineConstants>

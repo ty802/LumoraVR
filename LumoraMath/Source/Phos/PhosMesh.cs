@@ -9,11 +9,6 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Phos;
 
-/// <summary>
-/// Platform-agnostic procedural mesh container.
-/// Stores vertex data (positions, normals, tangents, colors, UVs, bones, blend shapes).
-/// Core mesh system architecture (PhosMeshSys).
-/// </summary>
 public class PhosMesh
 {
     // Vertex Data Arrays
@@ -21,7 +16,7 @@ public class PhosMesh
     internal float3[] normals = Array.Empty<float3>();
     internal float4[] tangents = Array.Empty<float4>();
     internal color[] colors = Array.Empty<color>();
-    internal PhosUVArray[] uvChannels = new PhosUVArray[4];  // Support up to 4 UV channels
+    internal PhosUVArray[] uvChannels = new PhosUVArray[4];
     internal PhosBoneBinding[] boneBindings = Array.Empty<PhosBoneBinding>();
     internal List<PhosBone> bones = new List<PhosBone>();
     internal BitArray flags = new BitArray(0);
@@ -30,35 +25,49 @@ public class PhosMesh
     internal int[] vertexIDs = Array.Empty<int>();  // For version tracking
     private int _currentVertexID = 0;
 
-    /// <summary>Number of vertices in this mesh</summary>
+    // Arrays a Clear let go of. A procedural mesh whose topology changes clears and builds again, and a big
+    // one (a canvas chunk, a graph's wires) used to drop and regrow every channel each time: about 10 MB of
+    // large-object garbage a rebuild for one graph's wires. The next build takes them back, filled exactly
+    // as a new array would be, so nothing reads what the last build left. -xlinka
+    private float3[] _sparePositions = Array.Empty<float3>();
+    private float3[] _spareNormals = Array.Empty<float3>();
+    private float4[] _spareTangents = Array.Empty<float4>();
+    private color[] _spareColors = Array.Empty<color>();
+    private PhosBoneBinding[] _spareBoneBindings = Array.Empty<PhosBoneBinding>();
+    private readonly float2[][] _spareUVs = { Array.Empty<float2>(), Array.Empty<float2>(), Array.Empty<float2>(), Array.Empty<float2>() };
+    private readonly List<int[]> _spareIndices = new List<int[]>();
+    private const int SpareIndexArrays = 4;
+
+    // Room the channels are kept at, grown geometrically. Its own number, not positions.Length: a channel
+    // that took back a big spare must not drag every other channel up to that size.
+    private int _capacity;
+
+    // Bumped by every Clear. A cleared mesh can hand the same array back with other contents, so anything
+    // that caches on an array's identity keys on this as well.
+    public int ClearCount { get; private set; }
+
     public int VertexCount { get; private set; }
 
-    /// <summary>Version number - increments when vertices are removed</summary>
+    // Changes on every vertex removal.
     internal int VerticesVersion { get; private set; } = -1;
 
-    /// <summary>Enable removal tracking (required for vertex/triangle removal)</summary>
+    // Required for vertex and triangle removal.
     public bool TrackRemovals { get; set; }
 
     // Metadata Flags
-    /// <summary>Whether this mesh has normal data</summary>
     public bool HasNormals { get; set; }
 
-    /// <summary>Whether this mesh has tangent data</summary>
     public bool HasTangents { get; set; }
 
-    /// <summary>Whether this mesh has vertex color data</summary>
     public bool HasColors { get; set; }
 
-    /// <summary>Whether this mesh has bone binding data (for skinning)</summary>
     public bool HasBoneBindings { get; set; }
 
-    /// <summary>Whether this mesh has per-vertex flags</summary>
     public bool HasFlags { get; set; }
 
-    /// <summary>Number of UV channels (0-4)</summary>
+    // 0..4.
     public int UVChannelCount { get; private set; }
 
-    /// <summary>Whether mesh has UV channel 0</summary>
     public bool HasUV0s
     {
         get => uvChannels[0].HasData;
@@ -71,52 +80,35 @@ public class PhosMesh
         set => SetHasUV(1, value);
     }
 
-    /// <summary>Raw array of positions - direct access</summary>
+    // The live backing arrays, no copies. They run past VertexCount, so read up to VertexCount only.
     public float3[] RawPositions => positions;
 
-    /// <summary>Raw array of normals - direct access</summary>
     public float3[] RawNormals => normals;
 
-    /// <summary>Raw array of tangents - direct access</summary>
     public float4[] RawTangents => tangents;
 
-    /// <summary>Raw array of colors - direct access</summary>
     public color[] RawColors => colors;
 
-    /// <summary>Raw array of UV channel 0 - direct access</summary>
     public float2[] RawUV0s => uvChannels[0].uv2D ?? Array.Empty<float2>();
 
-    /// <summary>Raw array of UV channel 1 - direct access</summary>
     public float2[] RawUV1s => uvChannels[1].uv2D ?? Array.Empty<float2>();
 
-    /// <summary>Raw array of UV channel 2 - direct access</summary>
     public float2[] RawUV2s => uvChannels[2].uv2D ?? Array.Empty<float2>();
 
-    /// <summary>Raw array of UV channel 3 - direct access</summary>
     public float2[] RawUV3s => uvChannels[3].uv2D ?? Array.Empty<float2>();
 
-    /// <summary>Raw array of per-vertex bone bindings - direct access</summary>
     public PhosBoneBinding[] RawBoneBindings => boneBindings;
 
-    // Submeshes
-    /// <summary>List of submeshes (different topology groups)</summary>
     public List<PhosSubmesh> Submeshes { get; } = new List<PhosSubmesh>();
 
-    // Blend Shapes
-    /// <summary>List of blend shapes (morph targets)</summary>
     public List<PhosBlendShape> BlendShapes { get; } = new List<PhosBlendShape>();
 
-    // Constructor
     public PhosMesh()
     {
     }
 
     // Vertex Management
 
-    /// <summary>
-    /// Increase vertex count by specified amount.
-    /// Automatically resizes internal arrays.
-    /// </summary>
     public void IncreaseVertexCount(int count)
     {
         int oldCount = VertexCount;
@@ -126,26 +118,24 @@ public class PhosMesh
         // so resizing to the exact VertexCount every time made buffer growth O(n^2): each quad
         // reallocated and copied the whole buffer. Over-allocate to amortize to O(n). VertexCount
         // stays exact and every consumer reads up to VertexCount, never array.Length. - xlinka
-        int capacity = positions.Length;
-        if (capacity < VertexCount)
+        if (_capacity < VertexCount)
         {
-            capacity = System.Math.Max(VertexCount, System.Math.Max(capacity * 2, 64));
+            _capacity = System.Math.Max(VertexCount, System.Math.Max(_capacity * 2, 64));
         }
+        int capacity = _capacity;
 
-        EnsureArray(true, ref positions, capacity, float3.Zero);
-        EnsureArray(HasNormals, ref normals, capacity, float3.Zero);
-        EnsureArray(HasTangents, ref tangents, capacity, float4.Zero);
-        EnsureArray(HasColors, ref colors, capacity, color.White);
-        EnsureArray(HasBoneBindings, ref boneBindings, capacity, new PhosBoneBinding());
+        EnsureArray(true, ref positions, capacity, float3.Zero, ref _sparePositions);
+        EnsureArray(HasNormals, ref normals, capacity, float3.Zero, ref _spareNormals);
+        EnsureArray(HasTangents, ref tangents, capacity, float4.Zero, ref _spareTangents);
+        EnsureArray(HasColors, ref colors, capacity, color.White, ref _spareColors);
+        EnsureArray(HasBoneBindings, ref boneBindings, capacity, new PhosBoneBinding(), ref _spareBoneBindings);
 
-        // Resize UV channels
         for (int i = 0; i < UVChannelCount; i++)
         {
             if (uvChannels[i].uv2D != null)
-                EnsureArray(true, ref uvChannels[i].uv2D!, capacity, float2.Zero);
+                EnsureArray(true, ref uvChannels[i].uv2D!, capacity, float2.Zero, ref _spareUVs[i]);
         }
 
-        // Resize flags
         if (HasFlags)
         {
             var newFlags = new BitArray(VertexCount);
@@ -163,9 +153,6 @@ public class PhosMesh
         }
     }
 
-    /// <summary>
-    /// Get a vertex reference at the specified index.
-    /// </summary>
     public PhosVertex GetVertex(int index)
     {
         if (index < 0 || index >= VertexCount)
@@ -174,9 +161,6 @@ public class PhosMesh
         return new PhosVertex(index, this);
     }
 
-    /// <summary>
-    /// Remove vertices starting at index.
-    /// </summary>
     public void RemoveVertices(int index, int count, bool updateSubmeshes = true)
     {
         if (count == 0) return;
@@ -185,14 +169,12 @@ public class PhosMesh
         if (index + count > VertexCount)
             throw new ArgumentOutOfRangeException(nameof(count));
 
-        // Update submesh indices
         if (updateSubmeshes)
         {
             foreach (var submesh in Submeshes)
                 submesh.VerticesRemoved(index, count);
         }
 
-        // Shift arrays
         RemoveElements(positions, index, count, VertexCount, false, float3.Zero);
         RemoveElements(normals, index, count, VertexCount, false, float3.Zero);
         RemoveElements(tangents, index, count, VertexCount, false, float4.Zero);
@@ -200,7 +182,6 @@ public class PhosMesh
         RemoveElements(boneBindings, index, count, VertexCount, false, new PhosBoneBinding());
         RemoveElements(vertexIDs, index, count, VertexCount, true, int.MaxValue);
 
-        // Update UV channels
         for (int i = 0; i < UVChannelCount; i++)
         {
             if (uvChannels[i].uv2D != null)
@@ -211,14 +192,11 @@ public class PhosMesh
         VerticesVersion--;
     }
 
-    /// <summary>
-    /// Remove vertices in a collection.
-    /// </summary>
     public void RemoveVertices(Collections.PhosVertexCollection vertices)
     {
         if (vertices.Count == 0) return;
 
-        // Sort by index descending to remove from back to front
+        // Back to front, so the indices still to go stay valid.
         var sorted = vertices.OrderByDescending(v => v.Index).ToList();
 
         foreach (var vertex in sorted)
@@ -227,14 +205,10 @@ public class PhosMesh
         }
     }
 
-    /// <summary>
-    /// Remove triangles in a collection.
-    /// </summary>
     public void RemoveTriangles(Collections.PhosTriangleCollection triangles)
     {
         if (triangles.Count == 0) return;
 
-        // Group by submesh
         var bySubmesh = triangles.GroupBy(t => t.Submesh);
 
         foreach (var group in bySubmesh)
@@ -243,9 +217,6 @@ public class PhosMesh
         }
     }
 
-    /// <summary>
-    /// Remove points in a collection.
-    /// </summary>
     public void RemovePoints(Collections.PhosPointCollection points)
     {
         if (points.Count == 0) return;
@@ -258,17 +229,16 @@ public class PhosMesh
         }
     }
 
-    /// <summary>
-    /// Clear all mesh data.
-    /// </summary>
     public void Clear()
     {
+        ClearCount++;
         VertexCount = 0;
-        positions = Array.Empty<float3>();
-        normals = Array.Empty<float3>();
-        tangents = Array.Empty<float4>();
-        colors = Array.Empty<color>();
-        boneBindings = Array.Empty<PhosBoneBinding>();
+        _capacity = 0;
+        Keep(ref _sparePositions, ref positions);
+        Keep(ref _spareNormals, ref normals);
+        Keep(ref _spareTangents, ref tangents);
+        Keep(ref _spareColors, ref colors);
+        Keep(ref _spareBoneBindings, ref boneBindings);
         flags = new BitArray(0);
         vertexIDs = Array.Empty<int>();
 
@@ -281,8 +251,14 @@ public class PhosMesh
         UVChannelCount = 0;
 
         for (int i = 0; i < 4; i++)
+        {
+            if (uvChannels[i].uv2D is { } uv)
+                Keep(ref _spareUVs[i], ref uv);
             uvChannels[i] = new PhosUVArray();
+        }
 
+        foreach (var submesh in Submeshes)
+            KeepIndices(submesh.Release());
         Submeshes.Clear();
         BlendShapes.Clear();
         _blendShapeByName.Clear();
@@ -292,9 +268,6 @@ public class PhosMesh
 
     // UV Channel Management
 
-    /// <summary>
-    /// Set whether a UV channel is present.
-    /// </summary>
     public void SetHasUV(int channel, bool state)
     {
         if (channel < 0 || channel >= 4)
@@ -304,15 +277,12 @@ public class PhosMesh
         {
             if (uvChannels[channel].uv2D == null)
             {
-                uvChannels[channel].uv2D = new float2[VertexCount];
+                uvChannels[channel].uv2D = Fresh(ref _spareUVs[channel], VertexCount, float2.Zero);
             }
             UVChannelCount = System.Math.Max(UVChannelCount, channel + 1);
         }
     }
 
-    /// <summary>
-    /// Check if a UV channel exists, create if needed.
-    /// </summary>
     internal void CheckUV(int channel)
     {
         if (channel < 0 || channel >= 4)
@@ -322,18 +292,13 @@ public class PhosMesh
             SetHasUV(channel, true);
     }
 
-    /// <summary>
-    /// Get raw UVs for a channel (creates if doesn't exist).
-    /// </summary>
+    // Creates the channel when missing.
     internal float2[] GetRawUVs(int channel)
     {
         CheckUV(channel);
         return uvChannels[channel].uv2D!;
     }
 
-    /// <summary>
-    /// Set a UV coordinate at a specific vertex index.
-    /// </summary>
     public void SetUV(int channel, int vertexIndex, float2 uv)
     {
         CheckUV(channel);
@@ -343,9 +308,7 @@ public class PhosMesh
         }
     }
 
-    /// <summary>
-    /// Try to get UV array (doesn't create).
-    /// </summary>
+    // Never creates the channel.
     internal PhosUVArray TryGetRawUV_Array(int channel)
     {
         if (channel < 0 || channel >= 4)
@@ -360,7 +323,7 @@ public class PhosMesh
         if (!HasNormals)
         {
             HasNormals = true;
-            normals = new float3[VertexCount];
+            normals = Fresh(ref _spareNormals, VertexCount, float3.Zero);
         }
     }
 
@@ -369,7 +332,7 @@ public class PhosMesh
         if (!HasTangents)
         {
             HasTangents = true;
-            tangents = new float4[VertexCount];
+            tangents = Fresh(ref _spareTangents, VertexCount, float4.Zero);
         }
     }
 
@@ -378,9 +341,7 @@ public class PhosMesh
         if (!HasColors)
         {
             HasColors = true;
-            colors = new color[VertexCount];
-            for (int i = 0; i < VertexCount; i++)
-                colors[i] = color.White;
+            colors = Fresh(ref _spareColors, VertexCount, color.White);
         }
     }
 
@@ -389,7 +350,7 @@ public class PhosMesh
         if (!HasBoneBindings)
         {
             HasBoneBindings = true;
-            boneBindings = new PhosBoneBinding[VertexCount];
+            boneBindings = Fresh(ref _spareBoneBindings, VertexCount, new PhosBoneBinding());
         }
     }
 
@@ -404,9 +365,6 @@ public class PhosMesh
 
     // Submesh Management
 
-    /// <summary>
-    /// Get index of a submesh.
-    /// </summary>
     public int IndexOfSubmesh(PhosSubmesh submesh)
     {
         return Submeshes.IndexOf(submesh);
@@ -414,22 +372,17 @@ public class PhosMesh
 
     // Bone Management
 
-    /// <summary>Number of bones in this mesh's skeleton table.</summary>
     public int BoneCount => bones.Count;
 
-    /// <summary>Get a bone by index.</summary>
     public PhosBone GetBone(int index) => bones[index];
 
-    /// <summary>Index of a bone in the table, or -1 if not present.</summary>
     public int IndexOfBone(PhosBone bone) => bones.IndexOf(bone);
 
-    /// <summary>Bone name at the given index.</summary>
     public string GetBoneName(int index) => bones[index].Name;
 
-    /// <summary>Bone bind pose at the given index.</summary>
     public float4x4 GetBoneBindPose(int index) => bones[index].BindPose;
 
-    /// <summary>Append a new bone (BindPose defaults to identity) and return it.</summary>
+    // BindPose starts as identity.
     public PhosBone AddBone(string name = "Bone")
     {
         var bone = new PhosBone(name);
@@ -437,11 +390,9 @@ public class PhosMesh
         return bone;
     }
 
-    /// <summary>
-    /// Ensure the per-vertex bone-binding array exists, sized to VertexCount. Thin public wrapper over
-    /// the internal CheckBoneBindings so the asset path can request bindings without reaching into
-    /// internals. - xlinka
-    /// </summary>
+    // Ensure the per-vertex bone-binding array exists, sized to VertexCount. Thin public wrapper over
+    // the internal CheckBoneBindings so the asset path can request bindings without reaching into
+    // internals. - xlinka
     public void EnsureBoneBindings() => CheckBoneBindings();
 
     // Blend Shape Management
@@ -500,9 +451,7 @@ public class PhosMesh
         return shape;
     }
 
-    /// <summary>
-    /// Get or create a blend shape by name.
-    /// </summary>
+    // Creates the shape on a miss.
     public PhosBlendShape GetBlendShape(string name)
     {
         if (TryGetBlendShape(name, out var existing))
@@ -585,20 +534,14 @@ public class PhosMesh
         return false;
     }
 
-    /// <summary>Number of blend shapes on this mesh.</summary>
     public int BlendShapeCount => BlendShapes.Count;
 
-    /// <summary>Index of the named blend shape, or -1 if absent.</summary>
     public int BlendShapeIndex(string name) => BlendShapes.FindIndex(bs => bs.Name == name);
 
-    /// <summary>Whether a blend shape with this name exists.</summary>
     public bool HasBlendShape(string name) => BlendShapeMap().ContainsKey(name ?? string.Empty);
 
     // Utility Methods
 
-    /// <summary>
-    /// Calculate bounding box of entire mesh.
-    /// </summary>
     public BoundingBox CalculateBoundingBox()
     {
         var bounds = new BoundingBox();
@@ -621,23 +564,108 @@ public class PhosMesh
             int oldLength = array?.Length ?? 0;
             Array.Resize(ref array, size);
 
-            // Initialize new elements
             for (int i = oldLength; i < size; i++)
                 array[i] = defaultValue;
         }
+    }
+
+    // Growth that takes a channel's spare back when it is big enough. Whatever the live array held stays where
+    // it was and the rest is the default, the same as a resize gives.
+    internal void EnsureArray<T>(bool condition, ref T[] array, int size, T defaultValue, ref T[] spare)
+    {
+        if (!condition || array.Length >= size)
+            return;
+        if (spare.Length >= size)
+        {
+            int kept = array.Length;
+            var reused = spare;
+            spare = Array.Empty<T>();
+            if (kept > 0)
+                Array.Copy(array, reused, kept);
+            Array.Fill(reused, defaultValue, kept, reused.Length - kept);
+            array = reused;
+            return;
+        }
+        EnsureArray(true, ref array, size, defaultValue);
+    }
+
+    // A channel switched on with this many vertices already in place: all default, from its spare when that
+    // is big enough.
+    private static T[] Fresh<T>(ref T[] spare, int size, T value)
+    {
+        if (size == 0)
+            return Array.Empty<T>();
+        if (spare.Length >= size)
+        {
+            var reused = spare;
+            spare = Array.Empty<T>();
+            Array.Fill(reused, value);
+            return reused;
+        }
+        var made = new T[size];
+        if (!EqualityComparer<T>.Default.Equals(value, default!))
+            Array.Fill(made, value);
+        return made;
+    }
+
+    private static void Keep<T>(ref T[] spare, ref T[] live)
+    {
+        if (live.Length > spare.Length)
+            spare = live;
+        live = Array.Empty<T>();
+    }
+
+    private void KeepIndices(int[] indices)
+    {
+        if (indices.Length == 0)
+            return;
+        _spareIndices.Add(indices);
+        if (_spareIndices.Count <= SpareIndexArrays)
+            return;
+        int smallest = 0;
+        for (int i = 1; i < _spareIndices.Count; i++)
+        {
+            if (_spareIndices[i].Length < _spareIndices[smallest].Length)
+                smallest = i;
+        }
+        _spareIndices.RemoveAt(smallest);
+    }
+
+    // A submesh's index room, from the smallest spare that fits when there is one. Zeroed past what it held,
+    // as a new array is.
+    internal void EnsureIndices(ref int[] indices, int size)
+    {
+        if (indices.Length >= size)
+            return;
+        int best = -1;
+        for (int i = 0; i < _spareIndices.Count; i++)
+        {
+            if (_spareIndices[i].Length >= size && (best < 0 || _spareIndices[i].Length < _spareIndices[best].Length))
+                best = i;
+        }
+        if (best < 0)
+        {
+            EnsureArray(true, ref indices, size, 0);
+            return;
+        }
+        var reused = _spareIndices[best];
+        _spareIndices.RemoveAt(best);
+        int kept = indices.Length;
+        if (kept > 0)
+            Array.Copy(indices, reused, kept);
+        Array.Clear(reused, kept, reused.Length - kept);
+        indices = reused;
     }
 
     internal void RemoveElements<T>(T[] array, int index, int count, int totalCount, bool clear, T clearValue)
     {
         if (array == null || array.Length == 0) return;
 
-        // Shift elements down
         if (index + count < totalCount)
         {
             Array.Copy(array, index + count, array, index, totalCount - index - count);
         }
 
-        // Clear removed elements if requested
         if (clear)
         {
             for (int i = totalCount - count; i < totalCount; i++)
@@ -647,8 +675,6 @@ public class PhosMesh
 
     internal void RemoveElements(int[] array, Action<int, int> callback)
     {
-        // Used for removing elements with callback
-        // Implementation using PhosMeshSys pattern
         var toRemove = new List<(int index, int count)>();
 
         // Group consecutive indices
@@ -671,7 +697,6 @@ public class PhosMesh
         }
         toRemove.Add((startIndex, count));
 
-        // Remove in reverse order
         for (int i = toRemove.Count - 1; i >= 0; i--)
         {
             callback(toRemove[i].index, toRemove[i].count);

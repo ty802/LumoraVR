@@ -6,11 +6,6 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Phos;
 
-/// <summary>
-/// Base class for mesh submeshes.
-/// A submesh defines a group of primitives (triangles, quads, lines, or points) within a mesh.
-/// PhosMeshSys submesh definition.
-/// </summary>
 public abstract class PhosSubmesh
 {
     public readonly PhosMesh Mesh;
@@ -20,29 +15,20 @@ public abstract class PhosSubmesh
 
     private int _currentID = 0;
 
-    // Abstract Properties
-
-    /// <summary>Topology of this submesh (triangles, quads, lines, points)</summary>
     public abstract PhosTopology Topology { get; }
 
-    /// <summary>Number of indices per primitive (3 for triangles, 4 for quads, etc.)</summary>
     public abstract int IndicesPerElement { get; }
 
-    // Properties
-
-    /// <summary>Index of this submesh in the parent mesh</summary>
     public int Index => Mesh.IndexOfSubmesh(this);
 
-    /// <summary>Number of primitives in this submesh</summary>
     public int Count { get; protected set; }
 
-    /// <summary>Total number of indices</summary>
     public int IndexCount => Count * IndicesPerElement;
 
-    /// <summary>Raw index array - direct access</summary>
+    // The live array, not a copy.
     public int[] RawIndices => indices;
 
-    /// <summary>Current capacity (number of primitives that can be stored without resizing)</summary>
+    // In primitives, not indices.
     public int Capacity
     {
         get
@@ -52,21 +38,13 @@ public abstract class PhosSubmesh
         }
     }
 
-    /// <summary>Version number for primitive tracking</summary>
     internal int PrimitivesVersion { get; private set; } = -1;
-
-    // Constructor
 
     protected PhosSubmesh(PhosMesh mesh)
     {
         Mesh = mesh;
     }
 
-    // Count Management
-
-    /// <summary>
-    /// Set count and generate sequential indices.
-    /// </summary>
     public bool SetCountAndSequence(int count, int sequenceStart = 0)
     {
         int delta = count - Count;
@@ -86,17 +64,11 @@ public abstract class PhosSubmesh
         return delta != 0;
     }
 
-    /// <summary>
-    /// Clear all primitives.
-    /// </summary>
     public void Clear()
     {
         Count = 0;
     }
 
-    /// <summary>
-    /// Set primitive count.
-    /// </summary>
     public bool SetCount(int count)
     {
         int delta = count - Count;
@@ -111,9 +83,6 @@ public abstract class PhosSubmesh
         return delta != 0;
     }
 
-    /// <summary>
-    /// Increase primitive count.
-    /// </summary>
     public void IncreaseCount(int count)
     {
         Count += count;
@@ -132,9 +101,6 @@ public abstract class PhosSubmesh
         }
     }
 
-    /// <summary>
-    /// Append another submesh to this one.
-    /// </summary>
     public void Append(PhosSubmesh submesh)
     {
         if (submesh.Topology != Topology)
@@ -146,25 +112,16 @@ public abstract class PhosSubmesh
         Array.Copy(submesh.RawIndices, 0, RawIndices, IndexCount - submesh.IndexCount, submesh.IndexCount);
     }
 
-    /// <summary>
-    /// Remove primitives from the end.
-    /// </summary>
     public void RemoveFromEnd(int count)
     {
         Remove(Count - count, count);
     }
 
-    /// <summary>
-    /// Remove a single primitive.
-    /// </summary>
     public void Remove(int index)
     {
         Remove(index, 1);
     }
 
-    /// <summary>
-    /// Remove primitives starting at index.
-    /// </summary>
     public void Remove(int index, int count)
     {
         if (count == 0) return;
@@ -186,12 +143,20 @@ public abstract class PhosSubmesh
         Count -= count;
     }
 
-    // Helper Methods
-
     private void EnsureCapacity(int capacity)
     {
-        Mesh.EnsureArray(true, ref indices, capacity * IndicesPerElement, 0);
+        Mesh.EnsureIndices(ref indices, capacity * IndicesPerElement);
         Mesh.EnsureArray(Mesh.TrackRemovals, ref primitiveIDs, capacity, 0);
+    }
+
+    // Hands the index array back to the mesh at a Clear and leaves this submesh empty, so a write through a
+    // reference somebody kept fails loudly instead of landing in the next build's indices.
+    internal int[] Release()
+    {
+        var released = indices;
+        indices = Array.Empty<int>();
+        Count = 0;
+        return released;
     }
 
     internal void VerifyIndex(int index)
@@ -253,9 +218,6 @@ public abstract class PhosSubmesh
         }
     }
 
-    /// <summary>
-    /// Calculate bounding box of this submesh.
-    /// </summary>
     public BoundingBox CalculateBoundingBox()
     {
         var bounds = new BoundingBox();

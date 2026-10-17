@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
+using Lumora.Core.Assets.Interop.Unity;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.Avatar;
@@ -25,7 +26,13 @@ public class ModelImportSettings
 
     public bool ImportMaterials { get; set; } = true;
 
-    public bool GenerateColliders { get; set; } = false;
+    // On unless asked otherwise: an imported thing is something to point at and pick up.
+    public bool GenerateColliders { get; set; } = true;
+
+    // The import lands as one object to pick up: a grab on the slot it imports into, scalable or not, and
+    // an object root so tools and photos take it whole.
+    public bool Grabbable { get; set; } = true;
+    public bool Scalable { get; set; } = true;
 
     // Whether those colliders stop a walking body. See the attach site for why this is separate.
     public bool SolidToPeople { get; set; }
@@ -41,6 +48,11 @@ public class ModelImportSettings
     public bool ForceTpose { get; set; } = false;
 
     public bool IsAvatarImport { get; set; } = false;
+
+    // Bring the model in at the size its file declares (an FBX's unit factor, times Scale), the way the
+    // tool it came from showed it, instead of reading file units as metres. Applied before the rig is
+    // measured, so an avatar's height comes out in metres too. Ignored when Rescale is on.
+    public bool UseFileUnits { get; set; }
 
     // --- Options driven by the import dialog (ModelImportRequest). Only those the
     // importer can actually honor in its own scope are wired through; geometry-level
@@ -59,7 +71,23 @@ public class ModelImportSettings
 
     // -1 = no limit. Not enforced yet, no downscaler.
     public int MaxTextureSize { get; set; } = -1;
+
+    // A source that carries its own material definitions answers here. The importer asks once per
+    // surface, on the world thread, and only builds its own material when the answer is null. -xlinka
+    public Func<ModelMaterialRequest, MaterialProvider?>? MaterialOverride { get; set; }
+
+    // Runs on the world thread once the model is built and placed, before the import reports done.
+    public Action<ModelImportResult>? AfterBuild { get; set; }
+
+    // The creator's own humanoid mapping, rig node -> bone name, when the source ships one.
+    // Null lets a loose model read its Unity .meta sidecar; an explicit map takes precedence.
+    public IReadOnlyDictionary<BodyNode, string>? HumanBones { get; set; }
 }
+
+// One surface asking for its material: the model file's own name for that material, the model's root
+// slot, the node the surface belongs to, the slot its renderer sits on, and its index among that node's
+// surfaces in order.
+public readonly record struct ModelMaterialRequest(string SourceName, Slot Model, Slot Node, Slot Renderer, int Index);
 
 public class ModelImportResult
 {
@@ -74,6 +102,13 @@ public class ModelImportResult
     public List<AnimationProvider> AnimationProviders { get; set; } = new();
 
     public Animator Animator { get; set; } = null!;
+
+    // Metres per file unit as the file declares it; 1 when it declares nothing.
+    public float FileUnitScale { get; set; } = 1f;
+
+    // The slot of the model file's own root node. Everything the file defines hangs under it; the model
+    // slot also carries what the import adds beside it (references, animations, materials).
+    public Slot? NodeRoot { get; set; }
 }
 
 public static class ModelImporter
@@ -157,16 +192,18 @@ public static class ModelImporter
             SetupIK = true,
             IsAvatarImport = true,
             Rescale = true,
-            TargetHeight = 1.7f
+            TargetHeight = 1.7f,
+            GenerateColliders = true,
         };
 
         return await ImportModelAsync(filePath, targetSlot, settings, localDB, progress);
     }
 
     // The single Assimp + Phos import path (one importer for everything): parse the file ONCE with Assimp,
-    // bake every mesh in it to its own .lmesh in the local DB, build a Slot per node with its local transform,
-    // build a SkeletonBuilder from the meshes' bone names (bones are just named Slots), and per mesh attach a
-    // MeshProvider pointed at that mesh's baked file + a SkinnedMeshRenderer bound to the skeleton by name.
+    // bake each node's meshes to .lmesh files in the local DB (a node's parts merged into one mesh with a
+    // submesh per material), build a Slot per node with its local transform, build a SkeletonBuilder from the
+    // meshes' bone names (bones are just named Slots), and per baked mesh attach a MeshProvider pointed at
+    // that file + a renderer, skinned ones bound to the skeleton by name.
     // Assimp/glTF/Godot are all right-handed Y-up, so we import straight: no axis negate, no winding flip.
     //
     // PARSE ONCE IS THE WHOLE POINT. Providers used to carry the SOURCE model URL with a MeshIndex, so every
@@ -180,6 +217,7 @@ public static class ModelImporter
         IProgress<ImportProgress>? progress)
     {
         var result = new ModelImportResult();
+        bool ownsSourceGate = false;
         try
         {
             // Honesty: MaxTextureSize has no downscaler yet, so it's surfaced rather than silently ignored. (Geometry
@@ -189,8 +227,9 @@ public static class ModelImporter
                 Logger.Warn($"ModelImporter: 'Max Texture Size' ({settings.MaxTextureSize}) is not enforced - no texture downscaler yet; importing at source resolution.");
 
             progress?.Report(new ImportProgress(ImportStage.Fetching, 0.05f));
-            var bytes = await System.Threading.Tasks.Task.Run(() => File.ReadAllBytes(filePath)).ConfigureAwait(false);
-
+            var humanBones = settings.HumanBones;
+            if (settings.SetupIK && humanBones == null && File.Exists(filePath + ".meta"))
+                humanBones = await Task.Run(() => ReadHumanoidSidecar(filePath + ".meta")).ConfigureAwait(false);
             string ext = Path.GetExtension(filePath).ToLowerInvariant();
             string hint = ext == ".vrm" ? ".glb" : ext; // VRM is GLB; Assimp needs a known hint
             string modelDir = Path.GetDirectoryName(filePath) ?? ""; // for resolving external texture files
@@ -205,22 +244,19 @@ public static class ModelImporter
             // parse whoever starts it. Without this, dropping five models at once starts five imports on
             // five tasks and each one parses concurrently - which is the exact shape of the bug the
             // per-mesh baking below exists to end, just spelled with files instead of meshes. One heavy
-            // parse at a time, engine-wide. -xlinka
-            Assimp.Scene scene;
+            // scene at a time, through baking: releasing after parsing lets the next native scene
+            // overlap this scene's blend shapes and converted meshes.
             await Assets.AssetManager.SourceParseGate.WaitAsync().ConfigureAwait(false);
-            try
+            ownsSourceGate = true;
+            Assimp.Scene scene = await System.Threading.Tasks.Task.Run(() =>
             {
-                scene = await System.Threading.Tasks.Task.Run(() =>
-                {
-                    using var actx = new Assimp.AssimpContext();
-                    using var ms = new MemoryStream(bytes, writable: false);
-                    return actx.ImportFileFromStream(ms, MeshDecoder.GetAssimpPostProcessSteps(perMesh: true, hint), hint);
-                }).ConfigureAwait(false);
-            }
-            finally
-            {
-                Assets.AssetManager.SourceParseGate.Release();
-            }
+                // Read inside the gate, so queued imports do not retain whole-file buffers.
+                var bytes = File.ReadAllBytes(filePath);
+                if (ext == ".fbx") bytes = FbxImportLayers.Prepare(bytes);
+                using var actx = new Assimp.AssimpContext();
+                using var ms = new MemoryStream(bytes, writable: false);
+                return actx.ImportFileFromStream(ms, MeshDecoder.GetAssimpPostProcessSteps(perMesh: true, hint), hint);
+            }).ConfigureAwait(false);
 
             if (scene == null || !scene.HasMeshes || scene.MeshCount == 0)
             {
@@ -228,10 +264,6 @@ public static class ModelImporter
                 Logger.Error($"ModelImporter(Phos): {result.ErrorMessage} for '{filePath}'");
                 return result;
             }
-
-            // The source bytes were the parse's input and the parse is done. Nothing below reads them, and
-            // a model file is tens of megabytes of headroom on a machine that is about to be short of it.
-            bytes = null!;
 
             // EVERYTHING THE LATER STAGES NEED OUT OF THE PARSE, TAKEN NOW, AS PLAIN DATA.
             //
@@ -243,17 +275,22 @@ public static class ModelImporter
             // be dropped the instant the last mesh is converted. Holding an Assimp node instead would
             // hold its parent chain, and through that the scene, which is the same trap. -xlinka
             int meshCount = scene.MeshCount;
-            var meshMaterialIndex = new int[meshCount];
-            var meshIsSkinned = new bool[meshCount];
-            for (int mi = 0; mi < meshCount; mi++)
-            {
-                var srcMesh = scene.Meshes[mi];
-                if (srcMesh == null) continue;
-                meshMaterialIndex[mi] = srcMesh.MaterialIndex;
-                meshIsSkinned[mi] = srcMesh.HasBones || srcMesh.HasMeshAnimationAttachments;
-            }
+            var parts = MeshGrouping.Capture(scene);
             var boneNames = CollectBoneNames(scene);
             var nodeTree = CaptureNode(scene.RootNode);
+            result.FileUnitScale = FileUnitScale(scene);
+            float baseScale = settings.UseFileUnits && !settings.Rescale ? result.FileUnitScale * settings.Scale : 1f;
+
+            // ONE RENDERER PER NODE AND KIND, NOT PER SCENE MESH. A source object with several materials
+            // reaches us as one mesh per material on the same node, and a renderer each turned one object
+            // into a stack of "MeshN" slots. A node's parts go back together by how they deform (bones, blend
+            // shapes alone, neither); a part on its own still bakes exactly as it always has. -xlinka
+            var units = new List<MeshGrouping.Unit>();
+            var noTriangles = new SortedSet<int>();
+            GroupNodes(nodeTree, parts, units, new Dictionary<string, int>(StringComparer.Ordinal), noTriangles,
+                mi => MeshGrouping.ExactBlendBytes(scene.Meshes[mi]));
+            if (noTriangles.Count > 0)
+                Logger.Log($"ModelImporter: left out {noTriangles.Count} mesh(es) of '{Path.GetFileName(filePath)}' with no triangles: {string.Join(", ", noTriangles)}");
 
             // OFF-THREAD: resolve every used material's textures into local:// URIs up front. Texture
             // saves hit the local DB (file IO) and must NOT run on the world thread - so do them here, off-thread.
@@ -261,6 +298,7 @@ public static class ModelImporter
             // Ahead of the bake because this reads the scene's materials and embedded texture blobs, and the
             // bake is what releases the scene.
             var resolvedMaterials = new Dictionary<int, ResolvedMaterial?>();
+            var materialNames = new Dictionary<int, string>();
             // Counted before the loop so the readout can say "textures 3 of 11" instead of a bare
             // spinner - the slot count is what the user is actually waiting on here, and a model with
             // eleven 4K maps is exactly the import that feels like a hang without it. -xlinka
@@ -270,6 +308,8 @@ public static class ModelImporter
             foreach (var amesh in scene.Meshes)
             {
                 if (amesh == null || resolvedMaterials.ContainsKey(amesh.MaterialIndex)) continue;
+                if (amesh.MaterialIndex >= 0 && amesh.MaterialIndex < scene.MaterialCount)
+                    materialNames[amesh.MaterialIndex] = scene.Materials[amesh.MaterialIndex]?.Name ?? "";
                 var resolved = await ResolveMaterialAsync(scene, amesh.MaterialIndex, modelDir, localDB).ConfigureAwait(false);
                 resolvedMaterials[amesh.MaterialIndex] = resolved;
                 texturesDone += CountResolvedTextures(resolved);
@@ -309,116 +349,100 @@ public static class ModelImporter
                 }
             }
 
-            // BAKE, off-thread, one mesh at a time: convert this mesh out of the scene we already have,
-            // drop the blend shapes whose deltas are all noise, and write it to the local DB as its own
-            // .lmesh. The provider below then loads a file that IS one mesh, so no peer ever parses the
-            // model again - not on join, not on reload, not once per mesh.
+            // BAKE, off-thread, one unit at a time: convert it out of the scene we already have, drop the
+            // blend shapes whose deltas are all noise, and write it to the local DB as its own .lmesh. The
+            // provider below then loads a file that IS that mesh, so no peer ever parses the model again - not
+            // on join, not on reload, not once per mesh.
             //
             // One at a time and Clear()ed on the way out on purpose: the converted mesh is the largest
             // single allocation in the import (an avatar's dense blend shape deltas run to hundreds of
             // megabytes), and holding nine of them at once would just move the blowup rather than fix it. -xlinka
-            var meshUris = new Dictionary<int, Uri>();
+            var unitUris = new Uri?[units.Count];
+            var unitSubmeshParts = new int[]?[units.Count];
+            var partUris = new Dictionary<int, Uri>();
+            var partConverted = new bool[meshCount];
             var meshUsable = new bool[meshCount];
             // Kept for the rescale/center bounds at the end, so the Assimp scene can be released the moment
-            // the last mesh is converted instead of being pinned until the last chunk.
-            var modelPositions = new List<float3>();
-            progress?.Report(new ImportProgress(ImportStage.Decoding, 0.34f, 0, meshCount));
+            // the last mesh is converted instead of being pinned until the last chunk. One list per baked
+            // mesh, because each is measured where its own renderer draws it. -xlinka
+            var unitPoints = new List<float3>?[units.Count];
+            var partPoints = new List<float3>?[meshCount];
+            int strippedShapes = 0;
+            var nodeRest = MeshDecoder.BuildNodeRestMap(scene);
+
+            // The parse's copy of a mesh is dead once the last unit that reads it is converted, and it is the
+            // heavy half of the scene: the incident avatar carried 756 attachments over 58k vertices, which is
+            // 173 MB of dense frames sitting in the parse alongside the converted copy. Letting go per unit
+            // means peak is one converted unit plus the meshes not reached yet; a mesh no unit reads goes
+            // now. -xlinka
+            var lastUse = new int[meshCount];
+            Array.Fill(lastUse, -1);
+            for (int u = 0; u < units.Count; u++)
             {
-                var nodeRest = MeshDecoder.BuildNodeRestMap(scene);
-                int strippedShapes = 0;
-                var shapeNames = new List<string>();
-                var strippedIndices = new List<int>();
-                for (int mi = 0; mi < meshCount; mi++)
-                {
-                    var srcMesh = scene.Meshes[mi];
-                    if (srcMesh == null) continue;
-                    if (!srcMesh.HasVertices || srcMesh.VertexCount == 0) continue;
-                    // Dropped before the await: an async method's locals live in its state machine, so a
-                    // reference held here would keep this mesh alive right through its own conversion.
-                    srcMesh = null!;
-
-                    int captured = mi;
-                    var phos = await System.Threading.Tasks.Task.Run(
-                        () => MeshDecoder.ConvertScene(scene, captured, hint, nodeRest)).ConfigureAwait(false);
-
-                    // The parse's copy of this mesh is dead the moment it is converted, and it is the heavy
-                    // half of the scene: the incident avatar carried 756 attachments over 58k vertices, which
-                    // is 173 MB of dense frames sitting in the parse alongside the converted copy. Letting go
-                    // per mesh means peak is one converted mesh plus the meshes not reached yet. -xlinka
+                foreach (int mi in units[u].Parts)
+                    lastUse[mi] = u;
+            }
+            for (int mi = 0; mi < meshCount; mi++)
+            {
+                if (lastUse[mi] < 0)
                     scene.Meshes[mi] = null!;
-
-                    if (phos == null || phos.VertexCount == 0)
-                    {
-                        Logger.Warn($"ModelImporter: mesh {mi} of '{Path.GetFileName(filePath)}' converted to nothing; skipping.");
-                        continue;
-                    }
-                    meshUsable[mi] = true;
-
-                    // Bounds first: the same walk that collects positions for the rescale/center pass sizes
-                    // the blend shape epsilon below, so neither costs a second pass over the vertices.
-                    var positions = phos.RawPositions;
-                    int vc = phos.VertexCount;
-                    modelPositions.Capacity = System.Math.Max(modelPositions.Capacity, modelPositions.Count + vc);
-                    float3 lo = positions[0], hi = positions[0];
-                    for (int v = 0; v < vc; v++)
-                    {
-                        var p = positions[v];
-                        modelPositions.Add(p);
-                        if (p.x < lo.x) lo.x = p.x;
-                        if (p.y < lo.y) lo.y = p.y;
-                        if (p.z < lo.z) lo.z = p.z;
-                        if (p.x > hi.x) hi.x = p.x;
-                        if (p.y > hi.y) hi.y = p.y;
-                        if (p.z > hi.z) hi.z = p.z;
-                    }
-
-                    if (phos.BlendShapeCount > 0)
-                    {
-                        float diagonal = (hi - lo).Length;
-                        float epsilon = diagonal > 0f && float.IsFinite(diagonal)
-                            ? diagonal * BlendShapeStripDiagonalFraction
-                            : Phos.PhosMesh.BlendShapeDeltaEpsilon;
-
-                        shapeNames.Clear();
-                        for (int s = 0; s < phos.BlendShapes.Count; s++)
-                            shapeNames.Add(phos.BlendShapes[s].Name);
-                        strippedIndices.Clear();
-                        int dropped = phos.StripEmptyBlendShapes(strippedIndices, epsilon);
-                        if (dropped > 0)
-                        {
-                            strippedShapes += dropped;
-                            Logger.Debug($"ModelImporter: mesh {mi} dropped {dropped} flat blend shape(s) under {epsilon:G3} ({diagonal:G4} bounds diagonal): {DescribeStripped(shapeNames, strippedIndices)}");
-                        }
-                    }
-
-                    if (localDB != null)
-                    {
-                        var meshLocal = await localDB.SaveMeshAsync(phos).ConfigureAwait(false);
-                        if (!string.IsNullOrEmpty(meshLocal))
-                            meshUris[mi] = new Uri(meshLocal);
-                        else
-                            Logger.Warn($"ModelImporter: failed to store mesh {mi} of '{Path.GetFileName(filePath)}'; it will load from the source model instead.");
-                    }
-
-                    // Deterministic release: this method is a state machine, so the local stays rooted until
-                    // it is reassigned and the next conversion would otherwise allocate on top of it.
-                    phos.Clear();
-                    phos = null!;
-
-                    progress?.Report(new ImportProgress(ImportStage.Decoding,
-                        0.34f + 0.26f * (float)(mi + 1) / meshCount, mi + 1, meshCount));
-                }
-                if (strippedShapes > 0)
-                    Logger.Log($"ModelImporter: dropped {strippedShapes} blend shape(s) with no measurable deltas from '{Path.GetFileNameWithoutExtension(filePath)}'.");
-                if (localDB == null)
-                    Logger.Warn("ModelImporter: no local DB - meshes cannot be baked, so each provider will re-parse the source model on every peer.");
             }
 
+            progress?.Report(new ImportProgress(ImportStage.Decoding, 0.34f, 0, units.Count));
+            for (int u = 0; u < units.Count; u++)
+            {
+                var unitParts = units[u].Parts;
+                if (unitParts.Length > 1 && localDB != null)
+                {
+                    var points = new List<float3>();
+                    var group = await BakeGroupAsync(scene, unitParts, hint, nodeRest, localDB, points, filePath).ConfigureAwait(false);
+                    strippedShapes += group.Stripped;
+                    unitUris[u] = group.Uri;
+                    unitSubmeshParts[u] = group.SubmeshParts;
+                    if (group.Uri != null)
+                        unitPoints[u] = points;
+                }
+
+                // A lone part, or a unit that could not become one mesh: each part baked on its own, the way
+                // every mesh used to be. -xlinka
+                if (unitUris[u] == null)
+                {
+                    foreach (int mi in unitParts)
+                    {
+                        if (partConverted[mi])
+                            continue;
+                        partConverted[mi] = true;
+                        var points = new List<float3>();
+                        var part = await BakePartAsync(scene, mi, hint, nodeRest, localDB, points, filePath).ConfigureAwait(false);
+                        partPoints[mi] = points;
+                        strippedShapes += part.Stripped;
+                        meshUsable[mi] = part.Usable;
+                        if (part.Uri != null)
+                            partUris[mi] = part.Uri;
+                    }
+                }
+
+                foreach (int mi in unitParts)
+                {
+                    if (lastUse[mi] == u)
+                        scene.Meshes[mi] = null!;
+                }
+
+                progress?.Report(new ImportProgress(ImportStage.Decoding,
+                    0.34f + 0.26f * (float)(u + 1) / units.Count, u + 1, units.Count));
+            }
+            if (strippedShapes > 0)
+                Logger.Debug($"ModelImporter: dropped {strippedShapes} blend shape(s) with no measurable deltas from '{Path.GetFileNameWithoutExtension(filePath)}'.");
+            if (localDB == null)
+                Logger.Warn("ModelImporter: no local DB - meshes cannot be baked, so each provider will re-parse the source model on every peer.");
+
             // LAST READER OF THE SCENE. Everything past this point runs off the plain arrays taken above -
-            // per-mesh material index and skinned flag, bone names, the node tree, the baked URIs and the
+            // per-mesh material index and kind, bone names, the node tree, the baked URIs and the
             // positions for the bounds - so the parse goes now rather than living across the hierarchy
             // walk, the skeleton chunk and every per-mesh renderer chunk after them. -xlinka
             scene = null!;
+            Assets.AssetManager.SourceParseGate.Release();
+            ownsSourceGate = false;
 
             // The source model gets a local DB record, but only the FALLBACK case gets a COPY of it.
             //
@@ -433,7 +457,7 @@ public static class ModelImporter
                 bool anyFallback = false;
                 for (int mi = 0; mi < meshCount; mi++)
                 {
-                    if (meshUsable[mi] && !meshUris.ContainsKey(mi))
+                    if (meshUsable[mi] && !partUris.ContainsKey(mi))
                     {
                         anyFallback = true;
                         break;
@@ -453,22 +477,31 @@ public static class ModelImporter
             progress?.Report(new ImportProgress(ImportStage.Hierarchy, 0.64f));
             Slot modelSlot = null!;
             var nameToSlot = new Dictionary<string, Slot>();
-            var meshNodeSlots = new List<(int[] meshIndices, Slot slot)>();
+            var meshNodeSlots = new List<(int[] units, Slot slot)>();
             await OnWorldAsync(world, () =>
             {
                 modelSlot = targetSlot.AddSlot(Path.GetFileNameWithoutExtension(filePath));
                 result.RootSlot = modelSlot;
-                BuildNodeSlots(nodeTree, modelSlot, nameToSlot, meshNodeSlots);
+                if (settings.Grabbable)
+                {
+                    var grab = targetSlot.GetComponent<Grabbable>() ?? targetSlot.AttachComponent<Grabbable>();
+                    grab.Scalable.Value = settings.Scalable;
+                    if (targetSlot.GetComponent<ObjectRoot>() == null)
+                        targetSlot.AttachComponent<ObjectRoot>();
+                }
+                if (baseScale != 1f)
+                    modelSlot.LocalScale.Value = new float3(baseScale, baseScale, baseScale);
+                result.NodeRoot = BuildNodeSlots(nodeTree, modelSlot, nameToSlot, meshNodeSlots);
             });
 
             // Chunk 2: skeleton (union of mesh bone names) + avatar rig/IK if it classifies as a biped.
             progress?.Report(new ImportProgress(ImportStage.Skeleton, 0.68f));
             SkeletonBuilder? skelBuilder = null;
-            await OnWorldAsync(world, () => skelBuilder = BuildSkeletonAndRig(boneNames, modelSlot, nameToSlot, settings, result));
+            await OnWorldAsync(world, () => skelBuilder = BuildSkeletonAndRig(boneNames, modelSlot, nameToSlot, settings, result, humanBones));
 
-            // Chunk 3..N: per-mesh renderers - one mesh NODE per frame so each renderer's GPU build lands on its own
-            // frame and the world renders between them (load-in-pieces). The provider points at the mesh's OWN baked
-            // .lmesh and carries no MeshIndex: the file is that one mesh, so loading it costs a read and a decode
+            // Chunk 3..N: renderers - one mesh NODE per frame so each renderer's GPU build lands on its own
+            // frame and the world renders between them (load-in-pieces). A provider points at its OWN baked
+            // .lmesh and carries no MeshIndex: the file is that mesh, so loading it costs a read and a decode
             // rather than a model parse. MeshIndex stays live on MeshProvider for content saved before the bake -
             // this path just has no reason to set it any more. -xlinka
             progress?.Report(new ImportProgress(ImportStage.Meshes, 0.70f, 0, meshNodeSlots.Count));
@@ -477,64 +510,62 @@ public static class ModelImporter
             var sourceUri = !string.IsNullOrEmpty(result.LocalUri) ? new Uri(result.LocalUri) : new Uri(filePath);
             int totalMeshNodes = meshNodeSlots.Count;
             int meshNodeDone = 0;
-            foreach (var (nodeMeshIndices, slot) in meshNodeSlots)
+            int renderers = 0;
+            var measured = new List<(List<float3> Points, Slot Slot)>();
+            foreach (var (nodeUnits, slot) in meshNodeSlots)
             {
-                var indices = nodeMeshIndices;
+                var unitIndices = nodeUnits;
                 var capturedSlot = slot;
                 await OnWorldAsync(world, () =>
                 {
-                    for (int k = 0; k < indices.Length; k++)
+                    // A merged unit is one renderer, a unit baked part by part is one per part. A node left
+                    // with a single renderer carries it itself, as a node with a single mesh always has. -xlinka
+                    var entries = new List<(int Unit, int Part)>();
+                    foreach (int u in unitIndices)
                     {
-                        int meshIdx = indices[k];
-                        if (meshIdx < 0 || meshIdx >= meshCount) continue;
-                        if (!meshUsable[meshIdx]) continue;
-
-                        Slot meshSlot = indices.Length == 1 ? capturedSlot : capturedSlot.AddSlot($"Mesh{meshIdx}");
-                        var provider = meshSlot.AttachComponent<MeshProvider>();
-                        if (meshUris.TryGetValue(meshIdx, out var bakedUri))
+                        if (unitUris[u] != null)
                         {
-                            provider.URL.Value = bakedUri;
+                            entries.Add((u, -1));
+                            continue;
+                        }
+                        foreach (int mi in units[u].Parts)
+                        {
+                            if (meshUsable[mi])
+                                entries.Add((u, mi));
+                        }
+                    }
+
+                    int nodeSurface = 0;
+                    foreach (var (u, mi) in entries)
+                    {
+                        var unit = units[u];
+                        Slot meshSlot = entries.Count == 1
+                            ? capturedSlot
+                            : capturedSlot.AddSlot($"Mesh{(mi >= 0 ? mi : unit.Parts[0])}");
+                        if (mi >= 0)
+                        {
+                            bool baked = partUris.TryGetValue(mi, out var partUri);
+                            AttachRenderer(meshSlot, unit.Kind, baked ? partUri! : sourceUri, baked ? -1 : mi,
+                                new[] { parts[mi].MaterialIndex }, resolvedMaterials, settings, skelBuilder, result,
+                                new SurfaceContext(modelSlot, capturedSlot, nodeSurface, materialNames));
+                            nodeSurface++;
+                            if (partPoints[mi] is { } points)
+                                measured.Add((points, meshSlot));
                         }
                         else
                         {
-                            provider.URL.Value = sourceUri;
-                            provider.MeshIndex.Value = meshIdx;
+                            var submeshParts = unitSubmeshParts[u] ?? unit.Parts;
+                            var materialIndices = new int[submeshParts.Length];
+                            for (int k = 0; k < submeshParts.Length; k++)
+                                materialIndices[k] = parts[submeshParts[k]].MaterialIndex;
+                            AttachRenderer(meshSlot, unit.Kind, unitUris[u]!, -1,
+                                materialIndices, resolvedMaterials, settings, skelBuilder, result,
+                                new SurfaceContext(modelSlot, capturedSlot, nodeSurface, materialNames));
+                            nodeSurface += materialIndices.Length;
+                            if (unitPoints[u] is { } points)
+                                measured.Add((points, meshSlot));
                         }
-
-                        resolvedMaterials.TryGetValue(meshMaterialIndex[meshIdx], out var rmat);
-                        var material = BuildMaterialSync(meshSlot, rmat, settings);
-
-                        if (meshIsSkinned[meshIdx])
-                        {
-                            var smr = meshSlot.AttachComponent<SkinnedMeshRenderer>();
-                            smr.MeshAsset.Target = provider;
-                            if (skelBuilder != null) smr.Skeleton.Target = skelBuilder;
-                            if (material != null) smr.Material.Target = material;
-                            result.SkinnedMeshes.Add(smr);
-                        }
-                        else
-                        {
-                            // Static mesh: a plain MeshRenderer off the Phos asset.
-                            var mr = meshSlot.AttachComponent<MeshRenderer>();
-                            mr.Mesh.Target = provider;
-                            if (material != null) mr.Material.Target = material;
-
-                            // Optional collision geometry off the same mesh provider (skinned meshes are skipped:
-                            // their geometry deforms, so a static collider wouldn't track it).
-                            //
-                            // NOT something you walk into. An imported model is a thing somebody put in
-                            // the room - a chair, a statue, a prop - and every one of them used to be a
-                            // wall in its own shape, so importing furniture built a maze. The collider
-                            // is still here and still solid to lasers, grabs, touches and falling
-                            // physics objects; it just does not stop a person. Tick CharacterCollider on
-                            // it to make an imported mesh part of the floor plan. -xlinka
-                            if (settings.GenerateColliders)
-                            {
-                                var collider = meshSlot.AttachComponent<MeshCollider>();
-                                collider.Mesh.Target = provider;
-                                collider.CharacterCollider.Value = settings.SolidToPeople;
-                            }
-                        }
+                        renderers++;
                     }
                 });
                 meshNodeDone++;
@@ -571,7 +602,7 @@ public static class ModelImporter
                         // bindings are live, so pressing play in the inspector is all it takes.
                         int bound = animator.AutoBind(modelSlot, animations[0].clip);
                         result.Animator = animator;
-                        Logger.Log($"ModelImporter: animator bound {bound}/{animations[0].clip.TrackCount} tracks of '{animations[0].clip.Name}'");
+                        Logger.Debug($"ModelImporter: animator bound {bound}/{animations[0].clip.TrackCount} tracks of '{animations[0].clip.Name}'");
                     }
                 });
             }
@@ -580,12 +611,21 @@ public static class ModelImporter
             if (settings.Rescale || settings.Center)
             {
                 progress?.Report(new ImportProgress(ImportStage.Finishing, 0.98f));
-                await OnWorldAsync(world, () => ApplyModelTransform(modelPositions, modelSlot, settings, skelBuilder));
+                await OnWorldAsync(world, () => ApplyModelTransform(measured, modelSlot, settings, baseScale));
             }
+
+            if (settings.AfterBuild != null)
+                await OnWorldAsync(world, () => settings.AfterBuild(result));
 
             progress?.Report(new ImportProgress(ImportStage.Complete, 1f));
             result.Success = true;
-            Logger.Log($"ModelImporter(Phos/Assimp): '{Path.GetFileNameWithoutExtension(filePath)}' - {meshCount} meshes ({meshUris.Count} baked), {result.SkinnedMeshes.Count} skinned");
+            int bakedMeshes = partUris.Count;
+            foreach (var unitUri in unitUris)
+            {
+                if (unitUri != null)
+                    bakedMeshes++;
+            }
+            Logger.Debug($"ModelImporter(Phos/Assimp): '{Path.GetFileNameWithoutExtension(filePath)}' - {meshCount} meshes as {renderers} renderer(s) ({bakedMeshes} baked), {result.SkinnedMeshes.Count} skinned");
         }
         catch (Exception ex)
         {
@@ -593,6 +633,11 @@ public static class ModelImporter
             // The whole stack, not just the message: a failure inside a world-thread chunk surfaces here with
             // no other trace, and "Value cannot be null" alone names nothing.
             Logger.Error($"ModelImporter(Phos): failed '{filePath}': {ex}");
+        }
+        finally
+        {
+            if (ownsSourceGate)
+                Assets.AssetManager.SourceParseGate.Release();
         }
         return result;
     }
@@ -655,11 +700,156 @@ public static class ModelImporter
         return sb.ToString();
     }
 
+    // One scene mesh converted and baked exactly as a lone mesh always has been, so its file and hash stay what
+    // they were. Usable with a null uri means it converted but could not be stored. -xlinka
+    private static async Task<(Uri? Uri, bool Usable, int Stripped)> BakePartAsync(Assimp.Scene scene, int mi,
+        string hint, Dictionary<string, System.Numerics.Matrix4x4> nodeRest, LocalDB? localDB,
+        List<float3>? positions, string filePath)
+    {
+        var phos = await System.Threading.Tasks.Task.Run(
+            () => MeshDecoder.ConvertScene(scene, mi, hint, nodeRest)).ConfigureAwait(false);
+        if (phos == null || phos.VertexCount == 0)
+        {
+            Logger.Warn($"ModelImporter: mesh {mi} of '{Path.GetFileName(filePath)}' converted to nothing; skipping.");
+            return (null, false, 0);
+        }
+
+        int stripped = StripFlatShapes(phos, positions, $"mesh {mi}");
+        Uri? uri = null;
+        if (localDB != null)
+        {
+            var meshLocal = await SaveMeshOrNullAsync(localDB, phos, $"mesh {mi}", filePath).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(meshLocal))
+                uri = new Uri(meshLocal);
+            else
+                Logger.Warn($"ModelImporter: failed to store mesh {mi} of '{Path.GetFileName(filePath)}'; it will load from the source model instead.");
+        }
+
+        // Deterministic release: the next conversion would otherwise allocate on top of this one.
+        phos.Clear();
+        return (uri, true, stripped);
+    }
+
+    // A unit's parts as one mesh with a submesh each. A null uri hands the parts back to be baked one by one.
+    // -xlinka
+    private static async Task<(Uri? Uri, int[]? SubmeshParts, int Stripped)> BakeGroupAsync(
+        Assimp.Scene scene, int[] unitParts, string hint, Dictionary<string, System.Numerics.Matrix4x4> nodeRest,
+        LocalDB localDB, List<float3> positions, string filePath)
+    {
+        string what = $"meshes {string.Join(", ", unitParts)}";
+        Phos.PhosMesh phos;
+        int[] submeshParts;
+        try
+        {
+            (phos, submeshParts) = await System.Threading.Tasks.Task.Run(() =>
+            {
+                var merged = MeshDecoder.ConvertMeshGroup(scene, unitParts, hint, nodeRest, out var map);
+                return (merged, map);
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"ModelImporter: {what} of '{Path.GetFileName(filePath)}' could not be merged ({ex.Message}); baking them one by one.");
+            return (null, null, 0);
+        }
+
+        if (phos == null || phos.VertexCount == 0 || submeshParts.Length == 0)
+        {
+            Logger.Warn($"ModelImporter: {what} of '{Path.GetFileName(filePath)}' merged to nothing; baking them one by one.");
+            return (null, null, 0);
+        }
+
+        int stripped = StripFlatShapes(phos, positions, what);
+        var meshLocal = await SaveMeshOrNullAsync(localDB, phos, what, filePath).ConfigureAwait(false);
+        phos.Clear();
+        if (string.IsNullOrEmpty(meshLocal))
+        {
+            Logger.Warn($"ModelImporter: {what} of '{Path.GetFileName(filePath)}' could not be stored as one mesh; baking them one by one.");
+            return (null, null, 0);
+        }
+        return (new Uri(meshLocal), submeshParts, stripped);
+    }
+
+    // A bake the local DB refuses costs that mesh its file and nothing else. -xlinka
+    private static async Task<string?> SaveMeshOrNullAsync(LocalDB localDB, Phos.PhosMesh phos, string what, string filePath)
+    {
+        try
+        {
+            return await localDB.SaveMeshAsync(phos).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"ModelImporter: {what} of '{Path.GetFileName(filePath)}' could not be baked: {ex.Message}");
+            return null;
+        }
+    }
+
+    // Bounds first: the same walk that collects positions for the rescale/center pass (when positions is
+    // given) sizes the blend shape epsilon, so neither costs a second pass over the vertices. Returns how many
+    // flat shapes went. -xlinka
+    private static int StripFlatShapes(Phos.PhosMesh phos, List<float3>? positions, string what)
+    {
+        var raw = phos.RawPositions;
+        int vc = phos.VertexCount;
+        if (positions != null)
+            positions.Capacity = System.Math.Max(positions.Capacity, positions.Count + vc);
+        float3 lo = raw[0], hi = raw[0];
+        for (int v = 0; v < vc; v++)
+        {
+            var p = raw[v];
+            positions?.Add(p);
+            if (p.x < lo.x) lo.x = p.x;
+            if (p.y < lo.y) lo.y = p.y;
+            if (p.z < lo.z) lo.z = p.z;
+            if (p.x > hi.x) hi.x = p.x;
+            if (p.y > hi.y) hi.y = p.y;
+            if (p.z > hi.z) hi.z = p.z;
+        }
+
+        if (phos.BlendShapeCount == 0)
+            return 0;
+
+        float diagonal = (hi - lo).Length;
+        float epsilon = diagonal > 0f && float.IsFinite(diagonal)
+            ? diagonal * BlendShapeStripDiagonalFraction
+            : Phos.PhosMesh.BlendShapeDeltaEpsilon;
+
+        var shapeNames = new List<string>(phos.BlendShapes.Count);
+        for (int s = 0; s < phos.BlendShapes.Count; s++)
+            shapeNames.Add(phos.BlendShapes[s].Name);
+        var strippedIndices = new List<int>();
+        int dropped = phos.StripEmptyBlendShapes(strippedIndices, epsilon);
+        if (dropped > 0)
+            Logger.Debug($"ModelImporter: {what} dropped {dropped} flat blend shape(s) under {epsilon:G3} ({diagonal:G4} bounds diagonal): {DescribeStripped(shapeNames, strippedIndices)}");
+        return dropped;
+    }
+
+    private static IReadOnlyDictionary<BodyNode, string>? ReadHumanoidSidecar(string path)
+    {
+        try
+        {
+            // Match the package reader's limit for metadata. An optional sidecar must not prevent the
+            // model itself from importing if it is unreadable or contains no usable humanoid table.
+            using var stream = File.OpenRead(path);
+            if (stream.Length > 4 * 1024 * 1024)
+                throw new InvalidDataException("Humanoid metadata exceeds the 4 MB limit.");
+            using var reader = new StreamReader(stream);
+            var map = UnityModelMeta.Parse(reader.ReadToEnd()).HumanoidMap();
+            return map.Count > 0 ? map : null;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"ModelImporter: could not read humanoid metadata from '{Path.GetFileName(path)}': {ex.Message}");
+            return null;
+        }
+    }
+
     // Build the skeleton (union of the meshes' bone names) and, when it classifies as a biped, the avatar rig +
     // full-body IK. ALL data-model writes - call it on the world thread (from inside OnWorldAsync). Returns the
     // SkeletonBuilder, or null when the model has no bones. -xlinka
     private static SkeletonBuilder? BuildSkeletonAndRig(List<string> boneNames, Slot modelSlot,
-        Dictionary<string, Slot> nameToSlot, ModelImportSettings settings, ModelImportResult result)
+        Dictionary<string, Slot> nameToSlot, ModelImportSettings settings, ModelImportResult result,
+        IReadOnlyDictionary<BodyNode, string>? humanBones)
     {
         SkeletonBuilder? skelBuilder = null;
         if (boneNames.Count > 0)
@@ -689,7 +879,8 @@ public static class ModelImporter
         if (settings.SetupIK && skelBuilder != null && skelBuilder.IsBuilt.Value)
         {
             var rig = modelSlot.GetComponent<HumanoidRig>() ?? modelSlot.AttachComponent<HumanoidRig>();
-            rig.PopulateFromSkeleton(skelBuilder);
+            if (!(humanBones is { Count: > 0 } && rig.PopulateFromHumanMap(skelBuilder, humanBones, nameToSlot)))
+                rig.PopulateFromSkeleton(skelBuilder);
             // Normalize to a T-pose before IK captures the rest pose, when the import asked for it (an A-pose model
             // would otherwise IK-bind crooked). Opt-in - ForceTpose defaults off.
             if (settings.ForceTpose)
@@ -761,12 +952,26 @@ public static class ModelImporter
 
                 // No skeleton overlay on import: an imported model is something you look at and drag the
                 // studio markers onto, and a cage of balls and shafts over it is in the way of both. -xlinka
-                Logger.Log($"ModelImporter(Phos): rigged biped avatar ({rig.Bones.Count} bones)");
+                Logger.Debug($"ModelImporter(Phos): rigged biped avatar ({rig.Bones.Count} bones)");
             }
             else
             {
                 Logger.Log("ModelImporter(Phos): skeleton is not a biped - skipping IK rig.");
             }
+        }
+        // A rig nothing above fitted a body to still gets something to point at and pick up: a capsule per
+        // bone. Its static meshes get their own colliders when they are built.
+        if (skelBuilder != null && (settings.GenerateColliders || settings.IsAvatarImport)
+            && modelSlot.GetComponentInChildren<Collider>() == null)
+        {
+            var bones = new List<Slot>();
+            foreach (var bone in skelBuilder.BoneSlots)
+            {
+                if (bone != null)
+                    bones.Add(bone);
+            }
+            int made = BoneColliders.Build(bones);
+            Logger.Debug($"ModelImporter(Phos): {made} bone colliders");
         }
         return skelBuilder;
     }
@@ -806,52 +1011,56 @@ public static class ModelImporter
     // already built, which are the same authored vertices the parse handed over - taking them here instead of
     // walking the Assimp scene is what lets the scene be released before this runs. Data-model writes - call on
     // the world thread (from inside OnWorldAsync). -xlinka
-    private static void ApplyModelTransform(IReadOnlyList<float3> positions, Slot modelSlot, ModelImportSettings settings, SkeletonBuilder? skelBuilder)
+    //
+    // EACH MESH IS MEASURED WHERE ITS RENDERER DRAWS IT: its raw vertices through its renderer slot's transform
+    // relative to the model. A skinned mesh draws there at rest too, since every bone's rest times its bind is
+    // that mesh node's own transform. All meshes used to go through ONE shared transform, the armature's, and
+    // a mesh whose node carries a scale of its own measured at the wrong size: a fur shell on a node scaled
+    // 21.86 next to an armature at 100 read several times taller than it draws, and the dog wearing it
+    // imported a few centimetres long. -xlinka
+    // Metres per unit, as the file states it. An FBX carries its unit factor in centimetres and Assimp hands
+    // it through as scene metadata with the geometry left in file units.
+    private static float FileUnitScale(Assimp.Scene scene)
     {
-        // The skinned avatar renders as (SkeletonOffset * rawVertex) at rest - SkeletonHook offsets the Skeleton3D
-        // by the dropped non-bone-node up-axis rotation (the FBX Armature/RootNode Z-up->Y-up). So we MUST measure
-        // the rescale/center bounds in that SAME oriented space; measuring raw (authored) vertices picks the wrong
-        // axis for "height" and scales the model wrong (it came in far too big). Recreate that offset here =
-        // topmost bone's non-bone parent transform relative to the model root. -xlinka
-        float4x4 orient = float4x4.Identity;
-        if (skelBuilder != null && skelBuilder.BoneCount > 0)
+        try
         {
-            var boneSet = new HashSet<Slot>();
-            for (int bi = 0; bi < skelBuilder.BoneCount; bi++)
+            if (scene.Metadata != null && scene.Metadata.TryGetValue("UnitScaleFactor", out var entry) && entry.Data != null)
             {
-                var bs = skelBuilder.BoneSlots[bi];
-                if (bs != null) boneSet.Add(bs);
-            }
-            Slot? topMost = null;
-            for (int bi = 0; bi < skelBuilder.BoneCount; bi++)
-            {
-                var bs = skelBuilder.BoneSlots[bi];
-                if (bs == null) continue;
-                if (bs.Parent == null || !boneSet.Contains(bs.Parent)) { topMost = bs; break; }
-            }
-            if (topMost?.Parent != null && topMost.Parent != modelSlot)
-            {
-                var modelG = float4x4.TRS(modelSlot.GlobalPosition, modelSlot.GlobalRotation, modelSlot.GlobalScale);
-                var parentG = float4x4.TRS(topMost.Parent.GlobalPosition, topMost.Parent.GlobalRotation, topMost.Parent.GlobalScale);
-                orient = modelG.Inverse * parentG;
+                double factor = Convert.ToDouble(entry.Data, System.Globalization.CultureInfo.InvariantCulture);
+                if (factor > 0 && double.IsFinite(factor))
+                    return (float)(factor * 0.01);
             }
         }
+        catch (Exception ex) when (ex is InvalidCastException or FormatException)
+        {
+        }
+        return 1f;
+    }
+
+    private static void ApplyModelTransform(IReadOnlyList<(List<float3> Points, Slot Slot)> measured, Slot modelSlot, ModelImportSettings settings, float baseScale)
+    {
+        var toModel = float4x4.TRS(modelSlot.GlobalPosition, modelSlot.GlobalRotation, modelSlot.GlobalScale).Inverse;
 
         float minX = float.MaxValue, minY = float.MaxValue, minZ = float.MaxValue;
         float maxX = float.MinValue, maxY = float.MinValue, maxZ = float.MinValue;
         bool any = false;
-        for (int i = 0; i < positions.Count; i++)
+        foreach (var (points, slot) in measured)
         {
-            // Measure in the oriented (rendered) space so "height" is the real up-axis extent.
-            var p = orient.MultiplyPoint(positions[i]);
-            if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
-            if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
-            if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
-            any = true;
+            if (slot == null || slot.IsDestroyed)
+                continue;
+            var place = toModel * float4x4.TRS(slot.GlobalPosition, slot.GlobalRotation, slot.GlobalScale);
+            for (int i = 0; i < points.Count; i++)
+            {
+                var p = place.MultiplyPoint(points[i]);
+                if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+                if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+                if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
+                any = true;
+            }
         }
         if (!any) return;
         float height = maxY - minY;
-        float scale = (settings.Rescale && height > 0.001f) ? settings.TargetHeight / height : 1f;
+        float scale = (settings.Rescale && height > 0.001f) ? settings.TargetHeight / height : baseScale;
         modelSlot.LocalScale.Value = new float3(scale, scale, scale);
         if (settings.Center)
         {
@@ -860,7 +1069,8 @@ public static class ModelImporter
         }
     }
 
-    // The parse's node tree as plain data: name, decomposed local TRS, and the mesh indices hanging off it.
+    // The parse's node tree as plain data: name, decomposed local TRS, the mesh indices hanging off it and the
+    // units they were grouped into.
     // Nothing here refers back to the parse, which is the point - an Assimp.Node keeps its parent chain, and
     // through that the whole scene, alive for as long as anything holds it. -xlinka
     private sealed class NodeData
@@ -871,6 +1081,7 @@ public static class ModelImporter
         public floatQ Rotation = floatQ.Identity;
         public float3 Scale = float3.One;
         public int[]? MeshIndices;
+        public int[]? Units;
         public List<NodeData>? Children;
     }
 
@@ -906,10 +1117,10 @@ public static class ModelImporter
 
     // One Slot per captured node, local TRS from the node's transform, parented to the caller's slot. Records a
     // name -> Slot map (first wins on name collision) so mesh bone names resolve to their bone Slot. -xlinka
-    private static void BuildNodeSlots(NodeData? node, Slot parentSlot,
+    private static Slot? BuildNodeSlots(NodeData? node, Slot parentSlot,
         Dictionary<string, Slot> nameToSlot, List<(int[], Slot)> meshNodeSlots)
     {
-        if (node == null) return;
+        if (node == null) return null;
 
         var slot = parentSlot.AddSlot(string.IsNullOrEmpty(node.Name) ? "Node" : node.Name);
         if (node.HasTransform)
@@ -921,12 +1132,47 @@ public static class ModelImporter
         if (!string.IsNullOrEmpty(node.Name) && !nameToSlot.ContainsKey(node.Name))
             nameToSlot[node.Name] = slot;
 
-        if (node.MeshIndices != null) meshNodeSlots.Add((node.MeshIndices, slot));
+        if (node.Units != null) meshNodeSlots.Add((node.Units, slot));
 
         if (node.Children != null)
         {
             for (int i = 0; i < node.Children.Count; i++)
                 BuildNodeSlots(node.Children[i], slot, nameToSlot, meshNodeSlots);
+        }
+        return slot;
+    }
+
+    // Every node's meshes as units, shared between nodes that name the same parts so instanced geometry still
+    // bakes once. -xlinka
+    private static void GroupNodes(NodeData? node, MeshGrouping.Part[] parts, List<MeshGrouping.Unit> units,
+        Dictionary<string, int> unitByKey, ISet<int> noTriangles, Func<int, long> exactBlend)
+    {
+        if (node == null) return;
+
+        if (node.MeshIndices != null)
+        {
+            var nodeUnits = MeshGrouping.ForNode(node.MeshIndices, parts, exactBlend, noTriangles);
+            if (nodeUnits.Count > 0)
+            {
+                node.Units = new int[nodeUnits.Count];
+                for (int i = 0; i < nodeUnits.Count; i++)
+                {
+                    string key = nodeUnits[i].Key;
+                    if (!unitByKey.TryGetValue(key, out int index))
+                    {
+                        index = units.Count;
+                        units.Add(nodeUnits[i]);
+                        unitByKey[key] = index;
+                    }
+                    node.Units[i] = index;
+                }
+            }
+        }
+
+        if (node.Children != null)
+        {
+            for (int i = 0; i < node.Children.Count; i++)
+                GroupNodes(node.Children[i], parts, units, unitByKey, noTriangles, exactBlend);
         }
     }
 
@@ -1021,8 +1267,8 @@ public static class ModelImporter
     }
 
     // Attach a material + its texture providers from a pre-resolved material (WORLD thread - call from inside
-    // OnWorldAsync). No IO, no awaits - just data-model writes. The dialog options drive material type (Unlit vs
-    // PBS), double-sidedness, albedo/emissive gating, and texture mipmaps. Returns null when there's nothing to
+    // OnWorldAsync). No IO, no awaits - just data-model writes. The dialog options drive material type (Unlit, PBS,
+    // or a kind converted from the PBS build), double-sidedness, albedo/emissive gating, and texture mipmaps. Returns null when there's nothing to
     // build. -xlinka
     private static MaterialProvider? BuildMaterialSync(Slot parentSlot, ResolvedMaterial? rm, ModelImportSettings settings)
     {
@@ -1033,7 +1279,7 @@ public static class ModelImporter
         // Diagnostic: which maps did this material actually resolve? A stylized model with ONLY albedo should NOT
         // get metallic/occlusion maps - if it does (Assimp handing back a spurious slot), they drive bogus
         // roughness/AO and show as soft specular/occlusion blobs on the surface. -xlinka
-        Logger.Log($"BuildMaterialSync[maps] on '{parentSlot.SlotName.Value}': type={settings.Material} albedo={rm.AlbedoUri} normal={rm.NormalUri != null} emissive={rm.EmissiveUri != null} metallic={rm.MetallicUri != null} occlusion={rm.OcclusionUri != null}");
+        Logger.Debug($"BuildMaterialSync[maps] on '{parentSlot.SlotName.Value}': type={settings.Material} albedo={rm.AlbedoUri} normal={rm.NormalUri != null} emissive={rm.EmissiveUri != null} metallic={rm.MetallicUri != null} occlusion={rm.OcclusionUri != null}");
 
         var cull = settings.MakeDualSided ? Culling.None : Culling.Back;
         bool noMips = settings.ForceNoMipMaps;
@@ -1091,7 +1337,122 @@ public static class ModelImporter
         if (rm.OcclusionUri != null)
             pbs.OcclusionMap.Target = AttachTexture(matSlot, rm.OcclusionUri, isNormal: false, noMips);
 
-        return pbs;
+        return ConvertMaterial(pbs, settings.Material);
+    }
+
+    // The kinds past PBS Metallic and Unlit: the full PBS build hands its colour, textures, normal and emission
+    // to the chosen kind wherever that kind has a place for them, the way the material tool converts.
+    private const float ImportOutlineMetres = 0.002f;
+
+    private static MaterialProvider ConvertMaterial(PBS_Metallic pbs, ModelMaterialType type)
+    {
+        var slot = pbs.Slot;
+        MaterialProvider? target = type switch
+        {
+            ModelMaterialType.Specular => slot.AttachComponent<PBS_Specular>(),
+            ModelMaterialType.DualSided => slot.AttachComponent<PBS_DualSided>(),
+            ModelMaterialType.Triplanar => slot.AttachComponent<PBS_Triplanar>(),
+            ModelMaterialType.Toon or ModelMaterialType.ToonOutline => slot.AttachComponent<XiexeToonMaterial>(),
+            ModelMaterialType.Wireframe => slot.AttachComponent<WireframeMaterial>(),
+            _ => null,
+        };
+        if (target == null)
+            return pbs;
+
+        MaterialConversion.CopyProperties(pbs, target);
+        if (type == ModelMaterialType.ToonOutline && target is XiexeToonMaterial toon)
+        {
+            toon.OutlineWidth.Value = ImportOutlineMetres;
+            toon.OutlineColor.Value = new colorHDR(0f, 0f, 0f, 1f);
+        }
+        pbs.Destroy();
+        return target;
+    }
+
+    // One renderer over one mesh. materialIndices holds the scene material of each submesh in order: a single
+    // entry takes the single Material exactly as a lone mesh always has, several fill the per-surface list with
+    // one material built per distinct scene material. meshIndex >= 0 only when the provider has to decode the
+    // source model itself. -xlinka
+    // Where a renderer's surfaces sit in their model, for a material override to look them up by.
+    private readonly record struct SurfaceContext(Slot Model, Slot Node, int FirstIndex, Dictionary<int, string> MaterialNames);
+
+    private static void AttachRenderer(Slot meshSlot, MeshGrouping.Kind kind, Uri meshUrl, int meshIndex,
+        int[] materialIndices, Dictionary<int, ResolvedMaterial?> resolvedMaterials, ModelImportSettings settings,
+        SkeletonBuilder? skelBuilder, ModelImportResult result, SurfaceContext surfaces)
+    {
+        var provider = meshSlot.AttachComponent<MeshProvider>();
+        provider.URL.Value = meshUrl;
+        if (meshIndex >= 0)
+            provider.MeshIndex.Value = meshIndex;
+
+        var built = new Dictionary<int, MaterialProvider?>();
+        var materials = new MaterialProvider?[materialIndices.Length];
+        for (int k = 0; k < materialIndices.Length; k++)
+        {
+            if (settings.MaterialOverride != null)
+            {
+                surfaces.MaterialNames.TryGetValue(materialIndices[k], out var sourceName);
+                var supplied = settings.MaterialOverride(new ModelMaterialRequest(
+                    sourceName ?? "", surfaces.Model, surfaces.Node, meshSlot, surfaces.FirstIndex + k));
+                if (supplied != null)
+                {
+                    materials[k] = supplied;
+                    continue;
+                }
+            }
+            if (!built.TryGetValue(materialIndices[k], out var material))
+            {
+                resolvedMaterials.TryGetValue(materialIndices[k], out var rmat);
+                material = BuildMaterialSync(meshSlot, rmat, settings);
+                built[materialIndices[k]] = material;
+            }
+            materials[k] = material;
+        }
+        var firstMaterial = materials.Length > 0 ? materials[0] : null;
+
+        if (kind != MeshGrouping.Kind.Plain)
+        {
+            var smr = meshSlot.AttachComponent<SkinnedMeshRenderer>();
+            smr.MeshAsset.Target = provider;
+            if (skelBuilder != null) smr.Skeleton.Target = skelBuilder;
+            if (firstMaterial != null) smr.Material.Target = firstMaterial;
+            if (materials.Length > 1)
+            {
+                foreach (var material in materials)
+                    smr.Materials.Add(material!);
+            }
+            result.SkinnedMeshes.Add(smr);
+            return;
+        }
+
+        // Static mesh: a plain MeshRenderer off the Phos asset.
+        var mr = meshSlot.AttachComponent<MeshRenderer>();
+        mr.Mesh.Target = provider;
+        if (materials.Length > 1)
+        {
+            foreach (var material in materials)
+                mr.Materials.Add(material!);
+        }
+        else if (firstMaterial != null)
+        {
+            mr.Material.Target = firstMaterial;
+        }
+
+        // Optional collision geometry off the same mesh provider (skinned meshes are skipped:
+        // their geometry deforms, so a static collider wouldn't track it).
+        //
+        // NOT something you walk into. An imported model is a thing somebody put in
+        // the room - a chair, a statue, a prop - and every one of them used to be a
+        // wall in its own shape, so importing furniture built a maze. The collider
+        // is still here and still solid to lasers, grabs, touches and falling
+        // physics objects; it just does not stop a person. Tick CharacterCollider on
+        // it to make an imported mesh part of the floor plan. -xlinka
+        if (settings.GenerateColliders)
+        {
+            var collider = meshSlot.AttachComponent<MeshCollider>();
+            collider.Mesh.Target = provider;
+            collider.CharacterCollider.Value = settings.SolidToPeople;
+        }
     }
 
     // Attach an ImageProvider for a resolved texture URI, honoring the import's mipmap toggle. -xlinka
@@ -1136,7 +1497,7 @@ public static class ModelImporter
                     // and raw embedded textures get silently dropped, leaving the mesh untextured. -xlinka
                     bytes = EncodeTexelsToBmp(embedded);
                     fmt = "bmp";
-                    Logger.Log($"ModelImporter: re-encoded uncompressed embedded texture '{path}' ({embedded.Width}x{embedded.Height}) to BMP.");
+                    Logger.Debug($"ModelImporter: re-encoded uncompressed embedded texture '{path}' ({embedded.Width}x{embedded.Height}) to BMP.");
                 }
                 else
                 {

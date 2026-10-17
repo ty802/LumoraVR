@@ -82,6 +82,12 @@ public static class PhosMeshSerializer
         public bool HasTangents;
     }
 
+    private static void RefuseUnreadable(int count, int max, string what)
+    {
+        if (count > max)
+            throw new NotSupportedException($"{count} {what}; .lmesh reads back at most {max}.");
+    }
+
     public static byte[] Serialize(PhosMesh mesh)
     {
         if (mesh == null) throw new ArgumentNullException(nameof(mesh));
@@ -98,6 +104,17 @@ public static class PhosMeshSerializer
         }
 
         int vc = mesh.VertexCount;
+
+        // The reader's limits, held to on the way out as well. Nothing checked them here, so a mesh past
+        // one baked, hashed and saved fine and then failed on every load after. -xlinka
+        RefuseUnreadable(vc, MaxVertices, "vertices");
+        RefuseUnreadable(mesh.Submeshes.Count, MaxCount, "submeshes");
+        for (int i = 0; i < mesh.Submeshes.Count; i++)
+            RefuseUnreadable(mesh.Submeshes[i].IndexCount, MaxCount, $"indices in submesh {i}");
+        RefuseUnreadable(mesh.BoneCount, MaxCount, "bones");
+        RefuseUnreadable(mesh.BlendShapes.Count, MaxCount, "blend shapes");
+        for (int s = 0; s < mesh.BlendShapes.Count; s++)
+            RefuseUnreadable(mesh.BlendShapes[s].Frames?.Length ?? 0, MaxCount, $"frames in blend shape {s}");
 
         // Presence per channel, not a contiguous count: writing a count of 4 for a mesh that only has
         // UV0 and UV3 makes the reader materialise empty channels 1 and 2 that the source never had.

@@ -10,10 +10,14 @@ using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.UI;
+using Lumora.Core.Logging;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Import;
 
+// An import dialog stands out in the world: everyone sees it open, turn its pages and show how the import
+// went. The machine that made it builds it and runs it, with the files on that machine, and once an importer
+// is named only that user's pointers reach it. -xlinka
 public abstract class ImportDialog : Component
 {
     public const int GridItemsPerRow = 2;
@@ -49,15 +53,19 @@ public abstract class ImportDialog : Component
         return url;
     }
 
+    // Files on the importer's machine. Never synced: nobody else could open them.
     public readonly List<string> Paths = new();
 
-    // World where the import's resulting slot/components are spawned. The dialog
-    // itself lives in UserspaceWorld (so it can reference the dashboard font),
-    // but the imported asset belongs in the focused session world so other users
-    // see it. Set by UniversalImporter before OnStart fires. - xlinka
+    // World where the result is spawned. The dialog is shared, with importer-only controls. Set by
+    // UniversalImporter before OnStart fires, on the importer's machine only. - xlinka
     public World? TargetWorld { get; set; }
 
-    private User? _importingUser;
+    // Who opened the dialog. Synced, so every machine knows whose it is; null on a dialog nobody claimed.
+    public readonly SyncRef<User> ImportingUser = new();
+
+    // Whether the dialog was attached on this machine. One that arrived from another machine only shows what
+    // its maker built.
+    private bool _attachedHere;
     private PanelShell? _panel;
     private WizardForm? _wizard;
     private FontProvider? _fontProvider;
@@ -72,25 +80,83 @@ public abstract class ImportDialog : Component
     // arm's-length size regardless of how many rows the wizard needs. - xlinka
     protected virtual float PhysicalHeight => 0.5f;
 
-    protected bool CanInteract => _importingUser == null || _importingUser == World?.LocalUser;
+    protected bool CanInteract => IsExecutionAllowed && MayUse(ImportingUser, World);
 
     public PanelShell? Panel => _panel;
     public WizardForm? Wizard => _wizard;
 
     public void SetLocalUserAsImporting()
     {
-        if (_importingUser != null)
+        if (!ImportingUser.Value.IsNull)
             throw new InvalidOperationException("Importing user is already set!");
-        _importingUser = World.LocalUser;
+        ImportingUser.Target = World.LocalUser;
     }
 
+    public override void OnAttach()
+    {
+        base.OnAttach();
+        _attachedHere = true;
+    }
+
+    // Built and run by the machine that made it. One brought back from a save or duplicated here is this
+    // machine's too; the buttons it came with lead nowhere, so it builds afresh over them.
     public override void OnStart()
     {
         base.OnStart();
-        EnsureBuilt();
+        if (_attachedHere || IsMintedHere)
+        {
+            if (!_attachedHere || ImportingUser.Value.IsNull)
+                ImportingUser.Target = World.LocalUser;
+            EnsureBuilt(copied: !_attachedHere);
+        }
     }
 
-    private void EnsureBuilt()
+    public override void OnUserLeft(User user) => TakeDownForLeaver(this, ImportingUser, user);
+
+    // Missing or not-yet-resolved ownership never grants access to local files.
+    internal static bool MayUse(SyncRef<User> importer, World? world)
+        => importer.Target is { } user && ReferenceEquals(user, world?.LocalUser);
+
+    // The importer gone, its dialog goes too: the files it stood on left with them, and nobody else may press
+    // it. The authority takes it down as engine work, the way a leaver's body goes. -xlinka
+    internal static void TakeDownForLeaver(Component dialog, SyncRef<User> importer, User leaver)
+    {
+        if (dialog.World is not { IsAuthority: true } world || leaver == null || importer.Value.IsNull
+            || importer.Value != leaver.ReferenceID || dialog.Slot is not { IsDestroyed: false } slot)
+            return;
+        using (world.DataModelPermissions?.EnterSystemBypass())
+            slot.Destroy();
+    }
+
+    // Why nothing may be brought into this world from here, or null when it may. Asked on opening and again
+    // by every action at the moment it would bring something in: the right can be taken away while the
+    // dialog is up, and an import the host refuses would only ever appear on the importer's machine. -xlinka
+    public static string? SpawnRefusal(World? world)
+    {
+        if (world == null)
+            return "There is no world to import into.";
+        if (!world.AllowsItemSpawning
+            || world.DataModelPermissions?.AllowsDomain(world.LocalUser, DataModelPermissionDomain.Spawn) == false)
+            return "This world does not let you bring files in.";
+        return null;
+    }
+
+    // Only the owner's pointers reach a claimed dialog.
+    internal static void ClaimCanvas(Slot? inside, SyncRef<User> importer)
+    {
+        var canvas = inside?.GetComponentInParents<Helio.UI.Canvas>();
+        if (canvas != null && importer.Target is { } user)
+        {
+            canvas.Exclusive.Target = user;
+            if (inside?.GetComponentInParents<PanelShell>()?.Slot.GetComponent<Grabbable>() is { } grab)
+            {
+                grab.OnlyUsers.Clear();
+                grab.OnlyUsers.Add(user);
+            }
+        }
+    }
+
+    private void EnsureBuilt(bool copied)
     {
         if (_panel != null) return;
 
@@ -103,6 +169,11 @@ public abstract class ImportDialog : Component
         _panel = Slot.GetComponent<PanelShell>() ?? Slot.AttachComponent<PanelShell>();
         _panel.Title.Value = TitleText;
         _panel.Size.Value = CanvasSize;
+        if (copied)
+        {
+            Slot.FindChild("DialogFont", recursive: false)?.Destroy();
+            _panel.ClearContent();
+        }
 
         // Create a per-dialog FontProvider in this dialog's own world (so the
         // PanelShell.Font.Target ref doesn't cross worlds, which SyncRef rejects
@@ -126,7 +197,35 @@ public abstract class ImportDialog : Component
 
         _wizard = wizardHost.AttachComponent<WizardForm>();
         _wizard.CanvasSize.Value = CanvasSize;
-        _wizard.OpenRoot(WithFont(OpenRoot));
+        ClaimCanvas(wizardHost, ImportingUser);
+        var refusal = SpawnRefusal(ResolveTargetWorld());
+        _wizard.OpenRoot(WithFont(refusal != null ? ui => BuildRefusal(ui, refusal) : OpenRoot));
+    }
+
+    // Every action that brings something in asks this first. True when it may not, with the reason on the
+    // dialog and in the log.
+    protected bool RefuseSpawn()
+    {
+        var refusal = SpawnRefusal(ResolveTargetWorld());
+        if (refusal == null)
+            return false;
+        Logger.Warn($"{GetType().Name}: {refusal} {Paths.Count} file(s) not imported.");
+        OpenPage(ui => BuildRefusal(ui, refusal));
+        return true;
+    }
+
+    private void BuildRefusal(UIBuilder ui, string refusal)
+    {
+        var body = SetupSection(ui, "Can't Import Here", backButton: false);
+        body.PushStyle().FlexibleHeight(1f);
+        var msg = body.Text(refusal, 14f, ButtonText);
+        msg.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+        msg.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        msg.WordWrap.Value = true;
+        body.PopStyle();
+
+        SetupGrid(body);
+        GridButton(body, "Close", () => Slot.Destroy());
     }
 
     protected abstract void OpenRoot(UIBuilder ui);
@@ -304,8 +403,67 @@ public abstract class ImportDialog : Component
         ActionButton(ui, label, () => { if (CanInteract) onClick(); }, tint, primary);
     }
 
+    // One choice out of several: a heading, then a tile per option, the chosen one in the accent colour.
+    protected void SetupChoice<T>(UIBuilder ui, Sync<T> field, string label, IReadOnlyList<(T Value, string Name)> options)
+    {
+        var heading = ui.Root.AddSlot(label);
+        heading.AttachComponent<RectTransform>();
+        var hLE = heading.AttachComponent<LayoutElement>();
+        hLE.MinHeight.Value = 28f;
+        hLE.PreferredHeight.Value = 28f;
+        var headingBuilder = new UIBuilder(heading);
+        if (_fontProvider != null) headingBuilder.Font(_fontProvider);
+        var title = headingBuilder.Text(label, DashTheme.FontBody, SectionTitleColor);
+        title.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        title.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        FillRect(title.RectTransform!, 4f, 4f, 0f, 0f);
+
+        var tiles = ui.Root.AddSlot(label + " Options");
+        tiles.AttachComponent<RectTransform>();
+        int rows = (options.Count + GridItemsPerRow - 1) / GridItemsPerRow;
+        float height = rows * ButtonHeight + System.Math.Max(0, rows - 1) * GridItemSpacing;
+        var tLE = tiles.AttachComponent<LayoutElement>();
+        tLE.UseZeroMetrics.Value = true;
+        tLE.MinHeight.Value = height;
+        tLE.PreferredHeight.Value = height;
+        var grid = tiles.AttachComponent<GridLayout>();
+        grid.Columns.Value = GridItemsPerRow;
+        grid.Spacing.Value = GridItemSpacing;
+
+        var tileBuilder = new UIBuilder(tiles).SetStyle(ui.Style);
+        var drivers = new List<(T Value, ColorDriver Driver)>(options.Count);
+        void Show()
+        {
+            foreach (var (value, driver) in drivers)
+            {
+                if (driver.IsDestroyed)
+                    continue;
+                bool chosen = EqualityComparer<T>.Default.Equals(field.Value, value);
+                driver.NormalColor.Value = chosen ? DashTheme.Accent : ButtonFill;
+                driver.HighlightColor.Value = chosen ? DashTheme.AccentHover : DashTheme.SurfaceHover;
+                driver.PressedColor.Value = chosen ? DashTheme.AccentPressed : DashTheme.SurfacePressed;
+            }
+        }
+        foreach (var (value, name) in options)
+        {
+            var picked = value;
+            ActionButton(tileBuilder, name, () =>
+            {
+                if (!CanInteract) return;
+                field.Value = picked;
+                Show();
+            }, out var driver);
+            drivers.Add((value, driver));
+        }
+        Show();
+    }
+
     // Shared by wizard pages, advanced settings, and folder import actions.
     internal static Button ActionButton(UIBuilder ui, string label, Action onClick, color? tint = null, bool primary = false)
+        => ActionButton(ui, label, onClick, out _, tint, primary);
+
+    internal static Button ActionButton(UIBuilder ui, string label, Action onClick, out ColorDriver driver,
+        color? tint = null, bool primary = false)
     {
         var slot = ui.Next(label);
         var le = slot.GetComponent<LayoutElement>() ?? slot.AttachComponent<LayoutElement>();
@@ -330,16 +488,17 @@ public abstract class ImportDialog : Component
 
         var button = slot.AttachComponent<Button>();
         button.Clicked += (_, _) => onClick();
-        StyleButton(button, bg, fill, primary);
+        driver = StyleButton(button, bg, fill, primary);
         return button;
     }
 
-    private static void StyleButton(Button button, RoundedPanel panel, color fill, bool primary = false)
+    private static ColorDriver StyleButton(Button button, RoundedPanel panel, color fill, bool primary = false)
     {
         var driver = button.AddColorDriver(panel.Color, fill, InteractionColorMode.Direct);
         driver.HighlightColor.Value = primary ? DashTheme.AccentHover : DashTheme.SurfaceHover;
         driver.PressedColor.Value = primary ? DashTheme.AccentPressed : DashTheme.SurfacePressed;
         driver.DisabledColor.Value = DashTheme.Field;
+        return driver;
     }
 
     // The scrolling content owns its layout. The caller keeps its body builder for fixed actions.
@@ -347,6 +506,7 @@ public abstract class ImportDialog : Component
     {
         ui.PushStyle().MinHeight(0f).PreferredHeight(0f).FlexibleHeight(1f);
         var scroll = ui.ScrollRect(out var content, background: color.Transparent);
+        scroll.RowsActOnRelease.Value = true;
         ui.PopStyle();
         var viewport = scroll.Slot.GetComponent<LayoutElement>();
         if (viewport != null) viewport.UseZeroMetrics.Value = true;
@@ -418,7 +578,7 @@ public abstract class ImportDialog : Component
     // otherwise spawn a labeled grabbable as a visible placeholder. - xlinka
     public void AsRawFile()
     {
-        if (!CanInteract) return;
+        if (!CanInteract || RefuseSpawn()) return;
         int count = Paths.Count;
         int rowSize = (int)MathF.Max(1f, MathF.Ceiling(MathF.Sqrt(count)));
         int index = 0;
@@ -430,7 +590,7 @@ public abstract class ImportDialog : Component
         foreach (var file in Paths)
         {
             var name = Path.GetFileName(file);
-            var s = target.RootSlot.AddSlot(string.IsNullOrEmpty(name) ? file : name);
+            var s = target.AddSpawnSlot(target.RootSlot, string.IsNullOrEmpty(name) ? file : name);
             var offset = UniversalImporter.GridOffset(ref index, rowSize) * scale;
             s.GlobalPosition = basePos + baseRot * offset;
             s.GlobalRotation = baseRot;
@@ -443,14 +603,7 @@ public abstract class ImportDialog : Component
                 _ = handler.ImportAsync(s, pathCaptured);
             }
             else
-            {
-                var label = s.AttachComponent<TextRenderer>();
-                label.Text.Value = name;
-                label.Size.Value = 0.08f;
-                var grab = s.AttachComponent<Grabbable>();
-                grab.AllowGrab.Value = true;
-                grab.Scalable.Value = true;
-            }
+                UniversalImporter.SpawnFileLabel(s, string.IsNullOrEmpty(name) ? file : name);
         }
         Slot.Destroy();
     }

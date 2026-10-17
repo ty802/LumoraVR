@@ -32,8 +32,8 @@ public sealed class ImageImportDialog : ImportDialog
 
     public void RunImport()
     {
-        if (!CanInteract) return;
-        Logger.Log($"ImageImportDialog: importing {Paths.Count} file(s)");
+        if (!CanInteract || RefuseSpawn()) return;
+        Logger.Debug($"ImageImportDialog: importing {Paths.Count} file(s)");
 
         int rowSize = (int)MathF.Max(1f, MathF.Ceiling(MathF.Sqrt(Paths.Count)));
         int index = 0;
@@ -44,7 +44,7 @@ public sealed class ImageImportDialog : ImportDialog
 
         foreach (var file in Paths)
         {
-            var s = target.RootSlot.AddSlot(Path.GetFileName(file) ?? file);
+            var s = target.AddSpawnSlot(target.RootSlot, Path.GetFileName(file) ?? file);
             var offset = UniversalImporter.GridOffset(ref index, rowSize);
             s.GlobalPosition = basePos + baseRot * offset;
             s.GlobalRotation = baseRot;
@@ -74,7 +74,7 @@ public sealed class ImageImportDialog : ImportDialog
     // dropping a folder of them meant, so take the first and say so in the log. - xlinka
     public void AsSkybox()
     {
-        if (!CanInteract) return;
+        if (!CanInteract || RefuseSpawn()) return;
         if (Paths.Count == 0) { Slot.Destroy(); return; }
 
         var file = Paths[0];
@@ -82,7 +82,7 @@ public sealed class ImageImportDialog : ImportDialog
             Logger.Log($"ImageImportDialog: a world has one sky; using {Path.GetFileName(file)} and ignoring {Paths.Count - 1} other file(s)");
 
         var target = ResolveTargetWorld();
-        var slot = target.RootSlot.AddSlot(Path.GetFileNameWithoutExtension(file) ?? "Skybox");
+        var slot = target.AddSpawnSlot(target.RootSlot, Path.GetFileNameWithoutExtension(file) ?? "Skybox");
 
         var cubemap = slot.AttachComponent<StaticCubemap>();
         var skybox = slot.AttachComponent<Skybox>();

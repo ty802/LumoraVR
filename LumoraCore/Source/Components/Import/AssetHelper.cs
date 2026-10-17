@@ -72,6 +72,10 @@ public static class AssetHelper
         // references travels inside the file, so importing one never needs the network.
         { ".resonitepackage", AssetClass.Package },
 
+        // Unity packages: a project folder's worth of models, materials and textures, read by its own
+        // dialog because what comes across is decided per model, not per file.
+        { ".unitypackage", AssetClass.Package },
+
         // Shader
         { ".gdshader", AssetClass.Shader }, { ".lumshader", AssetClass.Shader }, { ".glsl", AssetClass.Shader },
         { ".hlsl", AssetClass.Shader }, { ".shader", AssetClass.Shader },

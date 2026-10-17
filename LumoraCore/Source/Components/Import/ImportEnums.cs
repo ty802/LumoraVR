@@ -6,11 +6,18 @@ namespace Lumora.Core.Components.Import;
 // Only includes materials Lumora actually has today. As more material providers
 // land extend this enum and add the corresponding presets in ModelImportDialog. - xlinka
 // Lit is first so it's the default: imported models/avatars are shaded by scene lighting
-// (PBS metallic). Unlit is opt-in for flat/self-lit content.
+// (PBS metallic). Unlit is opt-in for flat/self-lit content. Lit and Unlit keep their numbers;
+// every other kind starts as the PBS build and takes its look across (ModelImporter.ConvertMaterial).
 public enum ModelMaterialType
 {
     Lit,
     Unlit,
+    Specular,
+    DualSided,
+    Triplanar,
+    Toon,
+    ToonOutline,
+    Wireframe,
 }
 
 // How the two eyes are packed into one frame. A stereo video is one texture: half of it is the left
@@ -38,3 +45,10 @@ public enum VideoProjection
 // What the video dialog decided, handed to whichever handler the platform registered. Stream is set
 // when the source is a URL: nothing is downloaded first, the decoder pulls as it plays.
 public sealed record VideoImportOptions(bool Stream, StereoLayout Layout, VideoProjection Projection);
+
+// What an audio import brings in: the player panel, or a small orb that carries the clip and nothing else.
+public enum AudioImportForm
+{
+    Player,
+    Orb,
+}

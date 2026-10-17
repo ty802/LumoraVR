@@ -106,7 +106,7 @@ public sealed class VideoImportDialog : ImportDialog
 
     public void RunImport()
     {
-        if (!CanInteract) return;
+        if (!CanInteract || RefuseSpawn()) return;
 
         var handler = ImportHandlers.Video;
         if (handler == null)
@@ -116,7 +116,7 @@ public sealed class VideoImportDialog : ImportDialog
             return;
         }
 
-        Logger.Log($"VideoImportDialog: importing {Paths.Count} source(s) as {Projection.Value}/{Layout.Value}");
+        Logger.Debug($"VideoImportDialog: importing {Paths.Count} source(s) as {Projection.Value}/{Layout.Value}");
 
         int rowSize = (int)MathF.Max(1f, MathF.Ceiling(MathF.Sqrt(Paths.Count)));
         int index = 0;
@@ -126,7 +126,7 @@ public sealed class VideoImportDialog : ImportDialog
 
         foreach (var source in Paths)
         {
-            var s = target.RootSlot.AddSlot(NameFor(source));
+            var s = target.AddSpawnSlot(target.RootSlot, NameFor(source));
             var offset = UniversalImporter.GridOffset(ref index, rowSize);
             s.GlobalPosition = basePos + baseRot * offset;
             s.GlobalRotation = baseRot;

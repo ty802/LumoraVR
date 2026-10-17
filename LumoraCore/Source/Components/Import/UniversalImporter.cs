@@ -23,7 +23,16 @@ public static class UniversalImporter
         }
         if (list.Count == 0) return;
 
-        Logger.Log($"UniversalImporter: Importing {list.Count} file(s) as {assetClass}");
+        // A world that will not take what this would bring in gets none of it: one notice, on this machine
+        // alone since nothing of ours may stand in that world, and the reason in the log. -xlinka
+        if (ImportDialog.SpawnRefusal(world) is { } refusal)
+        {
+            Logger.Warn($"UniversalImporter: {refusal} {list.Count} file(s) not imported; the notice is shown only on this machine.");
+            SpawnUnsupportedDialog(assetClass, list, world, position, rotation, local: true);
+            return;
+        }
+
+        Logger.Debug($"UniversalImporter: Importing {list.Count} file(s) as {assetClass}");
 
         switch (assetClass)
         {
@@ -40,7 +49,7 @@ public static class UniversalImporter
                 SpawnVideoDialog(list, world, position, rotation, silent);
                 break;
             case AssetClass.Audio:
-                SpawnAudioItems(list, world, position, rotation);
+                SpawnAudioDialog(list, world, position, rotation, silent);
                 break;
             // PointCloud and the rest have no import pipeline yet. PointCloud in particular
             // can NOT go through the model dialog - its extensions aren't in ModelImporter's
@@ -207,7 +216,7 @@ public static class UniversalImporter
         // Datamodel writes happen on the world's update thread. Everything below this line is back on it.
         await WorldContext.ToWorld();
 
-        var slot = world.RootSlot.AddSlot(Path.GetFileNameWithoutExtension(path));
+        var slot = world.AddSpawnSlot(world.RootSlot, Path.GetFileNameWithoutExtension(path));
         slot.GlobalPosition = position;
         slot.GlobalRotation = rotation;
         slot.AttachComponent<Grabbable>();
@@ -238,7 +247,31 @@ public static class UniversalImporter
 
         Lumora.Core.Components.InspectorUndo.Record(world,
             Lumora.Core.Components.SlotExistenceUndoBatch.Created(world, new[] { slot }, Lumora.Core.Components.UndoLocale.ImportShader));
-        Logger.Log($"UniversalImporter: shader orb '{slot.SlotName.Value}' created ({uri}).");
+        Logger.Debug($"UniversalImporter: shader orb '{slot.SlotName.Value}' created ({uri}).");
+    }
+
+    // A file nothing here can open, as a thing in the world: its name, a box round the name to point at, and a
+    // grab. Every import lands as something that can be found and picked up.
+    public static void SpawnFileLabel(Slot slot, string name)
+    {
+        const float size = 0.08f;
+        var label = slot.GetComponent<TextRenderer>() ?? slot.AttachComponent<TextRenderer>();
+        if (label.Font.Target == null)
+        {
+            var font = slot.GetComponent<Assets.FontProvider>() ?? slot.AttachComponent<Assets.FontProvider>();
+            font.URL.Value = UI.DashTheme.FontSemibold;
+            font.FallbackURLs.Add(UI.DashTheme.FontRegular);
+            label.Font.Target = font;
+        }
+        label.Text.Value = name;
+        label.Size.Value = size;
+        var collider = slot.GetComponent<BoxCollider>() ?? slot.AttachComponent<BoxCollider>();
+        collider.Size.Value = new float3(MathF.Max(0.1f, name.Length * size * 0.55f), size * 1.4f, 0.01f);
+        var grab = slot.GetComponent<Grabbable>() ?? slot.AttachComponent<Grabbable>();
+        grab.AllowGrab.Value = true;
+        grab.Scalable.Value = true;
+        if (slot.GetComponent<ObjectRoot>() == null)
+            slot.AttachComponent<ObjectRoot>();
     }
 
     public static float3 GridOffset(ref int index, int rowSize)
@@ -251,9 +284,10 @@ public static class UniversalImporter
     // Spawn an honest "not supported yet" dialog for an asset class with no pipeline.
     // It tells the user the format isn't handled and offers a raw-file drop - it never
     // fabricates a placeholder that pretends the content loaded. - xlinka
-    private static void SpawnUnsupportedDialog(AssetClass assetClass, List<string> files, World world, float3 position, floatQ rotation)
+    private static void SpawnUnsupportedDialog(AssetClass assetClass, List<string> files, World world, float3 position, floatQ rotation,
+        bool local = false)
     {
-        var slot = CreateDialogSlot(world, "Unsupported Importer", position, rotation);
+        var slot = CreateDialogSlot(world, "Unsupported Importer", position, rotation, local);
         var dialog = slot.AttachComponent<UnsupportedImportDialog>();
         dialog.TargetWorld = world;
         dialog.ClassName = ClassDisplayName(assetClass);
@@ -269,13 +303,12 @@ public static class UniversalImporter
         _ => assetClass.ToString(),
     };
 
-    private static Slot CreateDialogSlot(World world, string name, float3 position, floatQ rotation)
+    private static Slot CreateDialogSlot(World world, string name, float3 position, floatQ rotation, bool local = false)
     {
-        // Dialog lives in the focused world (where the user and their laser
-        // pointer are). Local slot so it's per-user/non-synced. The dialog
-        // creates its own FontProvider in this same world via DefaultFontUrl
-        // so no cross-world asset refs are needed. - xlinka
-        var slot = world.RootSlot.AddLocalSlot(name);
+        // Share the panel and its progress. File paths stay on the importer, and its canvas only
+        // accepts that user's pointers. A spawn-refusal notice can still be shown locally.
+        var slot = local ? world.RootSlot.AddLocalSlot(name) : world.AddSpawnSlot(world.RootSlot, name);
+        slot.Persistent.Value = false;
         slot.GlobalPosition = position;
         slot.GlobalRotation = rotation;
         slot.GlobalScale = float3.One;
@@ -293,6 +326,16 @@ public static class UniversalImporter
         foreach (var file in files)
         {
             var offset = GridOffset(ref index, rowSize);
+            if (string.Equals(System.IO.Path.GetExtension(file), ".unitypackage", StringComparison.OrdinalIgnoreCase))
+            {
+                // Nothing to do silently: which model to bring in, and as what, is the user's choice.
+                var unitySlot = CreateDialogSlot(world, "Unity Package Importer", position + rotation * offset, rotation);
+                var unity = unitySlot.AttachComponent<UnityPackageImportDialog>();
+                unity.TargetWorld = world;
+                unity.Paths.Add(file);
+                unity.SetLocalUserAsImporting();
+                continue;
+            }
             var slot = CreateDialogSlot(world, "Package Importer", position + rotation * offset, rotation);
             var dialog = slot.AttachComponent<PackageImportDialog>();
             dialog.TargetWorld = world;
@@ -307,7 +350,7 @@ public static class UniversalImporter
         var slot = CreateDialogSlot(world, "Folder Importer", position, rotation);
         var dialog = slot.AttachComponent<FolderImportDialog>();
         dialog.TargetWorld = world;
-        dialog.Path.Value = folder;
+        dialog.Path = folder;
         dialog.SetLocalUserAsImporting();
     }
 
@@ -335,37 +378,16 @@ public static class UniversalImporter
         }
     }
 
-    // No dialog. A video has to be asked about because a stereo 360 clip is just a wide picture until
-    // somebody says otherwise; a sound file has nothing of the kind to decide, so asking would be a
-    // page with one button on it. The handler is what knows how to store and spawn it, and its absence
-    // is the honest unsupported notice rather than a dead item. -xlinka
-    private static void SpawnAudioItems(List<string> files, World world, float3 position, floatQ rotation)
+    // A sound is shown before it comes in: what it becomes (a player or a clip orb), how it plays, and a listen
+    // on this machine first. Formats the decoders cannot read are named there rather than dropped here. -xlinka
+    private static void SpawnAudioDialog(List<string> files, World world, float3 position, floatQ rotation, bool silent)
     {
-        var handler = ImportHandlers.Audio;
-        if (handler == null)
-        {
-            Logger.Warn($"UniversalImporter: no audio pipeline - {files.Count} file(s) not imported.");
-            SpawnUnsupportedDialog(AssetClass.Audio, files, world, position, rotation);
-            return;
-        }
-
-        int rowSize = (int)System.Math.Max(1, System.Math.Ceiling(System.Math.Sqrt(files.Count)));
-        int index = 0;
-        foreach (var file in files)
-        {
-            var offset = GridOffset(ref index, rowSize);
-            var slot = world.RootSlot.AddSlot(NameFor(file));
-            slot.GlobalPosition = position + rotation * offset;
-            slot.GlobalRotation = rotation;
-            slot.GlobalScale = float3.One;
-            _ = handler.ImportAsync(slot, file);
-        }
-    }
-
-    private static string NameFor(string source)
-    {
-        var name = Path.GetFileName(source);
-        return string.IsNullOrEmpty(name) ? source : name;
+        var slot = CreateDialogSlot(world, "Audio Importer", position, rotation);
+        var dialog = slot.AttachComponent<AudioImportDialog>();
+        dialog.TargetWorld = world;
+        dialog.Paths.AddRange(files);
+        dialog.SetLocalUserAsImporting();
+        if (silent) dialog.RunImport();
     }
 
     private static void SpawnVideoDialog(List<string> files, World world, float3 position, floatQ rotation, bool silent)

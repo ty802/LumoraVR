@@ -37,6 +37,11 @@ public sealed class ModelImportRequest
     // On by default: a model with no animation channels extracts nothing, so leaving this on costs
     // files without animations exactly nothing.
     public bool ImportAnimations = true;
+
+    // A source that already knows how its model goes together (a Unity package carries the materials,
+    // the avatar flag and what to switch off) hands over finished settings, and the handler imports with
+    // exactly those, avatar or not, instead of mapping the fields above.
+    public Lumora.Core.Assets.ModelImportSettings? Settings;
 }
 
 public interface IImageImportHandler
@@ -54,13 +59,6 @@ public interface IModelImportHandler
 public interface IVideoImportHandler
 {
     Task ImportAsync(Slot slot, string source, VideoImportOptions options);
-}
-
-// A decoded clip rather than a stream: source is a file path this machine can read, which the handler
-// copies into the local store so the ADDRESS travels and the other peers can fetch the bytes.
-public interface IAudioImportHandler
-{
-    Task ImportAsync(Slot slot, string source);
 }
 
 public interface IRawFileImportHandler
@@ -87,7 +85,6 @@ public static class ImportHandlers
     public static IImageImportHandler? Image { get; set; }
     public static IModelImportHandler? Model { get; set; }
     public static IVideoImportHandler? Video { get; set; }
-    public static IAudioImportHandler? Audio { get; set; }
     public static IRawFileImportHandler? Raw { get; set; }
 
     // Platform clipboard bridge. Null until the platform layer registers it. - xlinka

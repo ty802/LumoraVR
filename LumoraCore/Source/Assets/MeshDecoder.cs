@@ -182,11 +182,13 @@ public static class MeshDecoder
                     {
                         faceVerts.Add(ParseObjFaceVertex(parts[i]));
                     }
+                    // Wound the other way round, as every other format is on its way in: our front faces are
+                    // clockwise.
                     for (int i = 1; i < faceVerts.Count - 1; i++)
                     {
                         faceIndices.Add(faceVerts[0]);
-                        faceIndices.Add(faceVerts[i]);
                         faceIndices.Add(faceVerts[i + 1]);
+                        faceIndices.Add(faceVerts[i]);
                     }
                     break;
             }
@@ -233,6 +235,8 @@ public static class MeshDecoder
 
     private static PhosMesh DecodeAssimp(byte[] fileData, string extension, int meshIndex = -1)
     {
+        if (extension.Equals(".fbx", StringComparison.OrdinalIgnoreCase))
+            fileData = FbxImportLayers.Prepare(fileData);
         using var stream = new MemoryStream(fileData, writable: false);
         using var context = new AssimpContext();
 
@@ -331,7 +335,7 @@ public static class MeshDecoder
                 int already = allPositions.Count;
                 for (int a = 0; a < attachments.Count; a++)
                 {
-                    morphNames.Add(string.IsNullOrEmpty(attachments[a].Name) ? $"Morph{a}" : attachments[a].Name);
+                    morphNames.Add(ShapeName(attachments[a], a));
                     var pl = new List<float3>();
                     var nl = new List<float3>();
                     var tl = new List<float3>();
@@ -590,6 +594,405 @@ public static class MeshDecoder
         return phosMesh;
     }
 
+    // Triangles a mesh's faces make, counted the way the conversions read them: a face under three indices
+    // adds none. -xlinka
+    internal static int CountTriangles(Assimp.Mesh mesh)
+    {
+        if (mesh == null || !mesh.HasFaces)
+            return 0;
+        int triangles = 0;
+        foreach (var face in mesh.Faces)
+        {
+            if (face != null && face.HasIndices && face.IndexCount >= 3)
+                triangles += face.IndexCount / 3;
+        }
+        return triangles;
+    }
+
+    // A node's meshes as ONE mesh.
+    //
+    // A source object with several materials reaches us as one mesh per material on the same node. Here
+    // they go back together: each part keeps its own vertex range and becomes its own submesh, so one
+    // renderer gives every part its material. Bones are shared by name; a part whose bind for a name
+    // disagrees with the one already held gets an entry of its own under that name, and the skin binds both
+    // to the same joint. Blend shapes are shared by name, zero over every part that does not carry them.
+    // Parts without triangles add nothing. Keep skinned and unskinned parts in separate calls: an
+    // unweighted vertex in a skinned mesh rides bone 0.
+    //
+    // submeshParts[k] is the scene mesh submesh k came from. -xlinka
+    internal static PhosMesh ConvertMeshGroup(Assimp.Scene scene, IReadOnlyList<int> meshIndices, string? label,
+        Dictionary<string, System.Numerics.Matrix4x4>? nodeRest, out int[] submeshParts)
+    {
+        if (scene == null)
+            throw new ArgumentNullException(nameof(scene));
+        if (meshIndices == null)
+            throw new ArgumentNullException(nameof(meshIndices));
+
+        string extension = label ?? "";
+        var globalNodeRest = nodeRest ?? BuildGlobalNodeTransforms(scene.RootNode);
+
+        var parts = new List<(int Index, Assimp.Mesh Mesh, int Base, int Triangles)>(meshIndices.Count);
+        long total = 0;
+        bool anyTangents = false, anyColors = false, anySkin = false;
+        bool hasUV1 = false, hasUV2 = false, hasUV3 = false;
+        var shapeIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+        var shapeNames = new List<string>();
+        var shapeHasNormals = new List<bool>();
+        var shapeHasTangents = new List<bool>();
+
+        foreach (int mi in meshIndices)
+        {
+            if (mi < 0 || mi >= scene.MeshCount)
+                continue;
+            var mesh = scene.Meshes[mi];
+            if (mesh == null || !mesh.HasVertices || mesh.VertexCount == 0)
+                continue;
+            int triangles = CountTriangles(mesh);
+            if (triangles == 0)
+                continue;
+
+            parts.Add((mi, mesh, (int)total, triangles));
+            total += mesh.VertexCount;
+            if (total > int.MaxValue)
+                throw new InvalidOperationException($"MeshDecoder: merged meshes of {extension} pass {int.MaxValue} vertices.");
+
+            anyTangents |= mesh.HasTangentBasis;
+            anyColors |= ColorChannel(mesh) != null;
+            anySkin |= mesh.HasBones;
+            hasUV1 |= UVChannel(mesh, 1) != null;
+            hasUV2 |= UVChannel(mesh, 2) != null;
+            hasUV3 |= UVChannel(mesh, 3) != null;
+
+            if (!mesh.HasMeshAnimationAttachments)
+                continue;
+            var attachments = mesh.MeshAnimationAttachments;
+            for (int a = 0; a < attachments.Count; a++)
+            {
+                var att = attachments[a];
+                if (att == null)
+                    continue;
+                string name = ShapeName(att, a);
+                if (!shapeIndex.TryGetValue(name, out int s))
+                {
+                    s = shapeNames.Count;
+                    shapeIndex[name] = s;
+                    shapeNames.Add(name);
+                    shapeHasNormals.Add(false);
+                    shapeHasTangents.Add(false);
+                }
+                if (att.HasNormals && mesh.HasNormals)
+                    shapeHasNormals[s] = true;
+                if (att.HasTangentBasis)
+                    shapeHasTangents[s] = true;
+            }
+        }
+
+        submeshParts = new int[parts.Count];
+        var phosMesh = new PhosMesh();
+        if (parts.Count == 0)
+        {
+            LumoraLogger.Warn($"MeshDecoder: none of meshes {string.Join(", ", meshIndices)} of {extension} has a triangle");
+            return phosMesh;
+        }
+
+        int vertexCount = (int)total;
+        phosMesh.HasNormals = true;
+        phosMesh.HasTangents = anyTangents;
+        phosMesh.HasColors = anyColors;
+        phosMesh.IncreaseVertexCount(vertexCount);
+        phosMesh.SetHasUV(0, true);
+        if (hasUV1) phosMesh.SetHasUV(1, true);
+        if (hasUV2) phosMesh.SetHasUV(2, true);
+        if (hasUV3) phosMesh.SetHasUV(3, true);
+
+        var positions = phosMesh.RawPositions;
+        var normals = phosMesh.RawNormals;
+        var tangents = anyTangents ? phosMesh.RawTangents : null;
+        var colors = anyColors ? phosMesh.RawColors : null;
+        var uv0 = phosMesh.RawUV0s;
+        var uv1 = hasUV1 ? phosMesh.RawUV1s : null;
+        var uv2 = hasUV2 ? phosMesh.RawUV2s : null;
+        var uv3 = hasUV3 ? phosMesh.RawUV3s : null;
+
+        var boneIndices = anySkin ? new float4[vertexCount] : null;
+        var boneWeights = anySkin ? new float4[vertexCount] : null;
+        var boneSlots = anySkin ? new byte[vertexCount] : null;
+        var bonesByName = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        int rebuiltBinds = 0;
+
+        int shapeCount = shapeNames.Count;
+        var shapePositions = new float3[shapeCount][];
+        var shapeNormals = new float3[]?[shapeCount];
+        var shapeTangents = new float3[]?[shapeCount];
+        for (int s = 0; s < shapeCount; s++)
+        {
+            shapePositions[s] = new float3[vertexCount];
+            if (shapeHasNormals[s])
+                shapeNormals[s] = new float3[vertexCount];
+            if (shapeHasTangents[s])
+                shapeTangents[s] = new float3[vertexCount];
+        }
+
+        int triangleTotal = 0;
+        for (int p = 0; p < parts.Count; p++)
+        {
+            var (partIndex, mesh, baseVert, partTriangles) = parts[p];
+            int vcount = mesh.VertexCount;
+            var mv = mesh.Vertices;
+            var mn = mesh.HasNormals ? mesh.Normals : null;
+            var mt = mesh.HasTangentBasis ? mesh.Tangents : null;
+            var mb = mesh.HasTangentBasis ? mesh.BiTangents : null;
+            var mc = ColorChannel(mesh);
+            var t0 = UVChannel(mesh, 0);
+            var t1 = UVChannel(mesh, 1);
+            var t2 = UVChannel(mesh, 2);
+            var t3 = UVChannel(mesh, 3);
+
+            for (int i = 0; i < vcount; i++)
+            {
+                int v = baseVert + i;
+                var position = mv[i];
+                positions[v] = new float3(position.X, position.Y, position.Z);
+
+                bool hasNormal = mn != null && i < mn.Count;
+                var n = hasNormal ? mn![i] : new System.Numerics.Vector3(0f, 1f, 0f);
+                normals[v] = hasNormal ? new float3(n.X, n.Y, n.Z) : float3.Up;
+
+                uv0[v] = UVAt(t0, i);
+                if (uv1 != null) uv1[v] = UVAt(t1, i);
+                if (uv2 != null) uv2[v] = UVAt(t2, i);
+                if (uv3 != null) uv3[v] = UVAt(t3, i);
+
+                if (tangents != null)
+                {
+                    if (mt != null && mb != null && i < mt.Count && i < mb.Count)
+                    {
+                        var t = mt[i];
+                        var b = mb[i];
+                        float cx = n.Y * t.Z - n.Z * t.Y, cy = n.Z * t.X - n.X * t.Z, cz = n.X * t.Y - n.Y * t.X;
+                        float sign = (cx * b.X + cy * b.Y + cz * b.Z) < 0f ? -1f : 1f;
+                        tangents[v] = new float4(t.X, t.Y, t.Z, sign);
+                    }
+                    else tangents[v] = new float4(1f, 0f, 0f, 1f);
+                }
+
+                if (colors != null)
+                {
+                    if (mc != null && i < mc.Count)
+                    {
+                        var c = mc[i];
+                        colors[v] = new color(c.X, c.Y, c.Z, c.W);
+                    }
+                    else colors[v] = color.White;
+                }
+            }
+
+            if (mesh.HasBones && boneIndices != null && boneWeights != null && boneSlots != null)
+            {
+                foreach (var bone in mesh.Bones)
+                {
+                    if (bone == null)
+                        continue;
+                    string bname = string.IsNullOrEmpty(bone.Name) ? $"Bone{phosMesh.BoneCount}" : bone.Name;
+                    var bind = BindPoseFor(bone, bname, globalNodeRest, out bool rebuilt);
+                    if (!bonesByName.TryGetValue(bname, out var entries))
+                    {
+                        entries = new List<int>(1);
+                        bonesByName[bname] = entries;
+                    }
+                    int bIdx = -1;
+                    foreach (int e in entries)
+                    {
+                        if (SameBind(phosMesh.GetBoneBindPose(e), bind))
+                        {
+                            bIdx = e;
+                            break;
+                        }
+                    }
+                    if (bIdx < 0)
+                    {
+                        phosMesh.AddBone(bname).BindPose = bind;
+                        bIdx = phosMesh.BoneCount - 1;
+                        entries.Add(bIdx);
+                        if (rebuilt)
+                            rebuiltBinds++;
+                    }
+
+                    if (!bone.HasVertexWeights)
+                        continue;
+                    foreach (var vw in bone.VertexWeights)
+                    {
+                        if (vw.VertexID < 0 || vw.VertexID >= vcount)
+                            continue;
+                        int gv = baseVert + vw.VertexID;
+                        int slot = boneSlots[gv];
+                        if (slot < 4)
+                        {
+                            boneIndices[gv] = WithComponent(boneIndices[gv], slot, bIdx);
+                            boneWeights[gv] = WithComponent(boneWeights[gv], slot, vw.Weight);
+                            boneSlots[gv] = (byte)(slot + 1);
+                        }
+                        else
+                        {
+                            var w = boneWeights[gv];
+                            int minSlot = 0; float minW = w.x;
+                            if (w.y < minW) { minW = w.y; minSlot = 1; }
+                            if (w.z < minW) { minW = w.z; minSlot = 2; }
+                            if (w.w < minW) { minW = w.w; minSlot = 3; }
+                            if (vw.Weight > minW)
+                            {
+                                boneIndices[gv] = WithComponent(boneIndices[gv], minSlot, bIdx);
+                                boneWeights[gv] = WithComponent(boneWeights[gv], minSlot, vw.Weight);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (mesh.HasMeshAnimationAttachments)
+            {
+                var attachments = mesh.MeshAnimationAttachments;
+                for (int a = 0; a < attachments.Count; a++)
+                {
+                    var att = attachments[a];
+                    if (att == null)
+                        continue;
+                    int s = shapeIndex[ShapeName(att, a)];
+
+                    if (att.HasVertices)
+                    {
+                        var dp = shapePositions[s];
+                        var av = att.Vertices;
+                        int count = System.Math.Min(vcount, av.Count);
+                        for (int i = 0; i < count; i++)
+                        {
+                            var ap = av[i];
+                            var bp = mv[i];
+                            dp[baseVert + i] = new float3(ap.X - bp.X, ap.Y - bp.Y, ap.Z - bp.Z);
+                        }
+                    }
+
+                    if (shapeNormals[s] is { } dn && att.HasNormals && mn != null)
+                    {
+                        var an = att.Normals;
+                        int count = System.Math.Min(vcount, System.Math.Min(an.Count, mn.Count));
+                        for (int i = 0; i < count; i++)
+                        {
+                            var x = an[i];
+                            var y = mn[i];
+                            dn[baseVert + i] = new float3(x.X - y.X, x.Y - y.Y, x.Z - y.Z);
+                        }
+                    }
+
+                    if (shapeTangents[s] is { } dt && att.HasTangentBasis)
+                    {
+                        var at = att.Tangents;
+                        int count = System.Math.Min(vcount, at.Count);
+                        for (int i = 0; i < count; i++)
+                        {
+                            var baseT = tangents != null ? tangents[baseVert + i] : new float4(1f, 0f, 0f, 1f);
+                            var atn = Normalize3(at[i].X, at[i].Y, at[i].Z);
+                            var btn = Normalize3(baseT.x, baseT.y, baseT.z);
+                            dt[baseVert + i] = new float3(atn.x - btn.x, atn.y - btn.y, atn.z - btn.z);
+                        }
+                    }
+                }
+            }
+
+            // Same winding as ConvertScene, offset into this part's range.
+            var submesh = new PhosTriangleSubmesh(phosMesh);
+            submesh.IncreaseCount(partTriangles);
+            var indices = submesh.RawIndices;
+            int write = 0;
+            foreach (var face in mesh.Faces)
+            {
+                if (face == null || !face.HasIndices || face.IndexCount < 3)
+                    continue;
+                var fi = face.Indices;
+                for (int i = 0; i + 2 < fi.Count; i += 3)
+                {
+                    indices[write++] = baseVert + fi[i];
+                    indices[write++] = baseVert + fi[i + 2];
+                    indices[write++] = baseVert + fi[i + 1];
+                }
+            }
+            phosMesh.Submeshes.Add(submesh);
+            submeshParts[p] = partIndex;
+            triangleTotal += partTriangles;
+        }
+
+        if (anySkin && boneIndices != null && boneWeights != null)
+        {
+            phosMesh.EnsureBoneBindings();
+            phosMesh.HasBoneBindings = true;
+            var bindings = phosMesh.RawBoneBindings;
+            for (int i = 0; i < vertexCount; i++)
+                bindings[i] = new PhosBoneBinding(boneIndices[i], NormalizeWeights(boneWeights[i]));
+        }
+
+        for (int s = 0; s < shapeCount; s++)
+        {
+            var frame = phosMesh.AddBlendShape(shapeNames[s], 1).Frames[0];
+            frame.positions = shapePositions[s];
+            if (shapeNormals[s] is { } dn)
+                frame.normals = dn;
+            if (shapeTangents[s] is { } dt)
+                frame.tangents = dt;
+        }
+
+        LumoraLogger.Debug($"MeshDecoder: Merged meshes {string.Join(", ", submeshParts)} of {extension} - {vertexCount} verts, {triangleTotal} tris, {phosMesh.BoneCount} bones, {shapeCount} shapes, skinned={phosMesh.HasBoneBindings}");
+        if (rebuiltBinds > 0)
+            LumoraLogger.Warn($"MeshDecoder: {extension} (meshes {string.Join(", ", submeshParts)}) shipped {rebuiltBinds}/{phosMesh.BoneCount} bones with no usable inverse bind; rebuilt them from the rest pose.");
+        return phosMesh;
+    }
+
+    // The bind ConvertScene gives a bone: its own inverse bind when usable, else rebuilt from where the joint
+    // rests, else identity. rebuilt is true when the source's could not be used. -xlinka
+    private static float4x4 BindPoseFor(Assimp.Bone bone, string name,
+        Dictionary<string, System.Numerics.Matrix4x4> nodeRest, out bool rebuilt)
+    {
+        var offset = System.Numerics.Matrix4x4.Transpose(bone.OffsetMatrix);
+        if (IsUsableBind(offset))
+        {
+            rebuilt = false;
+            return FromTransposed(offset);
+        }
+        rebuilt = true;
+        if (nodeRest.TryGetValue(name, out var rest) && System.Numerics.Matrix4x4.Invert(rest, out var derived))
+            return FromTransposed(derived);
+        return float4x4.Identity;
+    }
+
+    // Parts cut from one object carry one bind bit for bit; the tolerance only absorbs an exporter that
+    // recomputed it per part. -xlinka
+    private static bool SameBind(float4x4 a, float4x4 b) =>
+        Close(a.c0, b.c0) && Close(a.c1, b.c1) && Close(a.c2, b.c2) && Close(a.c3, b.c3);
+
+    private static bool Close(float4 a, float4 b) =>
+        Close(a.x, b.x) && Close(a.y, b.y) && Close(a.z, b.z) && Close(a.w, b.w);
+
+    private static bool Close(float a, float b) =>
+        System.Math.Abs(a - b) <= 1e-5f * System.Math.Max(1f, System.Math.Max(System.Math.Abs(a), System.Math.Abs(b)));
+
+    private static List<System.Numerics.Vector3>? UVChannel(Assimp.Mesh mesh, int channel)
+    {
+        if (mesh.TextureCoordinateChannelCount <= channel)
+            return null;
+        var list = mesh.TextureCoordinateChannels[channel];
+        return list != null && list.Count > 0 ? list : null;
+    }
+
+    private static float2 UVAt(List<System.Numerics.Vector3>? channel, int i) =>
+        channel != null && i < channel.Count ? new float2(channel[i].X, channel[i].Y) : float2.Zero;
+
+    private static List<System.Numerics.Vector4>? ColorChannel(Assimp.Mesh mesh)
+    {
+        if (!mesh.HasVertexColors(0))
+            return null;
+        var list = mesh.VertexColorChannels[0];
+        return list != null && list.Count > 0 ? list : null;
+    }
+
     // Return a copy of v with component i (0..3) set to val.
     private static float4 WithComponent(float4 v, int i, float val) => i switch
     {
@@ -660,6 +1063,20 @@ public static class MeshDecoder
             null or "" => false,
             _ => true,
         };
+    }
+
+    // A shape's name as the file means it. FBX keeps a shape inside a channel, and when the two share a name
+    // the reader joins them ("Smile.Smile"); every other tool, and every avatar setup that names its shapes,
+    // calls that shape "Smile". -xlinka
+    public static string ShapeName(Assimp.MeshAnimationAttachment? attachment, int index)
+    {
+        var name = attachment?.Name;
+        if (string.IsNullOrEmpty(name))
+            return $"Morph{index}";
+        int half = name.Length / 2;
+        if (name.Length % 2 == 1 && name[half] == '.' && string.CompareOrdinal(name, 0, name, half + 1, half) == 0)
+            return name[..half];
+        return name;
     }
 
     internal static PostProcessSteps GetAssimpPostProcessSteps(bool perMesh = false, string? extension = null)

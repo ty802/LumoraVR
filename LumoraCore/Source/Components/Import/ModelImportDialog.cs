@@ -121,10 +121,23 @@ public sealed class ModelImportDialog : ImportDialog
         GridButton(body, "Advanced", () => OpenPage(MenuCustom));
     }
 
+    private static readonly (ModelMaterialType Value, string Name)[] MaterialChoices =
+    {
+        (ModelMaterialType.Lit, "PBS Metallic"),
+        (ModelMaterialType.Specular, "PBS Specular"),
+        (ModelMaterialType.DualSided, "PBS Dual Sided"),
+        (ModelMaterialType.Triplanar, "PBS Triplanar"),
+        (ModelMaterialType.Unlit, "Unlit"),
+        (ModelMaterialType.Toon, "Toon"),
+        (ModelMaterialType.ToonOutline, "Toon + Outline"),
+        (ModelMaterialType.Wireframe, "Wireframe"),
+    };
+
     private void MenuCustom(UIBuilder ui)
     {
         var body = SetupSection(ui, "Advanced Settings");
         var settings = ScrollContent(body);
+        SetupChoice(settings, Material, "Material", MaterialChoices);
         SetupCheckbox(settings, AutoScale, "Auto Scale");
         SetupCheckbox(settings, CalculateNormals, "Calculate Normals");
         SetupCheckbox(settings, CalculateTangents, "Calculate Tangents");
@@ -150,8 +163,8 @@ public sealed class ModelImportDialog : ImportDialog
 
     public void RunImport()
     {
-        if (!CanInteract) return;
-        Logger.Log($"ModelImportDialog: scale={Scale.Value} auto={AutoScale.Value} material={Material.Value} colliders={Colliders.Value}");
+        if (!CanInteract || RefuseSpawn()) return;
+        Logger.Debug($"ModelImportDialog: scale={Scale.Value} auto={AutoScale.Value} material={Material.Value} colliders={Colliders.Value}");
 
         int rowSize = (int)MathF.Max(1f, MathF.Ceiling(MathF.Sqrt(Paths.Count)));
         int index = 0;
@@ -163,7 +176,7 @@ public sealed class ModelImportDialog : ImportDialog
 
         foreach (var file in Paths)
         {
-            var s = target.RootSlot.AddSlot(Path.GetFileName(file) ?? file);
+            var s = target.AddSpawnSlot(target.RootSlot, Path.GetFileName(file) ?? file);
             if (!ImportAtOrigin.Value)
             {
                 var offset = UniversalImporter.GridOffset(ref index, rowSize);
@@ -171,6 +184,16 @@ public sealed class ModelImportDialog : ImportDialog
                 s.GlobalRotation = baseRot;
             }
             s.GlobalScale = float3.One * Scale.Value;
+
+            // Grabbable on the slot the model lands in, whoever builds the model: its colliders are children,
+            // so a grab anywhere on it walks up to this. The handler path used to skip the option entirely and
+            // an imported model came in that nothing could pick up. -xlinka
+            if (AllowGrabbable.Value)
+            {
+                var g = s.AttachComponent<Grabbable>();
+                g.AllowGrab.Value = true;
+                g.Scalable.Value = Scalable.Value;
+            }
 
             if (handler != null)
             {
@@ -183,15 +206,7 @@ public sealed class ModelImportDialog : ImportDialog
             }
             else
             {
-                var label = s.AttachComponent<TextRenderer>();
-                label.Text.Value = Path.GetFileName(file) ?? file;
-                label.Size.Value = 0.08f;
-                if (AllowGrabbable.Value)
-                {
-                    var g = s.AttachComponent<Grabbable>();
-                    g.AllowGrab.Value = true;
-                    g.Scalable.Value = Scalable.Value;
-                }
+                UniversalImporter.SpawnFileLabel(s, Path.GetFileName(file) ?? file);
             }
         }
 

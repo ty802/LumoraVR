@@ -4,27 +4,38 @@
 using Lumora.Core.Components.Import;
 using Lumora.Core.Input;
 using Lumora.Core.Logging;
+using System;
+using Helio.UI;
+using Lumora.Core.Components.Interaction;
+using Lumora.Core.Components.UI;
+using Lumora.Core.Math;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Components;
 
-// World-side Ctrl+V trigger. Detects the paste keystroke (gated on authority +
-// running world) and hands off to the platform clipboard bridge, which reads the
+// Userspace Ctrl+V trigger. Detects the local paste keystroke while a focused world
+// is running and hands off to the platform clipboard bridge, which reads the
 // real OS clipboard and routes its contents through the import pipeline. The core
 // has no clipboard access of its own, so without a registered bridge a paste is a
 // no-op - it never fabricates placeholder content. - xlinka
 [ComponentCategory("Assets/Import")]
+[UserspaceOnly]
 public class ClipboardImporter : Component
 {
     private bool _warnedNoBridge;
+    private SavedGraph? _copiedObject;
+    private string? _copyToken;
+    private float3 _copiedScale;
+    private floatQ _copiedRotation;
 
     private bool CanImport
     {
         get
         {
-            if (World == null || !World.IsAuthority)
+            if (!IsExecutionAllowed || Engine.Current?.WorldManager?.FocusedWorld is not { IsDestroyed: false } focused)
                 return false;
 
-            if (World.State != World.WorldState.Running)
+            if (focused.State != World.WorldState.Running)
                 return false;
 
             return true;
@@ -35,8 +46,12 @@ public class ClipboardImporter : Component
     {
         base.OnUpdate(delta);
 
-        if (!CanImport)
+        if (!CanImport || TextInput.Focused != null || DashWindowPanel.TakesKeys)
             return;
+
+        var actions = Engine.Current?.InputInterface?.Actions;
+        if (actions?.TextFocusHeld == true) return;
+        if (actions?.Editing.Copy.Pressed == true) CopyObject();
 
         // Paste is an action like anything else, so a focused text field takes the keyboard out of
         // play before this sees it; ctrl+V typed into a name box never reaches the importer.
@@ -48,6 +63,7 @@ public class ClipboardImporter : Component
 
     private void HandleClipboardPaste()
     {
+        if (PasteObject()) return;
         var bridge = ImportHandlers.Clipboard;
         if (bridge == null)
         {
@@ -62,7 +78,65 @@ public class ClipboardImporter : Component
             return;
         }
 
-        Logger.Log("ClipboardImporter: routing Ctrl+V to platform clipboard");
+        Logger.Debug("ClipboardImporter: routing Ctrl+V to platform clipboard");
         bridge.Paste();
+    }
+
+    private void CopyObject()
+    {
+        var world = Engine.Current?.WorldManager?.FocusedWorld;
+        var root = world?.LocalUser?.Root?.Slot;
+        var clipboard = Engine.Current?.InputInterface?.ClipboardText;
+        if (root == null || clipboard == null) return;
+        Slot? selected = null;
+        foreach (var hand in root.GetComponentsInChildren<HandTool>())
+        {
+            if (hand.Side.Value != Chirality.Right) continue;
+            if (hand.Grabber is { } grabber)
+                foreach (var held in grabber.GrabbedObjects)
+                    if (held is Component component) { selected = component.Slot; break; }
+            selected ??= (hand.ActiveToolItem.Target as DevToolItem)?.SelectedSlot.Target;
+        }
+        if (selected == null || selected.IsDestroyed || selected == world!.RootSlot
+            || selected.GetComponent<UserRoot>() != null || selected.GetComponent<ToolItem>() is { IsEquipped: true }
+            || DuplicateBlock.Blocks(selected)) return;
+        try
+        {
+            // A snapshot, so moving or deleting the original cannot change what was copied. Assets
+            // travel with it; local file paths and private UI services never enter the clipboard.
+            var graph = selected.SaveObject(DependencyHandling.CollectAssets, saveNonPersistent: true);
+            string token = "lumora-clipboard://object/" + Guid.NewGuid().ToString("N");
+            clipboard.SetText(token);
+            _copiedObject = graph;
+            _copyToken = token;
+            _copiedScale = selected.GlobalScale;
+            _copiedRotation = selected.GlobalRotation;
+        }
+        catch (Exception ex) { Logger.Warn($"Clipboard: object copy failed: {ex.Message}"); }
+    }
+
+    private bool PasteObject()
+    {
+        if (_copiedObject == null || _copyToken == null
+            || Engine.Current?.InputInterface?.ClipboardText?.GetText() != _copyToken) return false;
+        var world = Engine.Current?.WorldManager?.FocusedWorld;
+        if (ImportDialog.SpawnRefusal(world) is { } refusal) { Logger.Warn(refusal); return true; }
+        Slot? slot = null;
+        try
+        {
+            slot = world!.AddSpawnSlot(world.RootSlot, "Pasted object");
+            slot.LoadObject(_copiedObject.Root);
+            var head = world.LocalUser?.Root?.HeadSlot;
+            slot.GlobalPosition = head != null ? head.GlobalPosition + head.Forward * -1.5f : float3.Zero;
+            slot.GlobalRotation = _copiedRotation;
+            slot.GlobalScale = _copiedScale;
+            UndoManager.ForLocalUser(world)?.Record(SlotExistenceUndoBatch.Created(world, new[] { slot }, UndoLocale.Duplicate));
+        }
+        catch (Exception ex)
+        {
+            slot?.Destroy();
+            Logger.Warn($"Clipboard: object paste failed: {ex.Message}");
+        }
+        return true;
     }
 }

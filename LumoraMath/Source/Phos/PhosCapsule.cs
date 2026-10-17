@@ -7,8 +7,8 @@ using Lumora.Core.Math;
 namespace Lumora.Core.Phos;
 
 // A cylindrical body along Y capped by a hemisphere at each end. Height is the cylindrical section
-// only, so the total extent along Y is Height + 2 * Radius, which is the same convention the capsule
-// collider uses.
+// only, so the total extent along Y is Height + 2 * Radius; the capsule mesh component measures tip to tip
+// and hands this the straight part.
 //
 // One continuous latitude grid covers both hemispheres and the body. The two rows at the equator sit
 // at -Height/2 and +Height/2 and share a horizontal normal, so the band between them is the cylinder

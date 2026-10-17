@@ -58,7 +58,7 @@ public partial class ClipboardImporter : Node
 
     public override void _Ready()
     {
-        GD.Print("ClipboardImporter: Ready");
+        Lumora.Core.Logging.Logger.Debug("ClipboardImporter: Ready");
 
         GetTree().Root.FilesDropped += OnFilesDropped;
     }
@@ -74,7 +74,7 @@ public partial class ClipboardImporter : Node
     // - xlinka
     private async void OnFilesDropped(string[] files)
     {
-        GD.Print($"ClipboardImporter: {files.Length} file(s) dropped");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: {files.Length} file(s) dropped");
 
         var world = _engine?.WorldManager?.FocusedWorld;
         if (world == null)
@@ -87,7 +87,7 @@ public partial class ClipboardImporter : Node
         foreach (var filePath in files)
         {
             var normalized = NormalizeFilePath(filePath);
-            GD.Print($"ClipboardImporter: Processing dropped file: {normalized}");
+            Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Processing dropped file: {normalized}");
             UniversalImporter.Import(normalized, world, pos, rot);
         }
         await Task.CompletedTask;
@@ -130,13 +130,12 @@ public partial class ClipboardImporter : Node
         ImportHandlers.Image = new ImageHandler(this);
         ImportHandlers.Model = new ModelHandler(this);
         ImportHandlers.Video = new VideoHandler(this);
-        ImportHandlers.Audio = new AudioHandler(this);
         ImportHandlers.Raw = new RawFileHandler(this);
         // Bridge the real OS clipboard into the core's world-side Ctrl+V trigger
         // (Lumora.Core.Components.ClipboardImporter). That core component owns the
         // keystroke now, so this node no longer self-triggers paste in _Input. - xlinka
         ImportHandlers.Clipboard = new ClipboardBridge(this);
-        GD.Print("ClipboardImporter: Registered Image/Model/Video/Audio/Raw import + clipboard bridge");
+        Lumora.Core.Logging.Logger.Debug("ClipboardImporter: Registered Image/Model/Video/Raw import + clipboard bridge");
     }
 
     private sealed class ClipboardBridge : IClipboardPasteHandler
@@ -159,6 +158,8 @@ public partial class ClipboardImporter : Node
         public ModelHandler(ClipboardImporter owner) { _owner = owner; }
         public Task ImportAsync(Slot slot, string path, ModelImportRequest request)
         {
+            if (request.Settings != null)
+                return _owner.PopulateModelSlotAsync(slot, path, request.Settings.IsAvatarImport, request.Settings, exactSettings: true);
             var ext = Path.GetExtension(path).ToLowerInvariant();
             bool isAvatar = ext == ".vrm";
             // Map the dialog's request onto the core importer's settings so the Advanced
@@ -177,6 +178,8 @@ public partial class ClipboardImporter : Node
                 TargetHeight = isAvatar ? 1.7f : 1.8f,
                 GenerateColliders = r.Colliders,
                 SolidToPeople = r.SolidToPeople,
+                Grabbable = r.Grabbable,
+                Scalable = r.Scalable,
                 Material = r.Material,
                 MakeDualSided = r.MakeDualSided,
                 ImportAlbedoColor = r.ImportAlbedoColor,
@@ -198,30 +201,34 @@ public partial class ClipboardImporter : Node
             => _owner.PopulateVideoSlotAsync(slot, source, options);
     }
 
-    private sealed class AudioHandler : IAudioImportHandler
-    {
-        private readonly ClipboardImporter _owner;
-        public AudioHandler(ClipboardImporter owner) { _owner = owner; }
-        public Task ImportAsync(Slot slot, string source)
-            => _owner.PopulateAudioSlotAsync(slot, source);
-    }
-
     private sealed class RawFileHandler : IRawFileImportHandler
     {
         private readonly ClipboardImporter _owner;
         public RawFileHandler(ClipboardImporter owner) { _owner = owner; }
+
+        // A file nothing opens still lands as something to find and pick up.
+        private static Task Label(Slot slot, string path)
+        {
+            if (slot != null && !slot.IsDestroyed)
+                slot.World?.RunSynchronously(() =>
+                {
+                    if (!slot.IsDestroyed)
+                        Lumora.Core.Components.Import.UniversalImporter.SpawnFileLabel(slot, Path.GetFileName(path) ?? path);
+                });
+            return Task.CompletedTask;
+        }
         public Task ImportAsync(Slot slot, string path)
         {
             var ext = Path.GetExtension(path).ToLowerInvariant();
             return ext switch
             {
-                ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tga"
+                ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tga" or ".tif" or ".tiff"
                     => _owner.PopulateImageSlotAsync(slot, path),
                 ".gdshader"
                     => _owner.PopulateShaderSlotAsync(slot, path),
                 _ when ModelImporter.IsSupportedFormat(path)
                     => _owner.PopulateModelSlotAsync(slot, path, isAvatar: ext == ".vrm"),
-                _ => Task.CompletedTask,
+                _ => Label(slot, path),
             };
         }
     }
@@ -239,8 +246,8 @@ public partial class ClipboardImporter : Node
         _targetSlot = slot;
     }
 
-    // Ctrl+V is owned by the core world-side ClipboardImporter component, which
-    // gates on world authority/state and calls HandlePaste through the registered
+    // Ctrl+V is owned by the core userspace ClipboardImporter component, which
+    // checks the focused world and calls HandlePaste through the registered
     // clipboard bridge. We deliberately don't self-trigger paste here to avoid a
     // double import. Drag & drop (OnFilesDropped) is still handled directly. - xlinka
 
@@ -292,15 +299,24 @@ public partial class ClipboardImporter : Node
 
     public async void HandlePaste()
     {
-        GD.Print("ClipboardImporter: Handling paste...");
+        try { await HandlePasteAsync(); }
+        catch (Exception ex) { GD.PrintErr($"ClipboardImporter: Paste failed: {ex.Message}"); }
+    }
+
+    private async Task HandlePasteAsync()
+    {
+        Lumora.Core.Logging.Logger.Debug("ClipboardImporter: Handling paste...");
 
         var clipboardFiles = GetClipboardFiles();
+        var clipboardText = DisplayServer.ClipboardGet();
+        if (clipboardFiles.Count == 0)
+            clipboardFiles = Lumora.Core.Input.ClipboardFileList.Parse(clipboardText, OperatingSystem.IsWindows());
         if (clipboardFiles.Count > 0)
         {
-            GD.Print($"ClipboardImporter: Found {clipboardFiles.Count} file(s) in clipboard");
+            Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Found {clipboardFiles.Count} file(s) in clipboard");
             foreach (var filePath in clipboardFiles)
             {
-                GD.Print($"ClipboardImporter: Processing clipboard file: {filePath}");
+                Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Processing clipboard file: {filePath}");
                 await HandleFilePath(filePath);
             }
             return;
@@ -308,20 +324,18 @@ public partial class ClipboardImporter : Node
 
         if (DisplayServer.ClipboardHasImage())
         {
-            GD.Print("ClipboardImporter: Found image in clipboard");
+            Lumora.Core.Logging.Logger.Debug("ClipboardImporter: Found image in clipboard");
             await HandleClipboardImage();
             return;
         }
 
-        var clipboardText = DisplayServer.ClipboardGet();
-
         if (string.IsNullOrEmpty(clipboardText))
         {
-            GD.Print("ClipboardImporter: Clipboard is empty");
+            Lumora.Core.Logging.Logger.Debug("ClipboardImporter: Clipboard is empty");
             return;
         }
 
-        GD.Print($"ClipboardImporter: Clipboard text: {clipboardText.Substring(0, System.Math.Min(100, clipboardText.Length))}...");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Clipboard text, {clipboardText.Length} chars");
 
         var contentType = DetectContentType(clipboardText);
 
@@ -340,7 +354,7 @@ public partial class ClipboardImporter : Node
                 break;
 
             default:
-                GD.Print("ClipboardImporter: Unknown content type");
+                Lumora.Core.Logging.Logger.Debug("ClipboardImporter: Unknown content type");
                 break;
         }
     }
@@ -403,7 +417,7 @@ public partial class ClipboardImporter : Node
             }
         }
 
-        var otherExtensions = new[] { ".png", ".jpg", ".jpeg", ".webp", ".gdshader" };
+        var otherExtensions = new[] { ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".gdshader" };
         foreach (var ext in otherExtensions)
         {
             if (content.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
@@ -423,7 +437,7 @@ public partial class ClipboardImporter : Node
     private Task HandleFilePath(string filePath)
     {
         filePath = NormalizeFilePath(filePath);
-        GD.Print($"ClipboardImporter: Handling file path: {filePath}");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Handling file path: {filePath}");
 
         if (!File.Exists(filePath) && !Directory.Exists(filePath))
         {
@@ -487,7 +501,7 @@ public partial class ClipboardImporter : Node
             return Task.CompletedTask;
         }
 
-        GD.Print($"ClipboardImporter: Saved clipboard image to {tempPath}");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Saved clipboard image to {tempPath}");
         var (pos, rot) = GetSpawnPose();
         UniversalImporter.Import(tempPath, world, pos, rot);
         return Task.CompletedTask;
@@ -498,7 +512,7 @@ public partial class ClipboardImporter : Node
     // populates it. - xlinka
     public async Task PopulateImageSlotAsync(Slot imageSlot, string filePath)
     {
-        GD.Print($"ClipboardImporter: Populating image slot: {filePath}");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Populating image slot: {filePath}");
 
         string localUri = null!;
         if (_localDB != null)
@@ -540,7 +554,7 @@ public partial class ClipboardImporter : Node
         material.Culling.Value = Culling.None;
         meshRenderer.Material.Target = material;
 
-        GD.Print($"ClipboardImporter: Image populated with visual components from {localUri ?? filePath}");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Image populated with visual components from {localUri ?? filePath}");
         OnAssetImported?.Invoke(filePath, imageSlot);
 
         QueueTextureVariants(localUri, imageProvider.IsNormalMap.Value);
@@ -558,7 +572,7 @@ public partial class ClipboardImporter : Node
             return;
         }
 
-        GD.Print($"ClipboardImporter: Populating video slot: {source} ({options.Projection}/{options.Layout})");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Populating video slot: {source} ({options.Projection}/{options.Layout})");
 
         Uri.TryCreate(source, UriKind.Absolute, out var parsed);
         bool isLocalFile = parsed == null || parsed.IsFile;
@@ -593,50 +607,8 @@ public partial class ClipboardImporter : Node
             player.SetSource(source);
         }
 
-        GD.Print($"ClipboardImporter: Video populated from {localUri ?? source}");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Video populated from {localUri ?? source}");
         OnAssetImported?.Invoke(source, videoSlot);
-    }
-
-    // A clip is copied into the local store the way an image is, so the ADDRESS travels and the other
-    // peers can fetch the bytes by hash. A path handed straight to the provider would only ever make a
-    // sound on this machine. Nothing autoplays: a folder of sound files dropped into a room all
-    // starting at once is not an import, it is an accident. -xlinka
-    public async Task PopulateAudioSlotAsync(Slot audioSlot, string source)
-    {
-        if (audioSlot == null || audioSlot.IsDestroyed)
-        {
-            GD.PrintErr($"ClipboardImporter: audio import target for {source} is gone");
-            return;
-        }
-
-        GD.Print($"ClipboardImporter: Populating audio slot: {source}");
-
-        Uri.TryCreate(source, UriKind.Absolute, out var parsed);
-        bool isLocalFile = parsed == null || parsed.IsFile;
-
-        string localUri = null!;
-        if (isLocalFile && _localDB != null)
-        {
-            var path = parsed != null && parsed.IsFile ? parsed.LocalPath : source;
-            if (File.Exists(path))
-            {
-                localUri = await _localDB.ImportLocalAssetAsync(path, LocalDB.ImportLocation.Copy);
-            }
-        }
-
-        if (audioSlot.IsDestroyed)
-            return;
-
-        var player = audioSlot.AttachComponent<Lumora.Core.Components.Media.AudioPlayer>();
-        if (!string.IsNullOrEmpty(localUri))
-            player.SetSource(new Uri(localUri));
-        else if (parsed != null)
-            player.SetSource(parsed);
-        else
-            player.SetSource(source);
-
-        GD.Print($"ClipboardImporter: Audio populated from {localUri ?? source}");
-        OnAssetImported?.Invoke(source, audioSlot);
     }
 
     // Deliberately not awaited. Decoding a large image and filtering four mip chains off it is
@@ -669,9 +641,9 @@ public partial class ClipboardImporter : Node
     // this holds the readout and this task open across it, and rides the TARGET SLOT's lifetime while it
     // waits: delete the model, or leave the world, and the next world hop cancels instead of dropping
     // chunks onto a corpse. -xlinka
-    public async Task PopulateModelSlotAsync(Slot slot, string filePath, bool isAvatar, ModelImportSettings? settings = null)
+    public async Task PopulateModelSlotAsync(Slot slot, string filePath, bool isAvatar, ModelImportSettings? settings = null, bool exactSettings = false)
     {
-        GD.Print($"ClipboardImporter: Populating model slot as {(isAvatar ? "avatar" : "3D model")}: {filePath}");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Populating model slot as {(isAvatar ? "avatar" : "3D model")}: {filePath}");
 
         var importWorld = slot?.World;
         if (slot == null || slot.IsDestroyed || importWorld == null)
@@ -701,7 +673,7 @@ public partial class ClipboardImporter : Node
         try
         {
             ModelImportResult result;
-            if (isAvatar)
+            if (isAvatar && !exactSettings)
             {
                 // Avatar import uses fixed avatar settings (IK/rig); the dialog's material/texture
                 // options aren't surfaced for avatars yet, so keep the avatar preset. - xlinka
@@ -739,7 +711,7 @@ public partial class ClipboardImporter : Node
             // The target slot was destroyed or its world went away. Nothing to finish, nobody to tell.
             finished = true;
             ModelImportIndicator.Dismiss(token);
-            GD.Print($"ClipboardImporter: import of {filePath} cancelled - its target is gone");
+            Lumora.Core.Logging.Logger.Log($"ClipboardImporter: import of {filePath} cancelled - its target is gone");
         }
         finally
         {
@@ -853,7 +825,7 @@ public partial class ClipboardImporter : Node
 
     private async Task HandleUrl(string url)
     {
-        GD.Print($"ClipboardImporter: Handling URL: {url}");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Handling URL: {url}");
 
         // A video link is PLAYED, not fetched. A service page has no file behind it at all, a live
         // protocol has no end to download, and a two hour mp4 would be a two gigabyte wait before the
@@ -904,7 +876,13 @@ public partial class ClipboardImporter : Node
             ".jpg",
             ".jpeg",
             ".webp",
-            ".gdshader"
+            ".tif",
+            ".tiff",
+            ".gdshader",
+            ".mp3",
+            ".ogg",
+            ".oga",
+            ".wav"
         };
         foreach (var ext in knownExtensions)
         {
@@ -918,7 +896,7 @@ public partial class ClipboardImporter : Node
 
     private async Task<string> DownloadFile(string url)
     {
-        GD.Print($"ClipboardImporter: Downloading file from {url}");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Downloading file from {url}");
 
         try
         {
@@ -1000,6 +978,11 @@ public partial class ClipboardImporter : Node
                 header[8] == 0x57 && header[9] == 0x45 && header[10] == 0x42 && header[11] == 0x50)
                 return ".webp";
 
+            // TIFF, either byte order
+            if ((header[0] == 0x49 && header[1] == 0x49 && header[2] == 0x2A && header[3] == 0x00) ||
+                (header[0] == 0x4D && header[1] == 0x4D && header[2] == 0x00 && header[3] == 0x2A))
+                return ".tif";
+
             // GLB (binary GLTF)
             if (header[0] == 0x67 && header[1] == 0x6C && header[2] == 0x54 && header[3] == 0x46)
                 return ".glb";
@@ -1011,7 +994,7 @@ public partial class ClipboardImporter : Node
 
     private async Task HandleText(string text)
     {
-        GD.Print($"ClipboardImporter: Handling text content (length: {text.Length})");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Handling text content (length: {text.Length})");
 
         if (IsGdShaderText(text))
         {
@@ -1062,7 +1045,7 @@ public partial class ClipboardImporter : Node
 
     public async Task PopulateShaderSlotAsync(Slot rootSlot, string filePath)
     {
-        GD.Print($"ClipboardImporter: Populating shader workbench: {filePath}");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Populating shader workbench: {filePath}");
 
         string localUri = null!;
         if (_localDB != null)
@@ -1094,7 +1077,7 @@ public partial class ClipboardImporter : Node
         var sphereCollider = sphereSlot.AttachComponent<SphereCollider>();
         sphereCollider.Radius.Value = 0.3f;
 
-        GD.Print($"ClipboardImporter: Shader material created with local URI {localUri ?? filePath}");
+        Lumora.Core.Logging.Logger.Debug($"ClipboardImporter: Shader material created with local URI {localUri ?? filePath}");
         OnAssetImported?.Invoke(filePath, rootSlot);
     }
 

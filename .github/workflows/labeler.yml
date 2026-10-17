@@ -31,7 +31,7 @@ jobs:
         uses: redhat-plumbers-in-action/advanced-issue-labeler@v2
         with:
           issue-form: ${{ steps.issue-parser.outputs.jsonString }}
-          section: severity
+          section: labels
           block-list: |
             None
             Other

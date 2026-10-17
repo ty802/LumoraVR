@@ -3,232 +3,181 @@
 
 using System;
 using DiscordRPC;
+using Godot;
+using Newtonsoft.Json;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 using LumoraWorld = Lumora.Core.World;
 
 namespace Lumora.Source.Godot.Bootstrap;
 
-// Discord Rich Presence: tells your friends which world you're in (name, mode, head-count) and lets
-// them Ask-to-Join public ones. Fails soft - no app ID or no Discord running and it just shrugs,
-// logs once, and gets on with its day.
 public static class DiscordManager
 {
-    // LumoraVR's Discord application (discord.com/developers). Empty string = presence is off.
-    private const string AppId = "1330400493054464092";
-
-    // These MUST match the asset keys uploaded to the app, or Discord shows a sad empty square
-    // and quietly judges you.
-    private const string LargeImageKey = "lumoravr";
-    private const string PublicIconKey = "status_public";
-    private const string PrivateIconKey = "status_private";
-
-    // Raised on the main thread (via Poll) with the session URI to connect to when a friend joins /
-    // their Ask-to-Join is accepted. The bootstrap layer wires this to the join path.
-    public static Action<Uri>? JoinRequested;
+    // Called on the main thread. False keeps the invite pending while another world is loading.
+    public static Func<Uri, bool>? JoinRequested;
+    public static bool ExitAfterHandoff { get; private set; }
+    public static bool Initialized => _client is { IsDisposed: false, IsInitialized: true };
 
     private static DiscordRpcClient? _client;
-    private static DateTime _sessionStart;
+    private static DiscordLaunchRelay? _launchRelay;
+    private static DateTime _sessionStart = DateTime.UtcNow;
+    private static LumoraWorld? _presenceWorld;
+    private static string? _presenceSession;
     private static string _lastPresenceKey = string.Empty;
+    private static bool _joinRequestsAllowed;
+    private static readonly DiscordInviteQueue Invites = new();
 
-    public static bool Initialized => _client != null && !_client.IsDisposed;
+    // Runs in the first autoload, before Lumora opens its stores or starts the world bootstrap.
+    public static bool PrepareLaunch(string dataDirectory)
+    {
+        if (!OS.HasFeature("pc") || LaunchArgs.HasFlag("--Lumora-DebugConsole") || LaunchArgs.HasFlag("--headless"))
+            return true;
+        string? activation = DiscordJoinLink.LaunchActivation(LaunchArgs.All());
+        try
+        {
+            _launchRelay = DiscordLaunchRelay.Start(dataDirectory, activation ?? string.Empty);
+            if (_launchRelay == null)
+            {
+                ExitAfterHandoff = true;
+                LumoraLogger.Log("DiscordManager: launch handed to the running client");
+                return false;
+            }
+            if (DiscordJoinLink.TryParse(activation, out var uri)) Invites.Enqueue(uri);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ExitAfterHandoff = true;
+            GD.PushError($"Could not hand the launch to the running Lumora client: {ex.Message}");
+            return false;
+        }
+    }
+
+    public static void StopLaunchRelay()
+    {
+        _launchRelay?.Dispose();
+        _launchRelay = null;
+    }
 
     public static void Initialize()
     {
-        if (string.IsNullOrWhiteSpace(AppId))
-        {
-            LumoraLogger.Log("DiscordManager: no application ID set - rich presence disabled");
-            return;
-        }
-
+        if (Initialized || !OS.HasFeature("pc") || LaunchArgs.HasFlag("--headless")) return;
         try
         {
-            _sessionStart = DateTime.UtcNow;
-            _client = new DiscordRpcClient(AppId);
-            // Required before sending any presence that carries a join secret (Discord errors otherwise),
-            // and it's what lets Discord relaunch the game for a cold-launch join. Registers a
-            // discord-<appid>:// handler for the current executable (HKCU on Windows, no admin). - xlinka
-            _client.RegisterUriScheme();
-            _client.OnReady += (_, e) =>
+            // Event delivery is owned by Poll, so world state and join callbacks stay on the main thread.
+            _client = new DiscordRpcClient(DiscordJoinLink.AppId, autoEvents: false);
+            string command = DiscordJoinLink.LaunchCommand(OS.GetExecutablePath(),
+                OS.HasFeature("editor") ? ProjectSettings.GlobalizePath("res://") : null,
+                OperatingSystem.IsWindows(), HeadsetDeviceMode.IsSteamFrame);
+            try
             {
-                LumoraLogger.Log($"DiscordManager: connected as {e.User.Username}");
-                // Tell Discord we actually care about Join + Ask-to-Join events. Skip this and the
-                // "Join" button is purely decorative. - xlinka
-                _client?.SetSubscription(EventType.Join | EventType.JoinRequest);
+                if (!_client.RegisterUriScheme(executable: command))
+                    LumoraLogger.Warn("DiscordManager: URI registration failed; presence remains available without invites");
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Warn($"DiscordManager: URI registration unavailable; presence continues without invites: {ex.Message}");
+            }
+            _client.OnReady += (_, _) =>
+            {
+                _lastPresenceKey = string.Empty;
+                if (_client?.HasRegisteredUriScheme == true)
+                    _client.SetSubscription(EventType.Join | EventType.JoinRequest);
+                LumoraLogger.Log("DiscordManager: connected");
             };
-            _client.OnError += (_, e) => LumoraLogger.Warn($"DiscordManager: error {e.Code}: {e.Message}");
-            _client.OnJoin += HandleJoin;
-            _client.OnJoinRequested += HandleJoinRequest;
-            _client.Initialize();
-            LumoraLogger.Log("DiscordManager: rich presence initialized");
+            _client.OnError += (_, e) =>
+            {
+                _lastPresenceKey = string.Empty;
+                LumoraLogger.Warn($"DiscordManager: error {e.Code}: {e.Message}");
+            };
+            _client.OnJoin += (_, e) =>
+            {
+                if (DiscordJoinLink.TryParse(e.Secret, out var uri)) Invites.Enqueue(uri);
+                else LumoraLogger.Warn("DiscordManager: ignored an invalid join secret");
+            };
+            _client.OnJoinRequested += (_, e) => _client?.Respond(e, _joinRequestsAllowed);
+            if (!_client.Initialize()) throw new InvalidOperationException("RPC connection could not start");
+            _lastPresenceKey = string.Empty;
         }
         catch (Exception ex)
         {
-            LumoraLogger.Warn($"DiscordManager: init exception: {ex.Message}");
-            _client = null;
+            LumoraLogger.Warn($"DiscordManager: initialization failed: {ex.Message}");
+            CloseClient();
         }
     }
 
-    // call from the update loop
     public static void Poll()
     {
-        if (_client != null && !_client.IsDisposed)
-            _client.Invoke();
-    }
-
-    // A friend hit Join (or got their ask-to-join accepted). The "secret" is the session URI we
-    // stashed in the presence - hand it to the bootstrap layer to actually go there.
-    private static void HandleJoin(object sender, DiscordRPC.Message.JoinMessage args)
-    {
-        try
+        while (_launchRelay?.TryRead(out var activation) == true)
         {
-            var uri = new Uri(args.Secret);
-            LumoraLogger.Log($"DiscordManager: join -> {uri}");
-            JoinRequested?.Invoke(uri);
+            if (DiscordJoinLink.TryParse(activation, out var uri)) Invites.Enqueue(uri);
+            else
+            {
+                // Some Discord launch URIs carry no secret. Reconnect the existing process so Discord
+                // can deliver its pending ACTIVITY_JOIN after the new RPC handshake.
+                CloseClient();
+                Initialize();
+            }
+            if (!HeadsetDeviceMode.IsHeadset) DisplayServer.WindowMoveToForeground();
         }
-        catch (Exception ex)
-        {
-            LumoraLogger.Warn($"DiscordManager: ignoring bad join secret '{args.Secret}': {ex.Message}");
-        }
+        try { if (Initialized) _client!.Invoke(); }
+        catch (Exception ex) { LumoraLogger.Warn($"DiscordManager: callback failed: {ex.Message}"); }
+        try { Invites.Dispatch(JoinRequested); }
+        catch (Exception ex) { LumoraLogger.Warn($"DiscordManager: could not start the invited session: {ex.Message}"); }
     }
 
-    // Someone politely knocked (Ask to Join). We only ever attach a join secret to PUBLIC worlds, so
-    // if they got this far it's open house - wave them in. (Per-request prompts can come later.)
-    private static void HandleJoinRequest(object sender, DiscordRPC.Message.JoinRequestMessage args)
-    {
-        LumoraLogger.Log($"DiscordManager: {args.User.Username} asked to join - opening the door");
-        _client?.Respond(args, true);
-    }
-
-    // de-duped: only re-sends when the resulting state actually changes, so it's cheap every frame/tick
     public static void UpdatePresence(LumoraWorld? world)
     {
-        if (_client == null || _client.IsDisposed)
-            return;
-
+        if (!Initialized) return;
         try
         {
-            var presence = BuildPresence(world, out var key);
-            if (key == _lastPresenceKey)
-                return;
-            _lastPresenceKey = key;
+            if (world?.IsDisposed == true || world?.IsUserspace == true) world = null;
+            string? session = world?.SessionID?.Value;
+            if (!ReferenceEquals(world, _presenceWorld) || session != _presenceSession)
+            {
+                _presenceWorld = world;
+                _presenceSession = session;
+                _sessionStart = DateTime.UtcNow;
+            }
+            var settings = world?.Configuration;
+            var state = world == null ? null : new DiscordPresenceState(session ?? string.Empty,
+                world.WorldName?.Value ?? world.Name, world.Mode.ToString(), world.UserCount,
+                settings?.MaxUsers.Value ?? 1, settings?.IsPublic.Value ?? false,
+                settings?.AllowJoin.Value ?? false, world.Session != null, world.SessionURLs);
+            var presence = DiscordPresence.Build(state, _sessionStart, Lumora.Core.EngineVersion.VersionString);
+            if (!_client!.HasRegisteredUriScheme) presence.Secrets = null;
+            _joinRequestsAllowed = presence.Secrets != null && presence.Party.Privacy == Party.PrivacySetting.Public;
+            // Include session identity, address and timestamps: equally named worlds can be different sessions.
+            string key = JsonConvert.SerializeObject(presence);
+            if (key == _lastPresenceKey) return;
             _client.SetPresence(presence);
+            _lastPresenceKey = key;
         }
-        catch (Exception ex)
-        {
-            LumoraLogger.Warn($"DiscordManager: presence update failed: {ex.Message}");
-        }
+        catch (Exception ex) { LumoraLogger.Warn($"DiscordManager: presence update failed: {ex.Message}"); }
     }
 
-    private static RichPresence BuildPresence(LumoraWorld? world, out string key)
+    private static void CloseClient()
     {
-        string version = Lumora.Core.EngineVersion.VersionString;
-
-        if (world == null)
+        var client = _client;
+        _client = null;
+        _joinRequestsAllowed = false;
+        _lastPresenceKey = string.Empty;
+        try
         {
-            key = "idle";
-            return new RichPresence
+            if (client is { IsDisposed: false })
             {
-                Details = "In Userspace",
-                State = "Idle",
-                Timestamps = new Timestamps(_sessionStart),
-                Assets = new Assets
-                {
-                    LargeImageKey = LargeImageKey,
-                    LargeImageText = $"LumoraVR {version}",
-                },
-            };
+                if (client.IsInitialized) client.ClearPresence();
+                client.Dispose();
+            }
         }
-
-        string name = Trim(world.WorldName?.Value ?? world.Name, 120);
-        var mode = world.Mode;
-        string modeLabel = mode switch
-        {
-            Lumora.Warden.WorldMode.Social => "Social",
-            Lumora.Warden.WorldMode.Event => "Event",
-            _ => "Builder",
-        };
-        int users = world.UserCount;
-        int max = world.Configuration?.MaxUsers?.Value ?? 0;
-        bool isPublic = world.Configuration?.IsPublic?.Value ?? false;
-
-        var presence = new RichPresence
-        {
-            Timestamps = new Timestamps(_sessionStart),
-            Assets = new Assets
-            {
-                LargeImageKey = LargeImageKey,
-                LargeImageText = $"LumoraVR {version}",
-                SmallImageKey = isPublic ? PublicIconKey : PrivateIconKey,
-                SmallImageText = isPublic ? "Public world" : "Private world",
-            },
-        };
-
-        // Public worlds show their name; private (invite-only) worlds don't leak it.
-        presence.Details = isPublic ? Trim(name, 120) : "In a private world";
-        presence.State = $"{modeLabel} world";
-
-        // Any hosted session with a reachable URL is INVITABLE (the Discord "+ Invite" works) - that's
-        // the whole point of invite-only. Privacy decides who can ALSO ask-to-join: public = anyone,
-        // private = invite recipients only (no Ask-to-Join button shown to strangers). - xlinka
-        var sessionId = world.SessionID?.Value;
-        var joinUri = BestJoinUri(world);
-        bool joinable = !string.IsNullOrEmpty(sessionId) && joinUri != null;
-
-        if (joinable)
-        {
-            presence.Party = new Party
-            {
-                ID = sessionId!,
-                Size = Math.Max(1, users),
-                Max = max > 0 ? max : Math.Max(2, users + 1),
-                Privacy = isPublic ? Party.PrivacySetting.Public : Party.PrivacySetting.Private,
-            };
-            presence.Secrets = new Secrets { JoinSecret = Trim(joinUri!.ToString(), 120) };
-        }
-
-        key = $"{(isPublic ? "pub" : "priv")}|{(isPublic ? name : "")}|{modeLabel}|{users}/{max}|{(joinable ? "j" : "-")}";
-        return presence;
-    }
-
-    private static string Trim(string? s, int max)
-    {
-        s ??= string.Empty;
-        return s.Length <= max ? s : s.Substring(0, max);
-    }
-
-    // Pick a connectable session URL for the join secret. Skip 0.0.0.0/:: (bind-any addresses that
-    // mean "everything" to the host and "nothing" to a joiner).
-    private static Uri? BestJoinUri(LumoraWorld world)
-    {
-        var urls = world.SessionURLs;
-        if (urls == null || urls.Count == 0)
-            return null;
-        foreach (var u in urls)
-        {
-            if (u != null && u.Host != "0.0.0.0" && u.Host != "::")
-                return u;
-        }
-        return urls[0];
+        catch (Exception ex) { LumoraLogger.Warn($"DiscordManager: shutdown failed: {ex.Message}"); }
     }
 
     public static void Shutdown()
     {
-        if (_client == null)
-            return;
-        try
-        {
-            if (!_client.IsDisposed)
-            {
-                _client.ClearPresence();
-                _client.Dispose();
-            }
-        }
-        catch (Exception ex)
-        {
-            LumoraLogger.Warn($"DiscordManager: shutdown exception: {ex.Message}");
-        }
-        _client = null;
-        _lastPresenceKey = string.Empty;
-        LumoraLogger.Log("DiscordManager: shutdown");
+        CloseClient();
+        JoinRequested = null;
+        Invites.Clear();
+        _presenceWorld = null;
+        _presenceSession = null;
     }
 }

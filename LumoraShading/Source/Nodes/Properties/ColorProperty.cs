@@ -12,7 +12,7 @@ namespace Lumora.Shading;
 public sealed class ColorProperty : ShaderNode
 {
     [return: Port("color")]
-    public static color Run(string name = "Color", color value = default) => throw GpuOnly;
+    public static color Run([Setting] string name = "Color", [Setting] color value = default) => throw GpuOnly;
 
     public override void Emit(ShaderNodeContext context)
     {

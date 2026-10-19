@@ -12,7 +12,7 @@ namespace Lumora.Shading;
 public sealed class Position : ShaderNode
 {
     [return: Port("position")]
-    public static float3 Run(ShaderSpace space = ShaderSpace.World) => throw GpuOnly;
+    public static float3 Run([Setting] ShaderSpace space = ShaderSpace.World) => throw GpuOnly;
 
     public override void Emit(ShaderNodeContext context)
     {

@@ -11,7 +11,7 @@ namespace Lumora.Shading;
 public sealed class BooleanProperty : ShaderNode
 {
     [return: Port("on")]
-    public static bool Run(string name = "Toggle", bool value = false) => throw GpuOnly;
+    public static bool Run([Setting] string name = "Toggle", [Setting] bool value = false) => throw GpuOnly;
 
     public override void Emit(ShaderNodeContext context)
     {

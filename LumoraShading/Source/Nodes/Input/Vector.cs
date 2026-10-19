@@ -11,13 +11,13 @@ public sealed class Vector : ShaderNode
 {
     [Glsl("{value}")]
     [return: Port("vector")]
-    public static float3 Run(float3 value) => throw GpuOnly;
+    public static float3 Run([Setting] float3 value) => throw GpuOnly;
 
     [Glsl("{value}")]
     [return: Port("vector")]
-    public static float2 Run(float2 value) => throw GpuOnly;
+    public static float2 Run([Setting] float2 value) => throw GpuOnly;
 
     [Glsl("{value}")]
     [return: Port("vector")]
-    public static float4 Run(float4 value) => throw GpuOnly;
+    public static float4 Run([Setting] float4 value) => throw GpuOnly;
 }

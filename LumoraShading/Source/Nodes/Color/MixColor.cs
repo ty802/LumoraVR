@@ -12,7 +12,7 @@ public sealed class MixColor : ShaderNode
 {
     [return: Port("color")]
     public static color Run(float factor = 0.5f, [GlslDefault("vec4(0.5, 0.5, 0.5, 1.0)")] color a = default,
-        [GlslDefault("vec4(0.5, 0.5, 0.5, 1.0)")] color b = default, MixMode mode = MixMode.Mix) => throw GpuOnly;
+        [GlslDefault("vec4(0.5, 0.5, 0.5, 1.0)")] color b = default, [Setting] MixMode mode = MixMode.Mix) => throw GpuOnly;
 
     public override void Emit(ShaderNodeContext context)
     {

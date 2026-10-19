@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Reflection;
 using Lumora.Script;
@@ -16,7 +17,7 @@ internal sealed class ShaderNodeEntry
     public NodeOverload Overload { get; }
     public ShaderNode Behaviour { get; }
     public Dictionary<string, (string Node, string Port)> Wires { get; } = new(StringComparer.Ordinal);
-    public Dictionary<string, ParameterInfo> Parameters { get; } = new(StringComparer.Ordinal);
+    public IReadOnlyDictionary<string, ShaderPortInfo> Ports { get; }
 
     public string Id => Node.Id;
     public string Prefix => $"n{Index}";
@@ -29,19 +30,33 @@ internal sealed class ShaderNodeEntry
         Overload = overload;
         Behaviour = behaviour;
 
+        Ports = overload.Method != null ? PortsOf(overload.Method) : NoPorts;
+    }
+
+    private static readonly IReadOnlyDictionary<string, ShaderPortInfo> NoPorts = new Dictionary<string, ShaderPortInfo>();
+    private static readonly ConcurrentDictionary<MethodInfo, IReadOnlyDictionary<string, ShaderPortInfo>> PortCache = new();
+
+    // A node method's ports read once, not on every compile: a gallery load compiles each graph and then a
+    // preview per node, every one of them walking the same methods for the same parameters and attributes,
+    // about 25 MB of reflection garbage a load. -xlinka
+    private static IReadOnlyDictionary<string, ShaderPortInfo> PortsOf(MethodInfo method) => PortCache.GetOrAdd(method, static m =>
+    {
         // Port names are the parameter names with the first letter lowered, or what [Port] says.
-        if (overload.Method != null)
+        var ports = new Dictionary<string, ShaderPortInfo>(StringComparer.Ordinal);
+        foreach (var parameter in m.GetParameters())
         {
-            foreach (var parameter in overload.Method.GetParameters())
+            if (parameter.IsOut)
+                continue;
+            var name = parameter.GetCustomAttribute<PortAttribute>()?.Name ?? parameter.Name;
+            if (!string.IsNullOrEmpty(name) && NodePort.IsValidName(name))
             {
-                if (parameter.IsOut)
-                    continue;
-                var name = parameter.GetCustomAttribute<PortAttribute>()?.Name ?? parameter.Name;
-                if (!string.IsNullOrEmpty(name) && NodePort.IsValidName(name))
-                    Parameters[NodePort.NormalizeName(name)] = parameter;
+                ports[NodePort.NormalizeName(name)] = new ShaderPortInfo(
+                    parameter.GetCustomAttribute<VertexStageAttribute>() != null,
+                    parameter.GetCustomAttribute<GlslDefaultAttribute>());
             }
         }
-    }
+        return ports;
+    });
 
     public NodePort? Input(string port)
     {

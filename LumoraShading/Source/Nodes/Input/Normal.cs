@@ -11,7 +11,7 @@ namespace Lumora.Shading;
 public sealed class Normal : ShaderNode
 {
     [return: Port("normal")]
-    public static float3 Run(ShaderSpace space = ShaderSpace.World) => throw GpuOnly;
+    public static float3 Run([Setting] ShaderSpace space = ShaderSpace.World) => throw GpuOnly;
 
     public override void Emit(ShaderNodeContext context)
     {

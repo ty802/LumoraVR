@@ -21,6 +21,26 @@ public sealed class ShaderPreviewMaterial : MaterialProvider
     private int _textureStamp;
     private string? _checkedSource;
     private bool _passes;
+    private bool _curve = true;
+    private float _range = 1f;
+
+    // Local viewing preferences; these never change a node's saved values or its material output.
+    public bool Curve
+    {
+        get => _curve;
+        set { if (_curve != value) { _curve = value; MarkChangeDirty(); } }
+    }
+
+    public float Range
+    {
+        get => _range;
+        set
+        {
+            if (!float.IsFinite(value)) return;
+            value = System.Math.Clamp(value, 0.000001f, 1000000f);
+            if (_range != value) { _range = value; MarkChangeDirty(); }
+        }
+    }
 
     protected override MaterialType MaterialType => MaterialType.Custom;
 
@@ -66,6 +86,10 @@ public sealed class ShaderPreviewMaterial : MaterialProvider
         {
             if (uniform.Type == ShaderType.Texture)
                 asset.SetTexture(uniform.Name, _textures?.TextureFor(uniform.Name)?.Asset!);
+            else if (uniform.Name == ShaderPreview.CurveUniform)
+                asset.SetBool(uniform.Name, _curve);
+            else if (uniform.Name == ShaderPreview.RangeUniform)
+                asset.SetFloat(uniform.Name, _range);
         }
     }
 

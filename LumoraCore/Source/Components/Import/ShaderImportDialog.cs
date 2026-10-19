@@ -24,8 +24,8 @@ public sealed class ShaderImportDialog : ImportDialog
 
     public void RunImport()
     {
-        if (!CanInteract) return;
-        Logger.Log($"ShaderImportDialog: importing {Paths.Count} shader file(s) as material orbs");
+        if (!CanInteract || RefuseSpawn()) return;
+        Logger.Debug($"ShaderImportDialog: importing {Paths.Count} shader file(s) as material orbs");
         UniversalImporter.SpawnShaderOrbs(Paths, ResolveTargetWorld(), Slot.GlobalPosition, Slot.GlobalRotation);
         Slot.Destroy();
     }

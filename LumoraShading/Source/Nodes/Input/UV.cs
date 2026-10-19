@@ -11,8 +11,14 @@ namespace Lumora.Shading;
 public sealed class UV : ShaderNode
 {
     [return: Port("uv")]
-    public static float2 Run(ShaderUV channel = ShaderUV.UV1) => throw GpuOnly;
+    public static float2 Run([Setting] ShaderUV channel = ShaderUV.UV1) => throw GpuOnly;
 
     public override void Emit(ShaderNodeContext context)
-        => context.Output("uv", context.Option<ShaderUV>("channel") == ShaderUV.UV2 ? "UV2" : "UV");
+        => context.Output("uv", context.Option<ShaderUV>("channel") switch
+        {
+            ShaderUV.UV2 => "UV2",
+            ShaderUV.UV3 => context.Varying("uv34", ShaderType.Float4, "CUSTOM1") + ".xy",
+            ShaderUV.UV4 => context.Varying("uv34", ShaderType.Float4, "CUSTOM1") + ".zw",
+            _ => "UV",
+        });
 }

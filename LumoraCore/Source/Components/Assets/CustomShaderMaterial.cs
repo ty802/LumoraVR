@@ -23,6 +23,7 @@ public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
         public Action<bool> HasRangeChanged = _ => { };
         public Action<float2> RangeChanged = _ => { };
         public ReferenceEvent<IAssetProvider<TextureAsset>> TextureChanged = _ => { };
+        public Action<IChangeable> TextureArrived = _ => { };
     }
 
     public readonly AssetRef<ShaderSourceAsset> Shader;
@@ -149,26 +150,69 @@ public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
         }
         _lastShaderHash = hash;
 
-        var existing = new Dictionary<string, ShaderUniformParamSnapshot>();
-        foreach (var param in Parameters)
-        {
-            if (string.IsNullOrEmpty(param.Name.Value))
-            {
-                continue;
-            }
-            existing[param.Name.Value] = new ShaderUniformParamSnapshot(param);
-        }
-
-        Parameters.Clear();
-
-        // The source says what each property is (its type, its range, whether it is a color); what one held
-        // before carries over only while it is still the same type.
+        // The list is brought to the new source in place. A property the source still declares keeps its
+        // element, so an undo step recorded against it, a texture dropped on it, still has its target after
+        // a recompile; only what the source no longer declares goes, set aside by name. -xlinka
         var defs = ShaderUniformParser.Parse(shaderSource);
         var declared = new HashSet<string>(StringComparer.Ordinal);
         foreach (var def in defs)
         {
             declared.Add(def.Name);
-            var param = Parameters.Add();
+        }
+
+        var kept = new Dictionary<string, ShaderUniformParam>(StringComparer.Ordinal);
+        var stale = new List<ShaderUniformParam>();
+        foreach (var param in Parameters)
+        {
+            var name = param.Name.Value;
+            if (string.IsNullOrEmpty(name) || !declared.Contains(name))
+            {
+                stale.Add(param);
+                if (string.IsNullOrEmpty(name))
+                    continue;
+                if (_setAside.Count >= MaxSetAside)
+                    _setAside.Clear();
+                _setAside[name] = new ShaderUniformParamSnapshot(param);
+                continue;
+            }
+            if (kept.TryGetValue(name, out var first))
+            {
+                // Two machines making the same property at once leave two of it; one stays, with the texture.
+                if (first.Texture.Target == null && param.Texture.Target != null && first.Type.Value == param.Type.Value)
+                    first.Texture.Target = param.Texture.Target;
+                stale.Add(param);
+                continue;
+            }
+            kept.Add(name, param);
+        }
+        foreach (var param in stale)
+        {
+            Parameters.Remove(param);
+        }
+
+        // The source says what each property is (its type, its range, whether it is a color); what one held
+        // before carries over only while it is still the same type.
+        var done = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var def in defs)
+        {
+            if (!done.Add(def.Name))
+                continue;
+            if (kept.TryGetValue(def.Name, out var param))
+            {
+                if (param.Type.Value != def.Type)
+                {
+                    param.Type.Value = def.Type;
+                    param.Value.Value = def.HasDefault ? def.DefaultValue : default;
+                    if (param.Texture.Target != null)
+                        param.Texture.Target = null!;
+                }
+                param.IsColor.Value = def.IsColor;
+                param.HasRange.Value = def.HasRange;
+                param.Range.Value = def.Range;
+                continue;
+            }
+
+            param = Parameters.Add();
             param.Name.Value = def.Name;
             param.Type.Value = def.Type;
             param.IsColor.Value = def.IsColor;
@@ -179,19 +223,10 @@ public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
                 param.Value.Value = def.DefaultValue;
             }
 
-            if (existing.TryGetValue(def.Name, out var snapshot) || _setAside.Remove(def.Name, out snapshot))
+            if (_setAside.Remove(def.Name, out var snapshot))
             {
                 snapshot.ApplyValue(param);
             }
-        }
-
-        foreach (var (name, snapshot) in existing)
-        {
-            if (declared.Contains(name))
-                continue;
-            if (_setAside.Count >= MaxSetAside)
-                _setAside.Clear();
-            _setAside[name] = snapshot;
         }
 
         LumoraLogger.Debug($"CustomShaderMaterial: Built {Parameters.Count} uniforms for shader");
@@ -233,7 +268,8 @@ public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
             IsColorChanged = _ => NotifyUniformChanged(),
             HasRangeChanged = _ => NotifyUniformChanged(),
             RangeChanged = _ => NotifyUniformChanged(),
-            TextureChanged = _ => NotifyUniformChanged()
+            TextureChanged = _ => NotifyUniformChanged(),
+            TextureArrived = _ => NotifyUniformChanged()
         };
 
         param.Value.OnChanged += observer.ValueChanged;
@@ -242,6 +278,8 @@ public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
         param.HasRange.OnChanged += observer.HasRangeChanged;
         param.Range.OnChanged += observer.RangeChanged;
         param.Texture.OnTargetChange += observer.TextureChanged;
+        // The texture's asset landing raises Changed on the reference, not a target change.
+        ((IChangeable)param.Texture).Changed += observer.TextureArrived;
 
         _uniformObservers[param] = observer;
     }
@@ -259,6 +297,7 @@ public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
         param.HasRange.OnChanged -= observer.HasRangeChanged;
         param.Range.OnChanged -= observer.RangeChanged;
         param.Texture.OnTargetChange -= observer.TextureChanged;
+        ((IChangeable)param.Texture).Changed -= observer.TextureArrived;
 
         _uniformObservers.Remove(param);
     }
@@ -314,6 +353,15 @@ public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
                     asset.SetTexture(name, param.Texture.Asset);
                     break;
             }
+        }
+    }
+
+    protected override IEnumerable<IAssetRef> NestedAssetRefs()
+    {
+        foreach (var param in Parameters)
+        {
+            if (param.Texture.Target != null)
+                yield return param.Texture;
         }
     }
 

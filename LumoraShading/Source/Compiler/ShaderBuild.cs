@@ -44,6 +44,7 @@ internal sealed class ShaderBuild
     private readonly HashSet<string> _emitted = new(StringComparer.Ordinal);
     private readonly HashSet<string> _visiting = new(StringComparer.Ordinal);
     private bool _scratch;
+    private bool _preview;
 
     public ShaderBuild(ScriptGraph graph, NodeRegistry registry)
     {
@@ -69,7 +70,7 @@ internal sealed class ShaderBuild
         return Finish(vertex, fragment, null, null);
     }
 
-    // The shader a node's card shows: that one output, unlit, as a color or as the value itself.
+    // The shader a node's card shows: numeric curves or a bounded image, independently of material output.
     public ShaderProgram CompilePreview(string nodeId, string? port)
     {
         Resolve();
@@ -88,26 +89,19 @@ internal sealed class ShaderBuild
         BeginStage(ShaderStage.Fragment);
         Require(entry);
         var value = _values.TryGetValue((entry.Id, output.Name), out var v) ? v : Fallback(type);
-        string albedo;
-        if (type == ShaderType.Texture)
+        _preview = true;
+        if (ShaderPreview.IsNumeric(type))
         {
-            albedo = value.Code.Length > 0 ? $"texture({value.Code}, UV).rgb" : "vec3(1.0)";
-            if (value.Code.Length > 0)
-                _textureSamples++;
+            _uniforms.Add(new ShaderUniform(ShaderPreview.CurveUniform, ShaderType.Bool, "", "true", -1, null));
+            _uniforms.Add(new ShaderUniform(ShaderPreview.RangeUniform, ShaderType.Float, "", "1.0", -1, null));
         }
-        else if (type == ShaderType.Color)
-        {
-            albedo = $"{value.Code}.rgb";
-        }
-        else
-        {
-            _functions.Add("lm_srgb_to_linear");
-            albedo = $"lm_srgb_to_linear({ShaderTypes.Convert(value, ShaderType.Float3).Code})";
-        }
-        _body.Append("\tALBEDO = ").Append(albedo).Append(";\n");
+        if (type == ShaderType.Texture && value.Code.Length > 0)
+            _textureSamples++;
         AddRenderMode("unshaded");
-        AddRenderMode("cull_disabled");
-        var fragment = _body.ToString();
+        AddRenderMode("fog_disabled");
+        // Culled as usual. The square a preview is drawn on is two-sided, a face each way in one plane, and
+        // with culling off both faces drew: the picture and its mirror fought over every pixel. -xlinka
+        var fragment = ShaderPreview.Fragment(_body.ToString(), value);
         return Finish(string.Empty, fragment, nodeId, output.Name);
     }
 
@@ -204,7 +198,7 @@ internal sealed class ShaderBuild
             Report(DiagnosticSeverity.Error, to.Id, $"{from.Title} has no output '{wire.FromPort}'");
             return;
         }
-        if (IsSetting(input.Type))
+        if (input.IsSetting || IsSetting(input.Type))
         {
             Report(DiagnosticSeverity.Error, to.Id, $"{input.Name} is a setting: set it on the node instead of wiring it");
             return;
@@ -306,7 +300,7 @@ internal sealed class ShaderBuild
     }
 
     internal ShaderStage PortStage(ShaderNodeEntry entry, string port)
-        => entry.Parameters.TryGetValue(port, out var parameter) && parameter.GetCustomAttribute<VertexStageAttribute>() != null
+        => entry.Ports.TryGetValue(port, out var info) && info.VertexStage
             ? ShaderStage.Vertex
             : ShaderStage.Fragment;
 
@@ -364,7 +358,7 @@ internal sealed class ShaderBuild
                 Report(DiagnosticSeverity.Error, entry.Id, $"{port.Name} cannot read {set}");
             }
         }
-        if (entry.Parameters.TryGetValue(port.Name, out var parameter) && parameter.GetCustomAttribute<GlslDefaultAttribute>() is { } fallback)
+        if (entry.Ports.TryGetValue(port.Name, out var info) && info.Default is { } fallback)
             return new GlslValue(fallback.Code, type);
         if (port.HasDefault && type != ShaderType.Texture && GlslLiteral.FromDefault(port.Default, type) is { } byDefault)
             return byDefault;
@@ -535,6 +529,8 @@ internal sealed class ShaderBuild
         }
         foreach (var function in functions)
             source.Append('\n').Append(function.Code).Append('\n');
+        if (_preview)
+            source.Append('\n').Append(ShaderPreview.Helpers).Append('\n');
 
         if (vertex.Length > 0 || _varyings.Count > 0)
         {

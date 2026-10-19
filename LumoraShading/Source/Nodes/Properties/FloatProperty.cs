@@ -10,7 +10,8 @@ namespace Lumora.Shading;
 [Node("Properties/Float Property")]
 public sealed class FloatProperty : ShaderNode
 {
-    public static float Run(string name = "Amount", float value = 0f, float min = 0f, float max = 1f) => throw GpuOnly;
+    public static float Run([Setting] string name = "Amount", [Setting] float value = 0f,
+        [Setting] float min = 0f, [Setting] float max = 1f) => throw GpuOnly;
 
     public override void Emit(ShaderNodeContext context)
     {

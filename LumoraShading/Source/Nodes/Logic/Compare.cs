@@ -9,7 +9,7 @@ namespace Lumora.Shading;
 [Node("Logic/Compare")]
 public sealed class Compare : ShaderNode
 {
-    public static bool Run(float a, float b, CompareMode mode = CompareMode.Greater) => throw GpuOnly;
+    public static bool Run(float a, float b, [Setting] CompareMode mode = CompareMode.Greater) => throw GpuOnly;
 
     public override void Emit(ShaderNodeContext context)
     {

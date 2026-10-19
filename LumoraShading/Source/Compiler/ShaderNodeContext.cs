@@ -54,8 +54,10 @@ public sealed class ShaderNodeContext
         var value = _build.Constant(_entry, port);
         if (value?.Kind == GraphValueKind.String && Enum.TryParse<T>(value.String, ignoreCase: true, out var named) && Enum.IsDefined(named))
             return named;
-        if (value?.Kind == GraphValueKind.Number && Enum.IsDefined(typeof(T), (int)value.Number))
-            return (T)Enum.ToObject(typeof(T), (int)value.Number);
+        if (value?.Kind == GraphValueKind.Number
+            && Enum.TryParse<T>(value.Number.ToString(CultureInfo.InvariantCulture), out var numbered)
+            && Enum.IsDefined(numbered))
+            return numbered;
         if (value != null)
             Warning($"{port} is not one of {string.Join(", ", Enum.GetNames<T>())}; using the default");
         return input.Default is T fallback ? fallback : default;

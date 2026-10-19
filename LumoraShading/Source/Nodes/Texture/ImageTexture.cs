@@ -15,9 +15,9 @@ namespace Lumora.Shading;
 public sealed class ImageTexture : ShaderNode
 {
     [return: Port("color")]
-    public static color Run(ShaderTexture texture, [GlslDefault("UV")] float2 uv, out float alpha, string name = "",
-        TextureColorSpace colorSpace = TextureColorSpace.Color, TextureFilter filter = TextureFilter.Linear,
-        TextureWrap wrap = TextureWrap.Repeat) => throw GpuOnly;
+    public static color Run(ShaderTexture texture, [GlslDefault("UV")] float2 uv, out float alpha, [Setting] string name = "",
+        [Setting] TextureColorSpace colorSpace = TextureColorSpace.Color, [Setting] TextureFilter filter = TextureFilter.Linear,
+        [Setting] TextureWrap wrap = TextureWrap.Repeat) => throw GpuOnly;
 
     // The material property a node's texture slot is: the name typed on it, made usable, or else one made
     // from the node's id. The editor asks this too, to find the property a card's slot shows.

@@ -11,13 +11,13 @@ namespace Lumora.Shading;
 public sealed class VectorProperty : ShaderNode
 {
     [return: Port("vector")]
-    public static float3 Run(string name = "Vector", float3 value = default) => throw GpuOnly;
+    public static float3 Run([Setting] string name = "Vector", [Setting] float3 value = default) => throw GpuOnly;
 
     [return: Port("vector")]
-    public static float2 Run(string name = "Vector", float2 value = default) => throw GpuOnly;
+    public static float2 Run([Setting] string name = "Vector", [Setting] float2 value = default) => throw GpuOnly;
 
     [return: Port("vector")]
-    public static float4 Run(string name = "Vector", float4 value = default) => throw GpuOnly;
+    public static float4 Run([Setting] string name = "Vector", [Setting] float4 value = default) => throw GpuOnly;
 
     public override void Emit(ShaderNodeContext context)
     {

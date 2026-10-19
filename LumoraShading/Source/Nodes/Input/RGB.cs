@@ -11,5 +11,5 @@ public sealed class RGB : ShaderNode
 {
     [Glsl("{value}")]
     [return: Port("color")]
-    public static color Run([GlslDefault("vec4(1.0)")] color value) => throw GpuOnly;
+    public static color Run([Setting, GlslDefault("vec4(1.0)")] color value) => throw GpuOnly;
 }

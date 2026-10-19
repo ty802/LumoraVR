@@ -10,5 +10,5 @@ public sealed class Value : ShaderNode
 {
     [Glsl("{value}")]
     [return: Port("result")]
-    public static float Run(float value) => throw GpuOnly;
+    public static float Run([Setting] float value) => throw GpuOnly;
 }

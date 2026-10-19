@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System.Collections.Generic;
 using System.Linq;
 using Helio.UI;
 using Lumora.Core.Assets;
@@ -12,15 +13,16 @@ using Lumora.Shading;
 namespace Lumora.Core.Components.Assets;
 
 // The shader a shader graph makes, for a CustomShaderMaterial to wear. Every machine compiles the graph it
-// has: while the graph is open, from the graph's own check a moment after each edit, so the material
-// follows the graph as it is built; while it is closed, straight from its nodes when the material first
-// needs a shader here. No shader text ever travels. A graph with a problem keeps the last shader that
-// compiled.
+// has: from the graph's own check a moment after it comes up and after each edit, open or closed, so the
+// material follows the graph. A graph switched off is stopped: it compiles straight from its nodes once when
+// the material first needs a shader here, and the material keeps the shader it last made. No shader text
+// ever travels. A graph with a problem keeps the last shader that compiled.
 //
 // Material is the material whose properties hold what the graph takes from outside, its textures: a
 // texture slot on a card and a texture row on the material panel are the same property. -xlinka
 [ComponentCategory("Assets/Materials")]
-public sealed class ShaderGraphSource : DynamicAssetProvider<ShaderSourceAsset>, ICustomInspectorUI, IInspectorActionHandler
+public sealed class ShaderGraphSource : DynamicAssetProvider<ShaderSourceAsset>, ICustomInspectorUI, IInspectorActionHandler,
+    IAssetSlotDependencies
 {
     public readonly SyncRef<ScriptGraphSpace> Graph = new();
 
@@ -38,7 +40,7 @@ public sealed class ShaderGraphSource : DynamicAssetProvider<ShaderSourceAsset>,
     // The shader the material wears: the last one that compiled.
     public string Source => _source;
 
-    public bool IsGraphOpen => Graph.Target is { IsDestroyed: false, Slot.IsActive: true };
+    public bool IsGraphOpen => Graph.Target is { IsDestroyed: false, IsShown: true };
 
     protected override void OnAssetCreated(ShaderSourceAsset asset)
     {
@@ -66,15 +68,34 @@ public sealed class ShaderGraphSource : DynamicAssetProvider<ShaderSourceAsset>,
         _compileQueued = false;
         if (IsDestroyed)
             return;
+        if (WaitForCheck())
+            return;
         Compile();
         MarkChangeDirty();
+    }
+
+    // A switched-on graph checks itself on a worker a moment after it comes up, one graph of the world a
+    // frame, and hands that here (TakeCheck). Compiling it here as well read every graph of a world out on
+    // the main thread in one go as it loaded, then again for the check. Only a switched-off graph, which
+    // never checks, compiles here. -xlinka
+    private bool WaitForCheck()
+    {
+        var space = Graph.Target;
+        if (space is not { IsDestroyed: false } || !space.Enabled.Value || space.Slot is not { IsDestroyed: false, IsActive: true }
+            || !ReferenceEquals(space.ShaderSource.Target, this))
+            return false;
+        _compiledFrom = space;
+        _attempted = true;
+        if (space.IsChecked && space.LastShader is { } checkedShader && Take(checkedShader))
+            MarkChangeDirty();
+        return true;
     }
 
     protected override void OnAssetCleared()
     {
     }
 
-    // What the open graph's check found, on every machine it is open on.
+    // What the graph's check found, on every machine, while it is switched on.
     internal void TakeCheck(ScriptGraphSpace space, ShaderProgram program)
     {
         if (!ReferenceEquals(space, Graph.Target))
@@ -82,6 +103,15 @@ public sealed class ShaderGraphSource : DynamicAssetProvider<ShaderSourceAsset>,
         _compiledFrom = space;
         if (Take(program))
             MarkChangeDirty();
+    }
+
+    // A graph switched off before its first check landed would leave the material with no shader at all.
+    internal void CompileIfNone(ScriptGraphSpace space)
+    {
+        if (IsDestroyed || _program != null || !ReferenceEquals(space, Graph.Target))
+            return;
+        Compile();
+        MarkChangeDirty();
     }
 
     // Straight from the graph's nodes, open or not.
@@ -146,6 +176,16 @@ public sealed class ShaderGraphSource : DynamicAssetProvider<ShaderSourceAsset>,
         return param;
     }
 
+    // The nodes are the shader, so a saved object wearing this material takes the graph along with it.
+    public IEnumerable<Slot> SlotDependencies
+    {
+        get
+        {
+            if (Graph.Target is { IsDestroyed: false, Slot: { IsDestroyed: false } slot })
+                yield return slot;
+        }
+    }
+
     public void HandleInspectorAction(string argument)
     {
         if (argument == "togglegraph")
@@ -157,7 +197,10 @@ public sealed class ShaderGraphSource : DynamicAssetProvider<ShaderSourceAsset>,
         var space = Graph.Target;
         bool hasGraph = space != null && !space.IsDestroyed;
         int nodes = hasGraph ? space!.Nodes.Count() : 0;
-        StatRow(ui, "Graph", !hasGraph ? "none" : IsGraphOpen ? $"open, {nodes} nodes" : $"closed, {nodes} nodes");
+        string state = !hasGraph ? "none" : (space!.Packed.Value ? "closed" : "open") + $", {nodes} nodes";
+        if (hasGraph && !space!.Slot.IsActive)
+            state += ", switched off: the material keeps its last shader";
+        StatRow(ui, "Graph", state);
         if (_program == null)
         {
             StatRow(ui, "Shader", "not compiled here yet");

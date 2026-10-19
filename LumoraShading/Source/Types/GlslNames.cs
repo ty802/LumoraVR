@@ -4,13 +4,14 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Lumora.Shading;
 
 // Names people type (a property's name) turned into names shader code can use. Lower case letters,
 // digits and single underscores, starting with a letter, never a word the language or its built-in
-// functions own, never one of the compiler's own prefixes. What cannot be made usable falls back to the
-// given fallback. -xlinka
+// functions own or the helper library uses, never one of the compiler's own prefixes. What cannot be
+// made usable falls back to the given fallback. -xlinka
 public static class GlslNames
 {
     public const int MaxLength = 32;
@@ -43,7 +44,25 @@ public static class GlslNames
         "vertex", "fragment", "light",
     };
 
-    public static bool IsReserved(string name) => Reserved.Contains(name) || Reserved.Contains(name.ToLowerInvariant());
+    // Every word the helper library's code uses. Its parameters and locals share a scope with the uniforms,
+    // and Godot refuses a uniform that one of them would redefine: a property called Power broke every
+    // graph with a Fresnel in it. Read from the code itself, so a helper added later is covered too.
+    private static readonly Lazy<HashSet<string>> LibraryWords = new(() =>
+    {
+        var words = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var name in GlslLibrary.Names)
+        {
+            if (GlslLibrary.TryGet(name, out var function))
+            {
+                foreach (Match word in Regex.Matches(function.Code, "[A-Za-z_][A-Za-z0-9_]*"))
+                    words.Add(word.Value);
+            }
+        }
+        return words;
+    });
+
+    public static bool IsReserved(string name)
+        => Reserved.Contains(name) || Reserved.Contains(name.ToLowerInvariant()) || LibraryWords.Value.Contains(name);
 
     // The compiler's own names start with these; a property never takes one.
     public static bool IsCompilerName(string name)

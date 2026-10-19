@@ -19,7 +19,7 @@ namespace Lumora.Core.Components.Scripting;
 // itself, and press the slot or let go over it. The picture follows the property whoever changes it. Lives
 // on the local card. -xlinka
 [ComponentCategory("Hidden")]
-public sealed class ShaderTextureSlot : Component, IProxyReceiver
+public sealed class ShaderTextureSlot : Component, IProxyReceiver, IButtonPressReceiver
 {
     public ShaderGraphSource? Source { get; set; }
     public string Uniform { get; set; } = string.Empty;
@@ -56,15 +56,8 @@ public sealed class ShaderTextureSlot : Component, IProxyReceiver
         var source = Source;
         if (source == null || source.IsDestroyed || string.IsNullOrEmpty(Uniform))
             return false;
-        for (int i = 0; i < held.Count; i++)
+        return HeldTexture.Offer(held, grabber, texture =>
         {
-            if (held[i] is not Component component || component.Slot == null)
-                continue;
-            var proxy = component.Slot.GetComponent<ReferenceProxy>();
-            var texture = proxy?.Target.Target is { } element ? TextureIn(element) : TextureIn(component.Slot);
-            if (texture == null)
-                continue;
-
             var before = source.Material.Target?.Parameters.FirstOrDefault(p => p.Name.Value == Uniform)?.Texture.Value ?? default;
             ShaderUniformParam? param;
             try
@@ -78,38 +71,12 @@ public sealed class ShaderTextureSlot : Component, IProxyReceiver
             if (param == null)
                 return false;
             InspectorUndo.Record(this, new FieldEditUndoBatch(param.Texture, before, param.Texture.Value, ScriptGraphEditing.ValueStep));
-            proxy?.Consume(held[i], grabber);
             return true;
-        }
-        return false;
+        });
     }
 
-    // The texture something stands for: itself, what it points at, or one on it or just under it, where an
-    // imported picture keeps its own.
-    public static IAssetProvider<TextureAsset>? TextureIn(IWorldElement element)
-    {
-        if (element is IAssetProvider<TextureAsset> texture)
-            return texture;
-        if (element is ISyncRef reference && reference.Target is IAssetProvider<TextureAsset> target)
-            return target;
-        var slot = element as Slot ?? (element as Component)?.Slot;
-        if (slot == null)
-            return null;
-        foreach (var candidate in slot.Components)
-        {
-            if (candidate is IAssetProvider<TextureAsset> found)
-                return found;
-        }
-        foreach (var child in slot.Children)
-        {
-            foreach (var candidate in child.Components)
-            {
-                if (candidate is IAssetProvider<TextureAsset> found)
-                    return found;
-            }
-        }
-        return null;
-    }
+    // The slot's own press, from a hand that took hold of what it carries some way other than its beam.
+    public void OnButtonPressed(Button button, in UIInteractionContext context) => HeldTexture.OfferHeldBy(context.Actor, this);
 
     private static string Shorten(string text, int max) => text.Length <= max ? text : text[..(max - 3)] + "...";
 }

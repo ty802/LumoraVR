@@ -17,8 +17,8 @@ public sealed class MaterialOutput : ShaderNode
 
     public static void Run([GlslDefault("vec4(0.8, 0.8, 0.8, 1.0)")] color baseColor, float alpha = 1f, float metallic = 0f,
         float roughness = 0.5f, colorHDR emission = default, float3 normal = default, float occlusion = 1f, float alphaClip = 0.5f,
-        [VertexStage] float3 vertexOffset = default, ShaderSurface surface = ShaderSurface.Opaque,
-        ShaderLighting lighting = ShaderLighting.Lit, ShaderCull cull = ShaderCull.Back) => throw GpuOnly;
+        [VertexStage] float3 vertexOffset = default, [Setting] ShaderSurface surface = ShaderSurface.Opaque,
+        [Setting] ShaderLighting lighting = ShaderLighting.Lit, [Setting] ShaderCull cull = ShaderCull.Back) => throw GpuOnly;
 
     public override void Emit(ShaderNodeContext context)
     {

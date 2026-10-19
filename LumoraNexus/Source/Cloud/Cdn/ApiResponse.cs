@@ -14,6 +14,8 @@ public class ApiResponse
     public HttpStatusCode Status { get; init; }
     public string? Message { get; init; }
     public string? RawBody { get; init; }
+    // The service's own code for a refusal ("quota", "folder", "no-session"), when it gave one.
+    public string? Error { get; init; }
 
     public bool Failed => !Success;
 
@@ -271,6 +273,10 @@ public record PublicUserInfo
     [JsonPropertyName("status")] public string Status { get; init; } = "";
     [JsonPropertyName("tags")] public List<string> Tags { get; init; } = new(); // all tags = profile badges. -xlinka
     [JsonPropertyName("nameplateBadges")] public List<string> NameplateBadges { get; init; } = new(); // subset shown on the nameplate.
+    // "#RRGGBB" as the account stores them. Empty from a service too old to send them.
+    [JsonPropertyName("nameColor")] public string NameColor { get; init; } = "";
+    [JsonPropertyName("supporterColor")] public string? SupporterColor { get; init; }
+    [JsonPropertyName("isStaff")] public bool IsStaff { get; init; }
     [JsonPropertyName("isAccountBanned")] public bool IsAccountBanned { get; init; }
     [JsonPropertyName("isPublicBanned")] public bool IsPublicBanned { get; init; }
     [JsonPropertyName("isSpectatorBanned")] public bool IsSpectatorBanned { get; init; }
@@ -279,13 +285,19 @@ public record PublicUserInfo
     [JsonPropertyName("representedGroup")] public RepresentedGroupInfo? RepresentedGroup { get; init; }
 }
 
+// What POST /content/upload/begin answers: a session to send the chunks to, or that the blob is there already.
 public record UploadHandle
 {
-    public required string Id { get; init; }
-    public required string Hash { get; init; }
-    public DateTime Expires { get; init; }
-    public int ChunkSize { get; init; }
-    public int TotalChunks { get; init; }
+    [JsonPropertyName("uploadId")] public string? UploadId { get; init; }
+    [JsonPropertyName("chunkSize")] public int ChunkSize { get; init; }
+    [JsonPropertyName("totalChunks")] public int TotalChunks { get; init; }
+    [JsonPropertyName("alreadyStored")] public bool AlreadyStored { get; init; }
+}
+
+// What POST /content/missing answers: the asked-about blobs the store does not have.
+public record MissingContentResponse
+{
+    [JsonPropertyName("missing")] public List<string> Missing { get; init; } = new();
 }
 
 // user profile from /api/user/me
@@ -311,8 +323,6 @@ public record UserProfile
     public bool TwoFactorEnabled { get; init; }
     [JsonPropertyName("patreonData")]
     public PatreonInfo? PatreonData { get; init; }
-    [JsonPropertyName("storageQuota")]
-    public StorageQuota? StorageQuota { get; init; }
     // Roles + badges (admin/moderator/staff, supporter, patreon, tier:<name>). -xlinka
     [JsonPropertyName("tags")]
     public List<string> Tags { get; init; } = new();
@@ -334,18 +344,6 @@ public record PatreonInfo
     public int TotalSupportMonths { get; init; }
 }
 
-public record StorageQuota
-{
-    [JsonPropertyName("quotaMB")]
-    public int QuotaMB { get; init; }
-    [JsonPropertyName("usedMB")]
-    public int UsedMB { get; init; }
-    [JsonPropertyName("availableMB")]
-    public int AvailableMB { get; init; }
-    [JsonPropertyName("percentUsed")]
-    public double PercentUsed { get; init; }
-}
-
 public record TwoFactorSetup
 {
     public required string Secret { get; init; }
@@ -353,48 +351,36 @@ public record TwoFactorSetup
     public required List<string> RecoveryCodes { get; init; }
 }
 
-// inventory models matching backend Inventory.cs
-
-public enum AssetType
+// One saved item as the inventory routes answer it. FolderId is null at the top of the inventory.
+public record InventoryItemInfo
 {
-    Avatar,
-    World,
-    Prop
-}
-
-public record AssetRef
-{
-    [JsonPropertyName("assetId")] public string AssetId { get; init; } = "";
-    [JsonPropertyName("hash")] public string Hash { get; init; } = "";
+    [JsonPropertyName("id")] public string Id { get; init; } = "";
+    [JsonPropertyName("folderId")] public string? FolderId { get; init; }
     [JsonPropertyName("name")] public string Name { get; init; } = "";
-    [JsonPropertyName("type")] public AssetType Type { get; init; }
-    [JsonPropertyName("addedAt")] public DateTime AddedAt { get; init; }
-    [JsonPropertyName("tags")] public List<string> Tags { get; init; } = new();
-    [JsonPropertyName("thumbnailHash")] public string? ThumbnailHash { get; init; }
-    [JsonPropertyName("sizeBytes")] public long SizeBytes { get; init; }
-    // What the save was: "Avatar" | "Object" | "World", and a world's mode. Empty on rows written
-    // before the service learned to stamp them. -xlinka
+    // "Object", "Avatar" or "World", and the mode a world was saved in.
     [JsonPropertyName("kind")] public string Kind { get; init; } = "";
-    [JsonPropertyName("mode")] public string? Mode { get; init; }
+    [JsonPropertyName("worldMode")] public string? WorldMode { get; init; }
+    // The saved object or world, and its size.
+    [JsonPropertyName("fileHash")] public string FileHash { get; init; } = "";
+    [JsonPropertyName("fileBytes")] public long FileBytes { get; init; }
+    // The whole item: the saved file with its thumbnail, textures, meshes and sounds, the smaller texture
+    // copies made for loading left out.
+    [JsonPropertyName("totalBytes")] public long TotalBytes { get; init; }
+    [JsonPropertyName("thumbnailHash")] public string? ThumbnailHash { get; init; }
+    // Goes up by one on every change to the item.
+    [JsonPropertyName("version")] public long Version { get; init; }
+    [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; init; }
+    [JsonPropertyName("updatedAt")] public DateTime UpdatedAt { get; init; }
     // Search rows carry where they live; a folder listing leaves this null.
     [JsonPropertyName("path")] public string? Path { get; init; }
 }
 
-public record VariantState
+// A variant some client made and registered for a blob: the stored blob it is, and its size.
+public record VariantInfo
 {
-    [JsonPropertyName("variantId")] public string? VariantId { get; init; }
-    [JsonPropertyName("state")] public string State { get; init; } = "Pending";
-    [JsonPropertyName("resultHash")] public string? ResultHash { get; init; }
-    [JsonPropertyName("sizeBytes")] public long SizeBytes { get; init; }
-    public bool IsReady => State == "Ready" && !string.IsNullOrEmpty(ResultHash);
-    public bool IsSkipped => State == "Skipped";
-}
-
-public record VariantJob
-{
-    [JsonPropertyName("assetHash")] public string AssetHash { get; init; } = "";
     [JsonPropertyName("variantId")] public string VariantId { get; init; } = "";
-    [JsonPropertyName("attempt")] public int Attempt { get; init; }
+    [JsonPropertyName("resultHash")] public string ResultHash { get; init; } = "";
+    [JsonPropertyName("size")] public long Size { get; init; }
 }
 
 // One asset a save depends on, told to the service so a shared texture is stored and counted once.
@@ -407,13 +393,18 @@ public record AssetManifestEntry
     [JsonPropertyName("sizeBytes")] public long SizeBytes { get; init; }
 }
 
+// One folder as the inventory routes answer it. ParentId is null at the top, and the counts are of its
+// direct children.
 public record FolderSummary
 {
     [JsonPropertyName("id")] public string Id { get; init; } = "";
+    [JsonPropertyName("parentId")] public string? ParentId { get; init; }
     [JsonPropertyName("name")] public string Name { get; init; } = "";
     [JsonPropertyName("itemCount")] public int ItemCount { get; init; }
     [JsonPropertyName("folderCount")] public int FolderCount { get; init; }
     [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; init; }
+    [JsonPropertyName("updatedAt")] public DateTime UpdatedAt { get; init; }
+    // Search rows carry where they live; a folder listing leaves this null.
     [JsonPropertyName("path")] public string? Path { get; init; }
 }
 
@@ -421,69 +412,51 @@ public record FolderSummary
 public record FolderContents
 {
     [JsonPropertyName("folders")] public List<FolderSummary> Folders { get; init; } = new();
-    [JsonPropertyName("items")] public List<AssetRef> Items { get; init; } = new();
+    [JsonPropertyName("items")] public List<InventoryItemInfo> Items { get; init; } = new();
 }
 
-public record UserFolder
-{
-    [JsonPropertyName("id")] public string Id { get; init; } = "";
-    [JsonPropertyName("name")] public string Name { get; init; } = "";
-    [JsonPropertyName("parentId")] public string? ParentId { get; init; }
-    [JsonPropertyName("assets")] public List<AssetRef> Assets { get; init; } = new();
-    [JsonPropertyName("subfolders")] public List<UserFolder> Subfolders { get; init; } = new();
-    [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; init; }
-}
-
-public record InventoryResponse
-{
-    [JsonPropertyName("id")] public string Id { get; init; } = "";
-    [JsonPropertyName("userId")] public string UserId { get; init; } = "";
-    [JsonPropertyName("folders")] public List<UserFolder> Folders { get; init; } = new();
-    [JsonPropertyName("lastUpdated")] public DateTime LastUpdated { get; init; }
-}
-
+// The account's storage in bytes. Used is what its items list plus what it uploaded that nothing lists yet,
+// the pending part.
 public record UserQuotaResponse
 {
     [JsonPropertyName("userId")] public string UserId { get; init; } = "";
-    [JsonPropertyName("quotaMB")] public int QuotaMB { get; init; }
-    [JsonPropertyName("usedMB")] public long UsedMB { get; init; }
-    [JsonPropertyName("availableMB")] public long AvailableMB { get; init; }
-    [JsonPropertyName("percentUsed")] public double PercentUsed { get; init; }
+    [JsonPropertyName("usedBytes")] public long UsedBytes { get; init; }
+    [JsonPropertyName("pendingBytes")] public long PendingBytes { get; init; }
+    [JsonPropertyName("limitBytes")] public long LimitBytes { get; init; }
 }
 
-public record AssetComponentInfo
+// One setting that follows the account. Removed (with no value) when it was taken away on some computer,
+// so the removal reaches the others too. Changed is when, in Unix milliseconds; the newer side wins. -xlinka
+public record AccountSettingEntry
 {
-    [JsonPropertyName("hash")] public string Hash { get; init; } = "";
-    [JsonPropertyName("name")] public string Name { get; init; } = "";
-    [JsonPropertyName("extension")] public string Extension { get; init; } = "";
-    [JsonPropertyName("type")] public string Type { get; init; } = "";
-    [JsonPropertyName("sizeBytes")] public long SizeBytes { get; init; }
+    [JsonPropertyName("key")]
+    public string Key { get; init; } = "";
+    [JsonPropertyName("value")]
+    public string? Value { get; init; }
+    [JsonPropertyName("changed")]
+    public long Changed { get; init; }
+    [JsonPropertyName("removed")]
+    public bool Removed { get; init; }
 }
 
-public record AssetSharingInfo
+// Every setting the account holds, from /api/user/settings.
+public record AccountSettingsResponse
 {
-    [JsonPropertyName("level")] public string Level { get; init; } = "Private";
-    [JsonPropertyName("allowedUserIds")] public List<string> AllowedUserIds { get; init; } = new();
-    [JsonPropertyName("allowCopy")] public bool AllowCopy { get; init; }
-    [JsonPropertyName("allowModify")] public bool AllowModify { get; init; }
-    [JsonPropertyName("sharedAt")] public DateTime? SharedAt { get; init; }
-    [JsonPropertyName("sharedBy")] public string? SharedBy { get; init; }
+    [JsonPropertyName("entries")]
+    public List<AccountSettingEntry> Entries { get; init; } = new();
 }
 
-public record AssetInfo
+// Clients running right now, by platform, from /api/presence.
+public record OnlineCounts
 {
-    [JsonPropertyName("id")] public string Id { get; init; } = "";
-    [JsonPropertyName("hash")] public string Hash { get; init; } = "";
-    [JsonPropertyName("name")] public string Name { get; init; } = "";
-    [JsonPropertyName("extension")] public string Extension { get; init; } = "";
-    [JsonPropertyName("description")] public string? Description { get; init; }
-    [JsonPropertyName("type")] public AssetType Type { get; init; }
-    [JsonPropertyName("ownerId")] public string OwnerId { get; init; } = "";
-    [JsonPropertyName("originalSizeBytes")] public long OriginalSizeBytes { get; init; }
-    [JsonPropertyName("processedComponents")] public List<AssetComponentInfo> ProcessedComponents { get; init; } = new();
-    [JsonPropertyName("uploadedAt")] public DateTime UploadedAt { get; init; }
-    [JsonPropertyName("lastModifiedAt")] public DateTime LastModifiedAt { get; init; }
-    [JsonPropertyName("metadata")] public Dictionary<string, object> Metadata { get; init; } = new();
-    [JsonPropertyName("thumbnailHash")] public string? ThumbnailHash { get; init; }
-    [JsonPropertyName("sharing")] public AssetSharingInfo? Sharing { get; init; }
+    [JsonPropertyName("total")]
+    public int Total { get; init; }
+    [JsonPropertyName("windows")]
+    public int Windows { get; init; }
+    [JsonPropertyName("linux")]
+    public int Linux { get; init; }
+    [JsonPropertyName("android")]
+    public int Android { get; init; }
+    [JsonPropertyName("other")]
+    public int Other { get; init; }
 }

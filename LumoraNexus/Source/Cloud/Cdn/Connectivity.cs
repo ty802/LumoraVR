@@ -18,11 +18,19 @@ public static class Connectivity
     private static DateTime _lastCheck = DateTime.MinValue;
     private static DateTime _lastFailure = DateTime.MinValue;
     private static int _consecutiveFailures;
+    private static int _monitoring;
+    private static string? _pingUrl;
 
     public static TimeSpan CheckInterval { get; set; } = TimeSpan.FromSeconds(5);
     public static TimeSpan BackoffDuration { get; set; } = TimeSpan.FromSeconds(30);
     public static int FailureThreshold { get; set; } = 3;
-    public static string PingUrl { get; set; } = "https://api.lumoravr.com/health";
+
+    // The accounts service's health check wherever the client is pointed, unless set.
+    public static string PingUrl
+    {
+        get => _pingUrl ?? $"{ServiceConfig.Current.ApiBase}/health";
+        set => _pingUrl = value;
+    }
 
     // Round trip of the last successful health check, in milliseconds; -1 until one has succeeded.
     // The dash shows it as the ping to the services.
@@ -38,6 +46,11 @@ public static class Connectivity
                     return false;
                 _consecutiveFailures = 0;
             }
+            // Offline, but long enough ago that the next call may go and find out. A success brings the
+            // client back and a failure starts the wait again, so one bad minute can never leave it
+            // offline for the rest of the run. -xlinka
+            if (!_isOnline && DateTime.UtcNow - _lastFailure >= BackoffDuration)
+                return true;
             return _isOnline;
         }
     }
@@ -63,6 +76,7 @@ public static class Connectivity
         {
             _isOnline = false;
             StatusChanged?.Invoke(false);
+            EnsureMonitoring();
             _ = CheckConnectivityAsync();
         }
     }
@@ -135,20 +149,28 @@ public static class Connectivity
         }
     }
 
+    // Only going offline starts the wait. A health check that fails again while offline does not, or a
+    // check pointed somewhere unreachable would hold real calls back for good.
     private static void SetOffline()
     {
-        _lastFailure = DateTime.UtcNow;
         if (_isOnline)
         {
+            _lastFailure = DateTime.UtcNow;
             _isOnline = false;
             StatusChanged?.Invoke(false);
+            EnsureMonitoring();
         }
     }
 
     public static void StartMonitoring(TimeSpan interval)
     {
-        _ = MonitorLoop(interval);
+        if (Interlocked.Exchange(ref _monitoring, 1) == 0)
+            _ = MonitorLoop(interval);
     }
+
+    // Started the first time the client goes offline: something has to keep asking while it is, or
+    // nothing waiting for the connection ever hears that it came back.
+    private static void EnsureMonitoring() => StartMonitoring(CheckInterval);
 
     private static async Task MonitorLoop(TimeSpan interval)
     {

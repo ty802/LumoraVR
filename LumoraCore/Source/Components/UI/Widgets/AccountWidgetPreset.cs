@@ -13,7 +13,7 @@ using Lumora.Nexus.Cloud.Cdn;
 
 namespace Lumora.Core.Components.UI;
 
-// Who you are, as a profile tile: a picture disc on the left, your name and your storage on the right.
+// A compact profile header followed by a separate cloud-storage section.
 // The form that used to live in the card is a modal on the dashboard slot now, so the card stays a card
 // and the typing happens in one place.
 //
@@ -27,45 +27,50 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
     private const string UserKey = "Account.UserId";
     private const string TokenKey = "Account.Token";
 
-    // CARD. The picture disc is anchored to the left edge and everything else starts to the right of it,
-    // so the two halves never fight for the same pixels no matter how the cell stretches.
-    private const float AvatarSize = 86f;
-    private const float AvatarGap = 14f;
+    // CARD. The picture and name share the header; storage spans the full width below it.
+    private const float AvatarSize = 52f;
+    private const float AvatarGap = 12f;
     private const float TextLeft = Pad + AvatarSize + AvatarGap;
-    private const float HeadSize = 34f;
-    private const float ShoulderWidth = 58f;
-    private const float ShoulderHeight = 30f;
-    private const float LoginWidth = 168f;
+    private const float HeadSize = 20f;
+    private const float ShoulderWidth = 36f;
+    private const float ShoulderHeight = 20f;
     private const float SignOutWidth = 88f;
-    private const float SignOutHeight = 26f;
-    private const float VerifiedWidth = 68f;
-    private const float BarHeight = 8f;
-    // Right-hand strip the storage figure sits in, kept clear of the bar.
-    private const float StorageTextWidth = 128f;
+    private const float SignOutHeight = 36f;
+    private const float BarHeight = 7f;
     // Right-hand strip the sign-out pill sits in, kept clear of the status line.
     private const float StatusRightInset = Pad + 96f;
 
     // DIALOG.
-    private const float DialogWidth = 420f;
-    private const float DialogPad = 22f;
-    private const float FieldHeight = 34f;
-    private const float RememberHeight = 20f;
-    private const float StatusHeight = 18f;
+    private const float DialogWidth = 460f;
+    private const float DialogPad = 28f;
+    private const float FieldHeight = 68f;
+    private const float RememberHeight = 32f;
+    private const float StatusHeight = 28f;
     private const float TitleHeight = 28f;
-    private const float SubmitWidth = 132f;
-    private const float CancelWidth = 108f;
+    private const float SubmitWidth = 260f;
+    private const float CancelWidth = 132f;
+    private const float ActionHeight = 44f;
 
     // Row tops for the two shapes the dialog takes, and the panel height that goes with each. The
     // two-factor field only exists after the service asks for a code, and reserving its space up front
     // left the form floating above its own buttons. Order: title, username, password, code, remember,
     // buttons, status.
-    private static readonly float[] TopsPlain = { 24f, 70f, 112f, 0f, 158f, 194f, 236f };
-    private static readonly float[] TopsWithCode = { 24f, 70f, 112f, 154f, 200f, 236f, 278f };
-    private const float DialogHeightPlain = 278f;
-    private const float DialogHeightWithCode = 320f;
+    private static readonly float[] TopsPlain = { 24f, 88f, 166f, 0f, 244f, 294f, 352f };
+    private static readonly float[] TopsWithCode = { 24f, 88f, 166f, 244f, 322f, 372f, 430f };
+    private const float DialogHeightPlain = 400f;
+    private const float DialogHeightWithCode = 478f;
 
     // Same dim the create-world modal uses, so two dialogs raised from the same screen read as one thing.
-    private static readonly color ScrimFill = new color(0.02f, 0.02f, 0.05f, 0.62f);
+    private static readonly color ScrimFill = DashTheme.ModalScrim;
+
+    // STORAGE. Read when the card comes up, and again whenever the sync says the account's storage may
+    // read differently (a save went up or was parked, something was deleted, the out of space flag came or
+    // went): at most once every StorageGap seconds, and once more StorageSettle seconds after the last
+    // change, by when the service has counted what that change did. -xlinka
+    private const double StorageGap = 2.0;
+    private const double StorageSettle = 5.0;
+    private const double StorageRefresh = 30.0;
+    private const long Megabyte = 1024L * 1024L;
 
     private enum Focus { None, Username, Password, Code }
 
@@ -110,9 +115,11 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
     private Pill? _signOutPill;
     private Text? _status;
     private Text? _name;
-    private Text? _email;
+    private Text? _accountState;
     private Slot? _verified;
     private Text? _storage;
+    private Text? _storageHint;
+    private RoundedPanel? _barPaint;
     private RectTransform? _barFill;
 
     private Slot? _dialogBackdrop;
@@ -123,6 +130,7 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
     private Field? _passField;
     private Field? _codeField;
     private RoundedPanel? _rememberBox;
+    private Slot? _rememberCheck;
     private RectTransform? _rememberRect;
     private Button? _rememberButton;
     private RectTransform? _buttonRowRect;
@@ -131,23 +139,44 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
     private Text? _dialogStatus;
     private bool _hooked;
 
+    private long _storageSeen;
+    private double _storageChangedAt;
+    private double _storageReadAt = double.NegativeInfinity;
+    private bool _storageDue;
+    private bool _storageSettling;
+    // Only the newest read is drawn, so an answer that comes back late never paints over a fresher one.
+    private int _storageReads;
+    private int _accountGeneration;
+
     private static LumoraClient? Client => Engine.Current?.CDNClient;
 
-    // The Home screen this card is docked on, if any. It owns which of the two dashboard modals is up.
+    // The Home screen of the dash this card is on (the desk, or the top bar over it). It owns which of the
+    // two dashboard modals is up.
     private HomeScreen? HomeHost
     {
         get
         {
-            var screen = Slot.GetComponentInParents<HomeScreen>();
+            var screen = Slot.GetComponentInParents<HomeScreen>() ?? Slot.GetComponentInParents<Dashboard>()?.DeskScreen as HomeScreen;
             return screen != null && !screen.IsDestroyed ? screen : null;
         }
     }
 
+    // What the dash's top bar shows for this account: the name once the profile is in, empty before that.
+    public bool IsSignedIn => SignedIn;
+    public string ProfileName { get; private set; } = string.Empty;
+    public bool DialogOpen => _dialogOpen;
+    public bool HasStorageUsage { get; private set; }
+    public string StorageLabel { get; private set; } = "Loading storage…";
+    public long StorageUsedBytes { get; private set; }
+    public long StorageLimitBytes { get; private set; }
+    public float StorageFraction => !HasStorageUsage ? 0f : StorageLimitBytes <= 0 ? 1f
+        : (float)System.Math.Clamp((double)StorageUsedBytes / StorageLimitBytes, 0d, 1d);
+
     public AccountWidgetPreset()
     {
-        MinSize.Value = new float2(300f, 110f);
-        PreferredSize.Value = new float2(380f, 130f);
-        MaxSize.Value = new float2(720f, 260f);
+        MinSize.Value = new float2(300f, 188f);
+        PreferredSize.Value = new float2(360f, 196f);
+        MaxSize.Value = new float2(720f, 300f);
     }
 
     protected override void Build(Widget widget, Slot root)
@@ -165,6 +194,7 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
         Hook();
         ApplyState();
 
+        _storageSeen = InventorySync.StorageRevision;
         if (Client?.IsAuthenticated == true)
             LoadProfile();
         else
@@ -188,6 +218,38 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
         // Only the pills on the card are gated: the dialog lives above the grid, never under a drag.
         GateForEdit(_loginPill?.Button);
         GateForEdit(_signOutPill?.Button);
+        PollStorage();
+    }
+
+    // The top bar calls this too: a closed account popover does not receive component updates.
+    internal void PollStorage()
+    {
+        double now = World.Time.TotalTime;
+        if (SignedIn && now - _storageReadAt >= StorageRefresh)
+            _storageDue = true;
+        long revision = InventorySync.StorageRevision;
+        if (revision != _storageSeen)
+        {
+            _storageSeen = revision;
+            _storageChangedAt = now;
+            _storageDue = true;
+            _storageSettling = true;
+        }
+        if (!_storageDue && !_storageSettling)
+            return;
+        if (!SignedIn)
+        {
+            _storageDue = false;
+            _storageSettling = false;
+            return;
+        }
+        bool settled = now - _storageChangedAt >= StorageSettle;
+        if (now - _storageReadAt < StorageGap || (!_storageDue && !settled))
+            return;
+        _storageDue = false;
+        if (settled)
+            _storageSettling = false;
+        ReadStorage();
     }
 
     // CARD
@@ -199,9 +261,9 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
     private void BuildAvatar(Slot root)
     {
         float half = AvatarSize * 0.5f;
-        var disc = SettingsUI.Child(root, "Avatar", new float2(0f, 0.5f), new float2(0f, 0.5f),
-            new float2(Pad, -half), new float2(Pad + AvatarSize, half));
-        SettingsUI.Panel(disc, DashTheme.Field, DashTheme.Outline, half);
+        var disc = SettingsUI.Child(root, "Avatar", new float2(0f, 1f), new float2(0f, 1f),
+            new float2(Pad, -Pad - AvatarSize), new float2(Pad + AvatarSize, -Pad));
+        SettingsUI.Panel(disc, DashTheme.AccentSoft, color.Transparent, half);
 
         var clip = SettingsUI.Fill(disc, "Clip");
         SettingsUI.Panel(clip, color.White, color.Transparent, half);
@@ -211,106 +273,100 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
 
         float headHalf = HeadSize * 0.5f;
         var head = SettingsUI.Child(clip, "Head", new float2(0.5f, 1f), new float2(0.5f, 1f),
-            new float2(-headHalf, -(18f + HeadSize)), new float2(headHalf, -18f));
+            new float2(-headHalf, -(10f + HeadSize)), new float2(headHalf, -10f));
         SettingsUI.Panel(head, DashTheme.TextMuted, color.Transparent, headHalf);
 
         float shoulderHalf = ShoulderWidth * 0.5f;
         var shoulders = SettingsUI.Child(clip, "Shoulders", new float2(0.5f, 1f), new float2(0.5f, 1f),
-            new float2(-shoulderHalf, -(60f + ShoulderHeight)), new float2(shoulderHalf, -60f));
+            new float2(-shoulderHalf, -(34f + ShoulderHeight)), new float2(shoulderHalf, -34f));
         SettingsUI.Panel(shoulders, DashTheme.TextMuted, color.Transparent, ShoulderHeight * 0.5f);
     }
 
     private void BuildSignedOut(Slot root)
     {
         _signedOutRoot = SettingsUI.Fill(root, "SignedOut");
-
-        Label(_signedOutRoot, "Name", "Anonymous", DashTheme.FontTitle, DashTheme.Text,
-            TextHorizontalAlignment.Left, new float2(0f, 1f), new float2(1f, 1f),
-            new float2(TextLeft, -50f), new float2(-Pad, -22f), BoldFont);
-
+        CardLabel(_signedOutRoot, "Welcome", "Welcome to Lumora", TextLeft, 18f, Pad, 24f, 18f, DashTheme.Text, BoldFont);
+        CardLabel(_signedOutRoot, "Subtitle", "Make yourself at home.", TextLeft, 44f, Pad, 20f, 13f, DashTheme.TextDim);
         if (_dialogPanel != null)
         {
-            var slot = SettingsUI.Child(_signedOutRoot, "Login", new float2(0f, 1f), new float2(0f, 1f),
-                new float2(TextLeft, -(56f + DashTheme.ControlHeight)), new float2(TextLeft + LoginWidth, -56f));
-            _loginPill = AttachPill(slot, "Login / Register", DashTheme.FontBody, OnLoginPressed);
+            var slot = Row(_signedOutRoot, "Login", 88f, 40f, Pad, Pad);
+            _loginPill = AttachPill(slot, "Sign in", 16f, OnLoginPressed);
         }
         else
-        {
-            // Typed keys are routed to the CURRENT DASH SCREEN and the modal needs a dashboard slot to
-            // hang off, so a card floating in the world has neither. Saying so beats a button that opens
-            // nothing. -xlinka
-            Label(_signedOutRoot, "Note", "Sign in from the Home screen", DashTheme.FontBody, DashTheme.TextDim,
-                TextHorizontalAlignment.Left, new float2(0f, 1f), new float2(1f, 1f),
-                new float2(TextLeft, -82f), new float2(-Pad, -58f));
-        }
+            CardLabel(_signedOutRoot, "LoginNote", "Sign in from this widget on the workspace", Pad, 88f, Pad, 40f, 15f, DashTheme.TextDim);
+        var note = CardLabel(_signedOutRoot, "Note", "Your worlds and inventory, wherever you play.", Pad, 138f, Pad, 34f, 13f, DashTheme.TextDim);
+        note.WordWrap.Value = true;
     }
 
     private void BuildSignedIn(Slot root)
     {
         _signedInRoot = SettingsUI.Fill(root, "SignedIn");
-
-        // The name and the chip share one content-sized row so the chip lands right after the name rather
-        // than parked against the far edge of a card whose width is not ours to pick.
-        var nameRow = Row(_signedInRoot, "NameRow", 14f, 26f, TextLeft, Pad);
-        var layout = nameRow.AttachComponent<HorizontalLayout>();
-        layout.Spacing.Value = DashTheme.Gap;
-        layout.ForceExpandWidth.Value = false;
-        layout.ForceExpandHeight.Value = false;
-        layout.MainAlignment.Value = MainAxisAlignment.Start;
-        layout.CrossAlignment.Value = LayoutAlignment.Center;
-
-        _name = Label(nameRow, "Name", string.Empty, DashTheme.FontTitle, DashTheme.Text,
-            TextHorizontalAlignment.Left, float2.Zero, float2.One, float2.Zero, float2.Zero, BoldFont);
-
-        _verified = nameRow.AddSlot("Verified");
-        _verified.AttachComponent<RectTransform>();
-        // The chip is measured by its LayoutElement, not by its label: a LayoutElement outranks the Text on
-        // the same slot, so the text goes on a child and the box keeps its own size.
-        var chipSize = _verified.AttachComponent<LayoutElement>();
-        chipSize.MinWidth.Value = VerifiedWidth;
-        chipSize.PreferredWidth.Value = VerifiedWidth;
-        chipSize.FlexibleWidth.Value = 0f;
-        chipSize.MinHeight.Value = DashTheme.ChipHeight;
-        chipSize.PreferredHeight.Value = DashTheme.ChipHeight;
-        chipSize.FlexibleHeight.Value = 0f;
-        SettingsUI.Panel(_verified, DashTheme.AccentSoft, color.Transparent, DashTheme.RadiusChip);
-        SettingsUI.FillLabel(_verified, "Text", SemiboldFont, DashTheme.FontLabel, DashTheme.Accent)
-            .Content.Value = "Verified";
-        // Off until the profile says otherwise, so a card that comes up already signed in does not flash a
-        // badge it has not earned yet.
+        _name = CardLabel(_signedInRoot, "Name", "Your account", TextLeft, 18f, Pad, 26f, 20f, DashTheme.Text, BoldFont);
+        _accountState = CardLabel(_signedInRoot, "AccountState", "Signed in", TextLeft, 46f, Pad, 18f, 13f, DashTheme.TextDim);
+        _verified = SettingsUI.Child(_signedInRoot, "Verified", new float2(0f, 1f), new float2(0f, 1f),
+            new float2(Pad + AvatarSize - 15f, -Pad - AvatarSize), new float2(Pad + AvatarSize + 3f, -Pad - AvatarSize + 18f));
+        SettingsUI.Panel(_verified, DashTheme.Positive, DashTheme.Surface, 9f);
+        CheckIcon(_verified, DashTheme.TextOnLight);
         SetActive(_verified, false);
-
-        _email = Label(_signedInRoot, "Email", string.Empty, DashTheme.FontSmall, DashTheme.TextDim,
-            TextHorizontalAlignment.Left, new float2(0f, 1f), new float2(1f, 1f),
-            new float2(TextLeft, -58f), new float2(-Pad, -42f));
-
-        var track = Row(_signedInRoot, "Bar", 70f, BarHeight, TextLeft, Pad + StorageTextWidth);
-        SettingsUI.Panel(track, DashTheme.Field, DashTheme.Outline, DashTheme.RadiusControl);
+        CardLabel(_signedInRoot, "StorageTitle", "Cloud storage", Pad, 88f, 160f, 20f, 13f, DashTheme.TextDim);
+        _storage = CardLabel(_signedInRoot, "Storage", "Loading…", 140f, 88f, Pad, 20f, 13f, DashTheme.Text, SemiboldFont);
+        _storage.HorizontalAlignment.Value = TextHorizontalAlignment.Right;
+        var track = Row(_signedInRoot, "StorageTrack", 118f, BarHeight, Pad, Pad);
+        SettingsUI.Panel(track, DashTheme.Field, color.Transparent, BarHeight * 0.5f);
         var fill = SettingsUI.Child(track, "Fill", float2.Zero, new float2(0f, 1f), float2.Zero, float2.Zero);
-        SettingsUI.Panel(fill, DashTheme.Accent, color.Transparent, DashTheme.RadiusControl);
+        _barPaint = SettingsUI.Panel(fill, DashTheme.Accent, color.Transparent, BarHeight * 0.5f);
         _barFill = SettingsUI.Rect(fill);
-
-        // Right aligned over the full width, so the figure sits against the card edge and the bar keeps
-        // whatever is left instead of both being pinned to a guessed split.
-        _storage = Label(_signedInRoot, "Storage", "Storage unknown", DashTheme.FontSmall, DashTheme.TextDim,
-            TextHorizontalAlignment.Right, new float2(0f, 1f), new float2(1f, 1f),
-            new float2(TextLeft, -86f), new float2(-Pad, -62f));
-
+        _storageHint = Label(_signedInRoot, "StorageHint", "Checking storage…", 13f, DashTheme.TextDim,
+            TextHorizontalAlignment.Left, float2.Zero, new float2(1f, 0f),
+            new float2(Pad, Pad + 8f), new float2(-StatusRightInset, Pad + 28f));
+        FitLabel(_storageHint);
         var signOut = SettingsUI.Child(_signedInRoot, "SignOut", new float2(1f, 0f), new float2(1f, 0f),
-            new float2(-(Pad + SignOutWidth), 12f), new float2(-Pad, 12f + SignOutHeight));
-        _signOutPill = AttachPill(signOut, "Sign out", DashTheme.FontSmall, SignOut);
+            new float2(-(Pad + SignOutWidth), Pad), new float2(-Pad, Pad + SignOutHeight));
+        _signOutPill = AttachPill(signOut, "Sign out", 13f, SignOut);
+        // Forgets the saved sign-in, with nothing to confirm it.
+        _signOutPill.Button.ActOnRelease.Value = true;
     }
 
-    // One status line for both shapes of the card, hidden while it has nothing to say. It shares its band
-    // with the sign-out pill, so it stops short of the pill's strip.
     private void BuildStatus(Slot root)
     {
-        _status = Label(root, "Status", string.Empty, DashTheme.FontSmall, DashTheme.TextDim,
-            TextHorizontalAlignment.Left, new float2(0f, 1f), new float2(1f, 1f),
-            new float2(TextLeft, -112f), new float2(-StatusRightInset, -96f));
+        _status = Label(root, "Status", string.Empty, 12f, DashTheme.TextDim,
+            TextHorizontalAlignment.Left, float2.Zero, new float2(1f, 0f),
+            new float2(Pad, Pad), new float2(-StatusRightInset, Pad + 36f));
+        _status.WordWrap.Value = true;
+        _status.AutoSizeHorizontal.Value = _status.AutoSizeVertical.Value = true;
+        _status.AutoSizeMin.Value = 11f;
         SetActive(_status.Slot, false);
     }
 
+    private Text CardLabel(Slot parent, string name, string value, float left, float top, float right, float height,
+        float size, color tint, Lumora.Core.Assets.IAssetProvider<Lumora.Core.Assets.FontSet>? font = null)
+    {
+        var viewport = Row(parent, name, top, height, left, right);
+        viewport.AttachComponent<Mask>();
+        var text = Label(viewport, "Text", value, size, tint, TextHorizontalAlignment.Left,
+            float2.Zero, float2.One, float2.Zero, float2.Zero, font);
+        FitLabel(text);
+        return text;
+    }
+
+    private static void FitLabel(Text text)
+    {
+        text.WordWrap.Value = false;
+        text.AutoSizeHorizontal.Value = true;
+        text.AutoSizeMin.Value = 12f;
+    }
+
+    private static Slot CheckIcon(Slot parent, color tint)
+    {
+        var icon = SettingsUI.Child(parent, "Check", float2.Zero, float2.One, new float2(3f, 3f), new float2(-3f, -3f));
+        var source = icon.AttachComponent<Lumora.Core.Assets.ImageProvider>();
+        source.GenerateMipmaps.Value = false;
+        source.URL.Value = new Uri("res://Assets/Textures/Icons/check.svg");
+        var image = icon.AttachComponent<Image>();
+        image.Texture.Target = source;
+        image.Tint.Value = tint;
+        return icon;
+    }
     // DIALOG
     // Hosted on the CANVAS ROOT (the dashboard slot), the same place the create-world modal goes: the
     // backdrop has to cover the whole dash and the panel has to draw above the nav chrome, and neither is
@@ -333,7 +389,6 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
         // OverlayLevel 1 reserves a render band above all normal UI so the dim covers the nav bar and the
         // header rather than fighting them for order.
         _dialogBackdrop.AttachComponent<GraphicChunkRoot>().OverlayLevel = 1;
-        _dialogBackdrop.AttachComponent<Image>().Tint.Value = ScrimFill;
         _dialogBackdrop.AttachComponent<Button>().Clicked += (_, ctx) =>
         {
             // Dismiss only when the click lands OUTSIDE the panel, so a click on a field never closes the
@@ -343,6 +398,8 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
                 return;
             CloseSignInDialog();
         };
+        // The dismiss button must not auto-drive the full-screen image's tint on hover or press.
+        _dialogBackdrop.AttachComponent<Image>().Tint.Value = ScrimFill;
         _dialogBackdrop.ActiveSelf.Value = false;
 
         _dialogPanel = host.AddSlot("SignInDialog");
@@ -355,10 +412,11 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
         // Absorb clicks on the panel background so they never fall through to the backdrop's dismiss.
         _dialogPanel.AttachComponent<Button>();
 
-        var title = Label(_dialogPanel, "Title", "Sign in", DashTheme.FontTitle, DashTheme.Text,
+        var title = Label(_dialogPanel, "Title", "Welcome back", 24f, DashTheme.Text,
             TextHorizontalAlignment.Left, new float2(0f, 1f), new float2(1f, 1f),
             new float2(DialogPad, -52f), new float2(-DialogPad, -24f), BoldFont);
         _titleRect = SettingsUI.Rect(title.Slot);
+        CardLabel(_dialogPanel, "Subtitle", "Sign in to your Lumora account", DialogPad, 57f, DialogPad, 22f, 14f, DashTheme.TextDim);
 
         _userField = BuildField(_dialogPanel, "Username", TopsPlain[1]);
         _passField = BuildField(_dialogPanel, "Password", TopsPlain[2]);
@@ -367,10 +425,11 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
         var rememberRow = Row(_dialogPanel, "Remember", TopsPlain[4], RememberHeight, DialogPad, DialogPad);
         _rememberRect = SettingsUI.Rect(rememberRow);
         var box = SettingsUI.Child(rememberRow, "Box", new float2(0f, 0.5f), new float2(0f, 0.5f),
-            new float2(0f, -8f), new float2(16f, 8f));
+            new float2(0f, -11f), new float2(22f, 11f));
         _rememberBox = SettingsUI.Panel(box, DashTheme.Field, DashTheme.Outline, DashTheme.RadiusChip);
-        Label(rememberRow, "Text", "Remember me", DashTheme.FontSmall, DashTheme.TextDim,
-            TextHorizontalAlignment.Left, float2.Zero, new float2(1f, 1f), new float2(26f, 0f), float2.Zero);
+        _rememberCheck = CheckIcon(box, DashTheme.OnAccent);
+        Label(rememberRow, "Text", "Keep me signed in", 14f, DashTheme.TextDim,
+            TextHorizontalAlignment.Left, float2.Zero, new float2(1f, 1f), new float2(34f, 0f), float2.Zero);
         _rememberButton = rememberRow.AttachComponent<Button>();
         _rememberButton.Clicked += (_, _) =>
         {
@@ -380,7 +439,7 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
             UpdateRemember();
         };
 
-        var buttonRow = Row(_dialogPanel, "Actions", TopsPlain[5], DashTheme.ControlHeight, DialogPad, DialogPad);
+        var buttonRow = Row(_dialogPanel, "Actions", TopsPlain[5], ActionHeight, DialogPad, DialogPad);
         _buttonRowRect = SettingsUI.Rect(buttonRow);
         _submit = BuildPill(buttonRow, "Submit", "Sign in", 0f, SubmitWidth, SignIn);
         _cancel = BuildPill(buttonRow, "Cancel", "Cancel", SubmitWidth + DashTheme.Gap + 4f, CancelWidth,
@@ -389,6 +448,9 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
         _dialogStatus = Label(_dialogPanel, "Status", string.Empty, DashTheme.FontSmall, DashTheme.TextMuted,
             TextHorizontalAlignment.Left, new float2(0f, 1f), new float2(1f, 1f),
             new float2(DialogPad, -(TopsPlain[6] + StatusHeight)), new float2(-DialogPad, -TopsPlain[6]));
+        _dialogStatus.WordWrap.Value = true;
+        _dialogStatus.AutoSizeHorizontal.Value = _dialogStatus.AutoSizeVertical.Value = true;
+        _dialogStatus.AutoSizeMin.Value = 12f;
 
         _userField.Button.Clicked += (_, _) => SetFocus(Focus.Username);
         _passField.Button.Clicked += (_, _) => SetFocus(Focus.Password);
@@ -423,15 +485,21 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
     private Field BuildField(Slot parent, string name, float top)
     {
         var slot = Row(parent, name, top, FieldHeight, DialogPad, DialogPad);
+        CardLabel(slot, "Label", name == "Username" ? "Username or email" : name == "Code" ? "Authentication code" : "Password",
+            0f, 0f, 0f, 18f, 13f, DashTheme.TextDim);
+        var entry = Row(slot, "Entry", 24f, 44f, 0f, 0f);
         var field = new Field
         {
             Slot = slot,
-            Panel = SettingsUI.Panel(slot, DashTheme.Field, DashTheme.Outline, DashTheme.RadiusControl),
-            Button = slot.AttachComponent<Button>(),
+            Panel = SettingsUI.Panel(entry, DashTheme.Field, DashTheme.Outline, DashTheme.RadiusControl),
+            Button = entry.AttachComponent<Button>(),
         };
-        field.Text = Label(slot, "Text", string.Empty, DashTheme.FontBody, DashTheme.TextMuted,
+        entry.AttachComponent<Mask>().ShowMaskGraphic.Value = true;
+        field.Text = Label(entry, "Text", string.Empty, 16f, DashTheme.TextMuted,
             TextHorizontalAlignment.Left, float2.Zero, new float2(1f, 1f),
             new float2(10f, 0f), new float2(-10f, 0f));
+        field.Text.WordWrap.Value = false;
+        field.Text.KeepCaretVisible.Value = true;
         return field;
     }
 
@@ -513,7 +581,7 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
         if (_needsCode)
             Place(_codeField?.Slot, tops[3], FieldHeight);
         Place(_rememberRect, tops[4], RememberHeight);
-        Place(_buttonRowRect, tops[5], DashTheme.ControlHeight);
+        Place(_buttonRowRect, tops[5], ActionHeight);
         if (_dialogStatus != null && !_dialogStatus.IsDestroyed)
             Place(SettingsUI.Rect(_dialogStatus.Slot), tops[6], StatusHeight);
     }
@@ -553,14 +621,15 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
         SettingsUI.SetPaint(field.Panel, DashTheme.Field, focused ? DashTheme.Accent : DashTheme.Outline);
         if (value.Length == 0)
         {
-            ListingStyle.SetText(field.Text, focused ? "|" : placeholder);
+            ListingStyle.SetText(field.Text, placeholder);
             ListingStyle.SetTextColor(field.Text, DashTheme.TextMuted);
         }
         else
         {
-            ListingStyle.SetText(field.Text, focused ? value + "|" : value);
+            ListingStyle.SetText(field.Text, value);
             ListingStyle.SetTextColor(field.Text, DashTheme.Text);
         }
+        field.Text.CaretPosition.Value = focused ? value.Length : -1;
     }
 
     private void UpdateRemember()
@@ -570,6 +639,7 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
         SettingsUI.SetPaint(_rememberBox,
             _remember ? DashTheme.Accent : DashTheme.Field,
             _remember ? DashTheme.Accent : DashTheme.Outline);
+        SetActive(_rememberCheck, _remember);
         Repaint();
     }
 
@@ -578,6 +648,8 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
         if (_submit == null)
             return;
         bool live = !_busy && Connectivity.IsOnline;
+        ListingStyle.SetInteractable(_submit.Button, live);
+        ListingStyle.SetText(_submit.Text, _busy ? "Signing in…" : _needsCode ? "Verify & sign in" : "Sign in");
         if (live)
             _submit.SetRamp(DashTheme.Accent, DashTheme.AccentHover, DashTheme.AccentPressed,
                 WidgetScreen.OnFill(DashTheme.Accent));
@@ -594,6 +666,8 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
     {
         WriteStatus(_status, true, text, tint);
         WriteStatus(_dialogStatus, false, text, tint);
+        SetActive(_storageHint?.Slot, text.Length == 0);
+        SetActive(_signedOutRoot?.FindChild("Note", false), text.Length == 0);
         Repaint();
     }
 
@@ -611,6 +685,12 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
     // The dialog is modal, so while it is up it takes the keyboard whole and everything else answers false.
 
     public bool HasFieldFocus => _dialogOpen && _focus != Focus.None;
+    public string? CopyText => !_dialogOpen ? null : _focus switch
+    {
+        Focus.Username => _username,
+        Focus.Code => _code,
+        _ => null,
+    };
 
     public bool ConsumeChar(char c)
     {
@@ -673,7 +753,7 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
         return true;
     }
 
-    private static string Chop(string value) => value.Length > 0 ? value.Substring(0, value.Length - 1) : value;
+    private static string Chop(string value) => Lumora.Core.Input.TextElements.RemoveLast(value);
 
     // ACCOUNT SERVICE
 
@@ -741,14 +821,13 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
                 UpdateSubmitButton();
             });
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            string message = ex.Message;
             OnUi(world, () =>
             {
                 _busy = false;
                 UpdateSubmitButton();
-                SetStatus(message, DashTheme.Negative);
+                SetStatus("Unable to sign in. Please try again.", DashTheme.Negative);
             });
         }
     }
@@ -839,20 +918,58 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
             return;
 
         var world = World;
+        int generation = _accountGeneration;
+        int read = ++_storageReads;
+        _storageReadAt = world?.Time.TotalTime ?? 0.0;
         try
         {
             var profile = await client.GetCurrentUser();
             var quota = await client.GetQuota();
-            OnUi(world, () => ApplyProfile(profile, quota));
+            OnUi(world, () =>
+            {
+                if (!SignedIn || generation != _accountGeneration)
+                    return;
+                ApplyProfile(profile);
+                ApplyQuota(quota, read, keepOnFailure: false);
+            });
         }
         catch (Exception ex)
         {
             string message = ex.Message;
-            OnUi(world, () => SetStatus(message, DashTheme.Negative));
+            OnUi(world, () =>
+            {
+                if (!SignedIn || generation != _accountGeneration)
+                    return;
+                if (!HasStorageUsage)
+                    StorageLabel = "Storage unavailable";
+                SetStatus(message, DashTheme.Negative);
+            });
         }
     }
 
-    private void ApplyProfile(ApiResponse<UserProfile> profile, ApiResponse<UserQuotaResponse> quota)
+    // The storage figure alone, for a change the sync reported. One that does not get through leaves the
+    // last figure up rather than blanking a card that was right a moment ago.
+    private async void ReadStorage()
+    {
+        var client = Client;
+        if (client == null || !client.IsAuthenticated)
+            return;
+
+        var world = World;
+        int read = ++_storageReads;
+        _storageReadAt = world?.Time.TotalTime ?? 0.0;
+        try
+        {
+            var quota = await client.GetQuota();
+            OnUi(world, () => ApplyQuota(quota, read, keepOnFailure: true));
+        }
+        catch (Exception ex)
+        {
+            Logging.Logger.Warn($"Account: could not read your storage: {ex.Message}");
+        }
+    }
+
+    private void ApplyProfile(ApiResponse<UserProfile> profile)
     {
         if (IsDestroyed)
             return;
@@ -860,16 +977,17 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
         if (profile.Success && profile.Data != null)
         {
             var data = profile.Data;
+            ProfileName = data.Username ?? string.Empty;
             if (_name != null && !_name.IsDestroyed)
             {
-                ListingStyle.SetText(_name, data.Username);
+                ListingStyle.SetText(_name, ProfileName);
                 // The display color comes back as hex, written in sRGB like every other token, so it has
                 // to be decoded before it lands on a vertex.
                 ListingStyle.SetTextColor(_name,
                     ColorSwatchStore.TryParseHex(data.NameColor, out var tint) ? tint.ToLinear() : DashTheme.Text);
             }
-            if (_email != null && !_email.IsDestroyed)
-                ListingStyle.SetText(_email, data.Email ?? string.Empty);
+            if (_accountState != null && !_accountState.IsDestroyed)
+                ListingStyle.SetText(_accountState, data.IsVerified ? "Verified account" : "Signed in");
             SetActive(_verified, data.IsVerified);
             SetStatus(string.Empty, DashTheme.TextMuted);
             RememberToken(data.Id);
@@ -879,29 +997,56 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
             SetStatus(profile.Message ?? "Could not load your profile.", DashTheme.Negative);
         }
 
-        if (quota.Success && quota.Data != null && _storage != null && !_storage.IsDestroyed)
+        Repaint();
+    }
+
+    // The line and the bar from the newest read, in exact bytes.
+    private void ApplyQuota(ApiResponse<UserQuotaResponse> quota, int read, bool keepOnFailure)
+    {
+        if (IsDestroyed || !SignedIn || read != _storageReads || _storage == null || _storage.IsDestroyed)
+            return;
+
+        if (quota.Success && quota.Data != null)
         {
             var data = quota.Data;
-            ListingStyle.SetText(_storage, $"{FormatSize(data.UsedMB)} / {FormatSize(data.QuotaMB)}");
-            float used = data.QuotaMB > 0 ? (float)data.UsedMB / data.QuotaMB : 0f;
+            long used = System.Math.Max(0, data.UsedBytes);
+            long limit = System.Math.Max(0, data.LimitBytes);
+            HasStorageUsage = true;
+            StorageUsedBytes = used;
+            StorageLimitBytes = limit;
+            StorageLabel = $"{FormatSize(used)} / {FormatSize(limit)}";
+            ListingStyle.SetText(_storage, $"{FormatSize(used)} of {FormatSize(limit)}");
+            float fraction = StorageFraction;
+            color tint = fraction >= 1f ? DashTheme.Negative : fraction >= 0.85f ? DashTheme.Warning : DashTheme.Accent;
+            if (_barPaint != null && !_barPaint.IsDestroyed)
+                _barPaint.Color.Value = tint;
+            if (_storageHint != null)
+            {
+                ListingStyle.SetText(_storageHint, limit <= 0 ? "No storage available" : used >= limit ? "Storage full" : $"{FormatSize(limit - used)} free");
+                ListingStyle.SetTextColor(_storageHint, fraction >= 0.85f ? tint : DashTheme.TextDim);
+            }
             if (_barFill != null && !_barFill.IsDestroyed)
-                SettingsUI.SetAnchors(_barFill, float2.Zero, new float2(System.Math.Clamp(used, 0f, 1f), 1f));
+                SettingsUI.SetAnchors(_barFill, float2.Zero, new float2(System.Math.Clamp(fraction, 0f, 1f), 1f));
+            InventorySync.QuotaSeen(string.IsNullOrEmpty(data.UserId) ? Client?.AccountUserId : data.UserId, used, limit);
         }
-        else if (_storage != null && !_storage.IsDestroyed)
+        else if (!keepOnFailure || !HasStorageUsage)
         {
-            ListingStyle.SetText(_storage, "Storage unknown");
+            StorageLabel = "Storage unavailable";
+            ListingStyle.SetText(_storage, "Unavailable");
+            if (_storageHint != null) ListingStyle.SetText(_storageHint, "Check your connection");
         }
 
         Repaint();
     }
 
-    // Megabytes are what the service speaks, gigabytes are what a person reads once there are thousands of
-    // them. One decimal, and no trailing .0 so a round quota stays "5 GB".
-    private static string FormatSize(long megabytes)
+    // Megabytes are what a person reads for a save, gigabytes once there are thousands of them. One decimal,
+    // and no trailing .0 so a round quota stays "5 GB".
+    private static string FormatSize(long bytes)
     {
-        if (megabytes > 1024L)
-            return (megabytes / 1024f).ToString("0.#", CultureInfo.InvariantCulture) + " GB";
-        return megabytes.ToString(CultureInfo.InvariantCulture) + " MB";
+        double megabytes = bytes / (double)Megabyte;
+        if (megabytes >= 1024d)
+            return (megabytes / 1024d).ToString("0.#", CultureInfo.InvariantCulture) + " GB";
+        return megabytes.ToString("0.#", CultureInfo.InvariantCulture) + " MB";
     }
 
     // REMEMBERED SESSION
@@ -988,6 +1133,7 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
     {
         OnUi(World, () =>
         {
+            ResetStorage();
             _password = string.Empty;
             _code = string.Empty;
             _needsCode = false;
@@ -1001,14 +1147,33 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
     {
         OnUi(World, () =>
         {
+            ResetStorage();
             _username = string.Empty;
             _password = string.Empty;
             _code = string.Empty;
             _needsCode = false;
             _focus = Focus.None;
             _resumeTried = true;
+            ProfileName = string.Empty;
             ApplyState();
         });
+    }
+
+    private void ResetStorage()
+    {
+        ++_accountGeneration;
+        ++_storageReads;
+        ProfileName = string.Empty;
+        HasStorageUsage = false;
+        StorageUsedBytes = StorageLimitBytes = 0;
+        StorageLabel = "Loading storage…";
+        _storageDue = _storageSettling = false;
+        if (_storage != null && !_storage.IsDestroyed)
+            ListingStyle.SetText(_storage, "Loading…");
+        if (_storageHint != null && !_storageHint.IsDestroyed)
+            ListingStyle.SetText(_storageHint, "Checking storage…");
+        if (_barFill != null && !_barFill.IsDestroyed)
+            SettingsUI.SetAnchors(_barFill, float2.Zero, new float2(0f, 1f));
     }
 
     // The account service answers on a background thread; nothing here may touch the UI tree until it is

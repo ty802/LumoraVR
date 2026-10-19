@@ -35,7 +35,6 @@ public sealed class LumoraClient : IDisposable
     private string? _accountSessionId;
 
     public const int DefaultChunkSize = 4 * 1024 * 1024; // 4MB chunks
-    public const int MaxParallelChunks = 4;
 
     public static TimeSpan ApiTimeout { get; set; } = TimeSpan.FromSeconds(30);
     public static TimeSpan ContentTimeout { get; set; } = TimeSpan.FromMinutes(10);
@@ -58,6 +57,9 @@ public sealed class LumoraClient : IDisposable
 
     public event Action<Session>? Authenticated;
     public event Action? SignedOut;
+    // After a sign in has its account key published (or failed to), and after a sign out. Authenticated
+    // fires before the key exists, so anything that proves the account to a host waits for this one.
+    public event Action? AccountIdentityChanged;
 
     public LumoraClient(string deviceId, string appName = "LumoraVR", string version = "0.1.0")
     {
@@ -109,6 +111,8 @@ public sealed class LumoraClient : IDisposable
             : new { Username = username, Password = password, Remember = remember, DeviceId = _deviceId, TwoFactorCode = twoFactorCode };
 
         var result = await PostAsync<Session>($"{ServiceConfig.Current.ApiBase}/api/user/login", payload);
+        if (result.Failed)
+            return ApiResponse<Session>.Fail(result.Status, SignInError(result.Status, !string.IsNullOrEmpty(twoFactorCode)));
 
         if (result.Success && result.Data != null)
         {
@@ -118,6 +122,21 @@ public sealed class LumoraClient : IDisposable
 
         return result;
     }
+
+    // Login failures use fixed wording: neither response bodies nor account-specific details belong
+    // in the dialog. The login endpoint uses 403 to request a two-factor code after checking credentials.
+    private static string SignInError(HttpStatusCode status, bool sentCode) => status switch
+    {
+        HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized => sentCode
+            ? "Invalid login credentials or two-factor code."
+            : "Invalid login credentials.",
+        HttpStatusCode.Forbidden => "Enter your two-factor code.",
+        HttpStatusCode.TooManyRequests => "Too many sign-in attempts. Please wait and try again.",
+        HttpStatusCode.RequestTimeout or HttpStatusCode.GatewayTimeout => "Sign-in timed out. Please try again.",
+        HttpStatusCode.ServiceUnavailable => "Unable to reach the sign-in service. Please try again.",
+        _ when (int)status >= 500 => "Unable to sign in right now. Please try again later.",
+        _ => "Unable to sign in. Please try again."
+    };
 
     public async Task<ApiResponse<Session>> SignInWithToken(string userId, string token)
     {
@@ -154,6 +173,15 @@ public sealed class LumoraClient : IDisposable
 
     public void SetSession(Session session) => ApplySession(session);
 
+    // A sign in kept from before, applied without asking the accounts service: every service call checks
+    // the token anyway, so a stale one comes back as a refusal there. The account id comes with it, so
+    // nothing needs a round trip to know who is signed in. -xlinka
+    public void RestoreSession(string userId, string token)
+    {
+        _accountUserId = userId;
+        ApplySession(new Session { Token = token });
+    }
+
     private void ApplySession(Session session)
     {
         _session = session;
@@ -173,12 +201,25 @@ public sealed class LumoraClient : IDisposable
         // last account's group hanging over whoever plays next. -xlinka
         SetRepresentedGroup(null);
         SignedOut?.Invoke();
+        AccountIdentityChanged?.Invoke();
     }
 
     // Generate this login's account keypair and publish the public half so a game host can fetch it and
     // verify our account when we join. Best-effort: if it can't complete (no session id, offline, etc.) we
     // just have no account identity and join falls back to machine-key only (guest). -xlinka
     private async Task EstablishAccountIdentityAsync(Session session)
+    {
+        try
+        {
+            await PublishAccountKeyAsync(session);
+        }
+        finally
+        {
+            AccountIdentityChanged?.Invoke();
+        }
+    }
+
+    private async Task PublishAccountKeyAsync(Session session)
     {
         try
         {
@@ -246,6 +287,18 @@ public sealed class LumoraClient : IDisposable
     // Fetch another user's public profile (bio, status, badges, ban status) by id. -xlinka
     public Task<ApiResponse<PublicUserInfo>> GetPublicUser(string userId)
         => GetAsync<PublicUserInfo>($"{ServiceConfig.Current.ApiBase}/api/user/{userId}");
+
+    // The settings that follow the account: all of them, and a merge that keeps the newer side of each key
+    // and answers with what the account holds afterwards.
+    public Task<ApiResponse<AccountSettingsResponse>> GetAccountSettings()
+        => GetAsync<AccountSettingsResponse>($"{ServiceConfig.Current.ApiBase}/api/user/settings");
+
+    public Task<ApiResponse<AccountSettingsResponse>> MergeAccountSettings(IReadOnlyList<AccountSettingEntry> entries)
+        => PostAsync<AccountSettingsResponse>($"{ServiceConfig.Current.ApiBase}/api/user/settings", new { entries });
+
+    // This client is running; the answer is how many are, by platform.
+    public Task<ApiResponse<OnlineCounts>> ReportPresence(string clientId, string platform)
+        => PostAsync<OnlineCounts>($"{ServiceConfig.Current.ApiBase}/api/presence", new { clientId, platform });
 
     public async Task<ApiResponse> UpdateProfile(string bio, string status)
     {
@@ -315,58 +368,7 @@ public sealed class LumoraClient : IDisposable
         return ApiResponse<string>.Ok(_accountUserId!);
     }
 
-    public async Task<ApiResponse<InventoryResponse>> GetInventory()
-    {
-        var id = await ResolveUserIdAsync();
-        if (id.Failed || id.Data == null)
-            return ApiResponse<InventoryResponse>.Fail(id.Status, id.Message);
-
-        return await GetAsync<InventoryResponse>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}");
-    }
-
-    public async Task<ApiResponse<List<AssetRef>>> GetInventoryByType(AssetType type)
-    {
-        var id = await ResolveUserIdAsync();
-        if (id.Failed || id.Data == null)
-            return ApiResponse<List<AssetRef>>.Fail(id.Status, id.Message);
-
-        var typePath = type switch
-        {
-            AssetType.Avatar => "avatars",
-            AssetType.World => "worlds",
-            AssetType.Prop => "props",
-            _ => "props"
-        };
-
-        return await GetAsync<List<AssetRef>>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/{typePath}");
-    }
-
-    public async Task<ApiResponse<List<UserFolder>>> GetFolders()
-    {
-        var id = await ResolveUserIdAsync();
-        if (id.Failed || id.Data == null)
-            return ApiResponse<List<UserFolder>>.Fail(id.Status, id.Message);
-
-        return await GetAsync<List<UserFolder>>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/folders");
-    }
-
-    public async Task<ApiResponse<UserFolder>> GetFolder(string folderId)
-    {
-        var id = await ResolveUserIdAsync();
-        if (id.Failed || id.Data == null)
-            return ApiResponse<UserFolder>.Fail(id.Status, id.Message);
-
-        return await GetAsync<UserFolder>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/folders/{folderId}");
-    }
-
-    public async Task<ApiResponse<List<AssetInfo>>> GetUserAssets()
-    {
-        var id = await ResolveUserIdAsync();
-        if (id.Failed || id.Data == null)
-            return ApiResponse<List<AssetInfo>>.Fail(id.Status, id.Message);
-
-        return await GetAsync<List<AssetInfo>>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/assets");
-    }
+    public Task<ApiResponse<string>> ResolveAccountUserId() => ResolveUserIdAsync();
 
     public async Task<ApiResponse<UserQuotaResponse>> GetQuota()
     {
@@ -376,52 +378,19 @@ public sealed class LumoraClient : IDisposable
 
         return await GetAsync<UserQuotaResponse>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/quota");
     }
-
-    public async Task<ApiResponse<UserFolder>> CreateFolder(string name, string? parentFolderId = null)
+    // Makes the folder under the id this client chose, or renames it when it is there already, so asking
+    // twice never makes two.
+    public async Task<ApiResponse<FolderSummary>> UpsertFolder(string folderId, string name, string? parentId)
     {
         var id = await ResolveUserIdAsync();
         if (id.Failed || id.Data == null)
-            return ApiResponse<UserFolder>.Fail(id.Status, id.Message);
+            return ApiResponse<FolderSummary>.Fail(id.Status, id.Message);
 
-        var payload = new { Name = name, ParentFolderId = parentFolderId };
-        return await PostAsync<UserFolder>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/folders", payload);
-    }
-
-    public async Task<ApiResponse> AddAsset(string assetId)
-    {
-        var id = await ResolveUserIdAsync();
-        if (id.Failed || id.Data == null)
-            return ApiResponse.Fail(id.Status, id.Message);
-
-        return await PostAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/assets/{assetId}", null);
-    }
-
-    public async Task<ApiResponse> MoveAsset(string assetId, string? sourceFolderId, string targetFolderId)
-    {
-        var id = await ResolveUserIdAsync();
-        if (id.Failed || id.Data == null)
-            return ApiResponse.Fail(id.Status, id.Message);
-
-        var payload = new { SourceFolderId = sourceFolderId, TargetFolderId = targetFolderId };
-        return await PostAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/assets/{assetId}/move", payload);
-    }
-
-    public async Task<ApiResponse> UpdateAsset(string assetId, AssetRef assetRef)
-    {
-        var id = await ResolveUserIdAsync();
-        if (id.Failed || id.Data == null)
-            return ApiResponse.Fail(id.Status, id.Message);
-
-        return await PutAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/assets/{assetId}", assetRef);
-    }
-
-    public async Task<ApiResponse> RemoveAsset(string assetId)
-    {
-        var id = await ResolveUserIdAsync();
-        if (id.Failed || id.Data == null)
-            return ApiResponse.Fail(id.Status, id.Message);
-
-        return await DeleteAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/assets/{assetId}");
+        var payload = new { Name = name, ParentId = string.IsNullOrEmpty(parentId) ? InventoryRoot : parentId };
+        var answer = await SendAsync<JsonElement>(_api, HttpMethod.Put,
+            $"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/folders/{Uri.EscapeDataString(folderId)}",
+            CreateJsonContent(payload), auth: true, CancellationToken.None);
+        return answer.Success ? ApiResponse<FolderSummary>.Ok(Read<FolderSummary>(answer.Data)!) : Refused<FolderSummary>(answer);
     }
 
     // The folder browsing shape the inventory screen works with: one folder's direct children, or a
@@ -445,43 +414,49 @@ public sealed class LumoraClient : IDisposable
         return await GetAsync<FolderContents>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/search?q={Uri.EscapeDataString(query)}");
     }
 
-    // A blob already in the content store becomes an inventory item in one call. kind: Avatar | Object | World.
-    public async Task<ApiResponse<AssetRef>> AddInventoryItem(string hash, string name, string kind, string? folderId,
-        string? thumbnailHash, long sizeBytes, string? mode = null, List<string>? tags = null, List<AssetManifestEntry>? manifest = null)
+    // The item under the id this client chose, made or replaced whole, so sending it again after an answer
+    // that never arrived changes nothing. A folder that is gone comes back as 404 with Error "folder", an id
+    // another account holds as 409 with Error "id-taken", a save that does not fit as 413 with Error
+    // "quota". -xlinka
+    public async Task<ApiResponse<InventoryItemInfo>> UpsertInventoryItem(string itemId, string fileHash, string name, string kind,
+        string? folderId, string? thumbnailHash, long fileBytes, string? worldMode, IReadOnlyList<AssetManifestEntry> manifest,
+        CancellationToken ct = default)
     {
         var id = await ResolveUserIdAsync();
         if (id.Failed || id.Data == null)
-            return ApiResponse<AssetRef>.Fail(id.Status, id.Message);
+            return ApiResponse<InventoryItemInfo>.Fail(id.Status, id.Message);
         var payload = new
         {
-            Hash = hash,
             Name = name,
             Kind = kind,
-            FolderId = string.IsNullOrEmpty(folderId) || folderId == InventoryRoot ? null : folderId,
+            FolderId = string.IsNullOrEmpty(folderId) ? InventoryRoot : folderId,
+            FileHash = fileHash,
+            FileBytes = fileBytes,
             ThumbnailHash = thumbnailHash,
-            Tags = tags,
-            SizeBytes = sizeBytes,
-            Mode = mode,
+            WorldMode = worldMode,
             Manifest = manifest,
         };
-        return await PostAsync<AssetRef>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/items", payload);
+        var answer = await SendAsync<JsonElement>(_api, HttpMethod.Put,
+            $"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/items/{Uri.EscapeDataString(itemId)}",
+            CreateJsonContent(payload), auth: true, ct);
+        return answer.Success ? ApiResponse<InventoryItemInfo>.Ok(Read<InventoryItemInfo>(answer.Data)!) : Refused<InventoryItemInfo>(answer);
     }
 
-    public async Task<ApiResponse> RenameInventoryItem(string assetId, string name)
+    public async Task<ApiResponse> RenameInventoryItem(string itemId, string name)
     {
         var id = await ResolveUserIdAsync();
         if (id.Failed || id.Data == null)
             return ApiResponse.Fail(id.Status, id.Message);
-        var result = await PatchAsync<AssetRef>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/items/{assetId}", new { Name = name });
+        var result = await PatchAsync<InventoryItemInfo>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/items/{itemId}", new { Name = name });
         return result.Success ? ApiResponse.Ok() : ApiResponse.Fail(result.Status, result.Message);
     }
 
-    public async Task<ApiResponse> DeleteInventoryItem(string assetId)
+    public async Task<ApiResponse> DeleteInventoryItem(string itemId)
     {
         var id = await ResolveUserIdAsync();
         if (id.Failed || id.Data == null)
             return ApiResponse.Fail(id.Status, id.Message);
-        return await DeleteAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/items/{assetId}");
+        return await DeleteAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/items/{itemId}");
     }
 
     public async Task<ApiResponse> RenameFolder(string folderId, string name)
@@ -509,11 +484,15 @@ public sealed class LumoraClient : IDisposable
         return await DeleteAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/folders/{folderId}");
     }
 
-    // Moving an item into the root: the move route wants the root named, and the service calls it "root".
-    public Task<ApiResponse> MoveItemToFolder(string assetId, string? sourceFolderId, string? targetFolderId)
-        => MoveAsset(assetId,
-            string.IsNullOrEmpty(sourceFolderId) || sourceFolderId == InventoryRoot ? null : sourceFolderId,
-            string.IsNullOrEmpty(targetFolderId) ? InventoryRoot : targetFolderId);
+    public async Task<ApiResponse> MoveItemToFolder(string itemId, string? targetFolderId)
+    {
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse.Fail(id.Status, id.Message);
+        var target = string.IsNullOrEmpty(targetFolderId) || targetFolderId == InventoryRoot ? null : targetFolderId;
+        return await PostAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/items/{Uri.EscapeDataString(itemId)}/move",
+            new { TargetFolderId = target });
+    }
 
     #endregion
 
@@ -521,80 +500,28 @@ public sealed class LumoraClient : IDisposable
 
     public const string WorkerKeyHeader = "X-Lumora-Worker-Key";
 
-    // What the service knows about one variant of one blob. Asking is what queues it, so a first ask
-    // comes back Pending and a later one Ready. Skipped means the variant does not apply to that
-    // source and the original is the answer. -xlinka
-    public async Task<ApiResponse<VariantState>> GetVariantState(string hash, string variantId)
+    // Every variant registered for a blob; an empty list when there are none. Anyone may ask.
+    public Task<ApiResponse<List<VariantInfo>>> ListVariants(string hash) => ListVariants(hash, CancellationToken.None);
+
+    public async Task<ApiResponse<List<VariantInfo>>> ListVariants(string hash, CancellationToken ct)
     {
-        if (!Connectivity.IsOnline)
-            return ApiResponse<VariantState>.Fail(HttpStatusCode.ServiceUnavailable, "Offline");
-        try
-        {
-            using var response = await _content.GetAsync($"{ServiceConfig.Current.ContentBase}/api/variants/{hash}/{variantId}");
-            if (response.StatusCode == HttpStatusCode.NoContent)
-                return ApiResponse<VariantState>.Ok(new VariantState { VariantId = variantId, State = "Skipped" });
-            var body = await response.Content.ReadAsStringAsync();
-            if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.Accepted)
-                return ApiResponse<VariantState>.Fail(response.StatusCode, ErrorMessage(body));
-            var state = JsonSerializer.Deserialize<VariantState>(body, _json) ?? new VariantState { VariantId = variantId };
-            return ApiResponse<VariantState>.Ok(state);
-        }
-        catch (Exception ex)
-        {
-            return ApiResponse<VariantState>.Fail(HttpStatusCode.ServiceUnavailable, ex.Message);
-        }
+        var listed = await SendAsync<List<VariantInfo>>(_content, HttpMethod.Get,
+            $"{ServiceConfig.Current.ContentBase}/api/variants/{Uri.EscapeDataString(hash)}", null, auth: false, ct);
+        return listed.Success && listed.Data == null ? ApiResponse<List<VariantInfo>>.Ok(new List<VariantInfo>()) : listed;
     }
 
-    // WORKER SIDE: a shared key instead of an account.
+    // Records that a variant of a blob is another stored blob, made by this client. Both blobs have to be
+    // stored, and only whoever first uploaded the base blob may say what its variants are.
+    public Task<ApiResponse> RegisterVariant(string hash, string variantId, string resultHash, long size)
+        => RegisterVariant(hash, variantId, resultHash, size, CancellationToken.None);
 
-    public async Task<ApiResponse<VariantJob>> WorkerNextVariant(string workerKey, string workerName)
+    public async Task<ApiResponse> RegisterVariant(string hash, string variantId, string resultHash, long size, CancellationToken ct)
     {
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post,
-                $"{ServiceConfig.Current.ContentBase}/api/variants/queue/next?worker={Uri.EscapeDataString(workerName)}");
-            request.Headers.Add(WorkerKeyHeader, workerKey);
-            using var response = await _content.SendAsync(request);
-            if (response.StatusCode == HttpStatusCode.NoContent)
-                return ApiResponse<VariantJob>.Ok(null!);
-            var body = await response.Content.ReadAsStringAsync();
-            if (!response.IsSuccessStatusCode)
-                return ApiResponse<VariantJob>.Fail(response.StatusCode, ErrorMessage(body));
-            return ApiResponse<VariantJob>.Ok(JsonSerializer.Deserialize<VariantJob>(body, _json)!);
-        }
-        catch (Exception ex)
-        {
-            return ApiResponse<VariantJob>.Fail(HttpStatusCode.ServiceUnavailable, ex.Message);
-        }
-    }
-
-    // bytes null with skipped = true when the variant does not apply; bytes null with an error when
-    // it could not be made.
-    public async Task<ApiResponse> WorkerFinishVariant(string workerKey, string hash, string variantId, byte[]? bytes, bool skipped = false, string? error = null)
-    {
-        try
-        {
-            var url = $"{ServiceConfig.Current.ContentBase}/api/variants/{hash}/{variantId}/finish";
-            if (skipped)
-                url += "?skipped=true";
-            else if (!string.IsNullOrEmpty(error))
-                url += "?error=" + Uri.EscapeDataString(error!);
-            using var request = new HttpRequestMessage(HttpMethod.Post, url);
-            request.Headers.Add(WorkerKeyHeader, workerKey);
-            if (bytes != null && !skipped && string.IsNullOrEmpty(error))
-            {
-                request.Content = new ByteArrayContent(bytes);
-                request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-            }
-            using var response = await _content.SendAsync(request);
-            if (response.IsSuccessStatusCode)
-                return ApiResponse.Ok();
-            return ApiResponse.Fail(response.StatusCode, ErrorMessage(await response.Content.ReadAsStringAsync()));
-        }
-        catch (Exception ex)
-        {
-            return ApiResponse.Fail(HttpStatusCode.ServiceUnavailable, ex.Message);
-        }
+        if (!IsAuthenticated)
+            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+        return await SendAsync<JsonElement>(_api, HttpMethod.Put,
+            $"{ServiceConfig.Current.ContentBase}/api/variants/{Uri.EscapeDataString(hash)}/{Uri.EscapeDataString(variantId)}",
+            CreateJsonContent(new { ResultHash = resultHash, Size = size }), auth: true, ct);
     }
 
     // A raw blob into the store under the system owner, by worker key. The publisher uses it for the
@@ -830,32 +757,41 @@ public sealed class LumoraClient : IDisposable
 
     #region Content
 
-    public Task<ApiResponse<ContentInfo>> GetContentInfo(string hash)
-        => GetAsync<ContentInfo>($"{ServiceConfig.Current.ContentBase}/content/{hash}");
-
-    public async Task<bool> ContentExists(string hash)
+    // Which of these blobs the store does not have, asked at most 512 at a time.
+    public async Task<ApiResponse<List<string>>> MissingContent(IReadOnlyList<string> hashes, CancellationToken ct = default)
     {
-        if (!Connectivity.IsOnline)
-            return false;
-
-        var url = ServiceConfig.Current.GetContentUrl(hash);
-        try
+        if (!IsAuthenticated)
+            return ApiResponse<List<string>>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+        const int Batch = 512;
+        var missing = new List<string>();
+        for (int start = 0; start < hashes.Count; start += Batch)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Head, url);
-            using var response = await _content.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            return response.IsSuccessStatusCode;
+            var batch = new List<string>(System.Math.Min(Batch, hashes.Count - start));
+            for (int i = start; i < hashes.Count && i < start + Batch; i++)
+                batch.Add(hashes[i]);
+            var answer = await SendAsync<MissingContentResponse>(_content, HttpMethod.Post, $"{ServiceConfig.Current.ContentBase}/content/missing",
+                CreateJsonContent(new { Hashes = batch }), auth: true, ct);
+            if (answer.Failed || answer.Data == null)
+                return Refused<List<string>>(answer);
+            missing.AddRange(answer.Data.Missing);
         }
-        catch
-        {
-            Connectivity.ReportFailure();
-            return false;
-        }
+        return ApiResponse<List<string>>.Ok(missing);
     }
 
     public async Task<ApiResponse<byte[]>> FetchContent(string hash, IProgress<TransferProgress>? progress = null, CancellationToken ct = default)
     {
+        using var buffer = new MemoryStream();
+        var fetched = await FetchContentTo(hash, buffer, progress, ct).ConfigureAwait(false);
+        return fetched.Success ? ApiResponse<byte[]>.Ok(buffer.ToArray()) : ApiResponse<byte[]>.Fail(fetched.Status, fetched.Message);
+    }
+
+    // A blob streamed into the caller's stream as it arrives, so a download bound for disk never sits in
+    // memory whole. Answers the length written. A body that stops short of the length the service declared
+    // is a failed fetch, not a smaller blob.
+    public async Task<ApiResponse<long>> FetchContentTo(string hash, Stream destination, IProgress<TransferProgress>? progress = null, CancellationToken ct = default)
+    {
         if (!Connectivity.IsOnline)
-            return ApiResponse<byte[]>.Fail(HttpStatusCode.ServiceUnavailable, "Offline");
+            return ApiResponse<long>.Fail(HttpStatusCode.ServiceUnavailable, "Offline");
 
         var url = ServiceConfig.Current.GetContentUrl(hash);
         var state = new TransferProgress { Hash = hash, State = TransferState.Active };
@@ -867,7 +803,7 @@ public sealed class LumoraClient : IDisposable
             if (!response.IsSuccessStatusCode)
             {
                 ReportDownload(progress, state with { State = TransferState.Error });
-                return ApiResponse<byte[]>.Fail(response.StatusCode);
+                return ApiResponse<long>.Fail(response.StatusCode);
             }
 
             Connectivity.ReportSuccess();
@@ -876,7 +812,6 @@ public sealed class LumoraClient : IDisposable
             state = state with { TotalBytes = totalBytes };
 
             await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            using var buffer = new MemoryStream();
 
             // pooled buffer so we dont shit on the gc
             var chunk = ArrayPool<byte>.Shared.Rent(81920);
@@ -887,13 +822,19 @@ public sealed class LumoraClient : IDisposable
 
                 while ((read = await stream.ReadAsync(chunk.AsMemory(0, 81920), ct)) > 0)
                 {
-                    await buffer.WriteAsync(chunk.AsMemory(0, read), ct);
+                    await destination.WriteAsync(chunk.AsMemory(0, read), ct);
                     received += read;
                     ReportDownload(progress, state with { TransferredBytes = received });
                 }
 
+                if (totalBytes > 0 && received != totalBytes)
+                {
+                    ReportDownload(progress, state with { TransferredBytes = received, State = TransferState.Error });
+                    return ApiResponse<long>.Fail(HttpStatusCode.BadGateway, $"The download stopped at {received} of {totalBytes} bytes");
+                }
+
                 ReportDownload(progress, state with { TransferredBytes = received, State = TransferState.Completed });
-                return ApiResponse<byte[]>.Ok(buffer.ToArray());
+                return ApiResponse<long>.Ok(received);
             }
             finally
             {
@@ -903,207 +844,97 @@ public sealed class LumoraClient : IDisposable
         catch (OperationCanceledException)
         {
             ReportDownload(progress, state with { State = TransferState.Cancelled });
-            return ApiResponse<byte[]>.Fail(HttpStatusCode.RequestTimeout, "Cancelled");
+            return ApiResponse<long>.Fail(HttpStatusCode.RequestTimeout, "Cancelled");
         }
         catch (HttpRequestException)
         {
             Connectivity.ReportFailure();
             ReportDownload(progress, state with { State = TransferState.Error });
-            return ApiResponse<byte[]>.Fail(HttpStatusCode.ServiceUnavailable, "Network error");
+            return ApiResponse<long>.Fail(HttpStatusCode.ServiceUnavailable, "Network error");
         }
         catch (Exception ex)
         {
             ReportDownload(progress, state with { State = TransferState.Error });
-            return ApiResponse<byte[]>.FromException(ex);
+            return ApiResponse<long>.FromException(ex);
         }
     }
 
-    public Task<ApiResponse<byte[]>> FetchContent(Uri uri, IProgress<TransferProgress>? progress = null, CancellationToken ct = default)
+    // A blob into the store under the hash it was declared with: begin, then the chunks in order, then
+    // finish, which checks the whole against the hash. The service says at begin when it has the blob
+    // already and nothing is sent; a session it has forgotten, or chunks it lost, start the blob over once.
+    // Every request may take the content client's long timeout, a slow line included. -xlinka
+    public async Task<ApiResponse<ContentInfo>> UploadContent(byte[] data, string hash, string? extension, string? contentType,
+        IProgress<TransferProgress>? progress = null, CancellationToken ct = default)
     {
-        var hash = ContentHash.ParseHash(uri);
-        return FetchContent(hash, progress, ct);
-    }
+        if (!IsAuthenticated)
+            return ApiResponse<ContentInfo>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
 
-    public async Task<ApiResponse<ContentInfo>> StoreContent(string filePath, IProgress<TransferProgress>? progress = null, CancellationToken ct = default)
-    {
-        if (!File.Exists(filePath))
-            return ApiResponse<ContentInfo>.Fail(HttpStatusCode.NotFound, "File not found");
-
-        var fileInfo = new FileInfo(filePath);
-        var mime = MimeTypes.FromExtension(fileInfo.Extension);
-
-        await using var stream = File.OpenRead(filePath);
-        var hash = ContentHash.FromStream(stream);
-        stream.Position = 0;
-
-        return await StoreContentInternal(stream, hash, mime, fileInfo.Extension, progress, ct);
-    }
-
-    public async Task<ApiResponse<ContentInfo>> StoreContent(byte[] data, string mimeType, string? extension = null, IProgress<TransferProgress>? progress = null, CancellationToken ct = default)
-    {
-        var hash = ContentHash.FromBytes(data);
-        extension ??= MimeTypes.ToExtension(mimeType);
-
-        using var stream = new MemoryStream(data);
-        return await StoreContentInternal(stream, hash, mimeType, extension, progress, ct);
-    }
-
-    private async Task<ApiResponse<ContentInfo>> StoreContentInternal(Stream stream, string hash, string mimeType, string? extension, IProgress<TransferProgress>? progress, CancellationToken ct)
-    {
-        if (!Connectivity.IsOnline)
-            return ApiResponse<ContentInfo>.Fail(HttpStatusCode.ServiceUnavailable, "Offline");
-
-        var state = new TransferProgress { Hash = hash, TotalBytes = stream.Length, State = TransferState.Queued };
-
-        try
+        var state = new TransferProgress { Hash = hash, TotalBytes = data.LongLength, State = TransferState.Queued };
+        var contentBase = ServiceConfig.Current.ContentBase;
+        for (int round = 0; ; round++)
         {
-            if (await ContentExists(hash))
-            {
-                var existing = await GetContentInfo(hash);
-                if (existing.Success)
-                {
-                    ReportUpload(progress, state with { TransferredBytes = state.TotalBytes, State = TransferState.Completed });
-                    return existing;
-                }
-            }
-
-            var initPayload = new { Hash = hash, ContentType = mimeType, Extension = extension, Size = stream.Length };
-            var initResult = await PostAsync<UploadHandle>($"{ServiceConfig.Current.ContentBase}/content/upload/begin", initPayload);
-
-            if (!initResult.Success || initResult.Data == null)
-                return ApiResponse<ContentInfo>.Fail(initResult.Status, initResult.Message);
-
-            var handle = initResult.Data;
-            var chunkSize = handle.ChunkSize > 0 ? handle.ChunkSize : DefaultChunkSize;
-
-            state = state with { State = TransferState.Active };
-            ReportUpload(progress, state);
-
-            var chunks = new List<(int Index, byte[] Data)>();
-            var buffer = ArrayPool<byte>.Shared.Rent(chunkSize);
-
-            try
-            {
-                int chunkIndex = 0;
-                while (stream.Position < stream.Length)
-                {
-                    int bytesRead = await stream.ReadAsync(buffer.AsMemory(0, chunkSize), ct);
-                    if (bytesRead == 0) break;
-
-                    var chunkData = new byte[bytesRead];
-                    Buffer.BlockCopy(buffer, 0, chunkData, 0, bytesRead);
-                    chunks.Add((chunkIndex++, chunkData));
-                }
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
-
-            long transferred = 0;
-            var semaphore = new SemaphoreSlim(MaxParallelChunks);
-            var uploadTasks = new List<Task<bool>>();
-
-            foreach (var (index, chunkData) in chunks)
-            {
-                await semaphore.WaitAsync(ct);
-
-                var task = Task.Run(async () =>
-                {
-                    try
-                    {
-                        using var chunkContent = new ByteArrayContent(chunkData);
-                        chunkContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-
-                        var chunkUrl = $"{ServiceConfig.Current.ContentBase}/content/upload/{handle.Id}/chunk/{index}";
-                        using var chunkResponse = await _api.PutAsync(chunkUrl, chunkContent, ct);
-
-                        if (chunkResponse.IsSuccessStatusCode)
-                        {
-                            Interlocked.Add(ref transferred, chunkData.Length);
-                            ReportUpload(progress, state with { TransferredBytes = Interlocked.Read(ref transferred) });
-                            return true;
-                        }
-                        return false;
-                    }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                }, ct);
-
-                uploadTasks.Add(task);
-            }
-
-            var results = await Task.WhenAll(uploadTasks);
-            if (Array.Exists(results, r => !r))
+            var begun = await SendAsync<UploadHandle>(_content, HttpMethod.Post, $"{contentBase}/content/upload/begin",
+                CreateJsonContent(new { Hash = hash, Size = data.LongLength, Extension = extension, ContentType = contentType }), auth: true, ct);
+            if (begun.Failed || begun.Data == null)
             {
                 ReportUpload(progress, state with { State = TransferState.Error });
-                return ApiResponse<ContentInfo>.Fail(HttpStatusCode.InternalServerError, "Chunk upload failed");
+                return Refused<ContentInfo>(begun);
             }
 
-            Connectivity.ReportSuccess();
-
-            var finishResult = await PostAsync<ContentInfo>($"{ServiceConfig.Current.ContentBase}/content/upload/{handle.Id}/finish", null);
-
-            ReportUpload(progress, state with
+            var handle = begun.Data;
+            if (handle.AlreadyStored || string.IsNullOrEmpty(handle.UploadId))
             {
-                TransferredBytes = stream.Length,
-                State = finishResult.Success ? TransferState.Completed : TransferState.Error
-            });
+                ReportUpload(progress, state with { TransferredBytes = data.LongLength, State = TransferState.Completed });
+                return ApiResponse<ContentInfo>.Ok(new ContentInfo { Hash = hash, Size = data.LongLength });
+            }
 
-            return finishResult;
-        }
-        catch (OperationCanceledException)
-        {
-            ReportUpload(progress, state with { State = TransferState.Cancelled });
-            return ApiResponse<ContentInfo>.Fail(HttpStatusCode.RequestTimeout, "Cancelled");
-        }
-        catch (HttpRequestException)
-        {
-            Connectivity.ReportFailure();
-            ReportUpload(progress, state with { State = TransferState.Error });
-            return ApiResponse<ContentInfo>.Fail(HttpStatusCode.ServiceUnavailable, "Network error");
-        }
-        catch (Exception ex)
-        {
-            ReportUpload(progress, state with { State = TransferState.Error });
-            return ApiResponse<ContentInfo>.FromException(ex);
+            int chunkSize = handle.ChunkSize > 0 ? handle.ChunkSize : DefaultChunkSize;
+            int chunks = System.Math.Max(handle.TotalChunks, (int)((data.LongLength + chunkSize - 1) / chunkSize));
+            var session = $"{contentBase}/content/upload/{Uri.EscapeDataString(handle.UploadId!)}";
+            state = state with { State = TransferState.Active, TransferredBytes = 0 };
+            ReportUpload(progress, state);
+
+            ApiResponse? refused = null;
+            long sent = 0;
+            for (int index = 0; index < chunks; index++)
+            {
+                int offset = (int)System.Math.Min((long)index * chunkSize, data.LongLength);
+                int length = (int)System.Math.Min(chunkSize, data.LongLength - offset);
+                var body = new ByteArrayContent(data, offset, length);
+                body.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                var put = await SendAsync<JsonElement>(_content, HttpMethod.Put, $"{session}/chunk/{index}", body, auth: true, ct);
+                if (put.Failed)
+                {
+                    refused = put;
+                    break;
+                }
+                sent += length;
+                ReportUpload(progress, state with { TransferredBytes = sent });
+            }
+
+            if (refused == null)
+            {
+                var finished = await SendAsync<JsonElement>(_content, HttpMethod.Post, $"{session}/finish", null, auth: true, ct);
+                if (finished.Success)
+                {
+                    ReportUpload(progress, state with { TransferredBytes = data.LongLength, State = TransferState.Completed });
+                    return ApiResponse<ContentInfo>.Ok(new ContentInfo { Hash = hash, Size = data.LongLength });
+                }
+                refused = finished;
+            }
+
+            bool again = round == 0 && (refused.Error == "no-session" || refused.Error == "missing-chunks");
+            if (!again)
+            {
+                ReportUpload(progress, state with { State = ct.IsCancellationRequested ? TransferState.Cancelled : TransferState.Error });
+                return Refused<ContentInfo>(refused);
+            }
         }
     }
 
     #endregion
 
     #region HTTP
-
-    private async Task<ApiResponse> GetAsync(string url)
-    {
-        if (!Connectivity.IsOnline)
-            return ApiResponse.Fail(HttpStatusCode.ServiceUnavailable, "Offline");
-
-        try
-        {
-            using var response = await _api.GetAsync(url);
-            Connectivity.ReportSuccess();
-            var body = await response.Content.ReadAsStringAsync();
-            return new ApiResponse
-            {
-                Success = response.IsSuccessStatusCode,
-                Status = response.StatusCode,
-                RawBody = body,
-                Message = response.IsSuccessStatusCode ? null : ErrorMessage(body)
-            };
-        }
-        catch (HttpRequestException)
-        {
-            Connectivity.ReportFailure();
-            return ApiResponse.Fail(HttpStatusCode.ServiceUnavailable, "Network error");
-        }
-        catch (Exception ex)
-        {
-            return ApiResponse.FromException(ex);
-        }
-    }
 
     private async Task<ApiResponse<T>> GetAsync<T>(string url)
     {
@@ -1298,9 +1129,8 @@ public sealed class LumoraClient : IDisposable
         }
     }
 
-    // The service answers a refusal with { "message": "..." }. Handing that raw at a screen puts JSON in
-    // front of a player, so it gets unwrapped here once instead of at every call site. Anything that is not
-    // that shape comes back as it was. -xlinka
+    // Services return either { "message": "..." } or ProblemDetails { "title": "..." }.
+    // Unwrap the summary once for callers; leave diagnostic details out of the message. -xlinka
     private static string? ErrorMessage(string? body)
     {
         if (string.IsNullOrWhiteSpace(body))
@@ -1311,12 +1141,15 @@ public sealed class LumoraClient : IDisposable
         try
         {
             using var document = JsonDocument.Parse(body);
-            if (document.RootElement.ValueKind == JsonValueKind.Object
-                && document.RootElement.TryGetProperty("message", out var message)
-                && message.ValueKind == JsonValueKind.String)
+            if (document.RootElement.ValueKind == JsonValueKind.Object)
             {
-                var text = message.GetString();
-                return string.IsNullOrWhiteSpace(text) ? body : text;
+                foreach (string key in new[] { "message", "title" })
+                {
+                    if (document.RootElement.TryGetProperty(key, out var message)
+                        && message.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(message.GetString()))
+                        return message.GetString();
+                }
             }
         }
         catch (JsonException)
@@ -1324,6 +1157,109 @@ public sealed class LumoraClient : IDisposable
             // not JSON after all
         }
         return body;
+    }
+
+    // The code half of a refusal, { "error": "quota", ... }, for a caller that acts on which one it was.
+    private static string? ErrorCode(string? body)
+    {
+        var trimmed = body?.TrimStart();
+        if (string.IsNullOrEmpty(trimmed) || trimmed[0] != '{')
+            return null;
+        try
+        {
+            using var document = JsonDocument.Parse(trimmed);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String
+                ? error.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    // The body of a write that went through, when it reads as T. A shape this client does not know never
+    // turns a done write into a failure.
+    private T? Read<T>(JsonElement body) where T : class
+    {
+        if (body.ValueKind != JsonValueKind.Object)
+            return null;
+        try
+        {
+            return body.Deserialize<T>(_json);
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    private static ApiResponse<T> Refused<T>(ApiResponse answer) => new()
+    {
+        Success = false,
+        Status = answer.Status,
+        Message = answer.Message,
+        Error = answer.Error,
+        RawBody = answer.RawBody,
+    };
+
+    // One request with the answer read into T. An authenticated one carries the bearer on the request
+    // itself, so the content client, which anonymous reads share, never holds the token. A refusal keeps
+    // the service's code in Error; a request the caller called off comes back 408 "Cancelled", and one
+    // the timeout ended 408 "Timed out". -xlinka
+    private async Task<ApiResponse<T>> SendAsync<T>(HttpClient http, HttpMethod method, string url, HttpContent? content, bool auth,
+        CancellationToken ct)
+    {
+        if (!Connectivity.IsOnline)
+        {
+            content?.Dispose();
+            return ApiResponse<T>.Fail(HttpStatusCode.ServiceUnavailable, "Offline");
+        }
+
+        try
+        {
+            using var request = new HttpRequestMessage(method, url) { Content = content };
+            var token = _session?.Token;
+            if (auth && !string.IsNullOrEmpty(token))
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using var response = await http.SendAsync(request, ct);
+            Connectivity.ReportSuccess();
+
+            var body = await response.Content.ReadAsStringAsync(ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                return new ApiResponse<T>
+                {
+                    Success = false,
+                    Status = response.StatusCode,
+                    Message = ErrorMessage(body),
+                    Error = ErrorCode(body),
+                    RawBody = body,
+                };
+            }
+            if (string.IsNullOrWhiteSpace(body))
+                return ApiResponse<T>.Ok(default!);
+            return ApiResponse<T>.Ok(JsonSerializer.Deserialize<T>(body, _json)!);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return ApiResponse<T>.Fail(HttpStatusCode.RequestTimeout, "Cancelled");
+        }
+        catch (OperationCanceledException)
+        {
+            Connectivity.ReportFailure();
+            return ApiResponse<T>.Fail(HttpStatusCode.RequestTimeout, "Timed out");
+        }
+        catch (HttpRequestException)
+        {
+            Connectivity.ReportFailure();
+            return ApiResponse<T>.Fail(HttpStatusCode.ServiceUnavailable, "Network error");
+        }
+        catch (Exception ex)
+        {
+            return ApiResponse<T>.FromException(ex);
+        }
     }
 
     private HttpContent CreateJsonContent(object? payload)

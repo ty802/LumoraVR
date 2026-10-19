@@ -171,7 +171,9 @@ public static class ScriptGraphPacking
         foreach (var graphNode in graph.Nodes)
         {
             var node = made[graphNode.Id];
-            bool writesVariable = node.Overload?.Definition.Kind == NodeKind.WriteVariable;
+            var kind = node.Overload?.Definition.Kind;
+            // The settings that name another node by its id: a Write Value's "var", a Return's or a call's "fn".
+            string? pointer = kind == NodeKind.WriteVariable ? "var" : kind is { } known && FunctionSignature.FollowsFunction(known) ? "fn" : null;
             foreach (var (port, value) in graphNode.Values)
             {
                 if (value.Kind == GraphValueKind.Binding)
@@ -180,10 +182,9 @@ public static class ScriptGraphPacking
                     if (bound != null)
                         node.SetReference(port, bound);
                 }
-                else if (writesVariable && port == "var" && value.Kind == GraphValueKind.String
-                    && made.TryGetValue(value.String!, out var variable))
+                else if (port == pointer && value.Kind == GraphValueKind.String && made.TryGetValue(value.String!, out var named))
                 {
-                    node.SetReference(port, variable);
+                    node.SetReference(port, named);
                 }
                 else
                 {

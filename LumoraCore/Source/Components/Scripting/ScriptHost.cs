@@ -45,7 +45,18 @@ namespace Lumora.Core.Components.Scripting;
 // ScriptWrites; a Shared script of the same author reaches it through the inbox.
 //
 // Graphs compile on a worker. Until the compile lands the host keeps whatever it was running, and the
-// scheduler brings it back here in the script phase once it has. -xlinka
+// scheduler brings it back here in the script phase once it has.
+//
+// Switching off the object a script sits on, or its open graph's slot, stops the script, the same as
+// disabling the host; switching it back on starts it fresh.
+//
+// An Author script runs on its author's own machine, approved by the host in LocalApproval like a Local one,
+// with the host's checks; it writes as its author and reads their input. A world script's author is the
+// world, so one runs on the host as a Shared one would.
+//
+// Drives run on every machine. The runtime that owns the script on the host keeps one drive link per drive
+// node (ScriptDriveLinks), and the host approves the graph in LocalApproval for every machine not running
+// the whole script to run a drives-only copy of. -xlinka
 [ComponentCategory("Utility/Scripting")]
 public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspectorUI, IInspectorActionHandler
 {
@@ -64,6 +75,14 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
     public readonly Sync<float> InboxValue = new();
     [NonPersistent]
     public readonly Sync<int> Inbox = new();
+
+    // On a copy as it is made, by the machine that made it, until the script running it has heard so. Only
+    // the copy carries it; the machine that made the copy also keeps its own word for a script it runs itself.
+    [NonPersistent]
+    [DontCopy]
+    [HideInInspector]
+    public readonly Sync<bool> Duplicated = new();
+    private bool _duplicatedHere;
 
     // Host-only and never saved: what the Shared script costs on the host, milliseconds a frame over the
     // last second and its compile there. Written only while a panel on another machine asks for them.
@@ -93,6 +112,10 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
 
     private ScriptHostRuntime? _localRuntime;
     private int _seenInbox;
+    private Slot? _watched;
+
+    // Why this machine's last Edit graph or Pack press from the inspector did nothing, for its inspector.
+    private string? _lastAction;
 
     // The compile this host is waiting on, Shared or Local, by graph hash.
     private System.Threading.Tasks.Task<CompileResult>? _compiling;
@@ -131,6 +154,16 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
         // Pinned here: on the authority a user's component wakes while its sender is still in the world.
         if (World?.IsAuthority == true)
             Pin();
+
+        _watched = Slot;
+        if (_watched != null)
+            _watched.ActiveChanged += OnSlotActiveChanged;
+    }
+
+    private void OnSlotActiveChanged(Slot slot)
+    {
+        if (World is { } world && !IsDestroyed && (world.IsAuthority || Mode.Value == ScriptMode.Local || _localRuntime != null))
+            MarkChangeDirty();
     }
 
     public override void OnStart()
@@ -147,12 +180,25 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
         TakeInbox();
     }
 
+    public override void OnDuplicate()
+    {
+        base.OnDuplicate();
+        _duplicatedHere = true;
+        using (World?.DataModelPermissions?.EnterSystemBypass())
+            Duplicated.Value = true;
+    }
+
     public override void OnDestroy()
     {
+        if (_watched != null)
+            _watched.ActiveChanged -= OnSlotActiveChanged;
+        _watched = null;
         World?.ScriptsIfAny?.Unregister(this);
         StopRuntime();
         StopLocal(string.Empty);
         KeepClipsWarm(false);
+        _linkedFor = null;
+        ScriptDriveLinks.Release(this);
         base.OnDestroy();
     }
 
@@ -222,8 +268,8 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
         var world = World;
         if (world == null || IsDestroyed)
             return;
-        // A Local script hears the press on the machine it was made on, at once.
-        if (Mode.Value == ScriptMode.Local)
+        // A Local script hears the press on the machine it was made on, at once; an Author script on its author's.
+        if (Mode.Value == ScriptMode.Local || _localRuntime is { DrivesOnly: false, Runner.Context.OnAuthorMachine: true })
         {
             if (_localRuntime is { CanRun: true } local && button.CanInteract
                 && world.DataModelPermissions?.AllowsDomain(context.Actor ?? world.LocalUser, DataModelPermissionDomain.Touch) != false)
@@ -240,9 +286,9 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
     public void BuildInspectorBody(UIBuilder ui)
     {
         InspectorStats.AddRow(ui, "Status", string.IsNullOrEmpty(Status.Value) ? "not started" : Status.Value);
-        if (Mode.Value == ScriptMode.Local)
+        if (Mode.Value != ScriptMode.Shared)
             InspectorStats.AddRow(ui, "Here", string.IsNullOrEmpty(LocalStatus) ? "not started" : LocalStatus);
-        if ((Mode.Value == ScriptMode.Local ? LastRefusalHere : LastRefusal) is { } refused)
+        if ((Mode.Value != ScriptMode.Shared ? LastRefusalHere : LastRefusal) is { } refused)
             InspectorStats.AddRow(ui, "Last refused", refused);
         if (Synced.Count > 0)
         {
@@ -257,15 +303,21 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
             }
         }
         var space = ScriptGraphEditing.FindSpace(this);
+        bool open = space is { Packed.Value: false };
         int nodes = 0;
-        if (space != null)
+        if (open)
         {
-            foreach (var _ in space.Nodes)
+            foreach (var _ in space!.Nodes)
                 nodes++;
         }
-        InspectorStats.AddRow(ui, "Graph", space != null ? $"open for editing, {nodes} nodes" : Graph.Target == null ? "none yet" : "packed");
+        string graph = open ? $"open for editing, {nodes} nodes" : Graph.Target == null ? "none yet" : "packed";
+        if (space != null && !space.Slot.IsActive)
+            graph += ", switched off";
+        InspectorStats.AddRow(ui, "Graph", graph);
+        if (!string.IsNullOrEmpty(_lastAction))
+            InspectorStats.AddRow(ui, "Last press", _lastAction);
         InspectorUI.RelayButton(ui, this, "edit", "Edit graph", 0f);
-        if (space != null)
+        if (open)
             InspectorUI.RelayButton(ui, this, "pack", "Pack", 0f);
         // A group never packed has no graph or bindings to take on; packing it is what makes it run.
         if (Status.Value?.Contains("someone else") == true && Graph.Target != null)
@@ -278,16 +330,32 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
         switch (argument)
         {
             case "edit":
-                ScriptGraphEditing.Unpack(this, out _);
+                _lastAction = ScriptGraphEditing.Unpack(this, out var error) == null ? error ?? "the graph did not open" : null;
                 break;
             case "pack":
                 if (ScriptGraphEditing.FindSpace(this) is { } space)
-                    _ = ScriptGraphEditing.PackAsync(space);
+                    _ = TakePackAsync(ScriptGraphEditing.PackAsync(space));
                 break;
             case "adopt":
                 RunEditsAsAuthor();
                 break;
         }
+    }
+
+    private async System.Threading.Tasks.Task TakePackAsync(System.Threading.Tasks.Task<string?> pack)
+    {
+        string? refused;
+        try
+        {
+            refused = await pack.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            refused = ex.Message;
+        }
+        _lastAction = refused;
+        if (refused != null)
+            LumoraLogger.Warn($"ScriptHost {ReferenceID}: not packed: {refused}");
     }
 
     // A press the authority takes: the slot still has a live button, and the presser may interact here.
@@ -297,7 +365,7 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
     {
         if (_runtime is not { CanRun: true } runtime || string.IsNullOrEmpty(nodeId))
             return;
-        if (ScriptGraphEditing.FindSpace(this) is not { Slot.IsActive: true })
+        if (ScriptGraphEditing.FindSpace(this) is not { IsShown: true })
             return;
         if (World?.DataModelPermissions?.AllowsDomain(caller, DataModelPermissionDomain.Touch) == false)
             return;
@@ -319,6 +387,13 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
             runtime.Sources.Relay(user, source, kind, point, text, other);
     }
 
+    // A press on a panel button on a watched object landing, held or ending, with where it is on the button.
+    internal void PressStepFrom(User? user, Slot source, ScriptSourceKind kind, in float3 point, in float2 local, in float2 normalized)
+    {
+        if (_runtime is { CanRun: true } runtime && source != null && !source.IsDestroyed)
+            runtime.Sources.RelayPressStep(user, source, kind, point, local, normalized);
+    }
+
     // On the machine where a Call node's button was pressed: the authority runs it, anyone else carries
     // the press there.
     public static void Call(ScriptGraphNode node)
@@ -337,8 +412,7 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
     {
         if (_runtime is not { CanRun: true } runtime)
             return;
-        var button = Slot?.GetComponent<Button>();
-        if (button == null || !button.CanInteract)
+        if (!ScriptEventSources.Pressable(Slot))
             return;
         if (World?.DataModelPermissions?.AllowsDomain(presser, DataModelPermissionDomain.Touch) == false)
             return;
@@ -357,6 +431,31 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
             KeepClipsWarm(IsRunning || !string.IsNullOrEmpty(LocalApproval.Value));
         }
         ReconcileLocal();
+        KeepDriveLinks();
+    }
+
+    // On the host: the drive links follow whichever runtime owns the script here, the Shared one, or the
+    // host's own copy of a Local one. Remade when that runtime changes, taken away when there is none.
+    private ScriptHostRuntime? _linkedFor;
+
+    private void KeepDriveLinks()
+    {
+        var world = World;
+        if (world == null || !world.IsAuthority || IsDestroyed)
+            return;
+        var owner = _runtime is { CanRun: true } shared ? shared
+            : Mode.Value != ScriptMode.Shared && _localRuntime is { CanRun: true } local ? local
+            : null;
+        if (ReferenceEquals(owner, _linkedFor))
+            return;
+        _linkedFor = owner;
+        if (owner == null)
+        {
+            ScriptDriveLinks.Release(this);
+            return;
+        }
+        if (ScriptDriveLinks.Reconcile(this, owner.Runner.Compiled, owner.Bindings, owner.Runner.Context) is { } refused)
+            owner.Runner.Context.Warn(ScriptWarning.Fault, refused);
     }
 
     private void ReconcileShared(World world)
@@ -364,6 +463,12 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
         if (!Enabled.Value)
         {
             Halt("disabled");
+            return;
+        }
+        var space = ScriptGraphEditing.FindSpace(this);
+        if (SwitchedOff(space) is { } off)
+        {
+            Halt(off);
             return;
         }
         if (!MayRun(world, out var why))
@@ -377,8 +482,7 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
         // graph. Someone else's edits wait for a pack: a script runs as one person. One with nothing in it
         // that could ever run gets no runtime at all, so it holds no memory either.
         string? packedNote = null;
-        var space = ScriptGraphEditing.FindSpace(this);
-        if (space != null && space.Slot.IsActive)
+        if (space != null && !space.Packed.Value)
         {
             if (!space.IsChecked)
                 return;
@@ -483,11 +587,12 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
 
     private const string NothingToRun = "nothing to run yet: the open graph has no event";
 
-    // Anything a graph would ever do: an event that starts it, or a Display that works its value out alone.
-    // A Pulse, and a Display fed by an event, only ever show what an event did.
+    // Anything a graph would ever do: an event that starts it, a drive, a Display that works its value out
+    // alone, or a Function another script may call. A Pulse, and a Display fed by an event, only ever show what
+    // an event did.
     private static bool HasWork(CompileResult? compiled)
     {
-        if (compiled == null || compiled.Events.Count > 0)
+        if (compiled == null || compiled.Events.Count > 0 || compiled.Drives.Count > 0 || compiled.Functions.Count > 0)
             return true;
         foreach (var display in compiled.Displays)
         {
@@ -548,7 +653,7 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
     {
         var world = World;
         var local = world?.LocalUser;
-        if (world == null || local == null || IsDestroyed || local.AllocationID.Value != ReferenceID.GetUserByte())
+        if (world == null || local == null || IsDestroyed || !local.HoldsByte(ReferenceID.GetUserByte()))
             return false;
 
         if (Graph.Target is ScriptGraphProvider old)
@@ -597,7 +702,8 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
         ScriptHostRuntime next;
         try
         {
-            next = ScriptHostRuntime.Start(this, compiled, cached, bindings, principal, previous);
+            next = ScriptHostRuntime.Start(this, compiled, cached, bindings, principal, previous,
+                authorMachine: Mode.Value == ScriptMode.Author);
         }
         catch (Exception ex)
         {
@@ -633,6 +739,13 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
             ClearSynced();
             if (next.Runner.Instance.Handles(typeof(ScriptStarted)))
                 next.Enqueue(runner => runner.Raise(new ScriptStarted()));
+            if (Duplicated.Value)
+            {
+                using (World?.DataModelPermissions?.EnterSystemBypass())
+                    Duplicated.Value = false;
+                if (next.Runner.Instance.Handles(typeof(ObjectDuplicated)))
+                    next.Enqueue(runner => runner.Raise(new ObjectDuplicated()));
+            }
         }
         _running = status;
         _lastFault = null;
@@ -674,18 +787,30 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
         SetStatus(status);
     }
 
-    // What a Shared script would run, a Local one is approved to run on every machine instead.
+    // Why the script is stopped by a switch: its object off, or its graph's slot. Null while both are on.
+    private string? SwitchedOff(ScriptGraphSpace? space)
+    {
+        if (Slot is not { IsActive: true })
+            return "its object is switched off";
+        if (space is { Slot.IsActive: false })
+            return "its graph is switched off";
+        return null;
+    }
+
+    // What a Shared script would run, a Local one is approved to run on every machine instead, and an Author
+    // one on its author's.
     private void RunOrApprove(ScriptGraph graph, object?[] bindings, string status)
     {
-        if (Mode.Value == ScriptMode.Local)
+        if (Mode.Value == ScriptMode.Local || (Mode.Value == ScriptMode.Author && !_pinned!.IsWorldContent))
         {
             StopRuntime();
             SetApproval(graph.ComputeHash());
-            SetStatus("on every machine: " + status);
+            SetStatus((Mode.Value == ScriptMode.Local ? "on every machine: " : "on its author's machine: ") + status);
             return;
         }
-        SetApproval(string.Empty);
         Run(graph, bindings, status);
+        // Every other machine runs this graph's drives, so they need it approved as a Local one's would be.
+        SetApproval(_runtime is { CanRun: true } running && running.Runner.Instance.HasDrives ? running.GraphHash : string.Empty);
     }
 
     private void SetApproval(string hash)
@@ -697,13 +822,26 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
             LocalApproval.Value = hash;
     }
 
-    // On every machine: runs the graph the host approved once this machine has it, as the author.
+    // On every machine: runs the graph the host approved once this machine has it, as the author. A Local
+    // script runs whole everywhere, an Author one on its author's machine; everywhere else a drives-only copy
+    // runs, except where the host's own Shared runtime drives.
     private void ReconcileLocal()
     {
         string approved = LocalApproval.Value ?? string.Empty;
-        if (Mode.Value != ScriptMode.Local || !Enabled.Value)
+        var here = ScriptPrincipal.ForElement(this);
+        bool authorHere = Mode.Value == ScriptMode.Author && here is { IsWorldContent: false }
+            && World?.LocalUser is { } me && me.HoldsByte(here.AllocationByte);
+        bool drivesOnly = Mode.Value != ScriptMode.Local && !authorHere;
+        if ((drivesOnly && (approved.Length == 0 || _runtime != null || (World?.IsAuthority != false && Mode.Value == ScriptMode.Shared)))
+            || !Enabled.Value)
         {
             StopLocal(string.Empty);
+            return;
+        }
+        var space = ScriptGraphEditing.FindSpace(this);
+        if (SwitchedOff(space) is { } off)
+        {
+            StopLocal(off);
             return;
         }
         if (approved.Length == 0)
@@ -720,8 +858,7 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
 
         ScriptGraph? graph = null;
         object?[]? bindings = null;
-        var space = ScriptGraphEditing.FindSpace(this);
-        if (space is { IsChecked: true, HasProblems: false, LastBuild: { } build } && build.Graph.ComputeHash() == approved)
+        if (space is { Packed.Value: false, IsChecked: true, HasProblems: false, LastBuild: { } build } && build.Graph.ComputeHash() == approved)
         {
             graph = build.Graph;
             bindings = new object?[build.Bindings.Count];
@@ -742,12 +879,13 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
             return;
         }
         if (_localRuntime is { } running && running.GraphHash == approved && SameBindings(running.Bindings, bindings)
-            && running.Principal.AuthorKey == principal.AuthorKey)
+            && running.Principal.AuthorKey == principal.AuthorKey && running.DrivesOnly == drivesOnly
+            && running.Runner.Context.OnAuthorMachine == authorHere)
             return;
-        StartLocal(graph, bindings, principal);
+        StartLocal(graph, bindings, principal, drivesOnly, authorHere);
     }
 
-    private void StartLocal(ScriptGraph graph, object?[] bindings, ScriptPrincipal principal)
+    private void StartLocal(ScriptGraph graph, object?[] bindings, ScriptPrincipal principal, bool drivesOnly, bool authorMachine = false)
     {
         if (CompiledNow(graph, out bool cached) is not { } compiled)
         {
@@ -773,7 +911,8 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
         ScriptHostRuntime next;
         try
         {
-            next = ScriptHostRuntime.Start(this, compiled, cached, bindings, principal, previous, local: true);
+            next = ScriptHostRuntime.Start(this, compiled, cached, bindings, principal, previous, local: true, drivesOnly: drivesOnly,
+                authorMachine: authorMachine);
         }
         catch (Exception ex)
         {
@@ -797,7 +936,13 @@ public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspect
         previous?.Dispose();
         if (!swapped && next.Runner.Instance.Handles(typeof(ScriptStarted)))
             next.Enqueue(runner => runner.Raise(new ScriptStarted()));
-        LocalStatus = "running here";
+        if (!swapped && !drivesOnly && _duplicatedHere)
+        {
+            _duplicatedHere = false;
+            if (next.Runner.Instance.Handles(typeof(ObjectDuplicated)))
+                next.Enqueue(runner => runner.Raise(new ObjectDuplicated()));
+        }
+        LocalStatus = drivesOnly ? "driving here" : "running here";
     }
 
     private void StopLocal(string status)

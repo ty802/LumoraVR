@@ -10,7 +10,8 @@ namespace Lumora.Core.Components.Scripting;
 // One constant or setting on an unpacked node. A plain value is kept as the JSON a packed graph would
 // hold, so pack and unpack pass it through untouched. A bound world object is kept as a reference
 // instead of a binding number, so duplicating or saving the graph remaps it like any other reference;
-// a Write Value's "var" points at its Stored Value node the same way. -xlinka
+// a Write Value's "var" points at its Stored Value node the same way, and a Return's or a call's "fn" at its
+// Function. -xlinka
 public sealed class ScriptGraphValue : SyncElement
 {
     public override SyncMemberType MemberType => SyncMemberType.Object;

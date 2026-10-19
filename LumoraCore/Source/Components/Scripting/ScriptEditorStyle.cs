@@ -13,15 +13,20 @@ namespace Lumora.Core.Components.Scripting;
 // is and what colour it wears.
 public static class ScriptEditorStyle
 {
-    public const float CardWidth = 320f;
-    public const float HeaderHeight = 40f;
-    public const float RowHeight = 32f;
-    public const float Padding = 10f;
-    public const float HandleSize = 12f;
-    public const float CardScale = 0.0004f;
-    public const float FontSize = 14f;
-    public const float PortInset = 26f;
-    public const float ColumnGap = 20f;
+    // Sized to be read from a step back: a card is 24 cm across, port text 14 mm and the title 18 mm. At
+    // 13 cm, 5.6 mm and regular weight the words thinned away to hairlines, and 9 mm was still a squint.
+    // -xlinka
+    public const float CardWidth = 400f;
+    public const float HeaderHeight = 64f;
+    public const float RowHeight = 48f;
+    public const float Padding = 14f;
+    public const float HandleSize = 20f;
+    public const float CardScale = 0.0006f;
+    public const float FontSize = 24f;
+    public const float TitleSize = 30f;
+    public const float CornerRadius = 16f;
+    public const float PortInset = 36f;
+    public const float ColumnGap = 24f;
     public const int MaxProblemLines = 2;
 
     public static readonly color Flow = new(0.86f, 0.52f, 0.25f, 1f);
@@ -35,6 +40,13 @@ public static class ScriptEditorStyle
     public static readonly color Signal = new(1f, 0.93f, 0.78f, 1f);
     public static readonly color CardBackground = DashTheme.Panel;
     public static readonly color CardOutline = DashTheme.OutlineStrong;
+    public static readonly color PortText = DashTheme.Text;
+    public static readonly color HeaderButton = new(0f, 0f, 0f, 0.28f);
+
+    // The header band: the category's colour, held well down toward the card so the white title on it stays
+    // the brightest thing there. These colours are linear; at even half strength the world camera showed
+    // them as a pale band the title washed out on. -xlinka
+    public static color HeaderTint(string category) => color.Lerp(DashTheme.Surface, Category(category), 0.3f);
 
     public static color Category(string category) => category switch
     {
@@ -44,6 +56,7 @@ public static class ScriptEditorStyle
         "Logic" => new color(0.36f, 0.30f, 0.62f, 1f),
         "Strings" => new color(0.20f, 0.52f, 0.40f, 1f),
         "Variables" => new color(0.55f, 0.46f, 0.16f, 1f),
+        "Functions" => new color(0.46f, 0.56f, 0.20f, 1f),
         "World" => new color(0.18f, 0.50f, 0.56f, 1f),
         "Web" => new color(0.24f, 0.62f, 0.66f, 1f),
         "Users" => new color(0.56f, 0.26f, 0.52f, 1f),

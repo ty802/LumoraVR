@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Lumora.Core.Components.Assets;
+using Lumora.Core.Persistence;
 using Lumora.Core.Scripting;
 using Lumora.Script;
 using Lumora.Shading;
@@ -21,12 +22,23 @@ namespace Lumora.Core.Components.Scripting;
 // datamodel while checking. The graph is read here and compiled on a worker through the compile cache,
 // so the check that says a graph is clean has also compiled what the host then runs.
 //
-// A graph parked for an undo step, hidden or packed away is drawn by no one; a graph joined into another
-// is parked like that, and whatever a hand held from it now belongs to the other. -xlinka
+// A packed graph keeps its slot on and draws nothing: no cards, no wires, nothing a beam or a hand can
+// find. A closed material graph is packed like that and still makes its material's shader, checked a
+// little less often than one being built. Switching a graph's slot off is what stops it: its script stops
+// running it, and its material keeps the shader it last made. A graph parked for an undo step is switched
+// off in the graveyard; a graph joined into another is parked like that, and whatever a hand held from it
+// now belongs to the other. -xlinka
 [ComponentCategory("Hidden")]
 public sealed class ScriptGraphSpace : Component
 {
     public const double CheckDelaySeconds = 0.25;
+
+    // How often a packed material graph is looked at for edits.
+    public const double PackedPollSeconds = 0.5;
+
+    // The node list is made again when a child comes or goes, and anyway this often, for a node whose
+    // component arrived after its slot did.
+    private const double NodeSweepSeconds = 1.0;
 
     public readonly SyncRef<ScriptHost> Host = new();
 
@@ -34,13 +46,21 @@ public sealed class ScriptGraphSpace : Component
 
     public readonly SyncRef<ShaderGraphSource> ShaderSource = new();
 
+    public readonly Sync<bool> Packed = new();
+
     private static readonly IReadOnlyList<string> NoProblems = Array.Empty<string>();
+
+    // Drawn and in reach: not packed away, and switched on.
+    public bool IsShown => !Packed.Value && Slot is { IsDestroyed: false, IsActive: true };
 
     public GraphLanguage Language => GraphLanguage.For(Kind.Value);
 
     // Every graph in a world, so a tool can find the one under a swipe or a port to snap to without
     // walking the slot tree.
     private static readonly ConditionalWeakTable<World, List<ScriptGraphSpace>> Open = new();
+
+    // The frame some graph of the world last read itself out for a check, plus one so a fresh entry matches none.
+    private static readonly ConditionalWeakTable<World, StrongBox<ulong>> CheckTurns = new();
 
     private readonly Dictionary<ScriptGraphNode, List<string>> _problems = new();
     private readonly Dictionary<ScriptGraphNode, List<string>> _notes = new();
@@ -56,6 +76,14 @@ public sealed class ScriptGraphSpace : Component
     private int _checkingRevision;
     private Slot? _watched;
     private bool _activeChangeQueued;
+    private double _polledAt = double.NaN;
+    private bool _wasPacked;
+    private bool _fromOlderSave;
+    private bool? _bodiesPacked;
+    private int _bodiesCount = -1;
+    private bool _nodesStale = true;
+    private double _nodesSweptAt = double.NegativeInfinity;
+    private readonly List<ScriptGraphNode> _letGo = new();
 
     // This machine's cards and wires for the graph.
     public ScriptGraphView? View => _view;
@@ -79,6 +107,13 @@ public sealed class ScriptGraphSpace : Component
 
     // The graph as it stood at the last check, with the objects its bindings stand for.
     public ScriptGraphBuild? LastBuild { get; private set; }
+
+    // The nodes as of this frame's look, held ones included: what the view draws from. Made again only
+    // when the graph's children change, so a frame of a big open graph walks no slots for it.
+    public IReadOnlyList<ScriptGraphNode> NodeList => _nodes;
+
+    // Moves whenever NodeList is made again.
+    public int NodeListVersion { get; private set; }
 
     public IReadOnlyList<string> ProblemsOf(ScriptGraphNode node)
         => _problems.TryGetValue(node, out var list) ? list : NoProblems;
@@ -149,7 +184,51 @@ public sealed class ScriptGraphSpace : Component
         }
         _watched = Slot;
         if (_watched != null)
+        {
             _watched.ActiveChanged += OnActiveChanged;
+            _watched.OnChildAdded += OnChildrenChanged;
+            _watched.OnChildRemoved += OnChildrenChanged;
+        }
+    }
+
+    private void OnChildrenChanged(Slot parent, Slot child) => _nodesStale = true;
+
+    // A graph saved before Packed existed was put away by switching its slot off. It loads put away the way
+    // graphs are now, packed with its slot on, since an off slot now means a stopped graph.
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        base.Load(node, control);
+        _fromOlderSave = !Packed.ValueCameFromData;
+    }
+
+    public override void OnStart()
+    {
+        base.OnStart();
+        if (_fromOlderSave && World is { } world)
+            world.RunSynchronously(TakeOlderSave);
+    }
+
+    private void TakeOlderSave()
+    {
+        _fromOlderSave = false;
+        if (IsDestroyed || Slot is not { IsDestroyed: false } slot || slot.ActiveSelf.Value)
+            return;
+        using (World?.DataModelPermissions?.EnterSystemBypass())
+        {
+            Packed.Value = true;
+            slot.ActiveSelf.Value = true;
+        }
+    }
+
+    // Packing a script graph in place, or opening one, changes which graph its script runs.
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        if (Packed.Value == _wasPacked)
+            return;
+        _wasPacked = Packed.Value;
+        if (World is { } world && Host.Target is { IsDestroyed: false } host && (world.IsAuthority || host.Mode.Value == ScriptMode.Local))
+            host.MarkChangeDirty();
     }
 
     // Put off until the change has landed whole: parking moves the slot and switches it off, and from
@@ -173,10 +252,12 @@ public sealed class ScriptGraphSpace : Component
             _view?.Dispose();
             _view = null;
             HandOverHeld();
+            if (ShaderSource.Target is { IsDestroyed: false } source)
+                source.CompileIfNone(this);
         }
-        // Its script runs this graph only while the graph is out, so it decides again either way, in the change
-        // pass like any change to the host. A live swap drops what the old runtime still had queued, and
-        // deciding before the script phase could swap away a press made this frame.
+        // Its script stops while the graph is switched off, so it decides again either way, in the change pass
+        // like any change to the host. A live swap drops what the old runtime still had queued, and deciding
+        // before the script phase could swap away a press made this frame.
         if (Host.Target is { IsDestroyed: false } host && (world.IsAuthority || host.Mode.Value == ScriptMode.Local))
             host.MarkChangeDirty();
     }
@@ -195,31 +276,90 @@ public sealed class ScriptGraphSpace : Component
     {
         base.OnUpdate(delta);
 
-        // A packed graph waits parked for its undo step; nobody is looking at it.
+        // Switched off, it is stopped, and nobody is looking at it.
         if (Slot?.IsActive != true)
             return;
 
-        int revision = Revision();
-        double now = World?.Time.TotalTime ?? 0.0;
-        if (revision != _revision)
+        bool packed = Packed.Value;
+        if (World?.IsAuthority == true)
+            KeepBodies(packed);
+        if (packed && _view != null)
         {
-            _revision = revision;
-            _changedAt = now;
-            _dirty = true;
+            _view.Dispose();
+            _view = null;
+            HandOverHeld();
+        }
+        // A packed script runs the document it was packed into; there is nothing here to check.
+        if (packed && Kind.Value != GraphKind.Shader)
+            return;
+
+        double now = World?.Time.TotalTime ?? 0.0;
+        // Closed graphs that came up together would all poll in the same frame, every time: each takes its own
+        // place in the half second instead.
+        if (double.IsNaN(_polledAt))
+            _polledAt = now - PackedPollSeconds * (1.0 - PollPhase());
+        if (!packed || now - _polledAt >= PackedPollSeconds)
+        {
+            _polledAt = now;
+            RefreshNodes(now);
+            int revision = Revision();
+            if (revision != _revision)
+            {
+                _revision = revision;
+                _changedAt = now;
+                _dirty = true;
+            }
         }
         if (_checking is { IsCompleted: true })
             FinishCheck();
-        if (_dirty && _checking == null && now - _changedAt >= CheckDelaySeconds)
+        if (_dirty && _checking == null && now - _changedAt >= CheckDelaySeconds && TakeCheckTurn())
             BeginCheck();
 
+        if (packed)
+            return;
         _view ??= new ScriptGraphView(this);
         _view.Update();
+    }
+
+    // On the host: a packed graph's nodes have their grab boxes and grabs switched off, so nothing of a graph
+    // nobody can see is in anyone's way, and a shown graph's are switched back on. Packing or opening a graph
+    // only changes Packed, and this follows it, through undo and redo as well. Walked again only when that
+    // or the number of nodes changes. -xlinka
+    private void KeepBodies(bool packed)
+    {
+        int count = Slot.ChildCount;
+        if (_bodiesPacked == packed && _bodiesCount == count)
+            return;
+        _bodiesPacked = packed;
+        _bodiesCount = count;
+        bool shown = !packed;
+        using (World?.DataModelPermissions?.EnterSystemBypass())
+        {
+            foreach (var node in Nodes)
+            {
+                if (node.Slot is not { IsDestroyed: false } at)
+                    continue;
+                if (at.GetComponent<BoxCollider>() is { } box && box.Enabled.Value != shown)
+                    box.Enabled.Value = shown;
+                if (at.GetComponent<Grabbable>() is { } grab)
+                {
+                    if (grab.Enabled.Value != shown)
+                        grab.Enabled.Value = shown;
+                    if (grab.Scalable.Value)
+                        grab.Scalable.Value = false;
+                }
+            }
+        }
     }
 
     public override void OnDestroy()
     {
         if (_watched != null)
+        {
             _watched.ActiveChanged -= OnActiveChanged;
+            _watched.OnChildAdded -= OnChildrenChanged;
+            _watched.OnChildRemoved -= OnChildrenChanged;
+        }
         _watched = null;
         if (World is { } world && Open.TryGetValue(world, out var spaces))
         {
@@ -231,6 +371,24 @@ public sealed class ScriptGraphSpace : Component
         if (World != null && Host.Target is { IsDestroyed: false } host && (World.IsAuthority || host.Mode.Value == ScriptMode.Local))
             World.RunSynchronously(host.Reconcile);
         base.OnDestroy();
+    }
+
+    // Where in the poll period this graph sits: its id spread evenly over [0, 1) by a golden-ratio hash, so
+    // graphs made one after another land far apart.
+    private double PollPhase() => ((ReferenceID.RawValue * 0x9E3779B97F4A7C15UL) >> 11) / (double)(1UL << 53);
+
+    // Reading a graph out for a check is main-thread work as big as the graph, so one graph of a world does it
+    // a frame. A world that opens with many waiting spreads them over that many frames.
+    private bool TakeCheckTurn()
+    {
+        if (World is not { } world)
+            return true;
+        var turn = CheckTurns.GetOrCreateValue(world);
+        ulong frame = world.Time.UpdateIndex + 1;
+        if (turn.Value == frame)
+            return false;
+        turn.Value = frame;
+        return true;
     }
 
     // Reads the graph as it stands and hands it to a worker to check with its kind's compiler.
@@ -315,21 +473,41 @@ public sealed class ScriptGraphSpace : Component
         return hash.ToHashCode();
     }
 
-    // Cheap enough to take every frame for a graph people build by hand: moves nothing, allocates nothing
-    // past the first call.
-    private int Revision()
+    // A node a hand took from here leaves the children, and one let go of comes back, so the list is made
+    // again on those; while a hand holds one it is looked at every frame.
+    private void RefreshNodes(double now)
     {
+        if (!_nodesStale && _held.Count == 0 && now - _nodesSweptAt < NodeSweepSeconds)
+            return;
         foreach (var node in _nodes)
         {
             if (IsHeldFromHere(node))
                 _held.Add(node);
         }
-        HandOverHeld();
-        _held.RemoveWhere(node => !IsHeldFromHere(node));
+        if (_held.Count > 0)
+        {
+            HandOverHeld();
+            _letGo.Clear();
+            foreach (var node in _held)
+            {
+                if (!IsHeldFromHere(node))
+                    _letGo.Add(node);
+            }
+            foreach (var node in _letGo)
+                _held.Remove(node);
+        }
         _nodes.Clear();
         foreach (var node in Nodes)
             _nodes.Add(node);
+        _nodesStale = false;
+        _nodesSweptAt = now;
+        NodeListVersion++;
+    }
 
+    // Cheap enough to take every frame for a graph of a thousand nodes: a node's content hash is only
+    // walked again after an edit to it.
+    private int Revision()
+    {
         var hash = new HashCode();
         hash.Add(_nodes.Count);
         foreach (var node in _nodes)

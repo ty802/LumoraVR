@@ -58,6 +58,14 @@ public static class ScriptValueText
         => type.Kind != ScriptTypeKind.Handle || type == ScriptTypes.String;
 
     public static bool TryParse(string text, ScriptType type, out GraphValue value, out string? error)
+        => TryParse(text, type, 0d, out value, out error);
+
+    public static bool IsNumber(ScriptType type)
+        => type.Kind is ScriptTypeKind.Int or ScriptTypeKind.Long or ScriptTypeKind.Float or ScriptTypeKind.Double;
+
+    // current is what a number port holds now: a number takes math against it (FieldMath, "*2" doubles it),
+    // and an Int or Long rounds half away from zero into its range.
+    public static bool TryParse(string text, ScriptType type, double current, out GraphValue value, out string? error)
     {
         value = GraphValue.Null;
         error = null;
@@ -79,13 +87,21 @@ public static class ScriptValueText
             case ScriptTypeKind.Long:
             case ScriptTypeKind.Float:
             case ScriptTypeKind.Double:
-                if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double number) && double.IsFinite(number))
+            {
+                var result = Helio.UI.FieldMath.Evaluate(text, current);
+                if (!result.Ok)
                 {
-                    value = GraphValue.Of(number);
-                    return true;
+                    error = "a number";
+                    return false;
                 }
-                error = "a number";
-                return false;
+                double number = result.Value;
+                if (type.Kind == ScriptTypeKind.Int)
+                    number = System.Math.Clamp(System.Math.Round(number, MidpointRounding.AwayFromZero), int.MinValue, int.MaxValue);
+                else if (type.Kind == ScriptTypeKind.Long)
+                    number = System.Math.Clamp(System.Math.Round(number, MidpointRounding.AwayFromZero), long.MinValue, long.MaxValue);
+                value = GraphValue.Of(number);
+                return true;
+            }
 
             case ScriptTypeKind.Vector:
             {

@@ -14,7 +14,8 @@ namespace Lumora.Core.Components.Scripting;
 // people do to the object with a panel button or a beam happens on their own machines, where only this
 // hears it: a press of a panel button on this slot, the local user's beam coming onto the object or
 // anything under it and going off again, and a click of that beam on it. Each goes to the listening host,
-// directly on the authority and through the user's own press relay anywhere else. -xlinka
+// directly on the authority and through the user's own press relay anywhere else. When the host follows
+// presses step by step, a panel button's press landing, held each frame and ending go the same way. -xlinka
 [ComponentCategory("Hidden")]
 public sealed class ScriptSourceRelay : Component, IButtonPressReceiver
 {
@@ -22,8 +23,13 @@ public sealed class ScriptSourceRelay : Component, IButtonPressReceiver
 
     public readonly SyncRef<ScriptHost> Host = new();
 
+    // Set by the authority when the host listens to press steps here.
+    public readonly Sync<bool> PressSteps = new();
+
     private readonly List<(InteractionLaser Laser, Action<IInteractionTarget?> Changed, Action<IInteractionTarget, float3> Activated)> _lasers = new();
     private readonly HashSet<InteractionLaser> _over = new();
+    private int _lasersSearchedAt = -1;
+    private Slot? _lasersUnder;
     private double _nextLook = double.NegativeInfinity;
 
     // The text field, drop surface and scripted tool on this slot this relay listens to, and how to stop.
@@ -100,6 +106,27 @@ public sealed class ScriptSourceRelay : Component, IButtonPressReceiver
             var hooked = surface;
             _parts.Add((surface, () => hooked.Received -= received));
         }
+        if (PressSteps.Value)
+        {
+            foreach (var button in slot.GetComponents<Button>())
+            {
+                if (Hooked(button))
+                    continue;
+                var pressed = button;
+                Action<UIInteractionContext> began = context => ForwardStep(ScriptSourceKind.PressBegin, pressed, in context);
+                Action<UIInteractionContext> held = context => ForwardStep(ScriptSourceKind.PressHold, pressed, in context);
+                Action<UIInteractionContext> ended = context => ForwardStep(ScriptSourceKind.PressEnd, pressed, in context);
+                pressed.Pressed += began;
+                pressed.Dragged += held;
+                pressed.Released += ended;
+                _parts.Add((pressed, () =>
+                {
+                    pressed.Pressed -= began;
+                    pressed.Dragged -= held;
+                    pressed.Released -= ended;
+                }));
+            }
+        }
         foreach (var tool in slot.GetComponents<ScriptedTool>())
         {
             if (Hooked(tool))
@@ -138,6 +165,11 @@ public sealed class ScriptSourceRelay : Component, IButtonPressReceiver
         var root = World?.LocalUser?.Root?.Slot;
         if (root == null || root.IsDestroyed)
             return;
+        int structure = Slot.StructureEpoch;
+        if (structure == _lasersSearchedAt && ReferenceEquals(root, _lasersUnder))
+            return;
+        _lasersSearchedAt = structure;
+        _lasersUnder = root;
         foreach (var laser in root.GetComponentsInChildren<InteractionLaser>())
         {
             if (_lasers.Exists(l => ReferenceEquals(l.Laser, laser)))
@@ -179,6 +211,18 @@ public sealed class ScriptSourceRelay : Component, IButtonPressReceiver
             host.SourceEventFrom(user ?? world.LocalUser, Slot, kind, point);
         else
             ScriptPressRelay.For(world)?.PublishSource(host, Slot, kind, point);
+    }
+
+    private void ForwardStep(ScriptSourceKind kind, Button button, in UIInteractionContext context)
+    {
+        var world = World;
+        if (world == null || Host.Target is not { IsDestroyed: false } host)
+            return;
+        var (local, normalized) = ScriptEventSources.PointsOn(button, in context);
+        if (world.IsAuthority)
+            host.PressStepFrom(context.Actor ?? world.LocalUser, Slot, kind, context.WorldPoint, local, normalized);
+        else
+            ScriptPressRelay.For(world)?.PublishPress(host, Slot, kind, context.WorldPoint, local, normalized);
     }
 
     private void Forward(ScriptSourceKind kind, User? user, float3 point, string? text, Slot? other)

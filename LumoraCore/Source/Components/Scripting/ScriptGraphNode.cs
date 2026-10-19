@@ -2,6 +2,8 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
+using Lumora.Core.Persistence;
 using Lumora.Core.Scripting;
 using Lumora.Script;
 
@@ -45,6 +47,17 @@ public sealed class ScriptGraphNode : Component
     private NodeOverload? _overload;
     private string? _resolveError;
 
+    // Bumped by every edit to the node, an edit inside one of its values or wires included. A graph of a
+    // thousand nodes asked each frame whether any of them changed by hashing every entry of every node,
+    // twice, and that was most of what an open converted graph cost; the hash is now taken again only
+    // when this moves. What the host writes for show (Shown, Traced, Fault) is not an edit. -xlinka
+    public int EditVersion { get; private set; }
+
+    private Action<IChangeable>? _entryChanged;
+    private int _hashedVersion = -1;
+    private int _hash;
+    private readonly List<SyncRef<IWorldElement>> _bound = new();
+
     public override void OnInit()
     {
         base.OnInit();
@@ -58,6 +71,68 @@ public sealed class ScriptGraphNode : Component
         Shown.MarkHostOnly();
         Traced.MarkHostOnly();
         Fault.MarkHostOnly();
+        Values.ElementsAdded += (list, index, count) => WatchValues(index, count);
+        Inputs.ElementsAdded += (list, index, count) => WatchWires(Inputs, index, count);
+        Exits.ElementsAdded += (list, index, count) => WatchWires(Exits, index, count);
+        Values.ElementsRemoved += (_, _, _) => EditVersion++;
+        Inputs.ElementsRemoved += (_, _, _) => EditVersion++;
+        Exits.ElementsRemoved += (_, _, _) => EditVersion++;
+        WatchValues(0, Values.Count);
+        WatchWires(Inputs, 0, Inputs.Count);
+        WatchWires(Exits, 0, Exits.Count);
+    }
+
+    private Action<IChangeable> EntryChanged => _entryChanged ??= _ => EditVersion++;
+
+    private void WatchValues(int index, int count)
+    {
+        EditVersion++;
+        for (int i = index; i < index + count && i < Values.Count; i++)
+        {
+            var value = Values[i];
+            value.Port.Changed += EntryChanged;
+            value.Json.Changed += EntryChanged;
+            value.Reference.Changed += EntryChanged;
+        }
+    }
+
+    private void WatchWires(SyncList<ScriptGraphWire> list, int index, int count)
+    {
+        EditVersion++;
+        for (int i = index; i < index + count && i < list.Count; i++)
+        {
+            var wire = list[i];
+            wire.Port.Changed += EntryChanged;
+            wire.Node.Changed += EntryChanged;
+            wire.NodePort.Changed += EntryChanged;
+        }
+    }
+
+    protected override void OnSyncMemberChanged(IChangeable member)
+    {
+        if (!ReferenceEquals(member, Shown) && !ReferenceEquals(member, Traced) && !ReferenceEquals(member, Fault))
+            EditVersion++;
+        base.OnSyncMemberChanged(member);
+    }
+
+    // A load writes the fields without a change notice, and its list entries come in with it.
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        base.Load(node, control);
+        WatchValues(0, Values.Count);
+        WatchWires(Inputs, 0, Inputs.Count);
+        WatchWires(Exits, 0, Exits.Count);
+    }
+
+    // A hand here picking the node up keeps where it sat for the undo step; letting it go lands it on its
+    // graph's plane.
+    public override void OnStart()
+    {
+        base.OnStart();
+        if (Slot?.GetComponent<Grabbable>() is not { } grab)
+            return;
+        grab.OnLocalGrabbed += _ => ScriptGraphEditing.PickedUp(this, grab);
+        grab.OnLocalReleased += _ => ScriptGraphEditing.LetGo(this, grab);
     }
 
     // On the host, from the running script's Displays; a text that has not changed sends nothing.
@@ -139,6 +214,10 @@ public sealed class ScriptGraphNode : Component
 
     public NodeOverload? Overload => Resolve(out _);
 
+    // Why the type or ports typed on this machine's card were last refused, shown on the card until something
+    // typed there is taken. This machine's only: it is no part of the node.
+    public string? SignatureRefusal { get; internal set; }
+
     // The last part of the node's path, which is what a card shows.
     public string Title
     {
@@ -164,10 +243,27 @@ public sealed class ScriptGraphNode : Component
         }
     }
 
-    // Everything a check reads off this node, folded into one number. Walked rather than trusted to change
-    // notices, since an edit inside a list entry is what a graph edit mostly is.
+    // Everything a check reads off this node, folded into one number. Walked again only after an edit; a
+    // bound object going away is no edit of the node, so whether each one is still there is asked every time.
     public int ContentHash()
     {
+        if (_hashedVersion != EditVersion)
+        {
+            _hash = HashEntries();
+            _hashedVersion = EditVersion;
+        }
+        if (_bound.Count == 0)
+            return _hash;
+        var hash = new HashCode();
+        hash.Add(_hash);
+        foreach (var reference in _bound)
+            hash.Add(reference.Target is { IsDestroyed: false });
+        return hash.ToHashCode();
+    }
+
+    private int HashEntries()
+    {
+        _bound.Clear();
         var hash = new HashCode();
         hash.Add(NodeId.Value);
         hash.Add(NodeType.Value);
@@ -178,7 +274,8 @@ public sealed class ScriptGraphNode : Component
             hash.Add(value.Port.Value);
             hash.Add(value.Json.Value);
             hash.Add(value.Reference.Value.RawValue);
-            hash.Add(value.Reference.Target is { IsDestroyed: false });
+            if (!value.Reference.Value.IsNull)
+                _bound.Add(value.Reference);
         }
         foreach (var wire in Inputs)
         {
@@ -289,12 +386,15 @@ public sealed class ScriptGraphNode : Component
         int inputIndex = consumer.InputIndex(input);
         if (inputIndex < 0)
             return $"{Title} has no input '{input}'";
+        if (consumer.Inputs[inputIndex].IsSetting)
+            return $"'{input}' is a setting: set it on the node instead of wiring it";
         int outputIndex = producer.OutputIndex(output);
         if (outputIndex < 0)
             return $"{from.Title} has no output '{output}'";
         var wanted = consumer.Inputs[inputIndex].Type;
         var given = producer.Outputs[outputIndex].Type;
-        return Language.Accepts(wanted, given) ? null : $"'{input}' takes {wanted.Name}, '{output}' gives {given.Name}";
+        return Language.Accepts(wanted, given) || (anyGraph && ScriptGraphOverloads.SelectInput(this, input, given) != null)
+            ? null : $"'{input}' takes {wanted.Name}, '{output}' gives {given.Name}";
     }
 
     private string? CheckFlow(string exit, ScriptGraphNode to, string input, bool anyGraph = false)
@@ -323,6 +423,8 @@ public sealed class ScriptGraphNode : Component
         var otherSpace = other.Space;
         if (space == null || otherSpace == null)
             return anyGraph ? "that node is not in a graph" : "those nodes are in different graphs";
+        if (space.Kind.Value != otherSpace.Kind.Value)
+            return "those nodes are in different kinds of graph";
         return anyGraph || ReferenceEquals(space, otherSpace) ? null : "those nodes are in different graphs";
     }
 

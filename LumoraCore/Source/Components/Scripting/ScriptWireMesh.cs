@@ -16,14 +16,27 @@ namespace Lumora.Core.Components.Scripting;
 [ComponentCategory("Hidden")]
 public sealed class ScriptWireMesh : ProceduralMesh
 {
-    public const float Radius = 0.0022f;
+    public const float Radius = 0.004f;
     private const int Sides = 10;
     public const int Rings = 32;
+
+    // A pulse is a short glowing stretch remade every frame it moves, so it is a lighter tube than a wire:
+    // a fifth of a wire's length needs no wire's worth of rings. -xlinka
+    private const int PulseSides = 6;
+    private const int PulseRings = 12;
+
+    // Metres of wire one turn of a lengthwise pattern covers.
+    public const float StreamSpacing = 0.12f;
+
+    // Measures each wire along its length into UV0's u, in turns of StreamSpacing, so a pattern scrolled
+    // along u runs down every wire at the same pace whatever its length. Set before the first wires.
+    public bool Lengthwise { get; set; }
 
     private readonly List<ScriptWireCurve> _wires = new();
     private ScriptWireCurve[] _building = Array.Empty<ScriptWireCurve>();
     private PhosTriangleSubmesh? _submesh;
-    private int _lastWireCount = -1;
+    private int _lastVertexCount = -1;
+    private int _lastTriangleCount = -1;
 
     public int WireCount => _wires.Count;
 
@@ -43,20 +56,27 @@ public sealed class ScriptWireMesh : ProceduralMesh
 
     protected override void UpdateMeshData(PhosMesh mesh)
     {
-        int wires = _building.Length;
-        int vertexCount = wires * Rings * Sides;
-        int triangleCount = wires * (Rings - 1) * Sides * 2;
-        bool topologyChanged = _submesh == null || wires != _lastWireCount;
+        int vertexCount = 0;
+        int triangleCount = 0;
+        foreach (var wire in _building)
+        {
+            Shape(wire, out int rings, out int sides);
+            vertexCount += rings * sides;
+            triangleCount += (rings - 1) * sides * 2;
+        }
+        bool topologyChanged = _submesh == null || vertexCount != _lastVertexCount || triangleCount != _lastTriangleCount;
         if (topologyChanged)
         {
             mesh.Clear();
             mesh.HasNormals = true;
             mesh.HasColors = true;
+            mesh.HasUV0s = Lengthwise;
             mesh.IncreaseVertexCount(vertexCount);
             _submesh = new PhosTriangleSubmesh(mesh);
             mesh.Submeshes.Add(_submesh);
             _submesh.SetCount(triangleCount);
-            _lastWireCount = wires;
+            _lastVertexCount = vertexCount;
+            _lastTriangleCount = triangleCount;
         }
         mesh.HasNormals = true;
         mesh.HasColors = true;
@@ -64,19 +84,27 @@ public sealed class ScriptWireMesh : ProceduralMesh
         int vertex = 0;
         int triangle = 0;
         foreach (var wire in _building)
-            BuildWire(mesh, _submesh!, wire, ref vertex, ref triangle);
+            BuildWire(mesh, _submesh!, wire, Lengthwise, ref vertex, ref triangle);
 
         // Positions change when a card moves or a pulse advances, even with identical topology.
         uploadHint[MeshUploadHint.Flag.Geometry] = true;
         uploadHint[MeshUploadHint.Flag.Dynamic] = true;
         uploadHint[MeshUploadHint.Flag.Normals] = true;
         uploadHint[MeshUploadHint.Flag.Colors] = true;
+        uploadHint[MeshUploadHint.Flag.UV0] = Lengthwise;
     }
 
     protected override void ClearMeshData()
     {
         _submesh = null;
-        _lastWireCount = -1;
+        _lastVertexCount = -1;
+        _lastTriangleCount = -1;
+    }
+
+    private static void Shape(in ScriptWireCurve wire, out int rings, out int sides)
+    {
+        rings = wire.Pulse ? PulseRings : Rings;
+        sides = wire.Pulse ? PulseSides : Sides;
     }
 
     // The curve's four control points. A wire leaves and arrives along +X, reaching further the further
@@ -103,20 +131,26 @@ public sealed class ScriptWireMesh : ProceduralMesh
         return Bezier(p0, p1, p2, p3, System.Math.Clamp(t, 0f, 1f));
     }
 
-    private static void BuildWire(PhosMesh mesh, PhosTriangleSubmesh submesh, in ScriptWireCurve wire, ref int vertex, ref int triangle)
+    private static void BuildWire(PhosMesh mesh, PhosTriangleSubmesh submesh, in ScriptWireCurve wire, bool lengthwise, ref int vertex, ref int triangle)
     {
         ControlPoints(wire, out var p0, out var p1, out var p2, out var p3);
+        Shape(wire, out int rings, out int sides);
 
         int first = vertex;
-        for (int ring = 0; ring < Rings; ring++)
+        float travelled = 0f;
+        var previous = float3.Zero;
+        for (int ring = 0; ring < rings; ring++)
         {
-            float along = ring / (float)(Rings - 1);
+            float along = ring / (float)(rings - 1);
             float t = System.Math.Clamp(wire.Start + (wire.End - wire.Start) * along, 0f, 1f);
             var center = Bezier(p0, p1, p2, p3, t);
+            if (ring > 0)
+                travelled += (center - previous).Length;
+            previous = center;
             var tangent = BezierTangent(p0, p1, p2, p3, t);
             Frame(tangent, out var normal, out var binormal);
             var tint = color.Lerp(wire.FromColor, wire.ToColor, t);
-            float radius = Radius;
+            float radius = Radius * wire.Width;
             if (wire.Pulse)
             {
                 // Keep the envelope on the untrimmed segment so it enters and leaves the port
@@ -126,24 +160,26 @@ public sealed class ScriptWireMesh : ProceduralMesh
                 tint.a *= glow * glow;
                 radius *= 1.05f + 0.3f * glow;
             }
-            for (int side = 0; side < Sides; side++)
+            for (int side = 0; side < sides; side++)
             {
-                float angle = MathF.PI * 2f * side / Sides;
+                float angle = MathF.PI * 2f * side / sides;
                 var radial = normal * MathF.Cos(angle) + binormal * MathF.Sin(angle);
                 mesh.RawPositions[vertex] = center + radial * radius;
                 mesh.RawNormals[vertex] = radial;
                 mesh.RawColors[vertex] = tint;
+                if (lengthwise)
+                    mesh.RawUV0s[vertex] = new float2(travelled / StreamSpacing, side / (float)sides);
                 vertex++;
             }
         }
 
-        for (int ring = 0; ring < Rings - 1; ring++)
+        for (int ring = 0; ring < rings - 1; ring++)
         {
-            int row = first + ring * Sides;
-            int next = row + Sides;
-            for (int side = 0; side < Sides; side++)
+            int row = first + ring * sides;
+            int next = row + sides;
+            for (int side = 0; side < sides; side++)
             {
-                int nextSide = (side + 1) % Sides;
+                int nextSide = (side + 1) % sides;
                 submesh.SetTriangle(triangle++, row + side, next + side, row + nextSide);
                 submesh.SetTriangle(triangle++, row + nextSide, next + side, next + nextSide);
             }

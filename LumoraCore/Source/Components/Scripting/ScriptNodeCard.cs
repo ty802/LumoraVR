@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using Helio.UI;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.Import;
@@ -11,6 +12,7 @@ using Lumora.Core.Components.UI;
 using Lumora.Core.Math;
 using Lumora.Core.Scripting;
 using Lumora.Script;
+using Lumora.Shading;
 using Mask = Helio.UI.Mask;
 
 namespace Lumora.Core.Components.Scripting;
@@ -30,11 +32,20 @@ public sealed class ScriptNodeCard
     private const float BackingMargin = 6f;
 
     private int _editing;
-    private Slot? _backing;
     private Slot? _options;
+    private Slot? _content;
+    private FontProvider? _font;
+    private ScriptGraphNode? _node;
     private readonly List<ScriptCardHandle> _handles = new();
     private Text? _readout;
     private ScriptGraphNode? _shows;
+    private Text? _previewMode;
+    private Text? _previewUpper;
+    private Text? _previewLower;
+    private Slot? _previewAxes;
+    private Slot? _previewRange;
+    private bool? _previewShownCurve;
+    private float _previewShownRange = float.NaN;
 
     public Slot Root { get; }
     public ScriptCardLayout Layout { get; }
@@ -65,8 +76,6 @@ public sealed class ScriptNodeCard
     {
         if (!Root.IsDestroyed)
             Root.Destroy();
-        if (_backing is { IsDestroyed: false } backing)
-            backing.Destroy();
     }
 
     public static ScriptNodeCard Build(ScriptGraphNode node, IReadOnlyList<string> problems, int stamp, string? fault = null, bool optionsOpen = false,
@@ -81,6 +90,8 @@ public sealed class ScriptNodeCard
         bool faulted = !string.IsNullOrEmpty(fault);
         var noted = notes ?? Array.Empty<string>();
         var layout = ScriptCardLayout.For(node, shown.Count + noted.Count + (faulted ? 1 : 0));
+        if (layout.Compact)
+            return BuildCompact(node, layout, stamp);
         layout.OptionsOpen = optionsOpen && layout.OptionsRows > 0;
         float width = layout.Width;
         float height = layout.Height;
@@ -93,97 +104,201 @@ public sealed class ScriptNodeCard
         rect.AnchorMin.Value = rect.AnchorMax.Value = new float2(0.5f, 0.5f);
         rect.OffsetMin.Value = new float2(0f, -height);
         rect.OffsetMax.Value = new float2(width, 0f);
-        root.AttachComponent<Canvas>();
-        var font = root.AddSlot("Font").AttachComponent<FontProvider>();
-        font.URL.Value = ImportDialog.ResolveFontUrl(world) ?? DashTheme.FontRegular;
-        font.FallbackURLs.Add(DashTheme.FontRegular);
+        root.AttachComponent<Canvas>().SharesMaterials = true;
+        // The dash's heavier faces throughout, bold for the title: the regular weight read as hairlines.
+        var look = LookOf(world);
+        var bold = look.Bold;
+        var font = look.Semibold;
 
         var content = root.AddSlot("Content");
         Fill(content);
         content.AttachComponent<GraphicChunkRoot>();
         var background = content.AttachComponent<RoundedPanel>();
         background.Color.Value = ScriptEditorStyle.CardBackground;
-        background.CornerRadius.Value = 12f;
+        background.CornerRadius.Value = ScriptEditorStyle.CornerRadius;
         background.OutlineColor.Value = bad ? ScriptEditorStyle.Problem : faulted ? ScriptEditorStyle.Fault : ScriptEditorStyle.CardOutline;
         background.OutlineThickness.Value = bad || faulted ? 4f : 2f;
 
         var card = new ScriptNodeCard(root, layout, stamp);
-        card._backing = Backing(node, width, height);
-        card.BuildHeader(content, font, node, bad);
+        card.BuildHeader(content, bold, node, bad);
         card.BuildPorts(content, font, node);
         card.BuildSettings(content, font, node);
         card.BuildExtra(content, font, node);
-        card.BuildPreviewWell(content);
+        card.BuildPreviewWell(content, font, node);
         card.BuildProblems(content, font, shown, noted, faulted ? "at run time: " + fault : null);
-        card.BuildOptions(content, font, node, overload);
+        // The options drawer starts closed on nearly every card and is a sixth of a card's slots, so it is made
+        // the first time it opens. -xlinka
+        card._content = content;
+        card._font = font;
+        card._node = node;
+        if (layout.OptionsOpen)
+            card.BuildOptions(content, font, node, overload);
         return card;
     }
 
-    // A frosted slab just behind the card, the backing a panel has, so a card is still something from
-    // behind or edge on. It sits beside the canvas rather than in it, so the card's layout and batching
-    // never take it over.
-    private static Slot Backing(ScriptGraphNode node, float width, float height)
+    // A relay's bar: a port at each end, the line of what it carries running between them, and its middle to
+    // move it by, the way a card moves by its header. It has no words on it, so it makes no faces.
+    private static ScriptNodeCard BuildCompact(ScriptGraphNode node, ScriptCardLayout layout, int stamp)
     {
-        float scale = ScriptEditorStyle.CardScale;
-        var slot = node.Slot.AddLocalSlot("Card Backing");
-        slot.LocalPosition.Value = new float3(width * 0.5f * scale, -height * 0.5f * scale, -BackingDepth * scale);
-        slot.LocalScale.Value = new float3(scale, scale, scale);
-        var slab = slot.AttachComponent<RoundedQuadMesh>();
-        slab.CornerSegments.Value = 8;
-        slab.DualSided.Value = false;
-        slab.Size.Value = new float2(width + BackingMargin * 2f, height + BackingMargin * 2f);
-        slab.CornerRadius.Value = 12f + BackingMargin;
-        var renderer = slot.AttachComponent<MeshRenderer>();
-        renderer.Mesh.Target = slab;
-        var glass = DashGlass.Attach(slot);
-        // Drawn before the card's canvas, like a panel's glass before its backdrop.
-        glass.RenderQueue.Value = 2872;
-        renderer.Material.Target = glass;
-        renderer.ShadowCastMode.Value = ShadowCastMode.Off;
-        return slot;
+        float width = layout.Width;
+        float height = layout.Height;
+        var root = node.Slot.AddLocalSlot("Card");
+        root.LocalPosition.Value = float3.Zero;
+        root.LocalRotation.Value = floatQ.Identity;
+        root.LocalScale.Value = new float3(ScriptEditorStyle.CardScale, ScriptEditorStyle.CardScale, ScriptEditorStyle.CardScale);
+        var rect = root.AttachComponent<RectTransform>();
+        rect.AnchorMin.Value = rect.AnchorMax.Value = new float2(0.5f, 0.5f);
+        rect.OffsetMin.Value = new float2(0f, -height);
+        rect.OffsetMax.Value = new float2(width, 0f);
+        root.AttachComponent<Canvas>().SharesMaterials = true;
+
+        var carried = layout.Left.Count > 0 ? layout.Left[0].Type : layout.Right.Count > 0 ? layout.Right[0].Type : null;
+        var tint = ScriptEditorStyle.Type(carried);
+        var content = root.AddSlot("Content");
+        Fill(content);
+        content.AttachComponent<GraphicChunkRoot>();
+        var background = content.AttachComponent<RoundedPanel>();
+        background.Color.Value = ScriptEditorStyle.CardBackground;
+        background.CornerRadius.Value = ScriptEditorStyle.CornerRadius;
+        background.OutlineColor.Value = tint;
+        background.OutlineThickness.Value = 2f;
+
+        var card = new ScriptNodeCard(root, layout, stamp);
+        card._node = node;
+
+        var line = content.AddSlot("Line");
+        Place(line, 0f, height * 0.5f - 3f, width, 6f);
+        line.AttachComponent<Image>().Tint.Value = tint;
+
+        float input = 40f;
+        float output = 56f;
+        var middle = content.AddSlot("Header");
+        Place(middle, input, 0f, width - input - output, height);
+        var grip = middle.AttachComponent<Image>();
+        grip.Tint.Value = new color(tint.r, tint.g, tint.b, 0.16f);
+        grip.CornerRadius.Value = 8f;
+        middle.AttachComponent<Button>();
+        var handle = middle.AttachComponent<ScriptCardHandle>();
+        handle.Node = node;
+        handle.Kind = ScriptCardHandleKind.Header;
+        card._handles.Add(handle);
+
+        float top = layout.RowTop(0);
+        if (layout.Left.Count > 0)
+            card.Handle(content, node, layout.Left[0], -ScriptEditorStyle.HandleSize * 0.5f, top, -10f, input + 10f);
+        if (layout.Right.Count > 0)
+            card.Handle(content, node, layout.Right[0], width - ScriptEditorStyle.HandleSize * 0.5f, top, width - output, output + 10f);
+        return card;
     }
 
-    private void BuildHeader(Slot content, FontProvider font, ScriptGraphNode node, bool bad)
+    // A solid slab just behind the card, so a card is still something from behind or edge on. It sits beside
+    // the canvas rather than in it, so the card's layout and batching never take it over; the graph's view
+    // draws every card's slab as one mesh (ScriptCardBackings), from SlabOf.
+    //
+    // Solid and shared: it was frosted glass, a material of its own on every card, each reading and blurring
+    // the screen behind it. A converted graph unpacks a few thousand cards, and that was a few thousand
+    // screen reads a frame that could not share a single draw.
+    //
+    // The faces and the slab's material are made once a world, on a local slot of its own, and every card
+    // uses them. Each card made its own two font providers, and each looked its fonts up again; a card's
+    // slots now hold only what it draws. -xlinka
+    private sealed class CardLook
+    {
+        public FontProvider Bold = null!;
+        public FontProvider Semibold = null!;
+        public Lumora.Core.Assets.UnlitMaterial Backing = null!;
+
+        public bool IsGone => Bold.IsDestroyed || Semibold.IsDestroyed || Backing.IsDestroyed;
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<World, CardLook> Looks = new();
+
+    private static CardLook LookOf(World world)
+    {
+        if (Looks.TryGetValue(world, out var look) && !look.IsGone)
+            return look;
+        var holder = world.RootSlot.AddLocalSlot("Script Card Look");
+        var regular = ImportDialog.ResolveFontUrl(world) ?? DashTheme.FontRegular;
+        var material = holder.AttachComponent<Lumora.Core.Assets.UnlitMaterial>();
+        material.TintColor.Value = DashTheme.MeshTint(DashTheme.Surface);
+        material.Culling.Value = Lumora.Core.Assets.Culling.None;
+        look = new CardLook
+        {
+            Bold = Face(holder, DashTheme.FontBold, regular),
+            Semibold = Face(holder, DashTheme.FontSemibold, regular),
+            Backing = material,
+        };
+        Looks.AddOrUpdate(world, look);
+        return look;
+    }
+
+    public static Lumora.Core.Assets.UnlitMaterial BackingMaterial(World world) => LookOf(world).Backing;
+
+    // This card's slab in its node's space, in metres.
+    public ScriptCardSlab SlabOf()
+    {
+        float scale = ScriptEditorStyle.CardScale;
+        return new ScriptCardSlab(
+            new float3(Layout.Width * 0.5f, -Layout.Height * 0.5f, -BackingDepth) * scale,
+            floatQ.Identity,
+            new float2(Layout.Width + BackingMargin * 2f, Layout.Height + BackingMargin * 2f) * scale,
+            (ScriptEditorStyle.CornerRadius + BackingMargin) * scale);
+    }
+
+    private static FontProvider Face(Slot slot, Uri url, Uri fallback)
+    {
+        var face = slot.AttachComponent<FontProvider>();
+        face.URL.Value = url;
+        face.FallbackURLs.Add(fallback);
+        face.FallbackURLs.Add(DashTheme.FontRegular);
+        return face;
+    }
+
+    // The category's colour as a band across the top of the card, square where it meets the body. It was a
+    // band the colour of the card with a two-unit category line under it, a hairline that shimmered at any
+    // distance. -xlinka
+    private void BuildHeader(Slot content, FontProvider bold, ScriptGraphNode node, bool bad)
     {
         float width = Layout.Width;
+        float height = ScriptEditorStyle.HeaderHeight;
+        var tint = bad ? ScriptEditorStyle.Problem : ScriptEditorStyle.HeaderTint(node.Category);
         var header = content.AddSlot("Header");
-        Place(header, 0f, 0f, width, ScriptEditorStyle.HeaderHeight);
+        Place(header, 0f, 0f, width, height);
         var image = header.AttachComponent<Image>();
-        image.Tint.Value = bad ? ScriptEditorStyle.Problem : DashTheme.Surface;
-        image.CornerRadius.Value = 12f;
-        header.AttachComponent<Button>();
+        image.Tint.Value = tint;
+        image.CornerRadius.Value = ScriptEditorStyle.CornerRadius;
+        var grab = header.AttachComponent<Button>();
         var handle = header.AttachComponent<ScriptCardHandle>();
         handle.Node = node;
         handle.Kind = ScriptCardHandleKind.Header;
         _handles.Add(handle);
 
-        // A quiet category accent leaves the title itself clear.
-        var accent = content.AddSlot("Category");
-        Place(accent, 12f, ScriptEditorStyle.HeaderHeight - 2f, width - 24f, 2f);
-        accent.AttachComponent<Image>().Tint.Value = ScriptEditorStyle.Category(node.Category);
+        var squared = header.AddSlot("Band");
+        Place(squared, 0f, height * 0.5f, width, height * 0.5f);
+        var band = squared.AttachComponent<Image>();
+        band.Tint.Value = tint;
+        grab.SetupBackgroundColor(band.Tint);
 
-        Label(header, font, node.Title, 14f, 0f, width - (Layout.OptionsRows > 0 ? 62f : 28f),
-            ScriptEditorStyle.HeaderHeight, DashTheme.Text, size: 17f);
+        Label(header, bold, node.Title, 18f, 0f, width - (Layout.OptionsRows > 0 ? 86f : 36f),
+            height, DashTheme.Text, size: ScriptEditorStyle.TitleSize);
         if (Layout.OptionsRows > 0)
         {
             // Sibling of the drag header, so the node tool does not mistake this button for a grab.
-            var options = Builder(content, font).Button("···", (_, _) => SetOptionsOpen(!Layout.OptionsOpen), DashTheme.Field);
-            Place(options.Slot, width - 40f, 6f, 28f, 28f);
+            var options = Builder(content, bold).Button("···", (_, _) => SetOptionsOpen(!Layout.OptionsOpen), ScriptEditorStyle.HeaderButton);
+            Place(options.Slot, width - 58f, (height - 44f) * 0.5f, 44f, 44f);
         }
     }
 
     public void SetOptionsOpen(bool open)
     {
         Layout.OptionsOpen = open && Layout.OptionsRows > 0;
+        if (Layout.OptionsOpen && _options == null && _content is { IsDestroyed: false } content && _font != null
+            && _node is { IsDestroyed: false } node)
+            BuildOptions(content, _font, node, node.Resolve(out _));
         if (_options != null)
             _options.ActiveSelf.Value = Layout.OptionsOpen;
         var rect = Root.GetComponent<RectTransform>()!;
         rect.OffsetMin.Value = new float2(0f, -Layout.Height);
-        if (_backing is { IsDestroyed: false })
-        {
-            _backing.LocalPosition.Value = new float3(Layout.Width * 0.5f, -Layout.Height * 0.5f, -BackingDepth) * ScriptEditorStyle.CardScale;
-            _backing.GetComponent<RoundedQuadMesh>()!.Size.Value = new float2(Layout.Width + BackingMargin * 2f, Layout.Height + BackingMargin * 2f);
-        }
     }
 
     private void BuildOptions(Slot content, FontProvider font, ScriptGraphNode node, NodeOverload? overload)
@@ -196,50 +311,67 @@ public sealed class ScriptNodeCard
         float width = Layout.Width - 24f;
         var ui = Builder(_options, font);
         var choices = ScriptGraphEditing.SignatureChoices(node);
-        var signature = overload?.Signature ?? node.Signature.Value ?? string.Empty;
-        bool typeRow = overload?.Definition.IsGeneric == true || choices.Count > 1 || overload == null;
+        var signature = SignatureText(node, overload);
+        // A Function's ports are typed out here, and a call's to another script's Function; a Return and a call in
+        // this graph take theirs from their Function.
+        bool ports = overload?.Definition.Kind == NodeKind.Function || overload?.Definition.IsScriptCall == true;
+        bool typeRow = overload?.Definition.IsGeneric == true || choices.Count > 1 || overload == null || ports;
         if (typeRow)
         {
-            Label(_options, font, "Type", 2f, 0f, 44f, ScriptEditorStyle.RowHeight, DashTheme.TextMuted);
-            float fieldWidth = width - 52f - (choices.Count > 1 ? 68f : 0f);
-            if (overload?.Definition.IsGeneric == true || overload == null)
-                TypeEditor(_options, font, node, signature, 50f, fieldWidth);
+            Label(_options, font, ports ? "Ports" : "Type", 2f, 0f, 68f, ScriptEditorStyle.RowHeight, DashTheme.TextDim);
+            float fieldWidth = width - 76f - (choices.Count > 1 ? 96f : 0f);
+            if (overload?.Definition.IsGeneric == true || overload == null || ports)
+                TypeEditor(_options, font, node, signature, 74f, fieldWidth, ports ? "a:int,b:float|sum:float" : "type");
             else
-                Label(_options, font, signature, 50f, 0f, fieldWidth, ScriptEditorStyle.RowHeight, DashTheme.TextDim);
+                Label(_options, font, signature, 74f, 0f, fieldWidth, ScriptEditorStyle.RowHeight, ScriptEditorStyle.PortText);
             if (choices.Count > 1)
             {
                 var previous = ui.Button("‹", (_, _) => ScriptGraphEditing.CycleOverload(node, -1), DashTheme.Field);
-                Place(previous.Slot, width - 62f, 2f, 28f, 28f);
+                Place(previous.Slot, width - 88f, 3f, 42f, 42f);
                 var next = ui.Button("›", (_, _) => ScriptGraphEditing.CycleOverload(node, 1), DashTheme.Field);
-                Place(next.Slot, width - 28f, 2f, 28f, 28f);
+                Place(next.Slot, width - 42f, 3f, 42f, 42f);
             }
         }
         if (overload?.Definition.IsVariadic == true)
         {
             float top = typeRow ? ScriptEditorStyle.RowHeight : 0f;
-            Label(_options, font, "Inputs", 2f, top, width - 76f, ScriptEditorStyle.RowHeight, DashTheme.TextMuted);
+            Label(_options, font, "Inputs", 2f, top, width - 92f, ScriptEditorStyle.RowHeight, DashTheme.TextDim);
             var fewer = ui.Button("−", (_, _) => ScriptGraphEditing.ChangeInputCount(node, -1), DashTheme.Field);
-            Place(fewer.Slot, width - 62f, top + 2f, 28f, 28f);
+            Place(fewer.Slot, width - 88f, top + 3f, 42f, 42f);
             var more = ui.Button("+", (_, _) => ScriptGraphEditing.ChangeInputCount(node, 1), DashTheme.Field);
-            Place(more.Slot, width - 28f, top + 2f, 28f, 28f);
+            Place(more.Slot, width - 42f, top + 3f, 42f, 42f);
         }
     }
 
-    // The options drawer's type field. It commits when it lets go of focus; text the node cannot take goes back to
-    // what the node has.
-    private void TypeEditor(Slot header, FontProvider font, ScriptGraphNode node, string signature, float x, float width)
+    // The options drawer's type field, or a Function's ports. It commits when it lets go of focus; text the node
+    // cannot take goes back to what the node has, and the card says why.
+    private void TypeEditor(Slot header, FontProvider font, ScriptGraphNode node, string signature, float x, float width, string placeholder)
     {
         var ui = Builder(header, font);
-        var input = ui.TextInput(signature, "type", null, false, DashTheme.Field);
+        var input = ui.TextInput(signature, placeholder, null, false, DashTheme.Field);
         Place(input.Slot, x, 2f, width, ScriptEditorStyle.RowHeight - 4f);
         ClipField(input);
         input.EditingStarted += _ => _editing++;
         input.FocusLost += (field, text) =>
         {
             _editing = System.Math.Max(0, _editing - 1);
-            if (!ScriptGraphEditing.TrySetSignature(node, text, out _) && !node.IsDestroyed && !input.IsDestroyed)
-                input.Text.Value = node.Overload?.Signature ?? node.Signature.Value ?? string.Empty;
+            bool taken = ScriptGraphEditing.TrySetSignature(node, text, out var refusal);
+            if (node.IsDestroyed)
+                return;
+            // Said on the card, so text that goes back to what the node has does not go back without a reason.
+            node.SignatureRefusal = taken ? null : refusal ?? "that does not fit this node";
+            if (!taken && !input.IsDestroyed)
+                input.Text.Value = SignatureText(node, node.Overload);
         };
+    }
+
+    // What the type field shows: the node's signature, or nothing for a Function with no ports yet, so the field
+    // shows how ports are typed instead of a lone bar.
+    private static string SignatureText(ScriptGraphNode node, NodeOverload? overload)
+    {
+        if (overload?.FunctionSignature is { Inputs.Count: 0, Outputs.Count: 0 })
+            return string.Empty;
+        return overload?.Signature ?? node.Signature.Value ?? string.Empty;
     }
 
     private void BuildPorts(Slot content, FontProvider font, ScriptGraphNode node)
@@ -253,7 +385,7 @@ public sealed class ScriptNodeCard
             bool hasEditor = port.Kind == ScriptCardHandleKind.DataInput && port.Type != null && node.FindInput(port.Name)?.Node.Target == null;
             Handle(content, node, port, -ScriptEditorStyle.HandleSize * 0.5f, top, -10f, EditorLeft + 6f);
             Label(content, font, port.Kind == ScriptCardHandleKind.FlowInput ? "›" : port.Name,
-                ScriptEditorStyle.PortInset, top, Layout.InputLabelWidth, row, DashTheme.TextDim);
+                ScriptEditorStyle.PortInset, top, Layout.InputLabelWidth, row, ScriptEditorStyle.PortText);
 
             if (hasEditor)
                 ValueEditor(content, font, node, port.Name, port.Type!, EditorLeft, top);
@@ -266,7 +398,7 @@ public sealed class ScriptNodeCard
             float left = Layout.OutputLeft - 8f;
             Handle(content, node, port, width - ScriptEditorStyle.HandleSize * 0.5f, top, left, width - left + 10f);
             Label(content, font, port.Name, Layout.OutputLeft, top, Layout.OutputLabelWidth, row,
-                DashTheme.TextDim, TextHorizontalAlignment.Right);
+                ScriptEditorStyle.PortText, TextHorizontalAlignment.Right);
         }
     }
 
@@ -280,14 +412,13 @@ public sealed class ScriptNodeCard
             {
                 Handle(content, node, setting, 4f, top, 0f, Layout.Width);
                 var target = node.FindValue(setting.Name)?.Reference.Target as ScriptGraphNode;
-                string writes = target == null ? "drag onto a Stored Value" : "writes " + VariableName(target);
-                Label(content, font, writes, 26f, top, Layout.Width - 36f, ScriptEditorStyle.RowHeight,
-                    target == null ? DashTheme.Warning : DashTheme.TextDim);
+                Label(content, font, PointsAt(node, target), ScriptEditorStyle.PortInset, top, Layout.Width - ScriptEditorStyle.PortInset - 12f,
+                    ScriptEditorStyle.RowHeight, target == null ? DashTheme.Warning : ScriptEditorStyle.PortText);
                 continue;
             }
 
             Label(content, font, setting.Name, ScriptEditorStyle.PortInset, top, Layout.InputLabelWidth,
-                ScriptEditorStyle.RowHeight, DashTheme.TextDim);
+                ScriptEditorStyle.RowHeight, ScriptEditorStyle.PortText);
             if (setting.Type != null)
                 ValueEditor(content, font, node, setting.Name, setting.Type, EditorLeft, top);
         }
@@ -311,12 +442,12 @@ public sealed class ScriptNodeCard
         Place(well, 10f, top, width, height);
         var image = well.AttachComponent<Image>();
         image.Tint.Value = DashTheme.Field;
-        image.CornerRadius.Value = 6f;
+        image.CornerRadius.Value = 8f;
         var text = Builder(well, font).Text(ReadoutText(node), ScriptEditorStyle.FontSize + 2f, DashTheme.Text);
         Fill(text.Slot);
         well.AttachComponent<Mask>().ShowMaskGraphic.Value = true;
         text.AutoSizeHorizontal.Value = text.AutoSizeVertical.Value = true;
-        text.AutoSizeMin.Value = 12f;
+        text.AutoSizeMin.Value = 16f;
         text.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         _readout = text;
@@ -326,6 +457,7 @@ public sealed class ScriptNodeCard
     // Brings the readout up to what the host last showed, without rebuilding the card.
     public void Refresh()
     {
+        RefreshPreviewControls();
         if (_readout == null || _readout.IsDestroyed || _shows == null || _shows.IsDestroyed)
             return;
         var text = ReadoutText(_shows);
@@ -333,11 +465,22 @@ public sealed class ScriptNodeCard
             _readout.Content.Value = text;
     }
 
+    // How far the card's ground is pulled toward the selection tint: all the way for a selected node, partway
+    // while a hold is about to select or deselect it.
+    public float Highlight { get; private set; }
+
+    public void SetHighlight(float amount)
+    {
+        Highlight = amount;
+        if (Root.FindChild("Content", recursive: false)?.GetComponent<RoundedPanel>() is { IsDestroyed: false } ground)
+            ground.Color.Value = color.Lerp(ScriptEditorStyle.CardBackground, ScriptNodeSelection.Tint, amount * ScriptNodeSelection.Pull);
+    }
+
     private static string ReadoutText(ScriptGraphNode node)
         => string.IsNullOrEmpty(node.Shown.Value) ? "..." : node.Shown.Value;
 
     // The dark square a shader node's preview sits in front of; the preview itself is the view's, not the card's.
-    private void BuildPreviewWell(Slot content)
+    private void BuildPreviewWell(Slot content, FontProvider font, ScriptGraphNode node)
     {
         if (!Layout.Preview)
             return;
@@ -345,7 +488,67 @@ public sealed class ScriptNodeCard
         Place(well, 10f, Layout.PreviewTop, Layout.Width - 20f, ScriptCardLayout.PreviewSize);
         var image = well.AttachComponent<Image>();
         image.Tint.Value = DashTheme.Field;
-        image.CornerRadius.Value = 6f;
+        image.CornerRadius.Value = 8f;
+
+        var outputs = node.Overload?.Outputs;
+        if (outputs == null || outputs.Count == 0 || !ShaderTypes.TryFrom(outputs[0].Type, out var type) || !ShaderPreview.IsNumeric(type))
+            return;
+
+        float right = (Layout.Width + ScriptCardLayout.PreviewSize) * 0.5f + 2f;
+        float controlsWidth = Layout.Width - right - 16f;
+        var mode = Builder(content, font).Button("Curve", (_, _) =>
+        {
+            if (node.Space?.View?.PreviewOf(node)?.Material is { } material)
+                material.Curve = !material.Curve;
+            RefreshPreviewControls();
+        }, DashTheme.Surface);
+        Place(mode.Slot, right, Layout.PreviewTop + 8f, controlsWidth, 36f);
+        _previewMode = mode.Slot.GetComponentInChildren<Text>();
+
+        _previewRange = content.AddSlot("Preview range");
+        Fill(_previewRange);
+        var ui = Builder(_previewRange, font);
+        var wider = ui.Button("Y ×10", (_, _) => ChangePreviewRange(node, 10f), DashTheme.Surface);
+        Place(wider.Slot, right, Layout.PreviewTop + 52f, controlsWidth, 36f);
+        var narrower = ui.Button("Y ÷10", (_, _) => ChangePreviewRange(node, 0.1f), DashTheme.Surface);
+        Place(narrower.Slot, right, Layout.PreviewTop + 96f, controlsWidth, 36f);
+
+        _previewAxes = content.AddSlot("Preview axes");
+        Fill(_previewAxes);
+        float leftWidth = (Layout.Width - ScriptCardLayout.PreviewSize) * 0.5f - 12f;
+        _previewUpper = Label(_previewAxes, font, "+1", 18f, Layout.PreviewTop + 8f, leftWidth, 30f, DashTheme.TextDim, size: 19f);
+        _previewLower = Label(_previewAxes, font, "−1", 18f, Layout.PreviewTop + 160f, leftWidth, 30f, DashTheme.TextDim, size: 19f);
+        Label(_previewAxes, font, "U: 0–1", 18f, Layout.PreviewTop + 52f, leftWidth, 28f, DashTheme.TextDim, size: 18f);
+        Label(_previewAxes, font, "V: 0.5", 18f, Layout.PreviewTop + 78f, leftWidth, 28f, DashTheme.TextDim, size: 18f);
+        Label(_previewAxes, font, ShaderTypes.Width(type) == 1 ? "Value" : "XYZW"[..ShaderTypes.Width(type)],
+            18f, Layout.PreviewTop + 116f, leftWidth, 28f, DashTheme.TextDim, size: 18f);
+    }
+
+    private void ChangePreviewRange(ScriptGraphNode node, float factor)
+    {
+        if (node.Space?.View?.PreviewOf(node)?.Material is { } material)
+            material.Range *= factor;
+        RefreshPreviewControls();
+    }
+
+    private void RefreshPreviewControls()
+    {
+        if (_previewMode == null || _previewMode.IsDestroyed || _node == null)
+            return;
+        var material = _node.Space?.View?.PreviewOf(_node)?.Material;
+        bool curve = material?.Curve ?? true;
+        float valueRange = material?.Range ?? 1f;
+        if (_previewShownCurve == curve && _previewShownRange == valueRange)
+            return;
+        _previewShownCurve = curve;
+        _previewShownRange = valueRange;
+        string mode = curve ? "Curve" : "Image";
+        if (_previewMode.Content.Value != mode) _previewMode.Content.Value = mode;
+        if (_previewAxes != null) _previewAxes.ActiveSelf.Value = curve;
+        if (_previewRange != null) _previewRange.ActiveSelf.Value = curve;
+        string range = valueRange.ToString("G3", CultureInfo.InvariantCulture);
+        if (_previewUpper != null && _previewUpper.Content.Value != "+" + range) _previewUpper.Content.Value = "+" + range;
+        if (_previewLower != null && _previewLower.Content.Value != "−" + range) _previewLower.Content.Value = "−" + range;
     }
 
     // What is wrong in red, then notes in the warning colour, then a run-time fault.
@@ -361,7 +564,7 @@ public sealed class ScriptNodeCard
         for (int i = 0; i < Layout.ProblemLines && i < lines.Count; i++)
         {
             Label(content, font, Shorten(lines[i].Text, 64), 12f, Layout.ProblemTop(i),
-                Layout.Width - 24f, ScriptEditorStyle.RowHeight, lines[i].Tint, size: 12f);
+                Layout.Width - 24f, ScriptEditorStyle.RowHeight, lines[i].Tint, size: ScriptEditorStyle.FontSize - 3f);
         }
     }
 
@@ -387,7 +590,8 @@ public sealed class ScriptNodeCard
         button.SetupBackgroundColor(image.Tint);
     }
 
-    // A typed constant is a text field; an object input is a row a reference card drops onto.
+    // A typed constant is a text field; an object input is a row a reference card drops onto, with a clear
+    // button beside it while it holds something.
     private void ValueEditor(Slot content, FontProvider font, ScriptGraphNode node, string port, ScriptType type, float x, float top)
     {
         var entry = node.FindValue(port);
@@ -413,18 +617,23 @@ public sealed class ScriptNodeCard
         }
         if (!ScriptValueText.IsTyped(type))
         {
+            var bound = ScriptValueText.Display(entry);
             var drop = content.AddSlot("Drop " + port);
-            Place(drop, x, top + 3f, EditorWidth, ScriptEditorStyle.RowHeight - 6f);
+            Place(drop, x, top + 3f, bound.Length > 0 ? EditorWidth - 42f : EditorWidth, ScriptEditorStyle.RowHeight - 6f);
             var image = drop.AttachComponent<Image>();
             image.Tint.Value = DashTheme.Field;
-            image.CornerRadius.Value = 6f;
+            image.CornerRadius.Value = 8f;
             drop.AttachComponent<Mask>().ShowMaskGraphic.Value = true;
             drop.AttachComponent<Button>();
             var receiver = drop.AttachComponent<ScriptPortDrop>();
             receiver.Node = node;
             receiver.Port = port;
             receiver.Type = type;
-            var bound = ScriptValueText.Display(entry);
+            if (bound.Length > 0)
+            {
+                var clear = Builder(content, font).TextColor(DashTheme.Negative).Button("Ø", (_, _) => receiver.Clear(), DashTheme.Field);
+                Place(clear.Slot, x + EditorWidth - 40f, top + 3f, 40f, ScriptEditorStyle.RowHeight - 6f);
+            }
             var dropUi = Builder(drop, font);
             var label = dropUi.Text(bound.Length > 0 ? Shorten(bound, 16) : "drop " + type.Name, ScriptEditorStyle.FontSize - 3f,
                 bound.Length > 0 ? DashTheme.Text : DashTheme.TextMuted);
@@ -434,34 +643,125 @@ public sealed class ScriptNodeCard
             return;
         }
 
+        if (type == ScriptTypes.Bool)
+        {
+            Flip(content, font, node, port, x, top);
+            return;
+        }
+
+        // An unset value still has one, the port's default or the type's, and the field shows it rather than
+        // an empty box: a Constant that reads blank and still answers false is the field lying.
+        string fallback = DefaultText(node, port, type);
         var ui = Builder(content, font);
         // A text field takes line breaks: enter starts a new line, and clicking away keeps what was typed.
-        var input = ui.TextInput(ScriptValueText.Display(entry), type.Name, null, type == ScriptTypes.String, DashTheme.Field);
+        var input = ui.TextInput(Shown(entry, fallback), type.Name, null, type == ScriptTypes.String, DashTheme.Field);
         Place(input.Slot, x, top + 3f, EditorWidth, ScriptEditorStyle.RowHeight - 6f);
         ClipField(input);
         // What is typed goes into the node as it is typed, whenever it reads as a value, so the graph
         // follows the field; half-typed text that does not parse yet waits for more. The whole typing
         // session is one undo step, closed when the field lets go of focus however that happens, and text
         // that never parsed goes back to the node's value then.
+        // A number takes math against what the port held when typing began ("*2" doubles it), so every
+        // keystroke works from the same start; text that never works out says why in red for a moment.
         string before = string.Empty;
+        double start = 0d;
+        bool number = ScriptValueText.IsNumber(type);
+        if (number)
+            input.Tip.Value = FieldMath.Tip;
         input.EditingStarted += _ =>
         {
             _editing++;
             before = node.IsDestroyed ? string.Empty : node.FindValue(port)?.Json.Value ?? string.Empty;
+            if (number)
+                start = StartNumber(node, port, fallback);
         };
-        input.EditingChanged += (_, text) => Apply(node, port, type, text);
+        input.EditingChanged += (_, text) => Apply(node, port, type, text, fallback, start);
         input.FocusLost += (_, text) =>
         {
             _editing = System.Math.Max(0, _editing - 1);
-            Apply(node, port, type, text);
+            Apply(node, port, type, text, fallback, start);
             RecordSession(node, port, before);
             if (!node.IsDestroyed && !input.IsDestroyed)
             {
-                var shown = ScriptValueText.Display(node.FindValue(port));
+                var shown = Shown(node.FindValue(port), fallback);
                 if (input.Text.Value != shown)
                     input.Text.Value = shown;
+                if (number && !string.IsNullOrWhiteSpace(text) && FieldMath.Evaluate(text, start) is { Ok: false } refused)
+                    FieldHint.Show(input, text, refused.Hint, () => input.Text.Value = Shown(node.FindValue(port), fallback));
             }
         };
+    }
+
+    private static double StartNumber(ScriptGraphNode node, string port, string fallback)
+        => double.TryParse(node.IsDestroyed ? fallback : Shown(node.FindValue(port), fallback),
+            System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+            && double.IsFinite(value) ? value : 0d;
+
+    private static string Shown(ScriptGraphValue? entry, string fallback)
+    {
+        var shown = ScriptValueText.Display(entry);
+        return shown.Length == 0 ? fallback : shown;
+    }
+
+    // What an unset value reads as: the port's own default, else the type's zero. Text has none to show.
+    private static string DefaultText(ScriptGraphNode node, string port, ScriptType type)
+    {
+        if (type == ScriptTypes.String)
+            return string.Empty;
+        var overload = node.Overload;
+        int index = overload?.InputIndex(port) ?? -1;
+        object? value = index >= 0 && overload!.Inputs[index].HasDefault ? overload.Inputs[index].Default : null;
+        try
+        {
+            value ??= type.ClrType.IsValueType ? Activator.CreateInstance(type.ClrType) : null;
+            return value == null ? string.Empty : ScriptTextForm.Format(type, value);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidCastException or NotSupportedException)
+        {
+            return string.Empty;
+        }
+    }
+
+    // A true or false value is one press to flip, and says which it is now, the default included.
+    private void Flip(Slot content, FontProvider font, ScriptGraphNode node, string port, float x, float top)
+    {
+        bool on = CurrentBool(node, port);
+        var button = Builder(content, font).Button(on ? "true" : "false", (_, _) => FlipValue(node, port),
+            on ? DashTheme.Accent : DashTheme.Field);
+        Place(button.Slot, x, top + 3f, EditorWidth, ScriptEditorStyle.RowHeight - 6f);
+    }
+
+    private static bool CurrentBool(ScriptGraphNode node, string port)
+    {
+        if (node.FindValue(port) is { } entry && !string.IsNullOrEmpty(entry.Json.Value))
+        {
+            try
+            {
+                return GraphValue.ParseJson(entry.Json.Value).Bool;
+            }
+            catch (GraphFormatException)
+            {
+            }
+        }
+        var overload = node.Overload;
+        int index = overload?.InputIndex(port) ?? -1;
+        return index >= 0 && overload!.Inputs[index].Default is true;
+    }
+
+    private static void FlipValue(ScriptGraphNode node, string port)
+    {
+        if (node.IsDestroyed)
+            return;
+        string before = node.FindValue(port)?.Json.Value ?? string.Empty;
+        try
+        {
+            node.SetValue(port, GraphValue.Of(!CurrentBool(node, port)));
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return;
+        }
+        RecordSession(node, port, before);
     }
 
     // A shader node's texture: the material's property for it, as a small picture and a name, taking a held
@@ -474,7 +774,7 @@ public sealed class ScriptNodeCard
         Place(slot, x, top + 3f, EditorWidth, height);
         var well = slot.AttachComponent<Image>();
         well.Tint.Value = DashTheme.Field;
-        well.CornerRadius.Value = 6f;
+        well.CornerRadius.Value = 8f;
         slot.AttachComponent<Mask>().ShowMaskGraphic.Value = true;
         slot.AttachComponent<Button>();
 
@@ -522,15 +822,15 @@ public sealed class ScriptNodeCard
         float height = ScriptEditorStyle.RowHeight - 6f;
         var ui = Builder(content, font);
         var previous = ui.Button("\u2039", (_, _) => StepChoice(node, port, type, -1), DashTheme.Field);
-        Place(previous.Slot, x, top + 3f, 26f, height);
+        Place(previous.Slot, x, top + 3f, 38f, height);
         var shown = Builder(content, font).Text(CurrentChoice(node, port, type), ScriptEditorStyle.FontSize - 2f, DashTheme.Text);
-        Place(shown.RectTransform, x + 28f, top + 3f, EditorWidth - 56f, height);
+        Place(shown.RectTransform, x + 40f, top + 3f, EditorWidth - 80f, height);
         shown.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         shown.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         shown.AutoSizeHorizontal.Value = true;
-        shown.AutoSizeMin.Value = 10f;
+        shown.AutoSizeMin.Value = 14f;
         var next = ui.Button("\u203a", (_, _) => StepChoice(node, port, type, 1), DashTheme.Field);
-        Place(next.Slot, x + EditorWidth - 26f, top + 3f, 26f, height);
+        Place(next.Slot, x + EditorWidth - 38f, top + 3f, 38f, height);
     }
 
     private static string CurrentChoice(ScriptGraphNode node, string port, ScriptType type)
@@ -578,7 +878,7 @@ public sealed class ScriptNodeCard
             InspectorUndo.Record(node, new FieldEditUndoBatch(entry.Json, before, entry.Json.Value, ScriptGraphEditing.ValueStep));
     }
 
-    private static void Apply(ScriptGraphNode node, string port, ScriptType type, string text)
+    private static void Apply(ScriptGraphNode node, string port, ScriptType type, string text, string fallback = "", double start = 0d)
     {
         if (node.IsDestroyed)
             return;
@@ -588,7 +888,7 @@ public sealed class ScriptNodeCard
             string current = entry?.Json.Value ?? string.Empty;
             bool bound = entry != null && !entry.Reference.Value.IsNull;
             // Nothing typed that differs from what the node holds, so a field only visited changes nothing.
-            if (text == ScriptValueText.Display(entry))
+            if (text == ScriptValueText.Display(entry) || (current.Length == 0 && !bound && text == fallback && fallback.Length > 0))
                 return;
             // Text is kept exactly as typed, spaces and line breaks and all, and an emptied text field is the
             // empty string. Anything else left blank clears the value.
@@ -597,7 +897,7 @@ public sealed class ScriptNodeCard
                 if (current.Length > 0 || bound)
                     node.ClearValue(port);
             }
-            else if (ScriptValueText.TryParse(text, type, out var value, out _) && (value.ToJson() != current || bound))
+            else if (ScriptValueText.TryParse(text, type, start, out var value, out _) && (value.ToJson() != current || bound))
             {
                 node.SetValue(port, value);
             }
@@ -616,6 +916,19 @@ public sealed class ScriptNodeCard
             InspectorUndo.Record(node, new FieldEditUndoBatch(entry.Json, before, entry.Json.Value, ScriptGraphEditing.ValueStep));
     }
 
+    // A Write Value's row says what it writes, a Return's what it returns from, a call's what it calls.
+    private static string PointsAt(ScriptGraphNode node, ScriptGraphNode? target)
+    {
+        var kind = node.Overload?.Definition.Kind;
+        if (kind is NodeKind.Return or NodeKind.CallFunction or NodeKind.EvaluateFunction)
+        {
+            if (target == null)
+                return "drag onto a Function";
+            return (kind == NodeKind.Return ? "returns from " : "calls ") + VariableName(target);
+        }
+        return target == null ? "drag onto a Stored Value" : "writes " + VariableName(target);
+    }
+
     private static string VariableName(ScriptGraphNode variable)
     {
         var name = variable.FindValue("name");
@@ -627,23 +940,23 @@ public sealed class ScriptNodeCard
     {
         var ui = new UIBuilder(slot);
         ui.Font(font).FontSize(ScriptEditorStyle.FontSize).TextColor(DashTheme.Text).ForegroundColor(DashTheme.Accent)
-            .BackgroundColor(DashTheme.Surface).CornerRadius(6f);
+            .BackgroundColor(DashTheme.Surface).CornerRadius(8f);
         return ui;
     }
 
-    // Labels have a real clip window. A long custom port name can shrink within its column but can
-    // never paint over a value field or another port. The editor itself keeps its full value intact.
+    // Labels clip to their own rect. A long custom port name can shrink within its column but can never
+    // paint over a value field or another port. The editor itself keeps its full value intact. It was a
+    // masked slot holding the text, two slots and five components a label where one slot and two do.
     private static Text Label(Slot parent, FontProvider font, string value, float x, float y, float width,
         float height, color tint, TextHorizontalAlignment alignment = TextHorizontalAlignment.Left, float size = ScriptEditorStyle.FontSize)
     {
-        var viewport = parent.AddSlot("Label " + value);
-        Place(viewport, x, y, width, height);
-        viewport.AttachComponent<Mask>();
-        var text = Builder(viewport, font).Text(value, size, tint);
-        Fill(text.Slot);
+        var text = Builder(parent, font).Text(value, size, tint);
+        text.Slot.Name.Value = "Label " + value;
+        Place(text.RectTransform, x, y, width, height);
+        text.ClipToRect.Value = true;
         text.WordWrap.Value = false;
         text.AutoSizeHorizontal.Value = true;
-        text.AutoSizeMin.Value = 12f;
+        text.AutoSizeMin.Value = 16f;
         text.HorizontalAlignment.Value = alignment;
         text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         return text;
@@ -655,7 +968,7 @@ public sealed class ScriptNodeCard
         var text = input.Slot.FindChild("Text")?.GetComponent<Text>();
         if (text != null)
         {
-            text.Size.Value = 13f;
+            text.Size.Value = ScriptEditorStyle.FontSize - 2f;
             text.WordWrap.Value = false;
             text.KeepCaretVisible.Value = true;
         }

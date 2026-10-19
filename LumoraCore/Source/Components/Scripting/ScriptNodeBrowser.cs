@@ -13,11 +13,11 @@ using Lumora.Script;
 
 namespace Lumora.Core.Components.Scripting;
 
-// The nodes a graph can use: folders by category, and a search across all of them. It is one person's
-// list, so the panel is local, in the same shell as the inspector. Script nodes and shader nodes are two
-// lists, switched at the top.
+// The nodes a graph can use: folders by category, and a search across all of them. It is a
+// shared list, in the same shell as the inspector. Each peer builds the controls from the shared browse
+// state, while a pick readies that person's own tool. Script and shader nodes switch at the top.
 //
-// A pick readies that node on the node tool that opened the panel, to be placed with a double press, and
+// A pick readies that node on the user's equipped node tool, to be placed with a double press, and
 // the panel stays open for the next one. The readied node's row stays lit. -xlinka
 [ComponentCategory("Hidden")]
 public sealed class ScriptNodeBrowser : Component
@@ -29,14 +29,20 @@ public sealed class ScriptNodeBrowser : Component
 
     private static readonly Dictionary<GraphKind, Folder> _libraries = new();
 
+    public readonly Sync<GraphKind> BrowseKind = new();
+    public readonly Sync<string> BrowseQuery = new(string.Empty);
+    public readonly Sync<string> BrowsePath = new(string.Empty);
+
     private ScriptNodeTool? _tool;
     private GraphKind _kind;
     private string _query = string.Empty;
     private string _path = string.Empty;
     private string? _shownReady;
     private PanelShell? _shell;
+    private Slot? _view;
     private Slot? _list;
     private Text? _hint;
+    private TextInput? _search;
     private bool _dirty = true;
 
     public int RowCount { get; private set; }
@@ -48,8 +54,8 @@ public sealed class ScriptNodeBrowser : Component
     // In front of the user a little below eye level, facing them.
     public static ScriptNodeBrowser Open(World world, ScriptNodeTool tool, GraphKind kind = GraphKind.Script)
     {
-        CloseAll(world);
-        var slot = world.RootSlot.AddLocalSlot("Node Browser");
+        var slot = world.AddSpawnSlot(world.RootSlot, "Node Browser");
+        slot.Persistent.Value = false;
         var head = world.LocalUser?.Root?.HeadSlot;
         if (head != null && !head.IsDestroyed)
         {
@@ -70,14 +76,17 @@ public sealed class ScriptNodeBrowser : Component
     // Switches between the script nodes and the shader nodes, back at the top of an unfiltered list.
     public void ShowKind(GraphKind kind)
     {
+        BrowseKind.Value = kind;
+        BrowsePath.Value = string.Empty;
+        BrowseQuery.Value = string.Empty;
         bool changed = kind != _kind;
         _kind = kind;
         _path = string.Empty;
         _dirty = true;
-        if (changed && _shell is { IsDestroyed: false } shell)
+        if (changed && _view is { IsDestroyed: false })
         {
             _query = string.Empty;
-            shell.RebuildContent(BuildLayout);
+            BuildView();
         }
     }
 
@@ -89,35 +98,62 @@ public sealed class ScriptNodeBrowser : Component
         _shell.Title.Value = "Nodes";
         _shell.Size.Value = PanelSize;
         theme.ApplyTo(_shell);
-        _shell.RebuildContent(BuildLayout);
+    }
+
+    public override void OnStart()
+    {
+        base.OnStart();
+        EnsureView();
+    }
+
+    private void EnsureView()
+    {
+        if (_view is { IsDestroyed: false }) return;
+        _shell = Slot.GetComponent<PanelShell>();
+        if (_shell?.ContentSlot is not { } content) return;
+        _view = content.AddLocalSlot("Node Browser View");
+        InspectorUI.FillParent(_view.AttachComponent<RectTransform>());
+        _kind = BrowseKind.Value;
+        _query = BrowseQuery.Value;
+        _path = BrowsePath.Value;
+        BuildView();
+    }
+
+    private void BuildView()
+    {
+        if (_view == null) return;
+        _view.DestroyChildren();
+        var page = _view.AddSlot("Page");
+        InspectorUI.FillParent(page.AttachComponent<RectTransform>());
+        BuildLayout(new UIBuilder(page));
     }
 
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
-        if (_tool == null || _tool.IsDestroyed)
+        EnsureView();
+        _tool = ScriptNodeTool.ForLocalUser(World);
+        if (_kind != BrowseKind.Value)
         {
-            Slot.Destroy();
-            return;
+            _kind = BrowseKind.Value;
+            BuildView();
         }
-        if (_tool.ReadyType != _shownReady)
+        if (_query != BrowseQuery.Value || _path != BrowsePath.Value)
+            _dirty = true;
+        _query = BrowseQuery.Value;
+        _path = BrowsePath.Value;
+        if (_search is { IsDestroyed: false } && _search.Text.Value != _query)
+            _search.Text.Value = _query;
+        if (_tool?.ReadyType != _shownReady)
             _dirty = true;
         if (_dirty)
             Rebuild();
     }
 
-    private static void CloseAll(World world)
-    {
-        foreach (var child in world.RootSlot.LocalChildren)
-        {
-            if (child.GetComponent<ScriptNodeBrowser>() is { } open)
-                open.Slot.Destroy();
-        }
-    }
-
     // Readies the node on the tool that opened the panel.
     public void Pick(NodeDefinition definition)
     {
+        _tool = ScriptNodeTool.ForLocalUser(World);
         if (_tool is { IsDestroyed: false } tool)
             tool.Ready(definition.Name, ScriptGraphEditing.DefaultSignature(definition, GraphLanguage.For(_kind)), _kind);
         _dirty = true;
@@ -126,6 +162,7 @@ public sealed class ScriptNodeBrowser : Component
     public void Search(string query)
     {
         _query = query ?? string.Empty;
+        BrowseQuery.Value = _query;
         _dirty = true;
     }
 
@@ -133,6 +170,7 @@ public sealed class ScriptNodeBrowser : Component
     public void ShowFolder(string path)
     {
         _path = Library.Find(path) != null ? path : string.Empty;
+        BrowsePath.Value = _path;
         _dirty = true;
     }
 
@@ -161,6 +199,8 @@ public sealed class ScriptNodeBrowser : Component
         searchUi.PushStyle();
         searchUi.FlexibleWidth(1f);
         var input = InspectorUI.CreateTextInput(searchUi, "Search");
+        _search = input;
+        input.Text.Value = BrowseQuery.Value;
         input.Placeholder.Value = "Search nodes...";
         input.SetChangeAction(OnSearchChanged);
         input.SetSubmitAction(OnSearchChanged);
@@ -174,6 +214,7 @@ public sealed class ScriptNodeBrowser : Component
         var scrollUi = new UIBuilder(host);
         InspectorUI.ApplyTheme(scrollUi, Slot);
         var scroll = scrollUi.ScrollRect(out var content, null, InspectorUI.PaneColor);
+        scroll.RowsActOnRelease.Value = true;
         InspectorUI.FillParent(scroll.Slot.GetComponent<RectTransform>()!);
         var rows = content.Slot.AttachComponent<VerticalLayout>();
         rows.Spacing.Value = 2f;
@@ -188,6 +229,9 @@ public sealed class ScriptNodeBrowser : Component
         InspectorUI.FillParent(_hint.RectTransform!);
         _hint.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         _hint.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        _hint.WordWrap.Value = false;
+        _hint.ClipToRect.Value = true;
+        _hint.Ellipsis.Value = true;
         hintUi.PopStyle();
         _dirty = true;
     }
@@ -230,7 +274,8 @@ public sealed class ScriptNodeBrowser : Component
         if (_hint != null && !_hint.IsDestroyed)
         {
             bool readyHere = _shownReady != null && _tool?.ReadyKind == _kind;
-            _hint.Content.Value = readyHere && GraphLanguage.For(_kind).Registry.TryGetDefinition(_shownReady!, out var ready)
+            _hint.Content.Value = _tool == null ? "Equip a node tool to place a node from this browser."
+                : readyHere && GraphLanguage.For(_kind).Registry.TryGetDefinition(_shownReady!, out var ready)
                 ? $"Placing {TitleOf(ready)}: double press empty space."
                 : _kind == GraphKind.Shader
                     ? "Pick a node, place it, then wire it into a material's graph."
@@ -291,7 +336,12 @@ public sealed class ScriptNodeBrowser : Component
         {
             InspectorUI.FillParent(rect);
             rect.OffsetMin.Value = new float2(10f, 0f);
+            rect.OffsetMax.Value = new float2(-10f, 0f);
             text.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+            text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            text.WordWrap.Value = false;
+            text.ClipToRect.Value = true;
+            text.Ellipsis.Value = true;
         }
         ui.PopStyle();
 
@@ -305,6 +355,9 @@ public sealed class ScriptNodeBrowser : Component
             InspectorUI.FillParent(path.RectTransform!);
             path.HorizontalAlignment.Value = TextHorizontalAlignment.Right;
             path.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            path.WordWrap.Value = false;
+            path.ClipToRect.Value = true;
+            path.Ellipsis.Value = true;
             ui.PopStyle();
         }
         RowCount++;

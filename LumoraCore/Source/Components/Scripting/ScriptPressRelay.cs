@@ -51,6 +51,14 @@ public sealed class ScriptPressRelay : Component
     public readonly Sync<string> SourceText = new();
     public readonly SyncRef<Slot> SourceOther = new();
 
+    // A press on a watched panel button landing, held each frame and ending, one count per step like the rest,
+    // with where on the button it is riding along.
+    public readonly Sync<int> SourcePressBegins = new();
+    public readonly Sync<int> SourcePressHolds = new();
+    public readonly Sync<int> SourcePressEnds = new();
+    public readonly Sync<float2> LocalPoint = new();
+    public readonly Sync<float2> NormalizedPoint = new();
+
     // What a Local script on this machine last sent to its author's Shared scripts on a slot; the count
     // comes last. Messages sent in one frame arrive as the last of them.
     public readonly SyncRef<ScriptHost> MessageSender = new();
@@ -114,6 +122,18 @@ public sealed class ScriptPressRelay : Component
         PublishSource(host, source, kind, point);
     }
 
+    // The same for a press step, where on the button it is written ahead of the count.
+    public void PublishPress(ScriptHost host, Slot source, ScriptSourceKind kind, in float3 point, in float2 local, in float2 normalized)
+    {
+        if (host == null || host.IsDestroyed || source == null || source.IsDestroyed)
+            return;
+        if (!LocalPoint.Value.Equals(local))
+            LocalPoint.Value = local;
+        if (!NormalizedPoint.Value.Equals(normalized))
+            NormalizedPoint.Value = normalized;
+        PublishSource(host, source, kind, point);
+    }
+
     // On this peer: a Local script's message for its author's Shared scripts on target.
     public void PublishMessage(ScriptHost sender, Slot target, string text, float value)
     {
@@ -147,6 +167,9 @@ public sealed class ScriptPressRelay : Component
         ScriptSourceKind.ToolPrimaryUp => SourceToolPrimaryUps,
         ScriptSourceKind.ToolSecondaryDown => SourceToolSecondaryDowns,
         ScriptSourceKind.ToolSecondaryUp => SourceToolSecondaryUps,
+        ScriptSourceKind.PressBegin => SourcePressBegins,
+        ScriptSourceKind.PressHold => SourcePressHolds,
+        ScriptSourceKind.PressEnd => SourcePressEnds,
         _ => SourceClicks,
     };
 
@@ -211,8 +234,18 @@ public sealed class ScriptPressRelay : Component
             {
                 for (int kind = 0; kind < SourceKinds; kind++)
                 {
+                    var step = (ScriptSourceKind)kind;
+                    if (step is ScriptSourceKind.PressBegin or ScriptSourceKind.PressHold or ScriptSourceKind.PressEnd)
+                    {
+                        // A held press is heard once a frame here, however many of its frames one batch carried,
+                        // and is no flood: it is meant to arrive every frame.
+                        int steps = step == ScriptSourceKind.PressHold ? System.Math.Min(sourceCounts[kind], 1) : sourceCounts[kind];
+                        for (int i = 0; i < steps && (step == ScriptSourceKind.PressHold || TakeSlot()); i++)
+                            host.PressStepFrom(presser, source, step, Point.Value, LocalPoint.Value, NormalizedPoint.Value);
+                        continue;
+                    }
                     for (int i = 0; i < sourceCounts[kind] && TakeSlot(); i++)
-                        host.SourceEventFrom(presser, source, (ScriptSourceKind)kind, Point.Value, SourceText.Value, SourceOther.Target);
+                        host.SourceEventFrom(presser, source, step, Point.Value, SourceText.Value, SourceOther.Target);
                 }
             }
         }

@@ -11,6 +11,7 @@ public enum ScriptCardHandleKind : byte
     FlowInput,
     FlowOutput,
 
-    // A Write Value's "var": dragged onto a Stored Value card to choose what it writes.
+    // A Write Value's "var", or a Return's or a call's "fn": dragged onto a Stored Value card to choose what it
+    // writes, or onto a Function card to choose the Function.
     Variable
 }

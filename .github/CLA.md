@@ -1,6 +1,6 @@
 # Contributor License Agreement
 
-**LumoraVR Source Available License — Contributor Agreement v2.0**
+**LumoraVR Source Available License — Contributor Agreement v3.0**
 
 By submitting a pull request or any contribution to this repository, you agree to the following terms in full:
 
@@ -8,7 +8,7 @@ By submitting a pull request or any contribution to this repository, you agree t
 
 ## What You're Contributing To
 
-LumoraVR is a source-available project developed and maintained by **LUMORAVR LTD**. Non-commercial use is free and broadly permitted. Commercial use requires a paid licence. On **2030-03-24**, this version of the code additionally becomes available under **GPL v3**.
+LumoraVR is a source-available project developed and maintained by **LUMORAVR LTD**. Non-commercial use is free and broadly permitted. Commercial use requires a paid licence.
 
 ---
 
@@ -34,13 +34,13 @@ By contributing (code, assets, documentation, bug fixes, or anything else), you 
 
 ## What This Means in Plain English
 
-You keep ownership of what you write, but you give LUMORAVR LTD the permanent right to use it however they like — including commercially. The code itself is free for non-commercial use by everyone, and becomes GPL v3 on 2030-03-24.
+You keep ownership of what you write, but you give LUMORAVR LTD the permanent right to use it however they like — including commercially. The code itself is free for non-commercial use by everyone.
 
 ---
 
 ## Permitted Use (for all users, including contributors)
 
-Under the main licence (v2.0), the following are permitted **without a commercial licence**:
+Under the main licence (v3.0), the following are permitted **without a commercial licence**:
 
 - View and study the source code for any purpose
 - Run the project locally or on servers for non-commercial purposes
@@ -68,7 +68,7 @@ Under the main licence (v2.0), the following are permitted **without a commercia
 
 ## Licence Version
 
-This CLA is tied to the main licence version in effect at the time of your contribution (currently v2.0). Continued contributions after a revised CLA is published constitute acceptance of the revised terms for new contributions.
+This CLA is tied to the main licence version in effect at the time of your contribution (currently v3.0). Continued contributions after a revised CLA is published constitute acceptance of the revised terms for new contributions.
 
 ---
 

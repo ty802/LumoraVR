@@ -1,6 +1,6 @@
 # LumoraVR Source Available License
 
-**Version 2.0**
+**Version 3.0**
 Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 
 ---
@@ -13,9 +13,8 @@ The Software is made available under a **dual-path model**:
 
 - **Non-commercial use** is free and broadly permitted. You can build, fork, host, experiment, and share — as long as no money changes hands.
 - **Commercial use** requires a separate paid licence from LUMORAVR LTD. Contact **legal@lumoravr.com**.
-- **Change Date:** On **2030-03-24**, this version of the Software automatically becomes available under the **GNU General Public License v3.0 (GPL v3)** in addition to this licence. From that date, you may use this version under either this licence or GPL v3, at your option.
 
-This is **not** an open source licence until the Change Date passes. If you require commercial rights before then, contact us.
+This is **not** an open source licence. If you require commercial rights, contact us.
 
 ---
 
@@ -29,8 +28,6 @@ This is **not** an open source licence until the Change Date passes. If you requ
 - **"Non-Commercial Use"** means personal, educational, research, hobbyist, or community use where no commercial advantage or monetary compensation is received or expected.
 - **"Contribution"** means any code, asset, documentation, bug fix, or other material submitted to this repository by You.
 - **"Licensor"** means LUMORAVR LTD, a company incorporated in England and Wales.
-- **"Change Date"** means 2030-03-24.
-- **"Change License"** means the GNU General Public License v3.0.
 
 ---
 
@@ -80,14 +77,9 @@ The following are prohibited under all circumstances without prior written conse
 
 ---
 
-## 5. Change Date
+## 5. Earlier Versions
 
-On the Change Date (2030-03-24), this version of the Software will additionally become available under the Change License (GNU General Public License v3.0). From that date:
-
-- You may use, modify, and distribute this version under the terms of GPL v3 instead of, or in addition to, this licence.
-- The text of GPL v3 is available at https://www.gnu.org/licenses/gpl-3.0.html.
-- This licence continues to apply to versions of the Software released after the Change Date until their own Change Date arrives.
-- The Licensor's rights are not affected by the Change Date.
+Versions of the Software published under an earlier version of this licence remain available under the terms of that version, including any change date it set. This version of the licence sets no change date: Software published under it is not relicensed under the GNU General Public License or any other licence at any future date.
 
 ---
 
@@ -200,4 +192,4 @@ For general support or community questions: **support@lumoravr.com**
 
 ---
 
-*Non-commercial use is free. Commercial use requires a licence. This code becomes GPL v3 on 2030-03-24.*
+*Non-commercial use is free. Commercial use requires a licence.*

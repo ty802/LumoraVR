@@ -24,13 +24,11 @@ For questions or issues, please open an issue or make a PR.
 
 ## Licence
 
-LumoraVR is source-available under the [LumoraVR Source Available License v2.0](./LICENSE.md).
+LumoraVR is source-available under the [LumoraVR Source Available License v3.0](./LICENSE.md).
 
 **Non-commercial use is free.** Build, fork, host community servers, experiment, share — as long as no money changes hands.
 
 **Commercial use requires a paid licence.** Contact **legal@lumoravr.com**.
-
-**On 2030-03-24 this version becomes GPL v3** — fully open source, forever.
 
 **What you can do for free:**
 - View, study, run, and modify the source code for non-commercial purposes.

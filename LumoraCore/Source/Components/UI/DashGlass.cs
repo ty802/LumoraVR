@@ -12,9 +12,11 @@ namespace Lumora.Core.Components.UI;
 // solid; only the backing is glass. -xlinka
 public static class DashGlass
 {
+    // Opaque, so no unblurred world shows through, and washed mostly to the tint: a panel's ground has
+    // to stay dark against a bright sky for its text to read.
     public const float BlurRadius = 8f;
-    public const float Opacity = 0.92f;
-    public const float TintStrength = 0.6f;
+    public const float Opacity = 1f;
+    public const float TintStrength = 0.8f;
 
     public static CustomShaderMaterial Attach(Slot slot)
     {

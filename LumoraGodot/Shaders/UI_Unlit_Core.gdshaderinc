@@ -19,12 +19,11 @@
 #endif
 
 uniform vec4 albedo_color : source_color = vec4(1.0);
-// Plain bilinear, NO mipmaps, NO aniso. UI textures at glancing viewing angles
-// otherwise drop to a higher mip level (because screen-space derivatives grow
-// along the foreshortened axis) - rounded-rect sprites lose their alpha shape
-// and tinted backgrounds wash toward grey/white. UI is interactive and viewed
-// close, mip 0 sampling everywhere matches what the designer painted. - xlinka
-uniform sampler2D albedo_texture : source_color, filter_linear_mipmap, repeat_disable;
+// Mipmapped AND anisotropic. Plain trilinear drops to a coarse mip at a glancing angle (the screen-space
+// derivatives grow along the foreshortened axis), so rounded-rect sprites lost their shape and tinted
+// grounds washed toward grey; aniso picks the level off the short axis and keeps them. Mips stay so a far
+// icon does not shimmer. - xlinka
+uniform sampler2D albedo_texture : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
 uniform bool use_albedo_texture = false;
 
 uniform vec2 uv_scale = vec2(1.0);
@@ -42,7 +41,7 @@ uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.01;
 
 // A second picture whose alpha cuts this one, on the quad's own UV: multiplied in (mask_mode 0) or as a hard
 // edge at the cutoff (mask_mode 1).
-uniform sampler2D mask_texture : source_color, filter_linear_mipmap, repeat_disable;
+uniform sampler2D mask_texture : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
 uniform bool use_mask_texture = false;
 uniform vec2 mask_scale = vec2(1.0);
 uniform vec2 mask_offset = vec2(0.0);

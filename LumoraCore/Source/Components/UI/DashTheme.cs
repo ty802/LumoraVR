@@ -38,9 +38,10 @@ public static class DashTheme
     public static readonly color Backdrop = S(0.075f, 0.071f, 0.110f, 0.97f);
     public static readonly color Panel = S(0.110f, 0.104f, 0.157f, 1f);
     public static readonly color Surface = S(0.153f, 0.145f, 0.216f, 1f);
-    // A canvas root over a glass bezel: enough panel colour to ground the cards, enough gap to
-    // let the frosted world behind it read through.
-    public static readonly color GlassBackdrop = new color(Panel.r, Panel.g, Panel.b, 0.42f);
+    // A canvas root over a glass bezel. Mostly panel colour: the blend is linear, so even a few percent of
+    // a bright sky lifts the dark ground a long way, and at 0.42 a panel in daylight went grey and its
+    // text washed out with it. What is left of the glass reads as a faint frost.
+    public static readonly color GlassBackdrop = new color(Panel.r, Panel.g, Panel.b, 0.88f);
     public static readonly color SurfaceHover = S(0.196f, 0.186f, 0.275f, 1f);
     public static readonly color SurfacePressed = S(0.235f, 0.224f, 0.325f, 1f);
     public static readonly color Field = S(0.086f, 0.082f, 0.125f, 1f);

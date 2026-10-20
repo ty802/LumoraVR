@@ -514,8 +514,9 @@ public static class EngineSettings
     // RenderScale becomes a CEILING when this is on: the platform layer lowers the 3D render scale
     // when frames run long and walks it back up when they do not. A 4k window is four times the
     // pixels of 1080p and nothing was adapting, which is the whole "30fps in fullscreen" report.
-    // -xlinka
-    private static bool _dynamicResolution = true;
+    // Off unless chosen: every step down smears world-space text and hairlines into mush, and panels
+    // are most of what you look at. -xlinka
+    private static bool _dynamicResolution = false;
     public static bool DynamicResolution
     {
         get => _dynamicResolution;
@@ -866,8 +867,9 @@ public static class EngineSettings
     public static readonly int[] AntiAliasingOptions = { 0, 1, 2, 4, 8 };
 
     // Desktop mode: 0 is off, 1 is FXAA, and 2/4/8 retain the saved MSAA sample counts.
-    // FXAA is the default for a new preference; headset rendering has its own quality profile.
-    private static int _antiAliasing = 1;
+    // 4x MSAA by default: FXAA blurs the whole frame after the fact, and small panel text is the first
+    // thing it eats. Headset rendering has its own quality profile.
+    private static int _antiAliasing = 4;
     public static int AntiAliasing
     {
         get => _antiAliasing;
@@ -993,6 +995,7 @@ public static class EngineSettings
     private const string KeyFieldOfView = "Engine.Video.FieldOfView";
     private const string KeyMaxTextureSize = "Engine.Video.MaxTextureSize";
     private const string KeyMobileTextureCeiling = "Engine.Video.MobileTextureCeiling";
+    private const string KeySharpPanelDefaults = "Engine.Video.SharpPanelDefaults";
     private const string KeyReflectionsEnabled = "Engine.Video.ReflectionsEnabled";
     private const string KeyLodBias = "Engine.Video.LodBias";
     private const string KeyMeshLodThreshold = "Engine.Video.MeshLodThreshold";
@@ -1142,6 +1145,17 @@ public static class EngineSettings
             _contrast = SettingsCatalog.Contrast.Clamp(Settings.ReadValue(KeyContrast, _contrast));
             _saturation = SettingsCatalog.Saturation.Clamp(Settings.ReadValue(KeySaturation, _saturation));
             _antiAliasing = SnapAntiAliasing(Settings.ReadValue(KeyAntiAliasing, _antiAliasing));
+            // Builds before this saved FXAA and dynamic resolution as everyone's choice without anyone
+            // making it. Once, those two old defaults move to the sharp ones; picked again after, they stay.
+            if (!Settings.ReadValue(KeySharpPanelDefaults, false))
+            {
+                if (_antiAliasing == 1)
+                    _antiAliasing = 4;
+                _dynamicResolution = false;
+                Settings.WriteValue(KeyAntiAliasing, _antiAliasing);
+                Settings.WriteValue(KeyDynamicResolution, _dynamicResolution);
+                Settings.WriteValue(KeySharpPanelDefaults, true);
+            }
             _shadowQuality = System.Math.Clamp(Settings.ReadValue(KeyShadowQuality, _shadowQuality), 0, ShadowQualityOptions.Length - 1);
             _turnMode = ReadEnum(KeyTurnMode, _turnMode);
             _snapTurnAngle = SettingsCatalog.SnapTurnAngle.Clamp(Settings.ReadValue(KeySnapTurnAngle, _snapTurnAngle));

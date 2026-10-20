@@ -154,6 +154,9 @@ public static class SkyEnvironment
         bool standalone = OS.HasFeature("android");
         environment.GlowEnabled = !standalone && settings.Bloom > 0.001f;
         environment.GlowIntensity = settings.Bloom;
+        // Bloom here is the share of the WHOLE frame fed into the glow, not only what clears the threshold.
+        // The scene's 0.05 laid a soft copy of every frame over itself, and every panel's text with it.
+        environment.GlowBloom = 0f;
 
         // Screen-space ambient occlusion. The strength maps the 0..1 setting onto the renderer's
         // scale where 2 is its own default; the rest is shaped for a broad, soft falloff rather than a

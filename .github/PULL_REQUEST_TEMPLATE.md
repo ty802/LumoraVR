@@ -22,3 +22,4 @@
 > `I have read the CLA Document and I hereby sign the CLA`
 >
 > PRs without a signed CLA will not be merged. No exceptions.
+> Signing it once will assume that you sign it in perpetuity for this repository.

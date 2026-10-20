@@ -217,8 +217,15 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             SetUpTextMaterial(material, atlas);
             _sharedTextMaterials[atlas] = material;
         }
+        else if (TextMaterialStale(material, atlas))
+            SetUpTextMaterial(material, atlas);
         return material;
     }
+
+    // The atlas only knows it holds a distance field once its first glyph is in, so a material made before
+    // that has the wrong text path; drawn that way every glyph quad fills solid. -xlinka
+    internal static bool TextMaterialStale(UITextMaterial material, TextureAsset atlas)
+        => material.UseMSDF.Value != atlas.IsMSDF || (atlas.IsMSDF && material.PixelRange.Value != atlas.MsdfPixelRange);
 
     internal void SetUpTextMaterial(UITextMaterial material, TextureAsset atlas)
     {

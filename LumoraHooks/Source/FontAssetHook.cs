@@ -31,7 +31,12 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
     // resolution-independent, so the small base is enough and keeps the atlas tight). Set at load. -xlinka
     private int _rasterSize = 96;
     // Distance-field span the MSDF was generated with (the font's msdf_pixel_range); carried to the atlas + shader.
-    private int _msdfPixelRange = 8;
+    private int _msdfPixelRange = DistanceRange;
+
+    // What every font we draw is made into. 16 texels of field: at 8 a pixel of far panel text spanned the
+    // whole field and edges went to mush. 64 em keeps corners on big headings square. -xlinka
+    private const int DistanceRange = 16;
+    private const int DistanceEm = 64;
     // MSDF was REQUESTED (imported with the flag, or a raw load asked for it) vs actually PRODUCED. The raw
     // dynamic rasterizer can silently emit LA8 coverage instead, so we confirm per-glyph before trusting it;
     // _isMsdf is what gates the distance-field path everywhere. -xlinka
@@ -87,6 +92,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
             {
                 _ownsFont = false; // shared imported resource - do not dispose it
                 Lumora.Core.Logging.Logger.Debug($"FontAssetHook: loaded imported FontFile from '{resPath}'");
+                RequireDistanceField();
                 ConfigureMsdf();
                 return;
             }
@@ -116,11 +122,28 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
             // anything set before it is thrown away and the font quietly comes up as coverage at raster 96.
             // That is how a fresh TTF with no import sidecar rendered soft next to the imported one. -xlinka
             _font.MultichannelSignedDistanceField = true;
-            _font.MsdfPixelRange = _msdfPixelRange;
-            _font.MsdfSize = 48;
+            _font.MsdfPixelRange = DistanceRange;
+            _font.MsdfSize = DistanceEm;
         }
 
         ConfigureMsdf();
+    }
+
+    // An imported font is drawn as a distance field whatever its import file says. The editor writes a fresh
+    // .import with the field off, and that quietly turned every dash and inspector label into a coverage atlas:
+    // soft from arm's length, strokes dropping out past it. The shared imported resource is left alone; the
+    // copy is ours. -xlinka
+    private void RequireDistanceField()
+    {
+        if (_font == null || (_font.MultichannelSignedDistanceField && _font.MsdfPixelRange >= DistanceRange))
+            return;
+        if (_font.Duplicate() is not FontFile copy)
+            return;
+        copy.MultichannelSignedDistanceField = true;
+        copy.MsdfPixelRange = DistanceRange;
+        copy.MsdfSize = DistanceEm;
+        _font = copy;
+        _ownsFont = true;
     }
 
     // Read MSDF intent + raster size from the loaded font. Imported fonts carry the flag from their import
@@ -137,8 +160,8 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         }
 
         _msdfIntended = _font.MultichannelSignedDistanceField;
-        _msdfPixelRange = _font.MsdfPixelRange > 0 ? _font.MsdfPixelRange : 8;
-        int msdfSize = _font.MsdfSize > 0 ? _font.MsdfSize : 48;
+        _msdfPixelRange = _font.MsdfPixelRange > 0 ? _font.MsdfPixelRange : DistanceRange;
+        int msdfSize = _font.MsdfSize > 0 ? _font.MsdfSize : DistanceEm;
         // MSDF is resolution-independent, so raster at its native msdf_size; coverage needs a larger base to
         // downsample from. -xlinka
         _rasterSize = _msdfIntended ? msdfSize : 96;

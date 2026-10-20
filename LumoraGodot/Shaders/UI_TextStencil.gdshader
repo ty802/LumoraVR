@@ -61,6 +61,26 @@ float msdf_screen_range(vec2 uv) {
 	return max(0.5 * dot(unit_range, screen_tex_size), 1.0);
 }
 
+// Four samples once a pixel spans more than two atlas texels, same as UI_Text.gdshader. -xlinka
+float msdf_face(vec2 uv, float edge, float aa, float softness) {
+	vec2 dx = dFdx(uv);
+	vec2 dy = dFdy(uv);
+	vec2 atlas = vec2(textureSize(albedo_texture, 0));
+	if (max(length(dx * atlas), length(dy * atlas)) < 2.0) {
+		vec3 m = textureLod(albedo_texture, uv, 0.0).rgb;
+		return clamp((median3(m.r, m.g, m.b) - edge) / (aa + softness) + 0.5, 0.0, 1.0);
+	}
+	float spread = aa * 0.5 + softness;
+	vec3 a = textureLod(albedo_texture, uv + dx * 0.125 + dy * 0.375, 0.0).rgb;
+	vec3 b = textureLod(albedo_texture, uv - dx * 0.125 - dy * 0.375, 0.0).rgb;
+	vec3 c = textureLod(albedo_texture, uv + dx * 0.375 - dy * 0.125, 0.0).rgb;
+	vec3 d = textureLod(albedo_texture, uv - dx * 0.375 + dy * 0.125, 0.0).rgb;
+	return 0.25 * (clamp((median3(a.r, a.g, a.b) - edge) / spread + 0.5, 0.0, 1.0)
+		+ clamp((median3(b.r, b.g, b.b) - edge) / spread + 0.5, 0.0, 1.0)
+		+ clamp((median3(c.r, c.g, c.b) - edge) / spread + 0.5, 0.0, 1.0)
+		+ clamp((median3(d.r, d.g, d.b) - edge) / spread + 0.5, 0.0, 1.0));
+}
+
 void vertex() {
 	VERTEX.xy += clip_offset;
 	local_pos = VERTEX.xy;
@@ -77,14 +97,13 @@ void fragment() {
 	}
 
 	if (use_msdf) {
-		vec3 msd = texture(albedo_texture, UV).rgb;
-		float sd = median3(msd.r, msd.g, msd.b);
 		float range = msdf_screen_range(UV);
-		float spread = 1.0 / max(range, 0.0001) + face_softness;
+		float aa = 1.0 / max(range, 0.0001);
+		float spread = aa + face_softness;
 		float face_edge = 0.5 - face_dilate - glyph_dilate;
-		float face = clamp((sd - face_edge) / spread + 0.5, 0.0, 1.0);
+		float face = msdf_face(UV, face_edge, aa, face_softness);
 		if (outline_thickness > 0.0) {
-			float outer = clamp((sd - (face_edge - min(outline_thickness, 0.45))) / spread + 0.5, 0.0, 1.0);
+			float outer = msdf_face(UV, face_edge - min(outline_thickness, 0.45), aa, face_softness);
 			// Inside the face the face colour shows, in the ring the outline's, and the alpha follows the colour
 			// that shows: a face with almost no alpha leaves an outlined glyph hollow. -xlinka
 			vec4 ringed = mix(out_color, outline_color, 1.0 - face);
@@ -106,13 +125,13 @@ void fragment() {
 		if (use_albedo_texture) {
 			coverage = texture(albedo_texture, UV).a;
 			coverage = pow(clamp(coverage, 0.0, 1.0), coverage_gamma);
+			// Crisped on the glyph's own coverage, before the colour, same as UI_Text.gdshader. -xlinka
+			if (alpha_clip) {
+				float width = max(fwidth(coverage), 0.001);
+				coverage *= smoothstep(alpha_cutoff - width, alpha_cutoff + width, coverage);
+			}
 		}
 		out_color.a *= coverage;
-
-		if (alpha_clip) {
-			float alpha_width = max(fwidth(out_color.a), 0.001);
-			out_color.a *= smoothstep(alpha_cutoff - alpha_width, alpha_cutoff + alpha_width, out_color.a);
-		}
 	}
 
 	out_color.a *= clip_alpha;

@@ -56,6 +56,8 @@ internal sealed class SharedUIMaterials
             canvas.SetUpTextMaterial(material, atlas);
             _text[key] = material;
         }
+        else if (Canvas.TextMaterialStale(material, atlas))
+            canvas.SetUpTextMaterial(material, atlas);
         return material;
     }
 

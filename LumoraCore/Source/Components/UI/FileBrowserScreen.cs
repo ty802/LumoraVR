@@ -59,6 +59,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
     private const float LaidOutViewportFloor = 100f;
 
     private const double DoublePressSeconds = 0.45;
+    private const string PressHint = "Press to select. Press twice to open a folder or import a file.";
 
     private string _currentPath = string.Empty;
     private string? _selectedPath;
@@ -318,7 +319,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         viewport.AttachComponent<Mask>();
         _scroll = viewport.AttachComponent<ScrollRect>();
         _scroll.ScrollSensitivity.Value = new float2(1f, 1f);
-        // A folder card replaces the list and a second press imports, so a drag must not start either.
+        // A second press opens a folder or imports a file, so a drag must not start either.
         _scroll.RowsActOnRelease.Value = true;
         _scroll.ScrollChanged += (_, _) => OnScrollChanged();
 
@@ -475,7 +476,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         le.PreferredHeight.Value = 24f;
         var ib = new UIBuilder(status);
         ib.Font(font).FontSize(13f);
-        _statusLabel = ib.Text("Press a file to select it, press it twice to import it.", 13f, TextDim);
+        _statusLabel = ib.Text(PressHint, 13f, TextDim);
         _statusLabel.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         _statusLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         _statusLabel.WordWrap.Value = false;
@@ -552,7 +553,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         if (_pathLabel != null) _pathLabel.Content.Value = path;
         if (_statusLabel != null)
         {
-            _statusLabel.Content.Value = "Press a file to select it, press it twice to import it.";
+            _statusLabel.Content.Value = PressHint;
             _statusLabel.Color.Value = TextDim;
         }
         Refresh();
@@ -833,31 +834,32 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 
             // Handler reads the card's LIVE path/type, not a captured value, because the card is recycled to a
             // different entry as you scroll. - xlinka
-            // A folder opens on one press. A file selects on one press and imports on a second press
-            // within the double press window, the same rule the inventory uses. -xlinka
+            // One press selects, a folder or a file alike. A second press on the same card within the double
+            // press window does its main thing: a folder opens, a file imports. The same rule the inventory
+            // uses, and what a desktop file browser does. -xlinka
             var captured = card;
             var btn = slot.AttachComponent<Button>();
             btn.Clicked += (_, _) =>
             {
-                if (captured.IsDirectory)
-                {
-                    NavigateTo(captured.Path);
-                    return;
-                }
                 var now = DateTime.UtcNow;
                 bool second = _lastPressPath != null
                     && string.Equals(_lastPressPath, captured.Path, StringComparison.OrdinalIgnoreCase)
                     && (now - _lastPress).TotalSeconds <= DoublePressSeconds;
                 _lastPress = now;
                 _lastPressPath = captured.Path;
-                if (second)
+                if (!second)
                 {
-                    _lastPressPath = null;
                     Select(captured);
-                    SpawnImport(captured.Path);
+                    return;
+                }
+                _lastPressPath = null;
+                if (captured.IsDirectory)
+                {
+                    NavigateTo(captured.Path);
                     return;
                 }
                 Select(captured);
+                SpawnImport(captured.Path);
             };
 
             _pool.Add(card);
@@ -911,6 +913,11 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         if (_statusLabel != null)
         {
             _statusLabel.Color.Value = TextPrimary;
+            if (card.IsDirectory)
+            {
+                _statusLabel.Content.Value = $"{Path.GetFileName(card.Path)}  ·  folder, press it again to open it";
+                return;
+            }
             try
             {
                 var info = new FileInfo(card.Path);

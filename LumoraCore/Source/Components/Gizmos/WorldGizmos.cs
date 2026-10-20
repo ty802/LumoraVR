@@ -1,9 +1,11 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Lumora.Core.Assets;
+using Lumora.Core.Logging;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Gizmos;
@@ -50,6 +52,7 @@ public sealed class WorldGizmos
 
     private Slot? _root;
     private Slot? _chrome;
+    private Slot? _abandoned;
 
     // One parked rig per user is enough for the single-selection flow (click a row, click the next
     // row): the outgoing gizmo parks and the incoming one rents it back the same frame. Multi-select
@@ -70,7 +73,8 @@ public sealed class WorldGizmos
     // tangled with a branch the user is actively editing. -xlinka
     public Slot? Root(World? world)
     {
-        if (_root != null && !_root.IsRemoved && !_root.IsDestroyed)
+        Verify();
+        if (_root != null)
             return _root;
 
         var worldRoot = world?.RootSlot;
@@ -79,7 +83,8 @@ public sealed class WorldGizmos
 
         // Find before add: the host's container replicates to everyone, and a joining peer that made
         // its own would leave a second one sitting next to it for the rest of the session.
-        _root = worldRoot.FindChild("Gizmos", recursive: false);
+        var found = worldRoot.FindChild("Gizmos", recursive: false);
+        _root = ReferenceEquals(found, _abandoned) ? null : found;
         if (_root == null)
         {
             _root = worldRoot.AddSlot("Gizmos");
@@ -88,18 +93,67 @@ public sealed class WorldGizmos
         return _root;
     }
 
+    // The container and the shared chrome in it count only while they sit where they were put. Deleting
+    // one from the inspector parks it in the undo pen rather than destroying it, alive and switched off,
+    // and every gizmo built after that went inside it and drew nothing, for good. So a container that
+    // has left the world root, or lost its chrome, is given up: everything built in it went with it, the
+    // indexes and the pool start over, and the old one is destroyed for real, since undoing the delete
+    // would only bring back rigs nothing tracks any more. The next selection builds a fresh one. -xlinka
+    private void Verify()
+    {
+        if (_root == null || Intact())
+            return;
+
+        var old = _root;
+        _root = null;
+        _chrome = null;
+        _materials.Clear();
+        _pool.Clear();
+        _byTarget.Clear();
+        _byOwner.Clear();
+        _byComponent.Clear();
+        _byComponentOwner.Clear();
+        _abandoned = old;
+        try
+        {
+            old.Destroy();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            Logger.Warn($"WorldGizmos: the old gizmo container '{old.Name.Value}' is not ours to destroy; building a new one beside it");
+        }
+    }
+
+    private bool Intact()
+    {
+        if (!InPlace(_root, _root?.World?.RootSlot))
+            return false;
+        if (_chrome != null && !InPlace(_chrome, _root))
+            return false;
+        foreach (var material in _materials.Values)
+        {
+            if (material == null || material.IsDestroyed || !InPlace(material.Slot, _chrome))
+                return false;
+        }
+        return true;
+    }
+
+    private static bool InPlace(Slot? slot, Slot? parent)
+        => slot != null && parent != null && !slot.IsDestroyed && !slot.IsRemoved && ReferenceEquals(slot.Parent, parent);
+
     // SHARED MATERIALS
 
     // every gizmo in the world points at the same eight providers instead of attaching its own set, so
     // a selection change stops allocating material components and the renderers batch
     public OverlayUnlitMaterial? GetMaterial(World? world, GizmoMaterialKind kind)
     {
-        if (_materials.TryGetValue(kind, out var cached) && cached != null && !cached.IsDestroyed)
-            return cached;
-
+        // Through the container first: one that was parked or moved takes its materials with it.
         var root = Root(world);
         if (root == null)
             return null;
+
+        if (_materials.TryGetValue(kind, out var cached) && cached != null && !cached.IsDestroyed)
+            return cached;
 
         if (_chrome == null || _chrome.IsRemoved || _chrome.IsDestroyed)
         {
@@ -162,6 +216,7 @@ public sealed class WorldGizmos
 
     public SlotGizmo? Get(Slot? target)
     {
+        Verify();
         if (target == null || !_byTarget.TryGetValue(target, out var gizmo))
             return null;
         if (IsLive(gizmo))
@@ -277,6 +332,7 @@ public sealed class WorldGizmos
     // change, so the outgoing gizmo keeps its slots
     public SlotGizmo? Rent()
     {
+        Verify();
         for (int i = _pool.Count - 1; i >= 0; i--)
         {
             var gizmo = _pool[i];
@@ -307,8 +363,9 @@ public sealed class WorldGizmos
             Untrack(target);
     }
 
+    // A rig parked by an undoable delete is still alive, just out of the world.
     private static bool IsLive(SlotGizmo? gizmo)
-        => gizmo != null && !gizmo.IsDestroyed && gizmo.Slot is { IsDestroyed: false, IsRemoved: false };
+        => gizmo != null && !gizmo.IsDestroyed && gizmo.Slot is { IsDestroyed: false, IsRemoved: false } slot && !UndoGraveyard.Holds(slot);
 
     // COMPONENT GIZMO INDEX
 
@@ -331,6 +388,7 @@ public sealed class WorldGizmos
 
     public ComponentGizmo? GetComponentGizmo(Component? target)
     {
+        Verify();
         if (target == null || !_byComponent.TryGetValue(target, out var gizmo))
             return null;
         if (IsLive(gizmo))
@@ -425,5 +483,5 @@ public sealed class WorldGizmos
     }
 
     private static bool IsLive(ComponentGizmo? gizmo)
-        => gizmo != null && !gizmo.IsDestroyed && gizmo.Slot is { IsDestroyed: false, IsRemoved: false };
+        => gizmo != null && !gizmo.IsDestroyed && gizmo.Slot is { IsDestroyed: false, IsRemoved: false } slot && !UndoGraveyard.Holds(slot);
 }

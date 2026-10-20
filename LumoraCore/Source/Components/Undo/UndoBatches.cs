@@ -40,6 +40,17 @@ public static class UndoGraveyard
     public static bool IsGraveyard(Slot? slot)
         => slot != null && slot.Parent is { IsRootSlot: true } && slot.SlotName.Value == SlotName;
 
+    // Parked anywhere in here is out of the world, though the slot itself still reads alive.
+    public static bool Holds(Slot? slot)
+    {
+        for (var current = slot; current != null; current = current.Parent)
+        {
+            if (IsGraveyard(current))
+                return true;
+        }
+        return false;
+    }
+
     // Called when a manager tears down. The pen is shared, so it only goes when the last parked slot
     // has gone with it - and only the authority swings the axe, or every peer that saw the same user
     // leave would send its own destroy for the same slot.

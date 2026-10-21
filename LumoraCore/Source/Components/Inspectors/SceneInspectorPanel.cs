@@ -194,10 +194,10 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
             forward = forward.LengthSquared > 1e-6f ? forward.Normalized : float3.Backward;
             // Drop the panel centre below eye level so the HEADER sits near the gaze line and the body falls into the
             // natural downward view, instead of centring on the eyes (which makes you look UP to read the title). -xlinka
-            panelSlot.GlobalPosition = head.GlobalPosition + forward * 1.0f + float3.Down * 0.12f;
+            panelSlot.GlobalPosition = head.GlobalPosition + forward * 1.0f + float3.Down * (240f * InspectorUI.PanelScale);
             FaceHead(panelSlot, head);
         }
-        panelSlot.LocalScale.Value = float3.One * 0.0005f;
+        panelSlot.LocalScale.Value = float3.One * InspectorUI.PanelScale;
 
         var panel = panelSlot.AttachComponent<SceneInspectorPanel>();
         panel.Root.Target = rootTarget;
@@ -304,8 +304,9 @@ public partial class SceneInspectorPanel : Component, IInspectorActionHandler, I
         return false;
     }
 
+    // A panel's width and a gap, in the origin's own units, so a resized panel's neighbour still clears it.
     public static SceneInspectorPanel? SpawnAdjacent(SceneInspectorPanel origin, Slot rootTarget)
-        => SpawnBeside(origin, rootTarget, new float3(0.72f, 0f, 0f));
+        => SpawnBeside(origin, rootTarget, new float3(1440f * origin.Slot.GlobalScale.x, 0f, 0f));
 
     public override void OnAttach()
     {

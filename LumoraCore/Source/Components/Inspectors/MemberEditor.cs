@@ -172,6 +172,10 @@ public abstract class MemberEditor : Component
 
 public static class InspectorUI
 {
+    // Metres per canvas unit for the inspector and every panel it opens. Was 0.0005, which put body text at
+    // 7.5 mm: crisp, but past arm's length on a desktop view it was too small to read. Neighbour offsets are
+    // in canvas units times this, so the layout grows with it. -xlinka
+    public const float PanelScale = 0.00065f;
     public static readonly color TextColor = DashTheme.Text;
     public static readonly color MutedColor = new color(0.78f, 0.77f, 0.85f, 1f);
     // slot's own persistence flag is off

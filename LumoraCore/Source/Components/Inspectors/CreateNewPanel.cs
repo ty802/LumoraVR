@@ -64,7 +64,7 @@ public sealed class CreateNewPanel : Component, IInspectorActionHandler
 
         // Half a millimetre a pixel like the other inspector panels; without it the canvas came up a metre a
         // pixel.
-        panelSlot.LocalScale.Value = float3.One * 0.0005f;
+        panelSlot.LocalScale.Value = float3.One * InspectorUI.PanelScale;
         return panelSlot.AttachComponent<CreateNewPanel>();
     }
 
@@ -240,7 +240,7 @@ public sealed class CreateNewPanel : Component, IInspectorActionHandler
         if (!entry.OpensInspector || made.IsDestroyed || World == null || Slot == null || Slot.IsDestroyed)
             return;
         var position = Slot.GlobalPosition;
-        var beside = position + Slot.GlobalRotation * new float3(0.55f, 0f, 0f);
+        var beside = position + Slot.GlobalRotation * new float3(1100f * InspectorUI.PanelScale, 0f, 0f);
         SceneInspectorPanel.OpenOrFocus(World, made, position, spawnAt: beside, mineOnly: true);
     }
 

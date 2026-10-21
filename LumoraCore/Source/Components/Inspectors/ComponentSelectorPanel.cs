@@ -90,7 +90,8 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
         var panelSlot = anchor.Parent?.AddSlot("Component Selector") ?? anchor.World.RootSlot.AddSlot("Component Selector");
         panelSlot.Persistent.Value = false;
         panelSlot.Tag.Value = "Developer";
-        panelSlot.GlobalPosition = anchor.GlobalPosition + anchor.GlobalRotation * new float3(0.55f, 0f, 0f);
+        // Half the inspector, half the picker and a gap, in the anchor's own units so a resized panel is cleared.
+        panelSlot.GlobalPosition = anchor.GlobalPosition + anchor.GlobalRotation * new float3(1100f * anchor.GlobalScale.x, 0f, 0f);
         panelSlot.GlobalRotation = anchor.GlobalRotation;
         panelSlot.LocalScale.Value = anchor.LocalScale.Value;
         return panelSlot.AttachComponent<ComponentSelectorPanel>();

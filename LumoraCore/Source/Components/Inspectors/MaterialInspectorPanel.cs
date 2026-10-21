@@ -89,7 +89,7 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
         panelSlot.GlobalRotation = toViewer.LengthSquared > 1e-6f
             ? floatQ.AxisAngleRad(float3.Up, MathF.Atan2(toViewer.x, toViewer.z))
             : rotation;
-        panelSlot.LocalScale.Value = float3.One * 0.0005f;
+        panelSlot.LocalScale.Value = float3.One * InspectorUI.PanelScale;
 
         var panel = panelSlot.AttachComponent<MaterialInspectorPanel>();
         panel.Target.Target = material;

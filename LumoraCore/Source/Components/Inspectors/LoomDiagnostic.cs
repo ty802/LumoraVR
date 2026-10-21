@@ -33,7 +33,7 @@ public sealed class LoomDiagnostic : Component, IInspectorActionHandler
 
     // Canvas units are slot units, so a panel is scaled down to half a millimetre a unit, like the
     // inspector's: this one is 0.4 by 0.54 m.
-    public const float PanelScale = 0.0005f;
+    public const float PanelScale = InspectorUI.PanelScale;
     private const float RowHeight = 30f;
     private const float ScriptRowHeight = 60f;
     private const float LabelWidth = 240f;

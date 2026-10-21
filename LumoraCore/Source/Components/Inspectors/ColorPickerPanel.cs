@@ -150,7 +150,7 @@ public class ColorPickerPanel : Component, IInspectorActionHandler
         toViewer.y = 0f;
         if (toViewer.LengthSquared > 1e-6f)
             panelSlot.GlobalRotation = floatQ.AxisAngleRad(float3.Up, MathF.Atan2(toViewer.x, toViewer.z));
-        panelSlot.LocalScale.Value = float3.One * 0.0005f;
+        panelSlot.LocalScale.Value = float3.One * InspectorUI.PanelScale;
 
         var panel = panelSlot.AttachComponent<ColorPickerPanel>();
         panel.TargetMember.Target = field;

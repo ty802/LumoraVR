@@ -22,7 +22,7 @@ namespace Lumora.Core.Components.Scripting;
 [ComponentCategory("Hidden")]
 public sealed class ScriptNodeBrowser : Component
 {
-    private const float Scale = 0.0005f;
+    private const float Scale = InspectorUI.PanelScale;
     private const float RowHeight = InspectorUI.RowHeight;
     private const int MaxSearchResults = 120;
     private static readonly float2 PanelSize = new(560f, 880f);

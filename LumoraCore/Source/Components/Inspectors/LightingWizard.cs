@@ -56,7 +56,7 @@ public sealed class LightingWizard : Component, IInspectorActionHandler
         panelSlot.Persistent.Value = false;
         panelSlot.Tag.Value = "Developer";
         // Canvas units are slot units: at scale 1 this panel was hundreds of metres across. -xlinka
-        panelSlot.LocalScale.Value = float3.One * 0.0005f;
+        panelSlot.LocalScale.Value = float3.One * InspectorUI.PanelScale;
 
         var head = world.LocalUser?.Root?.HeadSlot;
         if (head != null && !head.IsDestroyed)

@@ -348,7 +348,7 @@ public class ReferenceProxy : Component, IHeldActivatable
         }
         float userScale = world.LocalUser?.Root?.Slot?.GlobalScale.y ?? 1f;
         userScale = userScale > 0.0001f ? userScale : 1f;
-        slot.LocalScale.Value = float3.One * 0.0005f * userScale;
+        slot.LocalScale.Value = float3.One * InspectorUI.PanelScale * userScale;
 
         var proxy = slot.AttachComponent<ReferenceProxy>();
         proxy.Target.Target = target;

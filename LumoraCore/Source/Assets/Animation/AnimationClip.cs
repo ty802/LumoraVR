@@ -79,6 +79,21 @@ public sealed class AnimationClip
         return track;
     }
 
+    // Same slot, so a binding that names this track by index keeps naming it. An editor rebuilds a
+    // track from its edited keys and swaps it in here rather than mutating the one it read.
+    public void ReplaceTrack(int index, AnimationTrack track)
+    {
+        if (track == null)
+        {
+            throw new ArgumentNullException(nameof(track));
+        }
+        _tracks[index] = track;
+    }
+
+    // A deep copy through the file format, so every track type round-trips without a copy routine of its
+    // own. A track this build cannot read is left out, the same as loading the file would.
+    public AnimationClip Clone() => FromBytes(ToBytes());
+
     public AnimationTrack? FindTrack(string node, string property)
     {
         for (int i = 0; i < _tracks.Count; i++)

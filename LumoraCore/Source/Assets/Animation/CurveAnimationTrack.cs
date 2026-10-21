@@ -42,6 +42,11 @@ public sealed class CurveAnimationTrack<T> : AnimationTrackBase, IAnimationTrack
     public KeyframeInterpolation KeyInterpolation(int index)
         => _interpolations != null ? _interpolations[index] : _sharedInterpolation;
 
+    // The type default on a track that has never held a cubic key.
+    public T KeyInTangent(int index) => _inTangents != null ? _inTangents[index] : default!;
+
+    public T KeyOutTangent(int index) => _outTangents != null ? _outTangents[index] : default!;
+
     // Keys may arrive in any order; they are kept sorted by time. A type with no meaningful midpoint
     // (bool, string) is forced to Step regardless of what is asked for, so the file can never claim
     // an interpolation the sampler would have to ignore.

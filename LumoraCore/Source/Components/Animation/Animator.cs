@@ -27,7 +27,7 @@ namespace Lumora.Core.Components;
 // and TypeMigrations rewrites it on the way in.
 [SaveTypeVersion(1)]
 [ComponentCategory("Animation")]
-public class Animator : Component, ICustomInspectorUI, IPlayable
+public class Animator : Component, ICustomInspectorUI, IPlayable, IInspectorActionContextHandler
 {
     public readonly AssetRef<AnimationAsset> Clip;
 
@@ -545,6 +545,18 @@ public class Animator : Component, ICustomInspectorUI, IPlayable
         AddStatRow(ui, "Position", $"{Playback.Position:0.###} s");
         AddStatRow(ui, "Loop", Playback.LoopMode.ToString());
         AddStatRow(ui, "State", Playback.IsPlaying ? $"playing x{Playback.Speed:0.##}" : "paused");
+
+        if (Clip.Target is Assets.AnimationProvider)
+        {
+            InspectorUI.FixedRow(ui.Root, "Curves", InspectorUI.RowHeight, out var row, ui.Root);
+            InspectorUI.RelayButton(row, this, "curves", "Edit curves", 0f);
+        }
+    }
+
+    public void HandleInspectorAction(string argument, UIInteractionContext context)
+    {
+        if (argument == "curves" && Clip.Target is Assets.AnimationProvider provider)
+            CurveStudioPanel.Open(provider, null, context.WorldPoint);
     }
 
     private static void AddStatRow(UIBuilder ui, string label, string value)

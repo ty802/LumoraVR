@@ -131,6 +131,15 @@ public class ListMemberEditor : Component, IInspectorActionHandler
         label.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         ui.PopStyle();
 
+        // A list that is really a curve also opens as one.
+        if (member is SyncElement { Parent: Component owner } && CurveSources.CurveMemberFor(owner, member) != null)
+        {
+            ui.PushStyle();
+            ui.TextColor(InspectorUI.AccentColor);
+            InspectorUI.RelayButton(ui, editor, "curve", "Curve", 72f);
+            ui.PopStyle();
+        }
+
         var body = wrapper.AddSlot("Body");
         body.AttachComponent<RectTransform>();
         var bodyLayout = body.AttachComponent<VerticalLayout>();
@@ -419,6 +428,13 @@ public class ListMemberEditor : Component, IInspectorActionHandler
         if (argument == "toggle")
         {
             Expanded.Value = !Expanded.Value;
+            return;
+        }
+        if (argument == "curve")
+        {
+            if (TargetList.Target is SyncElement { Parent: Component owner } element
+                && CurveSources.CurveMemberFor(owner, element) is { } curveMember)
+                CurveStudioPanel.Open(owner, curveMember, Slot.GlobalPosition);
             return;
         }
         // The rows are gone, so this only fires for a relay that outlived a lock arriving mid-session,

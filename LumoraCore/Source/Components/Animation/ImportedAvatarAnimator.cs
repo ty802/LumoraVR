@@ -27,8 +27,20 @@ namespace Lumora.Core.Components;
 // drivers off. Play Audio cues the imported audio players. -xlinka
 [ComponentCategory("Animation")]
 [DefaultUpdateOrder(-150)]
-public sealed class ImportedAvatarAnimator : Component
+public sealed class ImportedAvatarAnimator : Component, ICustomInspectorUI, IInspectorActionContextHandler
 {
+    public void BuildInspectorBody(Helio.UI.UIBuilder ui)
+    {
+        InspectorUI.FixedRow(ui.Root, "Curves", InspectorUI.RowHeight, out var row, ui.Root);
+        InspectorUI.RelayButton(row, this, "curves", "View curves", 0f);
+    }
+
+    public void HandleInspectorAction(string argument, Helio.UI.UIInteractionContext context)
+    {
+        if (argument == "curves")
+            CurveStudioPanel.Open(this, "", context.WorldPoint);
+    }
+
     public readonly AssetRef<ImportedAnimatorAsset> Controller = new();
     public readonly SyncRef<Slot> Root = new();
     public readonly SyncRef<HandGestureReader> Gestures = new();
